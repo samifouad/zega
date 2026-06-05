@@ -9,6 +9,13 @@ use zega_parser::{
 };
 use zega_wal::{snapshot, restore, Operation, Wal};
 
+pub mod config;
+pub mod context;
+pub mod jwt;
+
+pub use config::{JwtConfig, JwtKey};
+pub use context::{ResolvedContext, ZegaContext};
+
 #[derive(Error, Debug)]
 pub enum ZegaError {
     #[error("parse error: {0}")]
@@ -17,6 +24,8 @@ pub enum ZegaError {
     Wal(#[from] zega_wal::WalError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("jwt error: {0}")]
+    Jwt(String),
     #[error("execution error: {0}")]
     Execution(String),
 }
@@ -28,18 +37,12 @@ pub struct Row {
     pub fields: HashMap<String, Value>,
 }
 
-#[derive(Clone, Debug)]
-pub enum ZegaContext {
-    Anonymous,
-    System,
-    Claims(HashMap<String, Value>),
-}
-
 pub struct Zega {
     graph: Mutex<Graph>,
     kv: KvStore,
     wal: Mutex<Wal>,
     path: PathBuf,
+    jwt_config: Option<JwtConfig>,
     _rt: Option<tokio::runtime::Runtime>,
 }
 
@@ -47,6 +50,8 @@ pub struct ZegaBuilder {
     path: PathBuf,
     wal_flush_every: bool,
     wal_flush_interval_ms: Option<u64>,
+    jwt_config: Option<JwtConfig>,
+    jwt_issuer: Option<String>,
 }
 
 impl ZegaBuilder {
@@ -64,6 +69,29 @@ impl ZegaBuilder {
         }
     }
 
+    pub fn jwt_hmac_secret(mut self, secret: impl Into<Vec<u8>>) -> Self {
+        let mut config = JwtConfig::hmac(secret);
+        config.issuer = self.jwt_issuer.clone();
+        self.jwt_config = Some(config);
+        self
+    }
+
+    pub fn jwt_rsa_public_key_pem(mut self, pem: impl Into<Vec<u8>>) -> Self {
+        let mut config = JwtConfig::rsa_public_pem(pem);
+        config.issuer = self.jwt_issuer.clone();
+        self.jwt_config = Some(config);
+        self
+    }
+
+    pub fn jwt_issuer(mut self, issuer: impl Into<String>) -> Self {
+        let issuer = issuer.into();
+        if let Some(config) = &mut self.jwt_config {
+            config.issuer = Some(issuer.clone());
+        }
+        self.jwt_issuer = Some(issuer);
+        self
+    }
+
     pub fn build(self) -> Result<Zega> {
         Zega::open_with_builder(self)
     }
@@ -75,11 +103,14 @@ impl Zega {
             path: PathBuf::from(path),
             wal_flush_every: false,
             wal_flush_interval_ms: None,
+            jwt_config: None,
+            jwt_issuer: None,
         }
     }
 
     fn open_with_builder(builder: ZegaBuilder) -> Result<Zega> {
         let path = builder.path;
+        let jwt_config = builder.jwt_config;
         std::fs::create_dir_all(&path)?;
 
         let mut graph = Graph::new();
@@ -141,6 +172,7 @@ impl Zega {
             kv,
             wal: Mutex::new(wal),
             path,
+            jwt_config,
             _rt: rt,
         })
     }
@@ -153,8 +185,10 @@ impl Zega {
         &self,
         zql: &str,
         params: HashMap<String, Value>,
-        _ctx: ZegaContext,
+        ctx: ZegaContext,
     ) -> Result<Vec<Row>> {
+        self.resolve_context(&ctx)?;
+
         let mut parser = Parser::new(zql)?;
         let stmts = parser.parse()?;
         let mut results = Vec::new();
@@ -163,6 +197,33 @@ impl Zega {
             results.extend(rows);
         }
         Ok(results)
+    }
+
+    fn resolve_context(&self, ctx: &ZegaContext) -> Result<ResolvedContext> {
+        match ctx {
+            ZegaContext::Jwt(_) => {
+                let config = self
+                    .jwt_config
+                    .as_ref()
+                    .ok_or_else(|| ZegaError::Jwt("jwt context requires jwt config".to_string()))?;
+                ctx.resolve(config)
+            }
+            ZegaContext::Anonymous => Ok(ResolvedContext {
+                claims: HashMap::new(),
+                is_system: false,
+                is_anonymous: true,
+            }),
+            ZegaContext::System => Ok(ResolvedContext {
+                claims: HashMap::new(),
+                is_system: true,
+                is_anonymous: false,
+            }),
+            ZegaContext::Claims(claims) => Ok(ResolvedContext {
+                claims: claims.clone(),
+                is_system: false,
+                is_anonymous: false,
+            }),
+        }
     }
 
     fn execute_statement(
@@ -676,8 +737,21 @@ fn apply_op_to_memory(graph: &mut Graph, kv: &KvStore, op: &Operation) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use hmac::{Hmac, Mac};
+    use rsa::pkcs1v15::SigningKey;
+    use rsa::pkcs8::EncodePublicKey;
+    use rsa::rand_core::OsRng;
+    use rsa::signature::{SignatureEncoding, Signer};
+    use rsa::RsaPrivateKey;
+    use serde_json::json;
+    use sha2::Sha256;
     use std::collections::HashMap;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tempfile::tempdir;
+
+    type HmacSha256 = Hmac<Sha256>;
 
     #[test]
     fn test_insert_and_match_node() {
@@ -787,5 +861,140 @@ mod tests {
             let stmts = p.parse().unwrap();
             assert!(!stmts.is_empty(), "failed to parse: {}", q);
         }
+    }
+
+    #[test]
+    fn test_hs256_valid_token_decodes() {
+        let token = hs256_token(b"secret", json!({ "sub": "user_1", "iss": "zega", "exp": future_exp() }));
+        let config = JwtConfig {
+            key: JwtKey::Hmac(b"secret".to_vec()),
+            issuer: Some("zega".to_string()),
+            leeway_seconds: 0,
+        };
+
+        let resolved = ZegaContext::jwt(&token).resolve(&config).unwrap();
+
+        assert_eq!(resolved.claims.get("sub"), Some(&Value::String("user_1".to_string())));
+        assert!(!resolved.is_system);
+        assert!(!resolved.is_anonymous);
+    }
+
+    #[test]
+    fn test_hs256_expired_rejected() {
+        let token = hs256_token(b"secret", json!({ "sub": "user_1", "exp": past_exp() }));
+        let config = JwtConfig::hmac(b"secret".to_vec());
+
+        assert!(ZegaContext::jwt(&token).resolve(&config).is_err());
+    }
+
+    #[test]
+    fn test_hs256_wrong_secret_rejected() {
+        let token = hs256_token(b"secret", json!({ "sub": "user_1", "exp": future_exp() }));
+        let config = JwtConfig::hmac(b"wrong-secret".to_vec());
+
+        assert!(ZegaContext::jwt(&token).resolve(&config).is_err());
+    }
+
+    #[test]
+    fn test_rs256_valid_signature_verifies() {
+        let (token, public_pem) = rs256_token(json!({ "sub": "user_1", "exp": future_exp() }));
+        let config = JwtConfig::rsa_public_pem(public_pem.into_bytes());
+
+        let resolved = ZegaContext::jwt(&token).resolve(&config).unwrap();
+
+        assert_eq!(resolved.claims.get("sub"), Some(&Value::String("user_1".to_string())));
+    }
+
+    #[test]
+    fn test_rs256_tampered_payload_rejected() {
+        let (token, public_pem) = rs256_token(json!({ "sub": "user_1", "exp": future_exp() }));
+        let mut parts: Vec<String> = token.split('.').map(str::to_string).collect();
+        parts[1] = encode_json(&json!({ "sub": "user_2", "exp": future_exp() }));
+        let tampered = parts.join(".");
+        let config = JwtConfig::rsa_public_pem(public_pem.into_bytes());
+
+        assert!(ZegaContext::jwt(&tampered).resolve(&config).is_err());
+    }
+
+    #[test]
+    fn test_custom_claims_extracted() {
+        let token = hs256_token(
+            b"secret",
+            json!({ "sub": "user_1", "org_id": "org_123", "role": "admin", "exp": future_exp() }),
+        );
+        let config = JwtConfig::hmac(b"secret".to_vec());
+
+        let resolved = ZegaContext::jwt(&token).resolve(&config).unwrap();
+
+        assert_eq!(resolved.claims.get("org_id"), Some(&Value::String("org_123".to_string())));
+        assert_eq!(resolved.claims.get("role"), Some(&Value::String("admin".to_string())));
+    }
+
+    #[test]
+    fn test_system_context_bypasses_jwt() {
+        let config = JwtConfig::hmac(b"secret".to_vec());
+
+        let resolved = ZegaContext::system().resolve(&config).unwrap();
+
+        assert!(resolved.claims.is_empty());
+        assert!(resolved.is_system);
+        assert!(!resolved.is_anonymous);
+    }
+
+    #[test]
+    fn test_anonymous_has_empty_claims() {
+        let config = JwtConfig::hmac(b"secret".to_vec());
+
+        let resolved = ZegaContext::anonymous().resolve(&config).unwrap();
+
+        assert!(resolved.claims.is_empty());
+        assert!(!resolved.is_system);
+        assert!(resolved.is_anonymous);
+    }
+
+    fn hs256_token(secret: &[u8], payload: serde_json::Value) -> String {
+        let header = encode_json(&json!({ "alg": "HS256", "typ": "JWT" }));
+        let payload = encode_json(&payload);
+        let signing_input = format!("{header}.{payload}");
+        let mut mac = HmacSha256::new_from_slice(secret).unwrap();
+        mac.update(signing_input.as_bytes());
+        let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+
+        format!("{signing_input}.{signature}")
+    }
+
+    fn rs256_token(payload: serde_json::Value) -> (String, String) {
+        let mut rng = OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let public_pem = private_key
+            .to_public_key()
+            .to_public_key_pem(Default::default())
+            .unwrap();
+        let header = encode_json(&json!({ "alg": "RS256", "typ": "JWT" }));
+        let payload = encode_json(&payload);
+        let signing_input = format!("{header}.{payload}");
+        let signing_key = SigningKey::<Sha256>::new(private_key);
+        let signature = URL_SAFE_NO_PAD.encode(signing_key.sign(signing_input.as_bytes()).to_bytes());
+
+        (format!("{signing_input}.{signature}"), public_pem)
+    }
+
+    fn encode_json(value: &serde_json::Value) -> String {
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(value).unwrap())
+    }
+
+    fn future_exp() -> u64 {
+        now() + 3600
+    }
+
+    fn past_exp() -> u64 {
+        now() - 3600
+    }
+
+    fn now() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 }
