@@ -1,0 +1,19 @@
+[package]
+name = "zega-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+bincode = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+
+zega-graph = { workspace = true }
+zega-kv = { workspace = true }
+zega-parser = { workspace = true }
+zega-wal = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true }

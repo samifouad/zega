@@ -1,0 +1,13 @@
+[package]
+name = "zega-kv"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dashmap = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "rt-multi-thread"] }
+serde = { workspace = true }
+zega-parser = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "time", "rt-multi-thread"] }
