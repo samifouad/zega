@@ -1,0 +1,10 @@
+[package]
+name = "zega-parser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
