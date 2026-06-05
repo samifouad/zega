@@ -4,17 +4,18 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use zega_graph::{Graph, NodeId};
 use zega_kv::KvStore;
-use zega_parser::{
-    ast::*, value::Value, BinaryOperator, Expr, OrderDirection, Parser, Statement,
-};
-use zega_wal::{snapshot, restore, Operation, Wal};
+use zega_parser::{ast::*, value::Value, BinaryOperator, Expr, OrderDirection, Parser, Statement};
+use zega_wal::{restore, snapshot, Operation, Wal};
 
 pub mod config;
 pub mod context;
 pub mod jwt;
+pub mod planner;
+pub mod policy;
 
 pub use config::{JwtConfig, JwtKey};
 pub use context::{ResolvedContext, ZegaContext};
+pub use policy::{Expr as PolicyExpr, ExprValue, Policy, PolicyCondition, PolicyTargets};
 
 #[derive(Error, Debug)]
 pub enum ZegaError {
@@ -26,6 +27,8 @@ pub enum ZegaError {
     Io(#[from] std::io::Error),
     #[error("jwt error: {0}")]
     Jwt(String),
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
     #[error("execution error: {0}")]
     Execution(String),
 }
@@ -43,6 +46,7 @@ pub struct Zega {
     wal: Mutex<Wal>,
     path: PathBuf,
     jwt_config: Option<JwtConfig>,
+    policies: Vec<Policy>,
     _rt: Option<tokio::runtime::Runtime>,
 }
 
@@ -52,6 +56,7 @@ pub struct ZegaBuilder {
     wal_flush_interval_ms: Option<u64>,
     jwt_config: Option<JwtConfig>,
     jwt_issuer: Option<String>,
+    policies: Vec<Policy>,
 }
 
 impl ZegaBuilder {
@@ -92,6 +97,16 @@ impl ZegaBuilder {
         self
     }
 
+    pub fn policy(
+        mut self,
+        name: impl Into<String>,
+        targets: PolicyTargets,
+        condition: PolicyCondition,
+    ) -> Self {
+        self.policies.push(Policy::new(name, targets, condition));
+        self
+    }
+
     pub fn build(self) -> Result<Zega> {
         Zega::open_with_builder(self)
     }
@@ -105,12 +120,14 @@ impl Zega {
             wal_flush_interval_ms: None,
             jwt_config: None,
             jwt_issuer: None,
+            policies: Vec::new(),
         }
     }
 
     fn open_with_builder(builder: ZegaBuilder) -> Result<Zega> {
         let path = builder.path;
         let jwt_config = builder.jwt_config;
+        let policies = builder.policies;
         std::fs::create_dir_all(&path)?;
 
         let mut graph = Graph::new();
@@ -140,7 +157,8 @@ impl Zega {
             let interval_ms = builder.wal_flush_interval_ms.unwrap();
             let wal_clone = wal_arc.clone();
             rt.spawn(async move {
-                let mut ticker = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+                let mut ticker =
+                    tokio::time::interval(std::time::Duration::from_millis(interval_ms));
                 loop {
                     ticker.tick().await;
                     if let Ok(mut w) = wal_clone.lock() {
@@ -173,6 +191,7 @@ impl Zega {
             wal: Mutex::new(wal),
             path,
             jwt_config,
+            policies,
             _rt: rt,
         })
     }
@@ -187,13 +206,13 @@ impl Zega {
         params: HashMap<String, Value>,
         ctx: ZegaContext,
     ) -> Result<Vec<Row>> {
-        self.resolve_context(&ctx)?;
+        let resolved = self.resolve_context(&ctx)?;
 
         let mut parser = Parser::new(zql)?;
         let stmts = parser.parse()?;
         let mut results = Vec::new();
         for stmt in stmts {
-            let rows = self.execute_statement(&stmt, &params)?;
+            let rows = self.execute_statement(&stmt, &params, &resolved)?;
             results.extend(rows);
         }
         Ok(results)
@@ -230,6 +249,23 @@ impl Zega {
         &self,
         stmt: &Statement,
         params: &HashMap<String, Value>,
+        ctx: &ResolvedContext,
+    ) -> Result<Vec<Row>> {
+        let planner = planner::Planner::new(&self.policies);
+        match planner.plan_statement(stmt, params, ctx)? {
+            planner::Plan::FilteredKvGet => {
+                let mut fields = HashMap::new();
+                fields.insert("value".to_string(), Value::Null);
+                Ok(vec![Row { fields }])
+            }
+            planner::Plan::Execute(stmt) => self.execute_planned_statement(&stmt, params),
+        }
+    }
+
+    fn execute_planned_statement(
+        &self,
+        stmt: &Statement,
+        params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
         match stmt {
             Statement::Match {
@@ -238,13 +274,22 @@ impl Zega {
                 return_clause,
                 order_by,
                 limit,
-            } => self.exec_match(pattern, where_clause.as_ref(), return_clause, order_by.as_ref(), limit.as_ref(), params),
+            } => self.exec_match(
+                pattern,
+                where_clause.as_ref(),
+                return_clause,
+                order_by.as_ref(),
+                limit.as_ref(),
+                params,
+            ),
             Statement::Create { pattern } => self.exec_create(pattern, params),
             Statement::Merge { pattern, on_create } => self.exec_merge(pattern, on_create, params),
             Statement::Set { assignments } => self.exec_set(assignments, params),
             Statement::Delete { identifiers } => self.exec_delete(identifiers),
             Statement::KvGet { key } => self.exec_kv_get(key, params),
-            Statement::KvSet { key, value, ttl } => self.exec_kv_set(key, value, ttl.as_ref(), params),
+            Statement::KvSet { key, value, ttl } => {
+                self.exec_kv_set(key, value, ttl.as_ref(), params)
+            }
             Statement::KvDel { key } => self.exec_kv_del(key, params),
             Statement::KvIncr { key } => self.exec_kv_incr(key, params),
         }
@@ -259,7 +304,10 @@ impl Zega {
         limit: Option<&Expr>,
         params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
-        let graph = self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let mut bindings: Vec<HashMap<String, NodeId>> = Vec::new();
         bindings.push(HashMap::new());
 
@@ -271,12 +319,15 @@ impl Zega {
                 } else {
                     let mut candidates: Option<Vec<NodeId>> = None;
                     for label in &element.labels {
-                        let ids: Vec<NodeId> = graph.nodes_by_label(label)
+                        let ids: Vec<NodeId> = graph
+                            .nodes_by_label(label)
                             .map(|s| s.iter().copied().collect())
                             .unwrap_or_default();
                         candidates = match candidates {
                             None => Some(ids),
-                            Some(prev) => Some(prev.into_iter().filter(|id| ids.contains(id)).collect()),
+                            Some(prev) => {
+                                Some(prev.into_iter().filter(|id| ids.contains(id)).collect())
+                            }
                         };
                     }
                     candidates.unwrap_or_default()
@@ -311,7 +362,8 @@ impl Zega {
                                         graph.outgoing_rels(prev_id).map_or(false, |rels| {
                                             rels.iter().any(|&rel_id| {
                                                 let r = graph.get_relationship(rel_id).unwrap();
-                                                let kind_match = rel.kinds.is_empty() || rel.kinds.contains(&r.kind);
+                                                let kind_match = rel.kinds.is_empty()
+                                                    || rel.kinds.contains(&r.kind);
                                                 kind_match && r.to == candidate_id
                                             })
                                         })
@@ -320,7 +372,8 @@ impl Zega {
                                         graph.incoming_rels(prev_id).map_or(false, |rels| {
                                             rels.iter().any(|&rel_id| {
                                                 let r = graph.get_relationship(rel_id).unwrap();
-                                                let kind_match = rel.kinds.is_empty() || rel.kinds.contains(&r.kind);
+                                                let kind_match = rel.kinds.is_empty()
+                                                    || rel.kinds.contains(&r.kind);
                                                 kind_match && r.from == candidate_id
                                             })
                                         })
@@ -329,8 +382,11 @@ impl Zega {
                                         graph.outgoing_rels(prev_id).map_or(false, |rels| {
                                             rels.iter().any(|&rel_id| {
                                                 let r = graph.get_relationship(rel_id).unwrap();
-                                                let kind_match = rel.kinds.is_empty() || rel.kinds.contains(&r.kind);
-                                                kind_match && (r.to == candidate_id || r.from == candidate_id)
+                                                let kind_match = rel.kinds.is_empty()
+                                                    || rel.kinds.contains(&r.kind);
+                                                kind_match
+                                                    && (r.to == candidate_id
+                                                        || r.from == candidate_id)
                                             })
                                         })
                                     }
@@ -350,13 +406,13 @@ impl Zega {
 
         // Apply WHERE
         if let Some(where_expr) = where_clause {
-            bindings.retain(|binding| {
-                match eval_expr(where_expr, params, binding, &graph) {
+            bindings.retain(
+                |binding| match eval_expr(where_expr, params, binding, &graph) {
                     Ok(Value::Bool(true)) => true,
                     Ok(Value::Bool(false)) => false,
                     _ => false,
-                }
-            });
+                },
+            );
         }
 
         // Build rows from RETURN
@@ -365,8 +421,12 @@ impl Zega {
             .map(|binding| {
                 let mut fields = HashMap::new();
                 for item in &return_clause.items {
-                    let val = eval_expr(&item.expr, params, &binding, &graph).unwrap_or(Value::Null);
-                    let key = item.alias.clone().unwrap_or_else(|| expr_to_string(&item.expr));
+                    let val =
+                        eval_expr(&item.expr, params, &binding, &graph).unwrap_or(Value::Null);
+                    let key = item
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| expr_to_string(&item.expr));
                     fields.insert(key, val);
                 }
                 Row { fields }
@@ -402,9 +462,19 @@ impl Zega {
         Ok(rows)
     }
 
-    fn exec_create(&self, pattern: &[PatternElement], params: &HashMap<String, Value>) -> Result<Vec<Row>> {
-        let mut graph = self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut wal = self.wal.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+    fn exec_create(
+        &self,
+        pattern: &[PatternElement],
+        params: &HashMap<String, Value>,
+    ) -> Result<Vec<Row>> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let mut wal = self
+            .wal
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let mut created = Vec::new();
         let mut var_map: HashMap<String, NodeId> = HashMap::new();
         let mut last_rel: Option<(String, NodeId, NodeId, HashMap<String, Value>)> = None;
@@ -457,9 +527,20 @@ impl Zega {
         Ok(vec![])
     }
 
-    fn exec_merge(&self, pattern: &[PatternElement], on_create: &[SetClause], params: &HashMap<String, Value>) -> Result<Vec<Row>> {
-        let mut graph = self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut wal = self.wal.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+    fn exec_merge(
+        &self,
+        pattern: &[PatternElement],
+        on_create: &[SetClause],
+        params: &HashMap<String, Value>,
+    ) -> Result<Vec<Row>> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let mut wal = self
+            .wal
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let mut created = false;
         let mut var_map: HashMap<String, NodeId> = HashMap::new();
 
@@ -508,7 +589,10 @@ impl Zega {
                             let mut p = HashMap::new();
                             p.insert(prop.clone(), val.clone());
                             graph.update_node(node_id, p.clone());
-                            wal.append(&Operation::UpdateNode { id: node_id, props: p })?;
+                            wal.append(&Operation::UpdateNode {
+                                id: node_id,
+                                props: p,
+                            })?;
                         }
                     }
                 }
@@ -518,9 +602,19 @@ impl Zega {
         Ok(vec![])
     }
 
-    fn exec_set(&self, _assignments: &[SetClause], _params: &HashMap<String, Value>) -> Result<Vec<Row>> {
-        let _graph = self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let _wal = self.wal.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+    fn exec_set(
+        &self,
+        _assignments: &[SetClause],
+        _params: &HashMap<String, Value>,
+    ) -> Result<Vec<Row>> {
+        let _graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let _wal = self
+            .wal
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         for _clause in _assignments {
             if let Expr::PropertyAccess(ref _target, ref _prop) = _clause.target {
                 if let Expr::Identifier(ref _var) = **_target {
@@ -543,8 +637,14 @@ impl Zega {
     }
 
     fn exec_delete(&self, _identifiers: &[String]) -> Result<Vec<Row>> {
-        let _graph = self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let _wal = self.wal.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let _graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let _wal = self
+            .wal
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         for _id_str in _identifiers {
             // For MVP, delete by variable name requires session context.
         }
@@ -552,7 +652,12 @@ impl Zega {
     }
 
     fn exec_kv_get(&self, key_expr: &Expr, params: &HashMap<String, Value>) -> Result<Vec<Row>> {
-        let key = match eval_expr(key_expr, params, &HashMap::new(), &self.graph.lock().unwrap())? {
+        let key = match eval_expr(
+            key_expr,
+            params,
+            &HashMap::new(),
+            &self.graph.lock().unwrap(),
+        )? {
             Value::String(s) => s,
             other => other.to_string(),
         };
@@ -562,8 +667,17 @@ impl Zega {
         Ok(vec![Row { fields }])
     }
 
-    fn exec_kv_set(&self, key_expr: &Expr, value_expr: &Expr, ttl: Option<&Expr>, params: &HashMap<String, Value>) -> Result<Vec<Row>> {
-        let graph = self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+    fn exec_kv_set(
+        &self,
+        key_expr: &Expr,
+        value_expr: &Expr,
+        ttl: Option<&Expr>,
+        params: &HashMap<String, Value>,
+    ) -> Result<Vec<Row>> {
+        let graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let key = match eval_expr(key_expr, params, &HashMap::new(), &graph)? {
             Value::String(s) => s,
             other => other.to_string(),
@@ -577,39 +691,65 @@ impl Zega {
             }
         });
         self.kv.set(key.clone(), value.clone(), ttl_secs);
-        let mut wal = self.wal.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        wal.append(&Operation::KvSet { key, value, ttl: ttl_secs })?;
+        let mut wal = self
+            .wal
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        wal.append(&Operation::KvSet {
+            key,
+            value,
+            ttl: ttl_secs,
+        })?;
         Ok(vec![])
     }
 
     fn exec_kv_del(&self, key_expr: &Expr, params: &HashMap<String, Value>) -> Result<Vec<Row>> {
-        let graph = self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let key = match eval_expr(key_expr, params, &HashMap::new(), &graph)? {
             Value::String(s) => s,
             other => other.to_string(),
         };
         self.kv.del(&key);
-        let mut wal = self.wal.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let mut wal = self
+            .wal
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         wal.append(&Operation::KvDel { key })?;
         Ok(vec![])
     }
 
     fn exec_kv_incr(&self, key_expr: &Expr, params: &HashMap<String, Value>) -> Result<Vec<Row>> {
-        let graph = self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let key = match eval_expr(key_expr, params, &HashMap::new(), &graph)? {
             Value::String(s) => s,
             other => other.to_string(),
         };
         let val = self.kv.incr(&key).unwrap_or(Value::Null);
-        let mut wal = self.wal.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        wal.append(&Operation::KvSet { key, value: val.clone(), ttl: None })?;
+        let mut wal = self
+            .wal
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        wal.append(&Operation::KvSet {
+            key,
+            value: val.clone(),
+            ttl: None,
+        })?;
         let mut fields = HashMap::new();
         fields.insert("value".to_string(), val);
         Ok(vec![Row { fields }])
     }
 
     pub fn snapshot(&self) -> Result<()> {
-        let graph = self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let snapshot_path = self.path.join("snapshot.bin");
         snapshot(&graph, &self.kv, &snapshot_path)?;
         Ok(())
@@ -631,7 +771,15 @@ fn eval_expr(
                     // Return node as a map for identifier-level access
                     let mut m = HashMap::new();
                     m.insert("id".to_string(), Value::Int(node_id as i64));
-                    m.insert("labels".to_string(), Value::List(node.labels.iter().map(|l| Value::String(l.clone())).collect()));
+                    m.insert(
+                        "labels".to_string(),
+                        Value::List(
+                            node.labels
+                                .iter()
+                                .map(|l| Value::String(l.clone()))
+                                .collect(),
+                        ),
+                    );
                     for (k, v) in &node.props {
                         m.insert(k.clone(), v.clone());
                     }
@@ -656,10 +804,22 @@ fn eval_expr(
             match op {
                 BinaryOperator::Eq => Ok(Value::Bool(lv == rv)),
                 BinaryOperator::Ne => Ok(Value::Bool(lv != rv)),
-                BinaryOperator::Gt => Ok(Value::Bool(lv.partial_cmp(&rv) == Some(std::cmp::Ordering::Greater))),
-                BinaryOperator::Lt => Ok(Value::Bool(lv.partial_cmp(&rv) == Some(std::cmp::Ordering::Less))),
-                BinaryOperator::Gte => Ok(Value::Bool(lv.partial_cmp(&rv).map(|o| o == std::cmp::Ordering::Greater || o == std::cmp::Ordering::Equal).unwrap_or(false))),
-                BinaryOperator::Lte => Ok(Value::Bool(lv.partial_cmp(&rv).map(|o| o == std::cmp::Ordering::Less || o == std::cmp::Ordering::Equal).unwrap_or(false))),
+                BinaryOperator::Gt => Ok(Value::Bool(
+                    lv.partial_cmp(&rv) == Some(std::cmp::Ordering::Greater),
+                )),
+                BinaryOperator::Lt => Ok(Value::Bool(
+                    lv.partial_cmp(&rv) == Some(std::cmp::Ordering::Less),
+                )),
+                BinaryOperator::Gte => Ok(Value::Bool(
+                    lv.partial_cmp(&rv)
+                        .map(|o| o == std::cmp::Ordering::Greater || o == std::cmp::Ordering::Equal)
+                        .unwrap_or(false),
+                )),
+                BinaryOperator::Lte => Ok(Value::Bool(
+                    lv.partial_cmp(&rv)
+                        .map(|o| o == std::cmp::Ordering::Less || o == std::cmp::Ordering::Equal)
+                        .unwrap_or(false),
+                )),
                 BinaryOperator::And => {
                     let lb = lv.as_bool().unwrap_or(false);
                     let rb = rv.as_bool().unwrap_or(false);
@@ -707,11 +867,21 @@ fn expr_to_string(expr: &Expr) -> String {
 fn apply_op_to_memory(graph: &mut Graph, kv: &KvStore, op: &Operation) {
     match op {
         Operation::InsertNode { id, labels, props } => {
-            graph.set_state({
-                let mut nodes = graph.all_nodes().clone();
-                nodes.insert(*id, zega_graph::Node { id: *id, labels: labels.clone(), props: props.clone() });
-                nodes
-            }, graph.all_relationships().clone());
+            graph.set_state(
+                {
+                    let mut nodes = graph.all_nodes().clone();
+                    nodes.insert(
+                        *id,
+                        zega_graph::Node {
+                            id: *id,
+                            labels: labels.clone(),
+                            props: props.clone(),
+                        },
+                    );
+                    nodes
+                },
+                graph.all_relationships().clone(),
+            );
         }
         Operation::UpdateNode { id, props } => {
             graph.update_node(*id, props.clone());
@@ -719,7 +889,13 @@ fn apply_op_to_memory(graph: &mut Graph, kv: &KvStore, op: &Operation) {
         Operation::DeleteNode { id } => {
             graph.delete_node(*id);
         }
-        Operation::InsertRel { id: _, kind, from, to, props } => {
+        Operation::InsertRel {
+            id: _,
+            kind,
+            from,
+            to,
+            props,
+        } => {
             graph.create_relationship(kind.clone(), *from, *to, props.clone());
         }
         Operation::DeleteRel { id } => {
@@ -759,8 +935,11 @@ mod tests {
         let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
         let mut params = HashMap::new();
         params.insert("name".to_string(), Value::String("Alice".to_string()));
-        zega.query("CREATE (n:Person {name: $name})", params.clone()).unwrap();
-        let rows = zega.query("MATCH (n:Person {name: $name}) RETURN n", params).unwrap();
+        zega.query("CREATE (n:Person {name: $name})", params.clone())
+            .unwrap();
+        let rows = zega
+            .query("MATCH (n:Person {name: $name}) RETURN n", params)
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].fields.contains_key("n"));
     }
@@ -772,8 +951,10 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("a".to_string(), Value::String("Alice".to_string()));
         params.insert("b".to_string(), Value::String("Bob".to_string()));
-        zega.query("CREATE (a:Person {name: $a})", params.clone()).unwrap();
-        zega.query("CREATE (b:Person {name: $b})", params.clone()).unwrap();
+        zega.query("CREATE (a:Person {name: $a})", params.clone())
+            .unwrap();
+        zega.query("CREATE (b:Person {name: $b})", params.clone())
+            .unwrap();
         // Note: relationship creation in CREATE with pattern like (a)-[:KNOWS]->(b) requires both nodes in same pattern
         // Our parser supports it but exec_create needs to handle it.
         // For this test, let's use individual CREATEs and then a separate rel creation query (not supported in MVP parser).
@@ -787,7 +968,12 @@ mod tests {
             assert_eq!(nodes.len(), 2);
             graph.create_relationship("KNOWS".to_string(), nodes[0], nodes[1], HashMap::new());
         }
-        let rows = zega.query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b", HashMap::new()).unwrap();
+        let rows = zega
+            .query(
+                "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b",
+                HashMap::new(),
+            )
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].fields.contains_key("a"));
         assert!(rows[0].fields.contains_key("b"));
@@ -800,9 +986,13 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("key".to_string(), Value::String("session".to_string()));
         params.insert("val".to_string(), Value::String("abc".to_string()));
-        zega.query("SET KEY $key = $val TTL 1", params.clone()).unwrap();
+        zega.query("SET KEY $key = $val TTL 1", params.clone())
+            .unwrap();
         let rows = zega.query("GET KEY $key", params.clone()).unwrap();
-        assert_eq!(rows[0].fields.get("value"), Some(&Value::String("abc".to_string())));
+        assert_eq!(
+            rows[0].fields.get("value"),
+            Some(&Value::String("abc".to_string()))
+        );
         std::thread::sleep(std::time::Duration::from_secs(2));
         let rows2 = zega.query("GET KEY $key", params).unwrap();
         assert_eq!(rows2[0].fields.get("value"), Some(&Value::Null));
@@ -816,16 +1006,22 @@ mod tests {
             let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
             let mut params = HashMap::new();
             params.insert("name".to_string(), Value::String("Alice".to_string()));
-            zega.query("CREATE (n:Person {name: $name})", params).unwrap();
+            zega.query("CREATE (n:Person {name: $name})", params)
+                .unwrap();
             zega.query("SET KEY foo = 'bar'", HashMap::new()).unwrap();
             // WAL is flushed on every write
         }
         {
             let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
-            let rows = zega.query("MATCH (n:Person) RETURN n", HashMap::new()).unwrap();
+            let rows = zega
+                .query("MATCH (n:Person) RETURN n", HashMap::new())
+                .unwrap();
             assert_eq!(rows.len(), 1);
             let kv_rows = zega.query("GET KEY foo", HashMap::new()).unwrap();
-            assert_eq!(kv_rows[0].fields.get("value"), Some(&Value::String("bar".to_string())));
+            assert_eq!(
+                kv_rows[0].fields.get("value"),
+                Some(&Value::String("bar".to_string()))
+            );
         }
     }
 
@@ -837,12 +1033,15 @@ mod tests {
             let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
             let mut params = HashMap::new();
             params.insert("name".to_string(), Value::String("Alice".to_string()));
-            zega.query("CREATE (n:Person {name: $name})", params).unwrap();
+            zega.query("CREATE (n:Person {name: $name})", params)
+                .unwrap();
             zega.snapshot().unwrap();
         }
         {
             let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
-            let rows = zega.query("MATCH (n:Person) RETURN n", HashMap::new()).unwrap();
+            let rows = zega
+                .query("MATCH (n:Person) RETURN n", HashMap::new())
+                .unwrap();
             assert_eq!(rows.len(), 1);
         }
     }
@@ -865,7 +1064,10 @@ mod tests {
 
     #[test]
     fn test_hs256_valid_token_decodes() {
-        let token = hs256_token(b"secret", json!({ "sub": "user_1", "iss": "zega", "exp": future_exp() }));
+        let token = hs256_token(
+            b"secret",
+            json!({ "sub": "user_1", "iss": "zega", "exp": future_exp() }),
+        );
         let config = JwtConfig {
             key: JwtKey::Hmac(b"secret".to_vec()),
             issuer: Some("zega".to_string()),
@@ -874,7 +1076,10 @@ mod tests {
 
         let resolved = ZegaContext::jwt(&token).resolve(&config).unwrap();
 
-        assert_eq!(resolved.claims.get("sub"), Some(&Value::String("user_1".to_string())));
+        assert_eq!(
+            resolved.claims.get("sub"),
+            Some(&Value::String("user_1".to_string()))
+        );
         assert!(!resolved.is_system);
         assert!(!resolved.is_anonymous);
     }
@@ -902,7 +1107,10 @@ mod tests {
 
         let resolved = ZegaContext::jwt(&token).resolve(&config).unwrap();
 
-        assert_eq!(resolved.claims.get("sub"), Some(&Value::String("user_1".to_string())));
+        assert_eq!(
+            resolved.claims.get("sub"),
+            Some(&Value::String("user_1".to_string()))
+        );
     }
 
     #[test]
@@ -926,8 +1134,14 @@ mod tests {
 
         let resolved = ZegaContext::jwt(&token).resolve(&config).unwrap();
 
-        assert_eq!(resolved.claims.get("org_id"), Some(&Value::String("org_123".to_string())));
-        assert_eq!(resolved.claims.get("role"), Some(&Value::String("admin".to_string())));
+        assert_eq!(
+            resolved.claims.get("org_id"),
+            Some(&Value::String("org_123".to_string()))
+        );
+        assert_eq!(
+            resolved.claims.get("role"),
+            Some(&Value::String("admin".to_string()))
+        );
     }
 
     #[test]
@@ -952,6 +1166,260 @@ mod tests {
         assert!(resolved.is_anonymous);
     }
 
+    #[test]
+    fn test_policy_no_policy_query_unchanged() {
+        let mut parser = Parser::new("MATCH (n:Doc) WHERE n.active = true RETURN n").unwrap();
+        let stmt = parser.parse().unwrap().remove(0);
+        let ctx = ResolvedContext {
+            claims: HashMap::new(),
+            is_system: false,
+            is_anonymous: false,
+        };
+
+        let plan = planner::Planner::new(&[])
+            .plan_statement(&stmt, &HashMap::new(), &ctx)
+            .unwrap();
+
+        assert_eq!(plan, planner::Plan::Execute(stmt));
+    }
+
+    #[test]
+    fn test_policy_tenant_where_injected_from_context() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap())
+            .policy(
+                "doc_tenant",
+                PolicyTargets::Labels(vec!["Doc".to_string()]),
+                PolicyCondition::AllowWhen(PolicyExpr::Eq(
+                    ExprValue::ContextField(".org_id".to_string()),
+                    ExprValue::NodeField("node.org_id".to_string()),
+                )),
+            )
+            .build()
+            .unwrap();
+        create_doc(&zega, "doc_1", "org_1");
+        create_doc(&zega, "doc_2", "org_2");
+
+        let rows = zega
+            .query_with_context(
+                "MATCH (n:Doc) RETURN n",
+                HashMap::new(),
+                ZegaContext::claims(claims(&[("org_id", "org_1")])),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            row_map_field(&rows[0], "n", "name"),
+            Some(Value::String("doc_1".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_policy_system_context_bypassed() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap())
+            .policy(
+                "doc_tenant",
+                PolicyTargets::Labels(vec!["Doc".to_string()]),
+                PolicyCondition::AllowWhen(PolicyExpr::Eq(
+                    ExprValue::ContextField(".org_id".to_string()),
+                    ExprValue::NodeField("node.org_id".to_string()),
+                )),
+            )
+            .build()
+            .unwrap();
+        create_doc(&zega, "doc_1", "org_1");
+        create_doc(&zega, "doc_2", "org_2");
+
+        let rows = zega
+            .query_with_context(
+                "MATCH (n:Doc) RETURN n",
+                HashMap::new(),
+                ZegaContext::system(),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn test_policy_anonymous_system_only_permission_denied() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap())
+            .policy(
+                "secret_system",
+                PolicyTargets::Labels(vec!["Secret".to_string()]),
+                PolicyCondition::SystemOnly,
+            )
+            .build()
+            .unwrap();
+        zega.query("CREATE (n:Secret {name: 's1'})", HashMap::new())
+            .unwrap();
+
+        let err = zega
+            .query_with_context(
+                "MATCH (n:Secret) RETURN n",
+                HashMap::new(),
+                ZegaContext::anonymous(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, ZegaError::PermissionDenied(_)));
+    }
+
+    #[test]
+    fn test_policy_allow_when_role_in_admin_owner() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap())
+            .policy(
+                "doc_roles",
+                PolicyTargets::Labels(vec!["Doc".to_string()]),
+                PolicyCondition::AllowWhen(PolicyExpr::In(
+                    ExprValue::ContextField(".role".to_string()),
+                    ExprValue::Literal(Value::List(vec![
+                        Value::String("admin".to_string()),
+                        Value::String("owner".to_string()),
+                    ])),
+                )),
+            )
+            .build()
+            .unwrap();
+        create_doc(&zega, "doc_1", "org_1");
+
+        let admin_rows = zega
+            .query_with_context(
+                "MATCH (n:Doc) RETURN n",
+                HashMap::new(),
+                ZegaContext::claims(claims(&[("role", "admin")])),
+            )
+            .unwrap();
+        let viewer_rows = zega
+            .query_with_context(
+                "MATCH (n:Doc) RETURN n",
+                HashMap::new(),
+                ZegaContext::claims(claims(&[("role", "viewer")])),
+            )
+            .unwrap();
+
+        assert_eq!(admin_rows.len(), 1);
+        assert!(viewer_rows.is_empty());
+    }
+
+    #[test]
+    fn test_policy_multi_label_query_applies_each_label_policy() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap())
+            .policy(
+                "account_tenant",
+                PolicyTargets::Labels(vec!["Account".to_string()]),
+                PolicyCondition::AllowWhen(PolicyExpr::Eq(
+                    ExprValue::ContextField(".org_id".to_string()),
+                    ExprValue::NodeField("node.org_id".to_string()),
+                )),
+            )
+            .policy(
+                "project_tenant",
+                PolicyTargets::Labels(vec!["Project".to_string()]),
+                PolicyCondition::AllowWhen(PolicyExpr::Eq(
+                    ExprValue::ContextField(".org_id".to_string()),
+                    ExprValue::NodeField("node.org_id".to_string()),
+                )),
+            )
+            .build()
+            .unwrap();
+
+        zega.query(
+            "CREATE (n:Account {name: 'acct_1', org_id: 'org_1'})",
+            HashMap::new(),
+        )
+        .unwrap();
+        zega.query(
+            "CREATE (n:Account {name: 'acct_2', org_id: 'org_2'})",
+            HashMap::new(),
+        )
+        .unwrap();
+        zega.query(
+            "CREATE (n:Project {name: 'proj_1', org_id: 'org_1'})",
+            HashMap::new(),
+        )
+        .unwrap();
+        zega.query(
+            "CREATE (n:Project {name: 'proj_2', org_id: 'org_2'})",
+            HashMap::new(),
+        )
+        .unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            let acct_1 = node_id_by_name(&graph, "acct_1");
+            let acct_2 = node_id_by_name(&graph, "acct_2");
+            let proj_1 = node_id_by_name(&graph, "proj_1");
+            let proj_2 = node_id_by_name(&graph, "proj_2");
+            graph.create_relationship("OWNS".to_string(), acct_1, proj_1, HashMap::new());
+            graph.create_relationship("OWNS".to_string(), acct_1, proj_2, HashMap::new());
+            graph.create_relationship("OWNS".to_string(), acct_2, proj_2, HashMap::new());
+        }
+
+        let rows = zega
+            .query_with_context(
+                "MATCH (a:Account)-[:OWNS]->(p:Project) RETURN a, p",
+                HashMap::new(),
+                ZegaContext::claims(claims(&[("org_id", "org_1")])),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            row_map_field(&rows[0], "a", "name"),
+            Some(Value::String("acct_1".to_string()))
+        );
+        assert_eq!(
+            row_map_field(&rows[0], "p", "name"),
+            Some(Value::String("proj_1".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_policy_kv_get_key_prefix_filtered() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap())
+            .policy(
+                "kv_tenant_prefix",
+                PolicyTargets::Kv,
+                PolicyCondition::AllowWhen(PolicyExpr::Eq(
+                    ExprValue::NodeField("key_prefix".to_string()),
+                    ExprValue::ContextField(".org_id".to_string()),
+                )),
+            )
+            .build()
+            .unwrap();
+        zega.query("SET KEY 'org_1:file' = 'allowed'", HashMap::new())
+            .unwrap();
+        zega.query("SET KEY 'org_2:file' = 'denied'", HashMap::new())
+            .unwrap();
+
+        let allowed = zega
+            .query_with_context(
+                "GET KEY 'org_1:file'",
+                HashMap::new(),
+                ZegaContext::claims(claims(&[("org_id", "org_1")])),
+            )
+            .unwrap();
+        let denied = zega
+            .query_with_context(
+                "GET KEY 'org_2:file'",
+                HashMap::new(),
+                ZegaContext::claims(claims(&[("org_id", "org_1")])),
+            )
+            .unwrap();
+
+        assert_eq!(
+            allowed[0].fields.get("value"),
+            Some(&Value::String("allowed".to_string()))
+        );
+        assert_eq!(denied[0].fields.get("value"), Some(&Value::Null));
+    }
+
     fn hs256_token(secret: &[u8], payload: serde_json::Value) -> String {
         let header = encode_json(&json!({ "alg": "HS256", "typ": "JWT" }));
         let payload = encode_json(&payload);
@@ -974,7 +1442,8 @@ mod tests {
         let payload = encode_json(&payload);
         let signing_input = format!("{header}.{payload}");
         let signing_key = SigningKey::<Sha256>::new(private_key);
-        let signature = URL_SAFE_NO_PAD.encode(signing_key.sign(signing_input.as_bytes()).to_bytes());
+        let signature =
+            URL_SAFE_NO_PAD.encode(signing_key.sign(signing_input.as_bytes()).to_bytes());
 
         (format!("{signing_input}.{signature}"), public_pem)
     }
@@ -996,5 +1465,37 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
+    }
+
+    fn claims(entries: &[(&str, &str)]) -> HashMap<String, Value> {
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), Value::String((*value).to_string())))
+            .collect()
+    }
+
+    fn create_doc(zega: &Zega, name: &str, org_id: &str) {
+        let mut params = HashMap::new();
+        params.insert("name".to_string(), Value::String(name.to_string()));
+        params.insert("org_id".to_string(), Value::String(org_id.to_string()));
+        zega.query("CREATE (n:Doc {name: $name, org_id: $org_id})", params)
+            .unwrap();
+    }
+
+    fn row_map_field(row: &Row, field: &str, prop: &str) -> Option<Value> {
+        match row.fields.get(field) {
+            Some(Value::Map(map)) => map.get(prop).cloned(),
+            _ => None,
+        }
+    }
+
+    fn node_id_by_name(graph: &Graph, name: &str) -> NodeId {
+        graph
+            .all_nodes()
+            .iter()
+            .find_map(|(id, node)| {
+                (node.props.get("name") == Some(&Value::String(name.to_string()))).then_some(*id)
+            })
+            .unwrap()
     }
 }
