@@ -349,24 +349,7 @@ impl Zega {
         for element in pattern {
             let mut new_bindings: Vec<HashMap<String, NodeId>> = Vec::new();
             for binding in &bindings {
-                let candidates = if element.labels.is_empty() {
-                    graph.all_nodes().keys().copied().collect::<Vec<_>>()
-                } else {
-                    let mut candidates: Option<Vec<NodeId>> = None;
-                    for label in &element.labels {
-                        let ids: Vec<NodeId> = graph
-                            .nodes_by_label(label)
-                            .map(|s| s.iter().copied().collect())
-                            .unwrap_or_default();
-                        candidates = match candidates {
-                            None => Some(ids),
-                            Some(prev) => {
-                                Some(prev.into_iter().filter(|id| ids.contains(id)).collect())
-                            }
-                        };
-                    }
-                    candidates.unwrap_or_default()
-                };
+                let candidates = match_candidates(&graph, element, where_clause, params, binding)?;
 
                 for candidate_id in candidates {
                     let node = graph.get_node(candidate_id).unwrap();
@@ -829,6 +812,87 @@ impl Zega {
     }
 }
 
+fn match_candidates(
+    graph: &Graph,
+    element: &PatternElement,
+    where_clause: Option<&Expr>,
+    params: &HashMap<String, Value>,
+    binding: &HashMap<String, NodeId>,
+) -> Result<Vec<NodeId>> {
+    let mut properties = element.properties.iter()
+        .map(|(key, expr)| Ok((key.clone(), eval_expr(expr, params, binding, graph)?)))
+        .collect::<Result<Vec<_>>>()?;
+    if let Some(expr) = where_clause {
+        collect_indexed_equalities(expr, &element.variable, params, binding, graph, &mut properties)?;
+    }
+
+    let mut smallest: Option<(usize, Vec<NodeId>)> = None;
+    for ids in element.labels.iter().map(|label| graph.nodes_by_label(label))
+        .chain(properties.iter().map(|(key, value)| graph.nodes_by_property(key, value)))
+    {
+        let len = ids.map_or(0, |set| set.len());
+        if smallest.as_ref().map_or(true, |(smallest_len, _)| len < *smallest_len) {
+            smallest = Some((len, ids.map_or_else(Vec::new, |set| set.iter().copied().collect())));
+        }
+    }
+
+    let mut candidates = smallest.map(|(_, ids)| ids)
+        .unwrap_or_else(|| graph.all_nodes().keys().copied().collect());
+    candidates.retain(|id| {
+        element.labels.iter().all(|label| graph.nodes_by_label(label).is_some_and(|ids| ids.contains(id)))
+            && properties.iter().all(|(key, value)| graph.nodes_by_property(key, value).is_some_and(|ids| ids.contains(id)))
+    });
+    Ok(candidates)
+}
+
+fn collect_indexed_equalities(
+    expr: &Expr,
+    variable: &str,
+    params: &HashMap<String, Value>,
+    binding: &HashMap<String, NodeId>,
+    graph: &Graph,
+    equalities: &mut Vec<(String, Value)>,
+) -> Result<()> {
+    match expr {
+        Expr::BinaryOp(left, BinaryOperator::And, right) => {
+            collect_indexed_equalities(left, variable, params, binding, graph, equalities)?;
+            collect_indexed_equalities(right, variable, params, binding, graph, equalities)?;
+        }
+        Expr::BinaryOp(left, BinaryOperator::Eq, right) => {
+            if let Some(property) = property_for_variable(left, variable) {
+                if !references_variable(right, variable) {
+                    equalities.push((property.to_string(), eval_expr(right, params, binding, graph)?));
+                    return Ok(());
+                }
+            }
+            if let Some(property) = property_for_variable(right, variable) {
+                if !references_variable(left, variable) {
+                    equalities.push((property.to_string(), eval_expr(left, params, binding, graph)?));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn property_for_variable<'a>(expr: &'a Expr, variable: &str) -> Option<&'a str> {
+    match expr {
+        Expr::PropertyAccess(target, property)
+            if matches!(target.as_ref(), Expr::Identifier(name) if name == variable) => Some(property),
+        _ => None,
+    }
+}
+
+fn references_variable(expr: &Expr, variable: &str) -> bool {
+    match expr {
+        Expr::Identifier(name) => name == variable,
+        Expr::PropertyAccess(target, _) => references_variable(target, variable),
+        Expr::BinaryOp(left, _, right) => references_variable(left, variable) || references_variable(right, variable),
+        Expr::Parameter(_) | Expr::Literal(_) => false,
+    }
+}
+
 fn eval_expr(
     expr: &Expr,
     params: &HashMap<String, Value>,
@@ -1016,6 +1080,55 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].fields.contains_key("n"));
+    }
+
+    #[test]
+    fn test_match_property_index_lookup_performance() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            for id in 0..10_000 {
+                graph.create_node(
+                    vec!["User".to_string()],
+                    HashMap::from([("id".to_string(), Value::Int(id))]),
+                );
+            }
+            graph.create_node(
+                vec!["Other".to_string()],
+                HashMap::from([("id".to_string(), Value::Int(7_777))]),
+            );
+        }
+
+        let params = HashMap::from([("id".to_string(), Value::Int(7_777))]);
+        let rows = zega.query("MATCH (u:User {id: $id}) RETURN u", params.clone()).unwrap();
+        assert_eq!(rows.len(), 1);
+
+        let started = std::time::Instant::now();
+        for _ in 0..10_000 {
+            let rows = zega.query("MATCH (u:User {id: $id}) RETURN u", params.clone()).unwrap();
+            assert_eq!(rows.len(), 1);
+        }
+        println!("10,000 indexed MATCH lookups: {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn test_match_where_property_equality_uses_same_lookup_semantics() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            for id in 0..100 {
+                graph.create_node(
+                    vec!["User".to_string()],
+                    HashMap::from([("id".to_string(), Value::Int(id))]),
+                );
+            }
+        }
+
+        let params = HashMap::from([("id".to_string(), Value::Int(42))]);
+        let rows = zega.query("MATCH (u:User) WHERE u.id = $id RETURN u", params).unwrap();
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]
