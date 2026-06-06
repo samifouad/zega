@@ -79,6 +79,13 @@ pub struct RelationshipPattern {
     pub variable: String,
     pub kinds: Vec<String>,
     pub properties: HashMap<String, Expr>,
+    pub length: Option<RelationshipLength>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelationshipLength {
+    pub min: usize,
+    pub max: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
