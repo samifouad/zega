@@ -72,7 +72,11 @@ impl<'a> Parser<'a> {
 
     fn parse_match(&mut self) -> Result<Statement, ParseError> {
         self.advance(); // MATCH
-        let pattern = self.parse_pattern()?;
+        let mut pattern = self.parse_pattern()?;
+        while self.current == Token::Match {
+            self.advance();
+            pattern.extend(self.parse_pattern()?);
+        }
         let where_clause = if self.current == Token::Where {
             self.advance();
             Some(self.parse_expression()?)
@@ -794,6 +798,22 @@ mod tests {
             }
             _ => panic!("expected MATCH...CREATE"),
         }
+    }
+
+    #[test]
+    fn test_parse_multi_match_create_as_one_statement() {
+        let mut p = Parser::new(
+            "MATCH (a:Category {id: $pid}) MATCH (b:Category {id: $cid}) CREATE (a)-[:SUBCATEGORY]->(b)",
+        ).unwrap();
+        let stmts = p.parse().unwrap();
+        assert_eq!(stmts.len(), 1);
+        let Statement::MatchCreate { match_pattern, create_pattern, .. } = &stmts[0] else {
+            panic!("expected MATCH...MATCH...CREATE");
+        };
+        assert_eq!(match_pattern.len(), 2);
+        assert_eq!(match_pattern[0].variable, "a");
+        assert_eq!(match_pattern[1].variable, "b");
+        assert_eq!(create_pattern.len(), 2);
     }
 
     #[test]

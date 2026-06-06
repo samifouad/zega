@@ -69,6 +69,17 @@ pub struct Wal {
 }
 
 impl Wal {
+    pub fn in_memory() -> Self {
+        Wal {
+            #[cfg(not(target_arch = "wasm32"))]
+            path: PathBuf::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            file: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            flush_every: false,
+        }
+    }
+
     pub fn new(path: &Path, flush_every: bool) -> Result<Self, WalError> {
         #[cfg(target_arch = "wasm32")]
         {

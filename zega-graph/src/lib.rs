@@ -54,6 +54,11 @@ impl Graph {
 
     pub fn create_node(&mut self, labels: Vec<String>, props: HashMap<String, Value>) -> NodeId {
         let id = self.next_node_id.fetch_add(1, Ordering::SeqCst);
+        self.restore_node(id, labels, props);
+        id
+    }
+
+    pub fn restore_node(&mut self, id: NodeId, labels: Vec<String>, props: HashMap<String, Value>) {
         let node = Node {
             id,
             labels: labels.clone(),
@@ -72,17 +77,15 @@ impl Graph {
                 .or_default()
                 .insert(id);
         }
-        id
+        self.next_node_id.fetch_max(id + 1, Ordering::SeqCst);
     }
 
     pub fn update_node(&mut self, id: NodeId, props: HashMap<String, Value>) {
         if let Some(node) = self.nodes.get_mut(&id) {
             for (k, v) in &node.props {
-                self.property_index
-                    .get_mut(&(k.clone(), v.clone()))
-                    .map(|set| {
-                        set.remove(&id);
-                    });
+                if let Some(set) = self.property_index.get_mut(&(k.clone(), v.clone())) {
+                    set.remove(&id);
+                }
             }
             node.props.extend(props);
             for (k, v) in &node.props {
@@ -126,9 +129,21 @@ impl Graph {
         props: HashMap<String, Value>,
     ) -> RelId {
         let id = self.next_rel_id.fetch_add(1, Ordering::SeqCst);
+        self.restore_relationship(id, kind, from, to, props);
+        id
+    }
+
+    pub fn restore_relationship(
+        &mut self,
+        id: RelId,
+        kind: String,
+        from: NodeId,
+        to: NodeId,
+        props: HashMap<String, Value>,
+    ) {
         let rel = Relationship {
             id,
-            kind: kind.clone(),
+            kind,
             from,
             to,
             props,
@@ -136,7 +151,7 @@ impl Graph {
         self.relationships.insert(id, rel);
         self.outgoing.entry(from).or_default().insert(id);
         self.incoming.entry(to).or_default().insert(id);
-        id
+        self.next_rel_id.fetch_max(id + 1, Ordering::SeqCst);
     }
 
     pub fn delete_relationship(&mut self, id: RelId) {
