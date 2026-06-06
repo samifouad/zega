@@ -69,6 +69,7 @@ pub struct Zega {
     wal: Mutex<Wal>,
     #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
+    in_memory: bool,
     jwt_config: Option<JwtConfig>,
     policies: Vec<Policy>,
     traversal_work_budget: usize,
@@ -78,6 +79,7 @@ pub struct Zega {
 
 pub struct ZegaBuilder {
     path: PathBuf,
+    in_memory: bool,
     wal_flush_every: bool,
     #[cfg(not(target_arch = "wasm32"))]
     wal_flush_interval_ms: Option<u64>,
@@ -152,6 +154,7 @@ impl Zega {
     pub fn open(path: &str) -> ZegaBuilder {
         ZegaBuilder {
             path: PathBuf::from(path),
+            in_memory: false,
             wal_flush_every: false,
             #[cfg(not(target_arch = "wasm32"))]
             wal_flush_interval_ms: None,
@@ -165,6 +168,7 @@ impl Zega {
     pub fn in_memory() -> ZegaBuilder {
         ZegaBuilder {
             path: PathBuf::from(":memory:"),
+            in_memory: true,
             wal_flush_every: false,
             #[cfg(not(target_arch = "wasm32"))]
             wal_flush_interval_ms: None,
@@ -181,7 +185,9 @@ impl Zega {
         let policies = builder.policies;
         let traversal_work_budget = builder.traversal_work_budget;
         #[cfg(not(target_arch = "wasm32"))]
-        std::fs::create_dir_all(&path)?;
+        if !builder.in_memory {
+            std::fs::create_dir_all(&path)?;
+        }
 
         #[cfg(not(target_arch = "wasm32"))]
         let mut graph = Graph::new();
@@ -195,16 +201,20 @@ impl Zega {
 
         // Restore from snapshot if exists
         #[cfg(not(target_arch = "wasm32"))]
-        if snapshot_path.exists() {
+        if !builder.in_memory && snapshot_path.exists() {
             restore(&mut graph, &kv, &snapshot_path)?;
         }
 
         // Replay WAL
-        let wal = Wal::new(&wal_path, builder.wal_flush_every)?;
+        let wal = if builder.in_memory {
+            Wal::in_memory()
+        } else {
+            Wal::new(&wal_path, builder.wal_flush_every)?
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let mut wal = wal;
         #[cfg(not(target_arch = "wasm32"))]
-        if wal_path.exists() {
+        if !builder.in_memory && wal_path.exists() {
             let ops = wal.iter()?;
             for op in ops {
                 apply_op_to_memory(&mut graph, &kv, &op);
@@ -213,10 +223,9 @@ impl Zega {
 
         // If interval flushing, start background task
         #[cfg(not(target_arch = "wasm32"))]
-        let rt = if builder.wal_flush_interval_ms.is_some() {
+        let rt = if let Some(interval_ms) = builder.wal_flush_interval_ms {
             let rt = tokio::runtime::Runtime::new()?;
             let wal_arc = Arc::new(Mutex::new(wal));
-            let interval_ms = builder.wal_flush_interval_ms.unwrap();
             let wal_clone = wal_arc.clone();
             rt.spawn(async move {
                 let mut ticker =
@@ -231,7 +240,11 @@ impl Zega {
             // Re-create wal for the struct (we keep the arc in a field? No, keep simple)
             // Actually for MVP, interval flush spawns task but we keep original wal.
             // To avoid double-ownership issues, we'll skip interval flush for now and just keep simple.
-            wal = Wal::new(&wal_path, false)?;
+            wal = if builder.in_memory {
+                Wal::in_memory()
+            } else {
+                Wal::new(&wal_path, false)?
+            };
             Some(rt)
         } else {
             None
@@ -254,6 +267,7 @@ impl Zega {
             wal: Mutex::new(wal),
             #[cfg(not(target_arch = "wasm32"))]
             path,
+            in_memory: builder.in_memory,
             jwt_config,
             policies,
             traversal_work_budget,
@@ -733,6 +747,9 @@ impl Zega {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
+            if self.in_memory {
+                return Ok(());
+            }
             let graph = self
                 .graph
                 .lock()
@@ -1058,7 +1075,7 @@ fn match_candidates(
         .chain(properties.iter().map(|(key, value)| graph.nodes_by_property(key, value)))
     {
         let len = ids.map_or(0, |set| set.len());
-        if smallest.as_ref().map_or(true, |(smallest_len, _)| len < *smallest_len) {
+        if smallest.as_ref().is_none_or(|(smallest_len, _)| len < *smallest_len) {
             smallest = Some((len, ids.map_or_else(Vec::new, |set| set.iter().copied().collect())));
         }
     }
@@ -1456,21 +1473,7 @@ fn extreme_value(values: &[Value], desired: std::cmp::Ordering) -> Value {
 fn apply_op_to_memory(graph: &mut Graph, kv: &KvStore, op: &Operation) {
     match op {
         Operation::InsertNode { id, labels, props } => {
-            graph.set_state(
-                {
-                    let mut nodes = graph.all_nodes().clone();
-                    nodes.insert(
-                        *id,
-                        zega_graph::Node {
-                            id: *id,
-                            labels: labels.clone(),
-                            props: props.clone(),
-                        },
-                    );
-                    nodes
-                },
-                graph.all_relationships().clone(),
-            );
+            graph.restore_node(*id, labels.clone(), props.clone());
         }
         Operation::UpdateNode { id, props } => {
             graph.update_node(*id, props.clone());
@@ -1479,13 +1482,13 @@ fn apply_op_to_memory(graph: &mut Graph, kv: &KvStore, op: &Operation) {
             graph.delete_node(*id);
         }
         Operation::InsertRel {
-            id: _,
+            id,
             kind,
             from,
             to,
             props,
         } => {
-            graph.create_relationship(kind.clone(), *from, *to, props.clone());
+            graph.restore_relationship(*id, kind.clone(), *from, *to, props.clone());
         }
         Operation::DeleteRel { id } => {
             graph.delete_relationship(*id);
@@ -1627,6 +1630,28 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].fields.contains_key("o"));
+    }
+
+    #[test]
+    fn test_multi_match_create_reuses_both_endpoints_deterministically() {
+        let zega = Zega::in_memory().build().unwrap();
+        zega.query("CREATE (a:Category {id: 'parent'})", HashMap::new()).unwrap();
+        zega.query("CREATE (b:Category {id: 'child'})", HashMap::new()).unwrap();
+
+        for _ in 0..5 {
+            zega.query(
+                "MATCH (a:Category {id: 'parent'}) MATCH (b:Category {id: 'child'}) CREATE (a)-[:SUBCATEGORY]->(b)",
+                HashMap::new(),
+            ).unwrap();
+        }
+
+        let graph = zega.graph.lock().unwrap();
+        assert_eq!(graph.all_nodes().len(), 2);
+        assert_eq!(graph.all_relationships().len(), 5);
+        assert!(graph
+            .all_relationships()
+            .values()
+            .all(|relationship| relationship.from == 1 && relationship.to == 2));
     }
 
     #[test]
