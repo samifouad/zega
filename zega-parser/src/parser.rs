@@ -589,7 +589,9 @@ impl<'a> Parser<'a> {
             Token::Identifier(id) => {
                 let name = id.clone();
                 self.advance();
-                if self.current == Token::Dot {
+                if self.current == Token::LParen {
+                    self.parse_function_call(name)
+                } else if self.current == Token::Dot {
                     self.advance();
                     if let Token::Identifier(prop) = &self.current {
                         let p = prop.clone();
@@ -614,6 +616,41 @@ impl<'a> Parser<'a> {
             }),
         }
     }
+
+    fn parse_function_call(&mut self, name: String) -> Result<Expr, ParseError> {
+        let function = match name.to_ascii_lowercase().as_str() {
+            "count" => AggregateFunction::Count,
+            "sum" => AggregateFunction::Sum,
+            "avg" => AggregateFunction::Avg,
+            "min" => AggregateFunction::Min,
+            "max" => AggregateFunction::Max,
+            "collect" => AggregateFunction::Collect,
+            _ => return Err(ParseError::Message(format!("unsupported function: {name}"))),
+        };
+
+        self.expect(Token::LParen)?;
+        let distinct = matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DISTINCT"));
+        if distinct {
+            self.advance();
+        }
+        let argument = if self.current == Token::Star {
+            self.advance();
+            if function != AggregateFunction::Count || distinct {
+                return Err(ParseError::Message(
+                    "only count(*) supports a star argument".to_string(),
+                ));
+            }
+            None
+        } else {
+            Some(Box::new(self.parse_expression()?))
+        };
+        self.expect(Token::RParen)?;
+        Ok(Expr::Aggregate {
+            function,
+            argument,
+            distinct,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -634,6 +671,35 @@ mod tests {
             }
             _ => panic!("expected MATCH"),
         }
+    }
+
+    #[test]
+    fn test_parse_return_aggregates() {
+        let mut p = Parser::new(
+            "MATCH (n:Label) RETURN count(*), count(DISTINCT n), sum(n.total), collect(n.id)",
+        )
+        .unwrap();
+        let stmts = p.parse().unwrap();
+        let Statement::Match { return_clause, .. } = &stmts[0] else {
+            panic!("expected MATCH");
+        };
+        assert_eq!(return_clause.items.len(), 4);
+        assert_eq!(
+            return_clause.items[0].expr,
+            Expr::Aggregate {
+                function: AggregateFunction::Count,
+                argument: None,
+                distinct: false,
+            }
+        );
+        assert!(matches!(
+            return_clause.items[1].expr,
+            Expr::Aggregate {
+                function: AggregateFunction::Count,
+                distinct: true,
+                ..
+            }
+        ));
     }
 
     #[test]
