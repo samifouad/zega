@@ -1027,13 +1027,13 @@ fn collect_indexed_equalities(
         }
         Expr::BinaryOp(left, BinaryOperator::Eq, right) => {
             if let Some(property) = property_for_variable(left, variable) {
-                if !references_variable(right, variable) {
+                if !references_variable(right, variable) && can_eval_from_binding(right, binding) {
                     equalities.push((property.to_string(), eval_expr(right, params, binding, graph)?));
                     return Ok(());
                 }
             }
             if let Some(property) = property_for_variable(right, variable) {
-                if !references_variable(left, variable) {
+                if !references_variable(left, variable) && can_eval_from_binding(left, binding) {
                     equalities.push((property.to_string(), eval_expr(left, params, binding, graph)?));
                 }
             }
@@ -1058,6 +1058,18 @@ fn references_variable(expr: &Expr, variable: &str) -> bool {
         Expr::BinaryOp(left, _, right) => references_variable(left, variable) || references_variable(right, variable),
         Expr::Aggregate { argument, .. } => argument.as_deref().is_some_and(|expr| references_variable(expr, variable)),
         Expr::Parameter(_) | Expr::Literal(_) => false,
+    }
+}
+
+fn can_eval_from_binding(expr: &Expr, binding: &HashMap<String, NodeId>) -> bool {
+    match expr {
+        Expr::Identifier(name) => binding.contains_key(name),
+        Expr::PropertyAccess(target, _) => can_eval_from_binding(target, binding),
+        Expr::BinaryOp(left, _, right) => {
+            can_eval_from_binding(left, binding) && can_eval_from_binding(right, binding)
+        }
+        Expr::Aggregate { .. } => false,
+        Expr::Parameter(_) | Expr::Literal(_) => true,
     }
 }
 
@@ -1541,31 +1553,46 @@ mod tests {
         let mut graph = zega.graph.lock().unwrap();
         let user_1 = graph.create_node(
             vec!["User".to_string()],
-            HashMap::from([("id".to_string(), Value::String("u1".to_string()))]),
+            HashMap::from([
+                ("id".to_string(), Value::String("u1".to_string())),
+                ("tier".to_string(), Value::String("gold".to_string())),
+            ]),
         );
         let user_2 = graph.create_node(
             vec!["User".to_string()],
-            HashMap::from([("id".to_string(), Value::String("u2".to_string()))]),
+            HashMap::from([
+                ("id".to_string(), Value::String("u2".to_string())),
+                ("tier".to_string(), Value::String("silver".to_string())),
+            ]),
         );
         let order_1 = graph.create_node(
             vec!["Order".to_string()],
             HashMap::from([
+                ("id".to_string(), Value::String("o1".to_string())),
                 ("total".to_string(), Value::Int(10)),
                 ("category".to_string(), Value::String("book".to_string())),
+                ("status".to_string(), Value::String("pending".to_string())),
+                ("owner".to_string(), Value::String("u1".to_string())),
             ]),
         );
         let order_2 = graph.create_node(
             vec!["Order".to_string()],
             HashMap::from([
+                ("id".to_string(), Value::String("o2".to_string())),
                 ("total".to_string(), Value::Int(20)),
                 ("category".to_string(), Value::String("book".to_string())),
+                ("status".to_string(), Value::String("paid".to_string())),
+                ("owner".to_string(), Value::String("u1".to_string())),
             ]),
         );
         let order_3 = graph.create_node(
             vec!["Order".to_string()],
             HashMap::from([
+                ("id".to_string(), Value::String("o3".to_string())),
                 ("total".to_string(), Value::Int(30)),
                 ("category".to_string(), Value::String("game".to_string())),
+                ("status".to_string(), Value::String("paid".to_string())),
+                ("owner".to_string(), Value::String("u2".to_string())),
             ]),
         );
         graph.create_relationship("PLACED".to_string(), user_1, order_1, HashMap::new());
@@ -1670,6 +1697,164 @@ mod tests {
             totals,
             vec![Value::Int(10), Value::Int(20), Value::Int(30)]
         );
+    }
+
+    #[test]
+    fn test_where_filters_traversal_by_related_node_property() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query(
+                "MATCH (u:User {id: $user})-[:PLACED]->(o:Order) WHERE o.total > $min RETURN o.id AS order_id",
+                HashMap::from([
+                    ("user".to_string(), Value::String("u1".to_string())),
+                    ("min".to_string(), Value::Int(15)),
+                ]),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fields["order_id"], Value::String("o2".to_string()));
+    }
+
+    #[test]
+    fn test_where_and_or_conditions_across_bound_nodes() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query(
+                "MATCH (u:User)-[:PLACED]->(o:Order) WHERE u.tier = $tier AND o.status = $status OR o.total > $high RETURN u.id AS user, o.id AS order_id",
+                HashMap::from([
+                    ("tier".to_string(), Value::String("gold".to_string())),
+                    ("status".to_string(), Value::String("paid".to_string())),
+                    ("high".to_string(), Value::Int(25)),
+                ]),
+            )
+            .unwrap();
+        let pairs: HashSet<_> = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.fields["user"].clone(),
+                    row.fields["order_id"].clone(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            pairs,
+            HashSet::from([
+                (
+                    Value::String("u1".to_string()),
+                    Value::String("o2".to_string()),
+                ),
+                (
+                    Value::String("u2".to_string()),
+                    Value::String("o3".to_string()),
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_where_equality_can_reference_later_bound_variable() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query(
+                "MATCH (u:User)-[:PLACED]->(o:Order) WHERE u.id = o.owner RETURN o.id AS order_id",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_where_filters_variable_length_traversal_endpoint() {
+        let zega = Zega::in_memory().build().unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            let nodes: HashMap<_, _> = ["a", "b", "c", "d"]
+                .into_iter()
+                .map(|name| {
+                    let id = graph.create_node(
+                        Vec::new(),
+                        HashMap::from([
+                            ("id".to_string(), Value::String(name.to_string())),
+                            ("active".to_string(), Value::Bool(name == "c")),
+                        ]),
+                    );
+                    (name, id)
+                })
+                .collect();
+            for (from, to) in [("a", "b"), ("b", "c"), ("c", "d")] {
+                graph.create_relationship(
+                    "R".to_string(),
+                    nodes[from],
+                    nodes[to],
+                    HashMap::new(),
+                );
+            }
+        }
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[:R*1..3]->(x) WHERE x.active = true RETURN x",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(returned_ids(&rows, "x"), vec!["c"]);
+    }
+
+    #[test]
+    fn test_where_filters_traversal_before_aggregation() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query(
+                "MATCH (u:User)-[:PLACED]->(o:Order) WHERE o.total > $min RETURN u.id AS user, count(o) AS count, sum(o.total) AS total",
+                HashMap::from([("min".to_string(), Value::Int(15))]),
+            )
+            .unwrap();
+        let aggregates: HashMap<_, _> = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.fields["user"].clone(),
+                    (row.fields["count"].clone(), row.fields["total"].clone()),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            aggregates[&Value::String("u1".to_string())],
+            (Value::Int(1), Value::Int(20))
+        );
+        assert_eq!(
+            aggregates[&Value::String("u2".to_string())],
+            (Value::Int(1), Value::Int(30))
+        );
+    }
+
+    #[test]
+    fn test_where_can_filter_out_all_traversal_rows() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query(
+                "MATCH (u:User)-[:PLACED]->(o:Order) WHERE o.total > $min RETURN o",
+                HashMap::from([("min".to_string(), Value::Int(100))]),
+            )
+            .unwrap();
+
+        assert!(rows.is_empty());
     }
 
     #[test]
