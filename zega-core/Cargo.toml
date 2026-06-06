@@ -7,8 +7,8 @@ edition.workspace = true
 thiserror = { workspace = true }
 bincode = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true }
 base64 = { workspace = true }
+getrandom = { workspace = true }
 hmac = { workspace = true }
 rsa = { workspace = true }
 serde_json = { workspace = true }
@@ -19,6 +19,9 @@ zega-kv = { workspace = true }
 zega-parser = { workspace = true }
 zega-wal = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }

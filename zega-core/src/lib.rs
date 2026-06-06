@@ -1,11 +1,16 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+use std::sync::Mutex;
 use thiserror::Error;
 use zega_graph::{Graph, NodeId};
 use zega_kv::KvStore;
-use zega_parser::{ast::*, value::Value, BinaryOperator, Expr, OrderDirection, Parser, Statement};
-use zega_wal::{restore, snapshot, Operation, Wal};
+pub use zega_parser::Value;
+use zega_parser::{ast::*, BinaryOperator, Expr, OrderDirection, Parser, Statement};
+#[cfg(not(target_arch = "wasm32"))]
+use zega_wal::{restore, snapshot};
+use zega_wal::{Operation, Wal};
 
 pub mod config;
 pub mod context;
@@ -44,15 +49,18 @@ pub struct Zega {
     graph: Mutex<Graph>,
     kv: KvStore,
     wal: Mutex<Wal>,
+    #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
     jwt_config: Option<JwtConfig>,
     policies: Vec<Policy>,
+    #[cfg(not(target_arch = "wasm32"))]
     _rt: Option<tokio::runtime::Runtime>,
 }
 
 pub struct ZegaBuilder {
     path: PathBuf,
     wal_flush_every: bool,
+    #[cfg(not(target_arch = "wasm32"))]
     wal_flush_interval_ms: Option<u64>,
     jwt_config: Option<JwtConfig>,
     jwt_issuer: Option<String>,
@@ -67,6 +75,7 @@ impl ZegaBuilder {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn wal_flush_interval(self, ms: u64) -> Self {
         ZegaBuilder {
             wal_flush_interval_ms: Some(ms),
@@ -117,6 +126,19 @@ impl Zega {
         ZegaBuilder {
             path: PathBuf::from(path),
             wal_flush_every: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            wal_flush_interval_ms: None,
+            jwt_config: None,
+            jwt_issuer: None,
+            policies: Vec::new(),
+        }
+    }
+
+    pub fn in_memory() -> ZegaBuilder {
+        ZegaBuilder {
+            path: PathBuf::from(":memory:"),
+            wal_flush_every: false,
+            #[cfg(not(target_arch = "wasm32"))]
             wal_flush_interval_ms: None,
             jwt_config: None,
             jwt_issuer: None,
@@ -128,21 +150,30 @@ impl Zega {
         let path = builder.path;
         let jwt_config = builder.jwt_config;
         let policies = builder.policies;
+        #[cfg(not(target_arch = "wasm32"))]
         std::fs::create_dir_all(&path)?;
 
+        #[cfg(not(target_arch = "wasm32"))]
         let mut graph = Graph::new();
+        #[cfg(target_arch = "wasm32")]
+        let graph = Graph::new();
         let kv = KvStore::new();
 
+        #[cfg(not(target_arch = "wasm32"))]
         let snapshot_path = path.join("snapshot.bin");
         let wal_path = path.join("wal.bin");
 
         // Restore from snapshot if exists
+        #[cfg(not(target_arch = "wasm32"))]
         if snapshot_path.exists() {
             restore(&mut graph, &kv, &snapshot_path)?;
         }
 
         // Replay WAL
-        let mut wal = Wal::new(&wal_path, builder.wal_flush_every)?;
+        let wal = Wal::new(&wal_path, builder.wal_flush_every)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut wal = wal;
+        #[cfg(not(target_arch = "wasm32"))]
         if wal_path.exists() {
             let ops = wal.iter()?;
             for op in ops {
@@ -151,6 +182,7 @@ impl Zega {
         }
 
         // If interval flushing, start background task
+        #[cfg(not(target_arch = "wasm32"))]
         let rt = if builder.wal_flush_interval_ms.is_some() {
             let rt = tokio::runtime::Runtime::new()?;
             let wal_arc = Arc::new(Mutex::new(wal));
@@ -176,6 +208,7 @@ impl Zega {
         };
 
         // Start KV eviction
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(ref _rt) = rt {
             kv.start_eviction_task();
         } else {
@@ -189,9 +222,11 @@ impl Zega {
             graph: Mutex::new(graph),
             kv,
             wal: Mutex::new(wal),
+            #[cfg(not(target_arch = "wasm32"))]
             path,
             jwt_config,
             policies,
+            #[cfg(not(target_arch = "wasm32"))]
             _rt: rt,
         })
     }
@@ -745,14 +780,52 @@ impl Zega {
         Ok(vec![Row { fields }])
     }
 
-    pub fn snapshot(&self) -> Result<()> {
-        let graph = self
-            .graph
+    pub fn kv_get(&self, key: &str) -> Option<Value> {
+        self.kv.get(key)
+    }
+
+    pub fn kv_set(&self, key: String, value: Value, ttl_secs: Option<u64>) -> Result<()> {
+        self.kv.set(key.clone(), value.clone(), ttl_secs);
+        let mut wal = self
+            .wal
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let snapshot_path = self.path.join("snapshot.bin");
-        snapshot(&graph, &self.kv, &snapshot_path)?;
+        wal.append(&Operation::KvSet {
+            key,
+            value,
+            ttl: ttl_secs,
+        })?;
         Ok(())
+    }
+
+    pub fn kv_del(&self, key: &str) -> Result<bool> {
+        let deleted = self.kv.del(key);
+        let mut wal = self
+            .wal
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        wal.append(&Operation::KvDel {
+            key: key.to_string(),
+        })?;
+        Ok(deleted)
+    }
+
+    pub fn snapshot(&self) -> Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(())
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let graph = self
+                .graph
+                .lock()
+                .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+            let snapshot_path = self.path.join("snapshot.bin");
+            snapshot(&graph, &self.kv, &snapshot_path)?;
+            Ok(())
+        }
     }
 }
 
@@ -864,6 +937,7 @@ fn expr_to_string(expr: &Expr) -> String {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn apply_op_to_memory(graph: &mut Graph, kv: &KvStore, op: &Operation) {
     match op {
         Operation::InsertNode { id, labels, props } => {

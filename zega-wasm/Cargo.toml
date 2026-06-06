@@ -1,0 +1,12 @@
+[package]
+name = "zega-wasm"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde_json = { workspace = true }
+wasm-bindgen = { workspace = true }
+zega-core = { workspace = true }
