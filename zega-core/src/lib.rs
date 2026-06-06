@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::sync::Mutex;
 use thiserror::Error;
-use zega_graph::{Graph, NodeId};
+use zega_graph::{Graph, NodeId, RelId};
 use zega_kv::KvStore;
 pub use zega_parser::Value;
 use zega_parser::{ast::*, BinaryOperator, Expr, OrderDirection, Parser, Statement};
@@ -36,6 +36,8 @@ pub enum ZegaError {
     PermissionDenied(String),
     #[error("execution error: {0}")]
     Execution(String),
+    #[error("relationship traversal work budget exceeded (limit: {limit})")]
+    TraversalWorkBudgetExceeded { limit: usize },
 }
 
 pub type Result<T> = std::result::Result<T, ZegaError>;
@@ -53,6 +55,7 @@ pub struct Zega {
     path: PathBuf,
     jwt_config: Option<JwtConfig>,
     policies: Vec<Policy>,
+    traversal_work_budget: usize,
     #[cfg(not(target_arch = "wasm32"))]
     _rt: Option<tokio::runtime::Runtime>,
 }
@@ -65,7 +68,10 @@ pub struct ZegaBuilder {
     jwt_config: Option<JwtConfig>,
     jwt_issuer: Option<String>,
     policies: Vec<Policy>,
+    traversal_work_budget: usize,
 }
+
+const DEFAULT_TRAVERSAL_WORK_BUDGET: usize = 1_000_000;
 
 impl ZegaBuilder {
     pub fn wal_flush_every_write(self) -> Self {
@@ -116,6 +122,11 @@ impl ZegaBuilder {
         self
     }
 
+    pub fn traversal_work_budget(mut self, max_relationships: usize) -> Self {
+        self.traversal_work_budget = max_relationships;
+        self
+    }
+
     pub fn build(self) -> Result<Zega> {
         Zega::open_with_builder(self)
     }
@@ -131,6 +142,7 @@ impl Zega {
             jwt_config: None,
             jwt_issuer: None,
             policies: Vec::new(),
+            traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
         }
     }
 
@@ -143,6 +155,7 @@ impl Zega {
             jwt_config: None,
             jwt_issuer: None,
             policies: Vec::new(),
+            traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
         }
     }
 
@@ -150,6 +163,7 @@ impl Zega {
         let path = builder.path;
         let jwt_config = builder.jwt_config;
         let policies = builder.policies;
+        let traversal_work_budget = builder.traversal_work_budget;
         #[cfg(not(target_arch = "wasm32"))]
         std::fs::create_dir_all(&path)?;
 
@@ -226,6 +240,7 @@ impl Zega {
             path,
             jwt_config,
             policies,
+            traversal_work_budget,
             #[cfg(not(target_arch = "wasm32"))]
             _rt: rt,
         })
@@ -246,8 +261,10 @@ impl Zega {
         let mut parser = Parser::new(zql)?;
         let stmts = parser.parse()?;
         let mut results = Vec::new();
+        let mut traversal_budget = TraversalWorkBudget::new(self.traversal_work_budget);
         for stmt in stmts {
-            let rows = self.execute_statement(&stmt, &params, &resolved)?;
+            let rows =
+                self.execute_statement(&stmt, &params, &resolved, &mut traversal_budget)?;
             results.extend(rows);
         }
         Ok(results)
@@ -285,6 +302,7 @@ impl Zega {
         stmt: &Statement,
         params: &HashMap<String, Value>,
         ctx: &ResolvedContext,
+        traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
         let planner = planner::Planner::new(&self.policies);
         match planner.plan_statement(stmt, params, ctx)? {
@@ -293,7 +311,9 @@ impl Zega {
                 fields.insert("value".to_string(), Value::Null);
                 Ok(vec![Row { fields }])
             }
-            planner::Plan::Execute(stmt) => self.execute_planned_statement(&stmt, params),
+            planner::Plan::Execute(stmt) => {
+                self.execute_planned_statement(&stmt, params, traversal_budget)
+            }
         }
     }
 
@@ -301,6 +321,7 @@ impl Zega {
         &self,
         stmt: &Statement,
         params: &HashMap<String, Value>,
+        traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
         match stmt {
             Statement::Match {
@@ -316,6 +337,7 @@ impl Zega {
                 order_by.as_ref(),
                 limit.as_ref(),
                 params,
+                traversal_budget,
             ),
             Statement::Create { pattern } => self.exec_create(pattern, params),
             Statement::MatchCreate {
@@ -327,6 +349,7 @@ impl Zega {
                 where_clause.as_ref(),
                 create_pattern,
                 params,
+                traversal_budget,
             ),
             Statement::Merge { pattern, on_create } => self.exec_merge(pattern, on_create, params),
             Statement::Set { assignments } => self.exec_set(assignments, params),
@@ -340,6 +363,7 @@ impl Zega {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn exec_match(
         &self,
         pattern: &[PatternElement],
@@ -348,12 +372,14 @@ impl Zega {
         order_by: Option<&Vec<(Expr, OrderDirection)>>,
         limit: Option<&Expr>,
         params: &HashMap<String, Value>,
+        traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
         let graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let bindings = resolve_match_bindings(&graph, pattern, where_clause, params)?;
+        let bindings =
+            resolve_match_bindings(&graph, pattern, where_clause, params, traversal_budget)?;
 
         // Build rows from RETURN
         let mut rows: Vec<Row> = bindings
@@ -426,12 +452,19 @@ impl Zega {
         where_clause: Option<&Expr>,
         create_elements: &[PatternElement],
         params: &HashMap<String, Value>,
+        traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
         let mut graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let bindings = resolve_match_bindings(&graph, match_pattern, where_clause, params)?;
+        let bindings = resolve_match_bindings(
+            &graph,
+            match_pattern,
+            where_clause,
+            params,
+            traversal_budget,
+        )?;
         let mut wal = self
             .wal
             .lock()
@@ -716,19 +749,46 @@ fn resolve_match_bindings(
     pattern: &[PatternElement],
     where_clause: Option<&Expr>,
     params: &HashMap<String, Value>,
+    traversal_budget: &mut TraversalWorkBudget,
 ) -> Result<Vec<HashMap<String, NodeId>>> {
-    let mut bindings = vec![HashMap::new()];
+    let mut bindings = vec![(HashMap::new(), HashSet::new())];
 
     for (index, element) in pattern.iter().enumerate() {
         let mut new_bindings = Vec::new();
-        for binding in &bindings {
-            let candidates = if let Some(&id) = binding.get(&element.variable) {
-                vec![id]
+        for (binding, used_relationships) in &bindings {
+            let candidates = if let Some(rel) = &element.relationship {
+                let Some(previous) = index.checked_sub(1).and_then(|i| {
+                    let previous_var = &pattern[i].variable;
+                    binding.get(previous_var).copied()
+                }) else {
+                    continue;
+                };
+                traverse_relationship(
+                    graph,
+                    previous,
+                    rel,
+                    &element.direction,
+                    params,
+                    binding,
+                    used_relationships,
+                    traversal_budget,
+                )?
+            } else if let Some(&id) = binding.get(&element.variable) {
+                vec![(id, used_relationships.clone())]
             } else {
                 match_candidates(graph, element, where_clause, params, binding)?
+                    .into_iter()
+                    .map(|id| (id, used_relationships.clone()))
+                    .collect()
             };
 
-            for candidate_id in candidates {
+            for (candidate_id, path_relationships) in candidates {
+                if binding
+                    .get(&element.variable)
+                    .is_some_and(|bound| *bound != candidate_id)
+                {
+                    continue;
+                }
                 let Some(node) = graph.get_node(candidate_id) else {
                     continue;
                 };
@@ -744,31 +804,18 @@ fn resolve_match_bindings(
                     continue;
                 }
 
-                if let Some(rel) = &element.relationship {
-                    let Some(previous) = index.checked_sub(1).and_then(|i| {
-                        let previous_var = &pattern[i].variable;
-                        binding.get(previous_var).copied()
-                    }) else {
-                        continue;
-                    };
-                    if !relationship_matches(graph, previous, candidate_id, rel, &element.direction)
-                    {
-                        continue;
-                    }
-                }
-
                 let mut new_binding = binding.clone();
                 if !element.variable.is_empty() {
                     new_binding.insert(element.variable.clone(), candidate_id);
                 }
-                new_bindings.push(new_binding);
+                new_bindings.push((new_binding, path_relationships));
             }
         }
         bindings = new_bindings;
     }
 
     if let Some(where_expr) = where_clause {
-        bindings.retain(|binding| {
+        bindings.retain(|(binding, _)| {
             matches!(
                 eval_expr(where_expr, params, binding, graph),
                 Ok(Value::Bool(true))
@@ -776,45 +823,109 @@ fn resolve_match_bindings(
         });
     }
 
-    Ok(bindings)
+    Ok(bindings.into_iter().map(|(binding, _)| binding).collect())
 }
 
-fn relationship_matches(
+struct TraversalWorkBudget {
+    limit: usize,
+    traversed: usize,
+}
+
+impl TraversalWorkBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            traversed: 0,
+        }
+    }
+
+    fn consume(&mut self) -> Result<()> {
+        self.traversed += 1;
+        if self.traversed > self.limit {
+            Err(ZegaError::TraversalWorkBudgetExceeded { limit: self.limit })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn traverse_relationship(
     graph: &Graph,
-    previous: NodeId,
-    current: NodeId,
+    start: NodeId,
     pattern: &RelationshipPattern,
     direction: &Option<Direction>,
-) -> bool {
-    let matches_kind = |rel_id| {
-        graph.get_relationship(rel_id).is_some_and(|rel| {
-            pattern.kinds.is_empty() || pattern.kinds.contains(&rel.kind)
-        })
-    };
-    let outgoing = || {
-        graph.outgoing_rels(previous).is_some_and(|rels| {
-            rels.iter().any(|&id| {
-                graph
-                    .get_relationship(id)
-                    .is_some_and(|rel| matches_kind(id) && rel.to == current)
-            })
-        })
-    };
-    let incoming = || {
-        graph.incoming_rels(previous).is_some_and(|rels| {
-            rels.iter().any(|&id| {
-                graph
-                    .get_relationship(id)
-                    .is_some_and(|rel| matches_kind(id) && rel.from == current)
-            })
-        })
-    };
+    params: &HashMap<String, Value>,
+    binding: &HashMap<String, NodeId>,
+    used_relationships: &HashSet<RelId>,
+    budget: &mut TraversalWorkBudget,
+) -> Result<Vec<(NodeId, HashSet<RelId>)>> {
+    let (min, max) = pattern
+        .length
+        .as_ref()
+        .map(|length| (length.min, length.max))
+        .unwrap_or((1, Some(1)));
+    let mut endpoints = Vec::new();
+    let mut stack = vec![(start, used_relationships.clone(), 0_usize)];
 
-    match direction {
-        Some(Direction::Incoming) => incoming(),
-        Some(Direction::Both) => outgoing() || incoming(),
-        Some(Direction::Outgoing) | None => outgoing(),
+    while let Some((node_id, used_relationships, depth)) = stack.pop() {
+        if depth >= min {
+            endpoints.push((node_id, used_relationships.clone()));
+        }
+        if max.is_some_and(|max| depth >= max) {
+            continue;
+        }
+
+        let mut adjacent = HashSet::new();
+        match direction {
+            Some(Direction::Incoming) => {
+                adjacent.extend(graph.incoming_rels(node_id).into_iter().flatten().copied());
+            }
+            Some(Direction::Both) => {
+                adjacent.extend(graph.outgoing_rels(node_id).into_iter().flatten().copied());
+                adjacent.extend(graph.incoming_rels(node_id).into_iter().flatten().copied());
+            }
+            Some(Direction::Outgoing) | None => {
+                adjacent.extend(graph.outgoing_rels(node_id).into_iter().flatten().copied());
+            }
+        }
+
+        for rel_id in adjacent {
+            budget.consume()?;
+            if used_relationships.contains(&rel_id) {
+                continue;
+            }
+            let Some(rel) = graph.get_relationship(rel_id) else {
+                continue;
+            };
+            if !pattern.kinds.is_empty() && !pattern.kinds.contains(&rel.kind) {
+                continue;
+            }
+            let mut properties_match = true;
+            for (key, expr) in &pattern.properties {
+                let value = eval_expr(expr, params, binding, graph)?;
+                if rel.props.get(key) != Some(&value) {
+                    properties_match = false;
+                    break;
+                }
+            }
+            if !properties_match {
+                continue;
+            }
+            let next = match direction {
+                Some(Direction::Incoming) if rel.to == node_id => rel.from,
+                Some(Direction::Both) if rel.from == node_id => rel.to,
+                Some(Direction::Both) if rel.to == node_id => rel.from,
+                Some(Direction::Outgoing) | None if rel.from == node_id => rel.to,
+                _ => continue,
+            };
+            let mut next_used = used_relationships.clone();
+            next_used.insert(rel_id);
+            stack.push((next, next_used, depth + 1));
+        }
     }
+
+    Ok(endpoints)
 }
 
 fn create_pattern(
@@ -1248,6 +1359,142 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].fields.contains_key("o"));
+    }
+
+    #[test]
+    fn test_variable_length_traversal_returns_each_linear_path_endpoint() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_relationships(&zega, &[("a", "b"), ("b", "c"), ("c", "d")]);
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[:R*1..3]->(x) RETURN x",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(returned_ids(&rows, "x"), vec!["b", "c", "d"]);
+    }
+
+    #[test]
+    fn test_variable_length_traversal_honors_exact_length() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_relationships(&zega, &[("a", "b"), ("b", "c"), ("c", "d")]);
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[:R*2..2]->(x) RETURN x",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(returned_ids(&rows, "x"), vec!["c"]);
+    }
+
+    #[test]
+    fn test_unbounded_cycle_terminates_with_relationship_uniqueness() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_relationships(&zega, &[("a", "b"), ("b", "c"), ("c", "a")]);
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[:R*]->(x) RETURN x",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(returned_ids(&rows, "x"), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_unbounded_traversal_returns_all_reachable_nodes() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_relationships(&zega, &[("a", "b"), ("a", "c"), ("b", "d")]);
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[*]->(x) RETURN x",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(returned_ids(&rows, "x"), vec!["b", "c", "d"]);
+    }
+
+    #[test]
+    fn test_variable_length_traversal_returns_all_matching_paths() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_relationships(
+            &zega,
+            &[("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")],
+        );
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[:R*2..2]->(x) RETURN x",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(returned_ids(&rows, "x"), vec!["d", "d"]);
+    }
+
+    #[test]
+    fn test_variable_length_traversal_honors_incoming_and_undirected_patterns() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_relationships(&zega, &[("a", "b"), ("b", "c")]);
+
+        let incoming = zega
+            .query(
+                "MATCH (c {id: 'c'})<-[:R*1..2]-(x) RETURN x",
+                HashMap::new(),
+            )
+            .unwrap();
+        let undirected = zega
+            .query(
+                "MATCH (b {id: 'b'})-[:R*1..1]-(x) RETURN x",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(returned_ids(&incoming, "x"), vec!["a", "b"]);
+        assert_eq!(returned_ids(&undirected, "x"), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn test_relationship_uniqueness_spans_chained_pattern() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_relationships(&zega, &[("a", "b")]);
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[:R]-(b)-[:R]-(x) RETURN x",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_variable_length_traversal_aborts_at_work_budget() {
+        let zega = Zega::in_memory()
+            .traversal_work_budget(2)
+            .build()
+            .unwrap();
+        seed_relationships(&zega, &[("a", "b"), ("b", "c"), ("c", "d")]);
+
+        let error = zega
+            .query(
+                "MATCH (a {id: 'a'})-[:R*]->(x) RETURN x",
+                HashMap::new(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ZegaError::TraversalWorkBudgetExceeded { limit: 2 }
+        ));
     }
 
     #[test]
@@ -1788,6 +2035,37 @@ mod tests {
             Some(Value::Map(map)) => map.get(prop).cloned(),
             _ => None,
         }
+    }
+
+    fn seed_relationships(zega: &Zega, relationships: &[(&str, &str)]) {
+        let mut graph = zega.graph.lock().unwrap();
+        let mut nodes = HashMap::new();
+        for &(from, to) in relationships {
+            for id in [from, to] {
+                nodes.entry(id).or_insert_with(|| {
+                    graph.create_node(
+                        Vec::new(),
+                        HashMap::from([("id".to_string(), Value::String(id.to_string()))]),
+                    )
+                });
+            }
+            graph.create_relationship(
+                "R".to_string(),
+                nodes[from],
+                nodes[to],
+                HashMap::new(),
+            );
+        }
+    }
+
+    fn returned_ids(rows: &[Row], field: &str) -> Vec<String> {
+        let mut ids = rows
+            .iter()
+            .filter_map(|row| row_map_field(row, field, "id"))
+            .filter_map(|value| value.as_string().map(str::to_string))
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
     }
 
     fn node_id_by_name(graph: &Graph, name: &str) -> NodeId {

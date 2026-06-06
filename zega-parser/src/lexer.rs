@@ -40,6 +40,7 @@ pub enum Token {
     LBracket,
     RBracket,
     Arrow,      // ->
+    LeftArrow,  // <-
     Dash,       // -
     Dot,
     Dollar,     // $
@@ -134,7 +135,13 @@ impl<'a> Lexer<'a> {
         while let Some(&c) = self.peek() {
             if c.is_ascii_digit() || c == '_' {
                 s.push(self.advance().unwrap());
-            } else if c == '.' {
+            } else if c == '.'
+                && self
+                    .chars
+                    .clone()
+                    .nth(1)
+                    .is_some_and(|next| next.is_ascii_digit())
+            {
                 s.push(self.advance().unwrap());
                 while let Some(&c) = self.peek() {
                     if c.is_ascii_digit() || c == '_' {
@@ -248,7 +255,7 @@ impl<'a> Lexer<'a> {
                             Token::Lte
                         } else if let Some(&'-') = self.peek() {
                             self.advance();
-                            Token::Arrow // <- for incoming
+                            Token::LeftArrow
                         } else {
                             Token::Lt
                         }
@@ -298,8 +305,8 @@ mod tests {
 
     #[test]
     fn test_number() {
-        let mut lex = Lexer::new("42 3.14");
+        let mut lex = Lexer::new("42 3.125");
         assert_eq!(lex.next_token(), Token::Integer(42));
-        assert_eq!(lex.next_token(), Token::Float(3.14));
+        assert_eq!(lex.next_token(), Token::Float(3.125));
     }
 }

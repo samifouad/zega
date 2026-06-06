@@ -163,13 +163,9 @@ impl<'a> Parser<'a> {
     fn parse_delete(&mut self) -> Result<Statement, ParseError> {
         self.advance(); // DELETE
         let mut ids = Vec::new();
-        loop {
-            if let Token::Identifier(id) = &self.current {
-                ids.push(id.clone());
-                self.advance();
-            } else {
-                break;
-            }
+        while let Token::Identifier(id) = &self.current {
+            ids.push(id.clone());
+            self.advance();
             if self.current == Token::Comma {
                 self.advance();
             } else {
@@ -202,28 +198,29 @@ impl<'a> Parser<'a> {
 
     fn parse_pattern(&mut self) -> Result<Vec<PatternElement>, ParseError> {
         let mut result = vec![self.parse_pattern_element()?];
-        while self.current == Token::Dash || self.current == Token::Arrow {
-            if self.current == Token::Dash {
-                self.advance(); // -
-            }
-            // relationship
+        while self.current == Token::Dash || self.current == Token::LeftArrow {
+            let incoming = self.current == Token::LeftArrow;
+            self.advance();
             let rel = if self.current == Token::LBracket {
-                Some(self.parse_relationship()?) 
+                Some(self.parse_relationship()?)
             } else {
                 None
             };
-            // direction
-            let dir = if self.current == Token::Arrow {
+            let dir = if incoming {
+                self.expect(Token::Dash)?;
+                Some(Direction::Incoming)
+            } else if self.current == Token::Arrow {
                 self.advance();
                 Some(Direction::Outgoing)
             } else if self.current == Token::Dash {
-                // check for <-
                 self.advance();
                 Some(Direction::Both)
             } else {
-                None
+                return Err(ParseError::UnexpectedToken {
+                    expected: "relationship direction".to_string(),
+                    got: self.current.clone(),
+                });
             };
-            // next node
             let mut next_el = self.parse_pattern_element()?;
             next_el.relationship = rel;
             next_el.direction = dir;
@@ -279,6 +276,12 @@ impl<'a> Parser<'a> {
                 kinds.push(kind);
             }
         }
+        let length = if self.current == Token::Star {
+            self.advance();
+            Some(self.parse_relationship_length()?)
+        } else {
+            None
+        };
         let properties = if self.current == Token::LBrace {
             self.parse_properties()?
         } else {
@@ -289,7 +292,42 @@ impl<'a> Parser<'a> {
             variable,
             kinds,
             properties,
+            length,
         })
+    }
+
+    fn parse_relationship_length(&mut self) -> Result<RelationshipLength, ParseError> {
+        let first = self.take_non_negative_integer()?;
+        if self.current != Token::Dot {
+            return Ok(RelationshipLength {
+                min: first.unwrap_or(1),
+                max: first,
+            });
+        }
+
+        self.advance();
+        self.expect(Token::Dot)?;
+        let max = self.take_non_negative_integer()?;
+        let min = first.unwrap_or(1);
+        if max.is_some_and(|max| min > max) {
+            return Err(ParseError::Message(
+                "relationship length minimum exceeds maximum".to_string(),
+            ));
+        }
+        Ok(RelationshipLength { min, max })
+    }
+
+    fn take_non_negative_integer(&mut self) -> Result<Option<usize>, ParseError> {
+        match self.current.clone() {
+            Token::Integer(value) if value >= 0 => {
+                self.advance();
+                Ok(Some(value as usize))
+            }
+            Token::Integer(_) => Err(ParseError::Message(
+                "relationship length must be non-negative".to_string(),
+            )),
+            _ => Ok(None),
+        }
     }
 
     fn take_symbolic_name(&mut self) -> Option<String> {
@@ -607,8 +645,32 @@ mod tests {
             Statement::Match { pattern, .. } => {
                 assert_eq!(pattern.len(), 2);
                 assert_eq!(pattern[1].relationship.as_ref().unwrap().kinds, vec!["REL"]);
+                assert_eq!(pattern[1].direction, Some(Direction::Outgoing));
             }
             _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_parse_variable_length_relationship_ranges_and_directions() {
+        let cases = [
+            ("MATCH (a)-[:REL*]->(b) RETURN b", 1, None, Direction::Outgoing),
+            ("MATCH (a)-[:REL*1..5]->(b) RETURN b", 1, Some(5), Direction::Outgoing),
+            ("MATCH (a)-[:REL*..3]->(b) RETURN b", 1, Some(3), Direction::Outgoing),
+            ("MATCH (a)<-[:REL*2..]-(b) RETURN b", 2, None, Direction::Incoming),
+            ("MATCH (a)-[*1..3]-(b) RETURN b", 1, Some(3), Direction::Both),
+        ];
+
+        for (query, min, max, direction) in cases {
+            let mut parser = Parser::new(query).unwrap();
+            let statements = parser.parse().unwrap();
+            let Statement::Match { pattern, .. } = &statements[0] else {
+                panic!("expected MATCH");
+            };
+            let relationship = pattern[1].relationship.as_ref().unwrap();
+            assert!(relationship.kinds.is_empty() || relationship.kinds == vec!["REL"]);
+            assert_eq!(relationship.length, Some(RelationshipLength { min, max }));
+            assert_eq!(pattern[1].direction, Some(direction));
         }
     }
 
