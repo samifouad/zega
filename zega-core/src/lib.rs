@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
@@ -416,15 +417,21 @@ impl Zega {
         // ORDER BY
         if let Some(ob) = order_by {
             for (expr, dir) in ob.iter().rev() {
-                rows.sort_by(|a, b| {
-                    let av = eval_expr_from_row(expr, params, a).unwrap_or(Value::Null);
-                    let bv = eval_expr_from_row(expr, params, b).unwrap_or(Value::Null);
-                    let cmp = av.partial_cmp(&bv).unwrap_or(std::cmp::Ordering::Equal);
+                let mut keyed_rows: Vec<_> = rows
+                    .into_iter()
+                    .map(|row| {
+                        let key = eval_expr_from_row(expr, params, &row).unwrap_or(Value::Null);
+                        (key, row)
+                    })
+                    .collect();
+                keyed_rows.sort_by(|(a, _), (b, _)| {
+                    let cmp = a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
                     match dir {
                         OrderDirection::Asc => cmp,
                         OrderDirection::Desc => cmp.reverse(),
                     }
                 });
+                rows = keyed_rows.into_iter().map(|(_, row)| row).collect();
             }
         }
 
@@ -768,7 +775,7 @@ fn resolve_match_bindings(
     params: &HashMap<String, Value>,
     traversal_budget: &mut TraversalWorkBudget,
 ) -> Result<Vec<Bindings>> {
-    let mut bindings = vec![(HashMap::new(), HashSet::new())];
+    let mut bindings = vec![(HashMap::new(), Vec::new())];
 
     for (index, element) in pattern.iter().enumerate() {
         let mut new_bindings = Vec::new();
@@ -878,7 +885,7 @@ struct TraversalWorkBudget {
 struct TraversalMatch {
     node_id: NodeId,
     path_relationships: Vec<RelId>,
-    used_relationships: HashSet<RelId>,
+    used_relationships: Vec<RelId>,
 }
 
 impl TraversalWorkBudget {
@@ -907,7 +914,7 @@ fn traverse_relationship(
     direction: &Option<Direction>,
     params: &HashMap<String, Value>,
     binding: &Bindings,
-    used_relationships: &HashSet<RelId>,
+    used_relationships: &[RelId],
     budget: &mut TraversalWorkBudget,
 ) -> Result<Vec<TraversalMatch>> {
     let (min, max) = pattern
@@ -915,11 +922,94 @@ fn traverse_relationship(
         .as_ref()
         .map(|length| (length.min, length.max))
         .unwrap_or((1, Some(1)));
+    let adjacent_relationships = |node_id| -> Vec<RelId> {
+        match direction {
+            Some(Direction::Incoming) => graph
+                .incoming_rels(node_id)
+                .into_iter()
+                .flatten()
+                .copied()
+                .collect(),
+            Some(Direction::Both) => {
+                let mut adjacent = HashSet::new();
+                adjacent.extend(graph.outgoing_rels(node_id).into_iter().flatten().copied());
+                adjacent.extend(graph.incoming_rels(node_id).into_iter().flatten().copied());
+                adjacent.into_iter().collect()
+            }
+            Some(Direction::Outgoing) | None => graph
+                .outgoing_rels(node_id)
+                .into_iter()
+                .flatten()
+                .copied()
+                .collect(),
+        }
+    };
+
+    if min == 1 && max == Some(1) {
+        let mut endpoints = Vec::new();
+        let mut add_endpoint = |rel_id| -> Result<()> {
+            budget.consume()?;
+            if used_relationships.contains(&rel_id) {
+                return Ok(());
+            }
+            let Some(rel) = graph.get_relationship(rel_id) else {
+                return Ok(());
+            };
+            if !pattern.kinds.is_empty() && !pattern.kinds.contains(&rel.kind) {
+                return Ok(());
+            }
+            let mut properties_match = true;
+            for (key, expr) in &pattern.properties {
+                let value = eval_expr(expr, params, binding, graph)?;
+                if rel.props.get(key) != Some(&value) {
+                    properties_match = false;
+                    break;
+                }
+            }
+            if !properties_match {
+                return Ok(());
+            }
+            let next = match direction {
+                Some(Direction::Incoming) if rel.to == start => rel.from,
+                Some(Direction::Both) if rel.from == start => rel.to,
+                Some(Direction::Both) if rel.to == start => rel.from,
+                Some(Direction::Outgoing) | None if rel.from == start => rel.to,
+                _ => return Ok(()),
+            };
+            let mut next_used = used_relationships.to_vec();
+            next_used.push(rel_id);
+            endpoints.push(TraversalMatch {
+                node_id: next,
+                path_relationships: vec![rel_id],
+                used_relationships: next_used,
+            });
+            Ok(())
+        };
+        match direction {
+            Some(Direction::Incoming) => {
+                for &rel_id in graph.incoming_rels(start).into_iter().flatten() {
+                    add_endpoint(rel_id)?;
+                }
+            }
+            Some(Direction::Both) => {
+                for rel_id in adjacent_relationships(start) {
+                    add_endpoint(rel_id)?;
+                }
+            }
+            Some(Direction::Outgoing) | None => {
+                for &rel_id in graph.outgoing_rels(start).into_iter().flatten() {
+                    add_endpoint(rel_id)?;
+                }
+            }
+        }
+        return Ok(endpoints);
+    }
+
     let mut endpoints = Vec::new();
     let mut stack = vec![(
         start,
         Vec::<RelId>::new(),
-        used_relationships.clone(),
+        used_relationships.to_vec(),
         0_usize,
     )];
 
@@ -935,21 +1025,7 @@ fn traverse_relationship(
             continue;
         }
 
-        let mut adjacent = HashSet::new();
-        match direction {
-            Some(Direction::Incoming) => {
-                adjacent.extend(graph.incoming_rels(node_id).into_iter().flatten().copied());
-            }
-            Some(Direction::Both) => {
-                adjacent.extend(graph.outgoing_rels(node_id).into_iter().flatten().copied());
-                adjacent.extend(graph.incoming_rels(node_id).into_iter().flatten().copied());
-            }
-            Some(Direction::Outgoing) | None => {
-                adjacent.extend(graph.outgoing_rels(node_id).into_iter().flatten().copied());
-            }
-        }
-
-        for rel_id in adjacent {
+        for rel_id in adjacent_relationships(node_id) {
             budget.consume()?;
             if used_relationships.contains(&rel_id) {
                 continue;
@@ -979,7 +1055,7 @@ fn traverse_relationship(
                 _ => continue,
             };
             let mut next_used = used_relationships.clone();
-            next_used.insert(rel_id);
+            next_used.push(rel_id);
             let mut next_path = path_relationships.clone();
             next_path.push(rel_id);
             stack.push((next, next_path, next_used, depth + 1));
@@ -1196,6 +1272,12 @@ fn eval_expr(
             None => Ok(Value::Null),
         },
         Expr::PropertyAccess(target, prop) => {
+            if let Expr::Identifier(name) = target.as_ref() {
+                return Ok(bindings
+                    .get(name)
+                    .and_then(|value| bound_property(value, prop, graph))
+                    .unwrap_or(Value::Null));
+            }
             let target_val = eval_expr(target, params, bindings, graph)?;
             match target_val {
                 Value::Map(mut m) => Ok(m.remove(prop).unwrap_or(Value::Null)),
@@ -1239,6 +1321,36 @@ fn eval_expr(
         Expr::Aggregate { .. } => Err(ZegaError::Execution(
             "aggregate expression evaluated outside RETURN aggregation".to_string(),
         )),
+    }
+}
+
+fn bound_property(value: &BoundValue, prop: &str, graph: &Graph) -> Option<Value> {
+    match value {
+        BoundValue::Node(node_id) => {
+            let node = graph.get_node(*node_id)?;
+            node.props.get(prop).cloned().or_else(|| match prop {
+                "id" => Some(Value::Int(*node_id as i64)),
+                "labels" => Some(Value::List(
+                    node.labels
+                        .iter()
+                        .map(|label| Value::String(label.clone()))
+                        .collect(),
+                )),
+                _ => None,
+            })
+        }
+        BoundValue::Relationship(rel_id) => {
+            let rel = graph.get_relationship(*rel_id)?;
+            match prop {
+                "id" => Some(Value::Int(rel.id as i64)),
+                "type" => Some(Value::String(rel.kind.clone())),
+                "from" => Some(Value::Int(rel.from as i64)),
+                "to" => Some(Value::Int(rel.to as i64)),
+                "props" => Some(Value::Map(rel.props.clone())),
+                _ => rel.props.get(prop).cloned(),
+            }
+        }
+        BoundValue::Relationships(_) => None,
     }
 }
 
@@ -1301,6 +1413,40 @@ fn expr_to_string(expr: &Expr) -> String {
     }
 }
 
+fn eval_group_value<'a>(
+    expr: &Expr,
+    params: &HashMap<String, Value>,
+    bindings: &Bindings,
+    graph: &'a Graph,
+) -> Result<Cow<'a, Value>> {
+    if let Expr::PropertyAccess(target, prop) = expr {
+        if let Expr::Identifier(name) = target.as_ref() {
+            match bindings.get(name) {
+                Some(BoundValue::Node(node_id)) => {
+                    if let Some(value) = graph
+                        .get_node(*node_id)
+                        .and_then(|node| node.props.get(prop))
+                    {
+                        return Ok(Cow::Borrowed(value));
+                    }
+                }
+                Some(BoundValue::Relationship(rel_id))
+                    if !matches!(prop.as_str(), "id" | "type" | "from" | "to" | "props") =>
+                {
+                    if let Some(value) = graph
+                        .get_relationship(*rel_id)
+                        .and_then(|rel| rel.props.get(prop))
+                    {
+                        return Ok(Cow::Borrowed(value));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(Cow::Owned(eval_expr(expr, params, bindings, graph)?))
+}
+
 fn project_rows(
     bindings: &[Bindings],
     return_clause: &ReturnClause,
@@ -1308,7 +1454,22 @@ fn project_rows(
     graph: &Graph,
 ) -> Result<Vec<Row>> {
     type AggregateGroup<'a> = (Vec<Value>, Vec<&'a Bindings>);
+    #[derive(Hash, PartialEq, Eq)]
+    enum AggregateKey<'a> {
+        Empty,
+        Single(Cow<'a, Value>),
+        Multiple(Vec<Value>),
+    }
 
+    let field_names: Vec<_> = return_clause
+        .items
+        .iter()
+        .map(|item| {
+            item.alias
+                .clone()
+                .unwrap_or_else(|| expr_to_string(&item.expr))
+        })
+        .collect();
     let has_aggregates = return_clause
         .items
         .iter()
@@ -1318,7 +1479,7 @@ fn project_rows(
             .iter()
             .map(|binding| {
                 let group = [binding];
-                project_group(binding, &group, return_clause, params, graph)
+                project_group(binding, &group, return_clause, &field_names, params, graph)
             })
             .collect();
     }
@@ -1328,16 +1489,33 @@ fn project_rows(
         .iter()
         .filter(|item| !matches!(item.expr, Expr::Aggregate { .. }))
         .collect();
-    let mut groups: Vec<AggregateGroup<'_>> = Vec::new();
+    let expected_groups = bindings.len().min(16_384);
+    let mut groups: Vec<AggregateGroup<'_>> = Vec::with_capacity(expected_groups);
+    let mut group_indices: HashMap<AggregateKey<'_>, usize> =
+        HashMap::with_capacity(expected_groups);
     for binding in bindings {
-        let key = non_aggregate_items
-            .iter()
-            .map(|item| eval_expr(&item.expr, params, binding, graph))
-            .collect::<Result<Vec<_>>>()?;
-        if let Some((_, group)) = groups.iter_mut().find(|(group_key, _)| *group_key == key) {
-            group.push(binding);
+        let hash_key = match non_aggregate_items.as_slice() {
+            [] => AggregateKey::Empty,
+            [item] => AggregateKey::Single(eval_group_value(&item.expr, params, binding, graph)?),
+            items => AggregateKey::Multiple(
+                items
+                    .iter()
+                    .map(|item| eval_expr(&item.expr, params, binding, graph))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        };
+        if let Some(&group_index) = group_indices.get(&hash_key) {
+            groups[group_index].1.push(binding);
         } else {
-            groups.push((key, vec![binding]));
+            let key = match &hash_key {
+                AggregateKey::Empty => Vec::new(),
+                AggregateKey::Single(value) => vec![value.as_ref().clone()],
+                AggregateKey::Multiple(values) => values.clone(),
+            };
+            group_indices.insert(hash_key, groups.len());
+            let mut group = Vec::with_capacity(4);
+            group.push(binding);
+            groups.push((key, group));
         }
     }
     if groups.is_empty() && non_aggregate_items.is_empty() {
@@ -1349,7 +1527,14 @@ fn project_rows(
         .map(|(_, group)| {
             let empty_binding = HashMap::new();
             let representative = group.first().copied().unwrap_or(&empty_binding);
-            project_group(representative, &group, return_clause, params, graph)
+            project_group(
+                representative,
+                &group,
+                return_clause,
+                &field_names,
+                params,
+                graph,
+            )
         })
         .collect()
 }
@@ -1358,11 +1543,12 @@ fn project_group(
     representative: &Bindings,
     group: &[&Bindings],
     return_clause: &ReturnClause,
+    field_names: &[String],
     params: &HashMap<String, Value>,
     graph: &Graph,
 ) -> Result<Row> {
-    let mut fields = HashMap::new();
-    for item in &return_clause.items {
+    let mut fields = HashMap::with_capacity(return_clause.items.len());
+    for (item, key) in return_clause.items.iter().zip(field_names) {
         let value = match &item.expr {
             Expr::Aggregate {
                 function,
@@ -1371,11 +1557,7 @@ fn project_group(
             } => eval_aggregate(function, argument.as_deref(), *distinct, group, params, graph)?,
             expr => eval_expr(expr, params, representative, graph)?,
         };
-        let key = item
-            .alias
-            .clone()
-            .unwrap_or_else(|| expr_to_string(&item.expr));
-        fields.insert(key, value);
+        fields.insert(key.clone(), value);
     }
     Ok(Row { fields })
 }
@@ -1395,6 +1577,59 @@ fn eval_aggregate(
     let argument = argument.ok_or_else(|| {
         ZegaError::Execution("aggregate function requires an argument".to_string())
     })?;
+    if matches!(function, AggregateFunction::Count) && !distinct {
+        if let Expr::Identifier(name) = argument {
+            let count = if group
+                .first()
+                .is_some_and(|binding| binding.contains_key(name))
+            {
+                group.len()
+            } else {
+                0
+            };
+            return Ok(Value::Int(count as i64));
+        }
+    }
+    if !distinct && matches!(function, AggregateFunction::Sum | AggregateFunction::Avg) {
+        let mut integer_sum = 0i64;
+        let mut float_sum = 0.0;
+        let mut has_float = false;
+        let mut count = 0usize;
+        for binding in group {
+            match eval_expr(argument, params, binding, graph)? {
+                Value::Null => continue,
+                Value::Int(value) => {
+                    integer_sum = integer_sum.checked_add(value).ok_or_else(|| {
+                        ZegaError::Execution("integer overflow in sum()".to_string())
+                    })?;
+                }
+                Value::Float(bits) => {
+                    has_float = true;
+                    float_sum += f64::from_bits(bits);
+                }
+                _ => {
+                    return Err(ZegaError::Execution(
+                        "sum() and avg() require numeric values".to_string(),
+                    ));
+                }
+            }
+            count += 1;
+        }
+        if matches!(function, AggregateFunction::Avg) {
+            return if count == 0 {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::from_f64(
+                    (integer_sum as f64 + float_sum) / count as f64,
+                ))
+            };
+        }
+        return if has_float {
+            Ok(Value::from_f64(integer_sum as f64 + float_sum))
+        } else {
+            Ok(Value::Int(integer_sum))
+        };
+    }
     let mut values = Vec::new();
     for binding in group {
         let value = eval_expr(argument, params, binding, graph)?;
@@ -1969,6 +2204,44 @@ mod tests {
         assert_eq!(
             totals,
             vec![Value::Int(10), Value::Int(20), Value::Int(30)]
+        );
+    }
+
+    #[test]
+    fn test_aggregate_many_groups_completes_fast_and_correctly() {
+        const GROUPS: usize = 5_000;
+        let zega = Zega::in_memory().build().unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            for group in 0..GROUPS {
+                for amount in [1_i64, 2] {
+                    graph.create_node(
+                        vec!["Event".to_string()],
+                        HashMap::from([
+                            ("group".to_string(), Value::Int(group as i64)),
+                            ("amount".to_string(), Value::Int(amount)),
+                        ]),
+                    );
+                }
+            }
+        }
+
+        let started = std::time::Instant::now();
+        let rows = zega
+            .query(
+                "MATCH (e:Event) RETURN e.group AS group, count(e) AS count, sum(e.amount) AS total",
+                HashMap::new(),
+            )
+            .unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(rows.len(), GROUPS);
+        assert!(rows.iter().all(|row| {
+            row.fields["count"] == Value::Int(2) && row.fields["total"] == Value::Int(3)
+        }));
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "grouping 10,000 rows into {GROUPS} groups took {elapsed:?}"
         );
     }
 
