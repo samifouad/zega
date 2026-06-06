@@ -318,6 +318,16 @@ impl Zega {
                 params,
             ),
             Statement::Create { pattern } => self.exec_create(pattern, params),
+            Statement::MatchCreate {
+                match_pattern,
+                where_clause,
+                create_pattern,
+            } => self.exec_match_create(
+                match_pattern,
+                where_clause.as_ref(),
+                create_pattern,
+                params,
+            ),
             Statement::Merge { pattern, on_create } => self.exec_merge(pattern, on_create, params),
             Statement::Set { assignments } => self.exec_set(assignments, params),
             Statement::Delete { identifiers } => self.exec_delete(identifiers),
@@ -343,95 +353,7 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut bindings: Vec<HashMap<String, NodeId>> = Vec::new();
-        bindings.push(HashMap::new());
-
-        for element in pattern {
-            let mut new_bindings: Vec<HashMap<String, NodeId>> = Vec::new();
-            for binding in &bindings {
-                let candidates = match_candidates(&graph, element, where_clause, params, binding)?;
-
-                for candidate_id in candidates {
-                    let node = graph.get_node(candidate_id).unwrap();
-                    let mut matched = true;
-                    for (k, expr) in &element.properties {
-                        let val = eval_expr(expr, params, binding, &graph)?;
-                        if node.props.get(k) != Some(&val) {
-                            matched = false;
-                            break;
-                        }
-                    }
-                    if !matched {
-                        continue;
-                    }
-
-                    let mut new_binding = binding.clone();
-                    if !element.variable.is_empty() {
-                        new_binding.insert(element.variable.clone(), candidate_id);
-                    }
-
-                    // Handle relationship from previous element (MVP: simple 2-node chains)
-                    if element.relationship.is_some() || element.direction.is_some() {
-                        if let Some(ref rel) = element.relationship {
-                            let prev_var = &pattern[0].variable;
-                            if let Some(&prev_id) = binding.get(prev_var) {
-                                let has_rel = match element.direction {
-                                    Some(Direction::Outgoing) | None => {
-                                        graph.outgoing_rels(prev_id).map_or(false, |rels| {
-                                            rels.iter().any(|&rel_id| {
-                                                let r = graph.get_relationship(rel_id).unwrap();
-                                                let kind_match = rel.kinds.is_empty()
-                                                    || rel.kinds.contains(&r.kind);
-                                                kind_match && r.to == candidate_id
-                                            })
-                                        })
-                                    }
-                                    Some(Direction::Incoming) => {
-                                        graph.incoming_rels(prev_id).map_or(false, |rels| {
-                                            rels.iter().any(|&rel_id| {
-                                                let r = graph.get_relationship(rel_id).unwrap();
-                                                let kind_match = rel.kinds.is_empty()
-                                                    || rel.kinds.contains(&r.kind);
-                                                kind_match && r.from == candidate_id
-                                            })
-                                        })
-                                    }
-                                    Some(Direction::Both) => {
-                                        graph.outgoing_rels(prev_id).map_or(false, |rels| {
-                                            rels.iter().any(|&rel_id| {
-                                                let r = graph.get_relationship(rel_id).unwrap();
-                                                let kind_match = rel.kinds.is_empty()
-                                                    || rel.kinds.contains(&r.kind);
-                                                kind_match
-                                                    && (r.to == candidate_id
-                                                        || r.from == candidate_id)
-                                            })
-                                        })
-                                    }
-                                };
-                                if !has_rel {
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-
-                    new_bindings.push(new_binding);
-                }
-            }
-            bindings = new_bindings;
-        }
-
-        // Apply WHERE
-        if let Some(where_expr) = where_clause {
-            bindings.retain(
-                |binding| match eval_expr(where_expr, params, binding, &graph) {
-                    Ok(Value::Bool(true)) => true,
-                    Ok(Value::Bool(false)) => false,
-                    _ => false,
-                },
-            );
-        }
+        let bindings = resolve_match_bindings(&graph, pattern, where_clause, params)?;
 
         // Build rows from RETURN
         let mut rows: Vec<Row> = bindings
@@ -493,53 +415,30 @@ impl Zega {
             .wal
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut created = Vec::new();
-        let mut var_map: HashMap<String, NodeId> = HashMap::new();
-        let mut last_rel: Option<(String, NodeId, NodeId, HashMap<String, Value>)> = None;
+        create_pattern(&mut graph, &mut wal, pattern, params, HashMap::new())?;
 
-        for (i, element) in pattern.iter().enumerate() {
-            let mut props = HashMap::new();
-            for (k, expr) in &element.properties {
-                let val = eval_expr(expr, params, &var_map, &graph)?;
-                props.insert(k.clone(), val);
-            }
-            let id = graph.create_node(element.labels.clone(), props.clone());
-            created.push(id);
-            if !element.variable.is_empty() {
-                var_map.insert(element.variable.clone(), id);
-            }
+        Ok(vec![])
+    }
 
-            // If there was a relationship from previous element, create it now
-            if let Some((kind, from, _, rel_props)) = last_rel.take() {
-                let rid = graph.create_relationship(kind.clone(), from, id, rel_props.clone());
-                wal.append(&Operation::InsertRel {
-                    id: rid,
-                    kind,
-                    from,
-                    to: id,
-                    props: rel_props,
-                })?;
-            }
+    fn exec_match_create(
+        &self,
+        match_pattern: &[PatternElement],
+        where_clause: Option<&Expr>,
+        create_elements: &[PatternElement],
+        params: &HashMap<String, Value>,
+    ) -> Result<Vec<Row>> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let bindings = resolve_match_bindings(&graph, match_pattern, where_clause, params)?;
+        let mut wal = self
+            .wal
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
 
-            // If next element has a relationship, store it for next iteration
-            if i + 1 < pattern.len() {
-                let next = &pattern[i + 1];
-                if let Some(ref rel) = next.relationship {
-                    let mut rel_props = HashMap::new();
-                    for (k, expr) in &rel.properties {
-                        let val = eval_expr(expr, params, &var_map, &graph)?;
-                        rel_props.insert(k.clone(), val);
-                    }
-                    let kind = rel.kinds.first().cloned().unwrap_or_default();
-                    last_rel = Some((kind, id, 0, rel_props));
-                }
-            }
-
-            wal.append(&Operation::InsertNode {
-                id,
-                labels: element.labels.clone(),
-                props,
-            })?;
+        for binding in bindings {
+            create_pattern(&mut graph, &mut wal, create_elements, params, binding)?;
         }
 
         Ok(vec![])
@@ -810,6 +709,179 @@ impl Zega {
             Ok(())
         }
     }
+}
+
+fn resolve_match_bindings(
+    graph: &Graph,
+    pattern: &[PatternElement],
+    where_clause: Option<&Expr>,
+    params: &HashMap<String, Value>,
+) -> Result<Vec<HashMap<String, NodeId>>> {
+    let mut bindings = vec![HashMap::new()];
+
+    for (index, element) in pattern.iter().enumerate() {
+        let mut new_bindings = Vec::new();
+        for binding in &bindings {
+            let candidates = if let Some(&id) = binding.get(&element.variable) {
+                vec![id]
+            } else {
+                match_candidates(graph, element, where_clause, params, binding)?
+            };
+
+            for candidate_id in candidates {
+                let Some(node) = graph.get_node(candidate_id) else {
+                    continue;
+                };
+                let mut matched = true;
+                for (key, expr) in &element.properties {
+                    let value = eval_expr(expr, params, binding, graph)?;
+                    if node.props.get(key) != Some(&value) {
+                        matched = false;
+                        break;
+                    }
+                }
+                if !matched {
+                    continue;
+                }
+
+                if let Some(rel) = &element.relationship {
+                    let Some(previous) = index.checked_sub(1).and_then(|i| {
+                        let previous_var = &pattern[i].variable;
+                        binding.get(previous_var).copied()
+                    }) else {
+                        continue;
+                    };
+                    if !relationship_matches(graph, previous, candidate_id, rel, &element.direction)
+                    {
+                        continue;
+                    }
+                }
+
+                let mut new_binding = binding.clone();
+                if !element.variable.is_empty() {
+                    new_binding.insert(element.variable.clone(), candidate_id);
+                }
+                new_bindings.push(new_binding);
+            }
+        }
+        bindings = new_bindings;
+    }
+
+    if let Some(where_expr) = where_clause {
+        bindings.retain(|binding| {
+            matches!(
+                eval_expr(where_expr, params, binding, graph),
+                Ok(Value::Bool(true))
+            )
+        });
+    }
+
+    Ok(bindings)
+}
+
+fn relationship_matches(
+    graph: &Graph,
+    previous: NodeId,
+    current: NodeId,
+    pattern: &RelationshipPattern,
+    direction: &Option<Direction>,
+) -> bool {
+    let matches_kind = |rel_id| {
+        graph.get_relationship(rel_id).is_some_and(|rel| {
+            pattern.kinds.is_empty() || pattern.kinds.contains(&rel.kind)
+        })
+    };
+    let outgoing = || {
+        graph.outgoing_rels(previous).is_some_and(|rels| {
+            rels.iter().any(|&id| {
+                graph
+                    .get_relationship(id)
+                    .is_some_and(|rel| matches_kind(id) && rel.to == current)
+            })
+        })
+    };
+    let incoming = || {
+        graph.incoming_rels(previous).is_some_and(|rels| {
+            rels.iter().any(|&id| {
+                graph
+                    .get_relationship(id)
+                    .is_some_and(|rel| matches_kind(id) && rel.from == current)
+            })
+        })
+    };
+
+    match direction {
+        Some(Direction::Incoming) => incoming(),
+        Some(Direction::Both) => outgoing() || incoming(),
+        Some(Direction::Outgoing) | None => outgoing(),
+    }
+}
+
+fn create_pattern(
+    graph: &mut Graph,
+    wal: &mut Wal,
+    pattern: &[PatternElement],
+    params: &HashMap<String, Value>,
+    mut bindings: HashMap<String, NodeId>,
+) -> Result<()> {
+    let mut previous_id = None;
+
+    for element in pattern {
+        let id = if let Some(&bound_id) = bindings.get(&element.variable) {
+            bound_id
+        } else {
+            let props = element
+                .properties
+                .iter()
+                .map(|(key, expr)| {
+                    Ok((
+                        key.clone(),
+                        eval_expr(expr, params, &bindings, graph)?,
+                    ))
+                })
+                .collect::<Result<HashMap<_, _>>>()?;
+            let id = graph.create_node(element.labels.clone(), props.clone());
+            wal.append(&Operation::InsertNode {
+                id,
+                labels: element.labels.clone(),
+                props,
+            })?;
+            if !element.variable.is_empty() {
+                bindings.insert(element.variable.clone(), id);
+            }
+            id
+        };
+
+        if let (Some(from), Some(rel)) = (previous_id, &element.relationship) {
+            let props = rel
+                .properties
+                .iter()
+                .map(|(key, expr)| {
+                    Ok((
+                        key.clone(),
+                        eval_expr(expr, params, &bindings, graph)?,
+                    ))
+                })
+                .collect::<Result<HashMap<_, _>>>()?;
+            let kind = rel.kinds.first().cloned().unwrap_or_default();
+            let (from, to) = match element.direction {
+                Some(Direction::Incoming) => (id, from),
+                Some(Direction::Outgoing) | Some(Direction::Both) | None => (from, id),
+            };
+            let rel_id = graph.create_relationship(kind.clone(), from, to, props.clone());
+            wal.append(&Operation::InsertRel {
+                id: rel_id,
+                kind,
+                from,
+                to,
+                props,
+            })?;
+        }
+
+        previous_id = Some(id);
+    }
+
+    Ok(())
 }
 
 fn match_candidates(
@@ -1132,38 +1204,80 @@ mod tests {
     }
 
     #[test]
-    fn test_relationship_match() {
+    fn test_create_relationship_creates_two_nodes_and_edge() {
         let dir = tempdir().unwrap();
         let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
-        let mut params = HashMap::new();
-        params.insert("a".to_string(), Value::String("Alice".to_string()));
-        params.insert("b".to_string(), Value::String("Bob".to_string()));
-        zega.query("CREATE (a:Person {name: $a})", params.clone())
-            .unwrap();
-        zega.query("CREATE (b:Person {name: $b})", params.clone())
-            .unwrap();
-        // Note: relationship creation in CREATE with pattern like (a)-[:KNOWS]->(b) requires both nodes in same pattern
-        // Our parser supports it but exec_create needs to handle it.
-        // For this test, let's use individual CREATEs and then a separate rel creation query (not supported in MVP parser).
-        // Actually the MVP parser supports (a)-[:REL]->(b) in MATCH but not necessarily in CREATE.
-        // Let me test MATCH with rels using the graph directly first.
-        // Actually the test spec says: "Create two nodes + relationship, traverse with MATCH"
-        // We'll create nodes via query and rel via graph API for the test.
-        {
-            let mut graph = zega.graph.lock().unwrap();
-            let nodes: Vec<u64> = graph.all_nodes().keys().copied().collect();
-            assert_eq!(nodes.len(), 2);
-            graph.create_relationship("KNOWS".to_string(), nodes[0], nodes[1], HashMap::new());
-        }
+        let params = HashMap::from([
+            ("uid".to_string(), Value::String("user-1".to_string())),
+            ("oid".to_string(), Value::String("order-1".to_string())),
+        ]);
+        zega.query(
+            "CREATE (u:User {id: $uid})-[:PLACED]->(o:Order {id: $oid})",
+            params,
+        )
+        .unwrap();
+
+        let graph = zega.graph.lock().unwrap();
+        assert_eq!(graph.all_nodes().len(), 2);
+        assert_eq!(graph.all_relationships().len(), 1);
+        assert_eq!(
+            graph.all_relationships().values().next().unwrap().kind,
+            "PLACED"
+        );
+    }
+
+    #[test]
+    fn test_created_relationship_is_traversable() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let params = HashMap::from([
+            ("uid".to_string(), Value::String("user-1".to_string())),
+            ("oid".to_string(), Value::String("order-1".to_string())),
+        ]);
+        zega.query(
+            "CREATE (u:User {id: $uid})-[:PLACED]->(o:Order {id: $oid})",
+            params.clone(),
+        )
+        .unwrap();
+
         let rows = zega
             .query(
-                "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b",
-                HashMap::new(),
+                "MATCH (u:User {id: $uid})-[:PLACED]->(o:Order) RETURN o",
+                params,
             )
             .unwrap();
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].fields.contains_key("a"));
-        assert!(rows[0].fields.contains_key("b"));
+        assert!(rows[0].fields.contains_key("o"));
+    }
+
+    #[test]
+    fn test_match_create_reuses_existing_node() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let params = HashMap::from([
+            ("uid".to_string(), Value::String("user-1".to_string())),
+            ("oid".to_string(), Value::String("order-1".to_string())),
+        ]);
+        zega.query("CREATE (u:User {id: $uid})", params.clone())
+            .unwrap();
+        zega.query(
+            "MATCH (u:User {id: $uid}) CREATE (u)-[:PLACED]->(o:Order {id: $oid})",
+            params.clone(),
+        )
+        .unwrap();
+
+        {
+            let graph = zega.graph.lock().unwrap();
+            assert_eq!(graph.all_nodes().len(), 2);
+            assert_eq!(graph.all_relationships().len(), 1);
+        }
+        let rows = zega
+            .query(
+                "MATCH (u:User {id: $uid})-[:PLACED]->(o:Order) RETURN o",
+                params,
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]

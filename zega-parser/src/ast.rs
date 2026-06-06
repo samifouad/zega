@@ -34,6 +34,11 @@ pub enum Statement {
     Create {
         pattern: Vec<PatternElement>,
     },
+    MatchCreate {
+        match_pattern: Vec<PatternElement>,
+        where_clause: Option<Expr>,
+        create_pattern: Vec<PatternElement>,
+    },
     Merge {
         pattern: Vec<PatternElement>,
         on_create: Vec<SetClause>,
