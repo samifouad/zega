@@ -8,6 +8,21 @@ pub enum Expr {
     Identifier(String),                      // ident
     PropertyAccess(Box<Expr>, String),       // expr.prop
     BinaryOp(Box<Expr>, BinaryOperator, Box<Expr>),
+    Aggregate {
+        function: AggregateFunction,
+        argument: Option<Box<Expr>>, // None represents count(*)
+        distinct: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AggregateFunction {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Collect,
 }
 
 #[derive(Clone, Debug, PartialEq)]

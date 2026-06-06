@@ -381,23 +381,7 @@ impl Zega {
         let bindings =
             resolve_match_bindings(&graph, pattern, where_clause, params, traversal_budget)?;
 
-        // Build rows from RETURN
-        let mut rows: Vec<Row> = bindings
-            .into_iter()
-            .map(|binding| {
-                let mut fields = HashMap::new();
-                for item in &return_clause.items {
-                    let val =
-                        eval_expr(&item.expr, params, &binding, &graph).unwrap_or(Value::Null);
-                    let key = item
-                        .alias
-                        .clone()
-                        .unwrap_or_else(|| expr_to_string(&item.expr));
-                    fields.insert(key, val);
-                }
-                Row { fields }
-            })
-            .collect();
+        let mut rows = project_rows(&bindings, return_clause, params, &graph)?;
 
         // ORDER BY
         if let Some(ob) = order_by {
@@ -1072,6 +1056,7 @@ fn references_variable(expr: &Expr, variable: &str) -> bool {
         Expr::Identifier(name) => name == variable,
         Expr::PropertyAccess(target, _) => references_variable(target, variable),
         Expr::BinaryOp(left, _, right) => references_variable(left, variable) || references_variable(right, variable),
+        Expr::Aggregate { argument, .. } => argument.as_deref().is_some_and(|expr| references_variable(expr, variable)),
         Expr::Parameter(_) | Expr::Literal(_) => false,
     }
 }
@@ -1152,6 +1137,9 @@ fn eval_expr(
                 }
             }
         }
+        Expr::Aggregate { .. } => Err(ZegaError::Execution(
+            "aggregate expression evaluated outside RETURN aggregation".to_string(),
+        )),
     }
 }
 
@@ -1180,8 +1168,196 @@ fn expr_to_string(expr: &Expr) -> String {
     match expr {
         Expr::Identifier(s) => s.clone(),
         Expr::PropertyAccess(target, prop) => format!("{}.{}", expr_to_string(target), prop),
+        Expr::Aggregate {
+            function,
+            argument,
+            distinct,
+        } => {
+            let function = match function {
+                AggregateFunction::Count => "count",
+                AggregateFunction::Sum => "sum",
+                AggregateFunction::Avg => "avg",
+                AggregateFunction::Min => "min",
+                AggregateFunction::Max => "max",
+                AggregateFunction::Collect => "collect",
+            };
+            let argument = argument
+                .as_deref()
+                .map(expr_to_string)
+                .unwrap_or_else(|| "*".to_string());
+            let distinct = if *distinct { "DISTINCT " } else { "" };
+            format!("{function}({distinct}{argument})")
+        }
         _ => "expr".to_string(),
     }
+}
+
+fn project_rows(
+    bindings: &[HashMap<String, NodeId>],
+    return_clause: &ReturnClause,
+    params: &HashMap<String, Value>,
+    graph: &Graph,
+) -> Result<Vec<Row>> {
+    type AggregateGroup<'a> = (Vec<Value>, Vec<&'a HashMap<String, NodeId>>);
+
+    let has_aggregates = return_clause
+        .items
+        .iter()
+        .any(|item| matches!(item.expr, Expr::Aggregate { .. }));
+    if !has_aggregates {
+        return bindings
+            .iter()
+            .map(|binding| {
+                let group = [binding];
+                project_group(binding, &group, return_clause, params, graph)
+            })
+            .collect();
+    }
+
+    let non_aggregate_items: Vec<_> = return_clause
+        .items
+        .iter()
+        .filter(|item| !matches!(item.expr, Expr::Aggregate { .. }))
+        .collect();
+    let mut groups: Vec<AggregateGroup<'_>> = Vec::new();
+    for binding in bindings {
+        let key = non_aggregate_items
+            .iter()
+            .map(|item| eval_expr(&item.expr, params, binding, graph))
+            .collect::<Result<Vec<_>>>()?;
+        if let Some((_, group)) = groups.iter_mut().find(|(group_key, _)| *group_key == key) {
+            group.push(binding);
+        } else {
+            groups.push((key, vec![binding]));
+        }
+    }
+    if groups.is_empty() && non_aggregate_items.is_empty() {
+        groups.push((Vec::new(), Vec::new()));
+    }
+
+    groups
+        .into_iter()
+        .map(|(_, group)| {
+            let empty_binding = HashMap::new();
+            let representative = group.first().copied().unwrap_or(&empty_binding);
+            project_group(representative, &group, return_clause, params, graph)
+        })
+        .collect()
+}
+
+fn project_group(
+    representative: &HashMap<String, NodeId>,
+    group: &[&HashMap<String, NodeId>],
+    return_clause: &ReturnClause,
+    params: &HashMap<String, Value>,
+    graph: &Graph,
+) -> Result<Row> {
+    let mut fields = HashMap::new();
+    for item in &return_clause.items {
+        let value = match &item.expr {
+            Expr::Aggregate {
+                function,
+                argument,
+                distinct,
+            } => eval_aggregate(function, argument.as_deref(), *distinct, group, params, graph)?,
+            expr => eval_expr(expr, params, representative, graph)?,
+        };
+        let key = item
+            .alias
+            .clone()
+            .unwrap_or_else(|| expr_to_string(&item.expr));
+        fields.insert(key, value);
+    }
+    Ok(Row { fields })
+}
+
+fn eval_aggregate(
+    function: &AggregateFunction,
+    argument: Option<&Expr>,
+    distinct: bool,
+    group: &[&HashMap<String, NodeId>],
+    params: &HashMap<String, Value>,
+    graph: &Graph,
+) -> Result<Value> {
+    if matches!(function, AggregateFunction::Count) && argument.is_none() {
+        return Ok(Value::Int(group.len() as i64));
+    }
+
+    let argument = argument.ok_or_else(|| {
+        ZegaError::Execution("aggregate function requires an argument".to_string())
+    })?;
+    let mut values = Vec::new();
+    for binding in group {
+        let value = eval_expr(argument, params, binding, graph)?;
+        if value != Value::Null && (!distinct || !values.contains(&value)) {
+            values.push(value);
+        }
+    }
+
+    match function {
+        AggregateFunction::Count => Ok(Value::Int(values.len() as i64)),
+        AggregateFunction::Collect => Ok(Value::List(values)),
+        AggregateFunction::Sum => sum_values(&values),
+        AggregateFunction::Avg => average_values(&values),
+        AggregateFunction::Min => Ok(extreme_value(&values, std::cmp::Ordering::Less)),
+        AggregateFunction::Max => Ok(extreme_value(&values, std::cmp::Ordering::Greater)),
+    }
+}
+
+fn sum_values(values: &[Value]) -> Result<Value> {
+    let mut integer_sum = 0i64;
+    let mut float_sum = 0.0;
+    let mut has_float = false;
+    for value in values {
+        match value {
+            Value::Int(value) => {
+                integer_sum = integer_sum.checked_add(*value).ok_or_else(|| {
+                    ZegaError::Execution("integer overflow in sum()".to_string())
+                })?;
+            }
+            Value::Float(bits) => {
+                has_float = true;
+                float_sum += f64::from_bits(*bits);
+            }
+            _ => {
+                return Err(ZegaError::Execution(
+                    "sum() and avg() require numeric values".to_string(),
+                ));
+            }
+        }
+    }
+    if has_float {
+        Ok(Value::from_f64(integer_sum as f64 + float_sum))
+    } else {
+        Ok(Value::Int(integer_sum))
+    }
+}
+
+fn average_values(values: &[Value]) -> Result<Value> {
+    if values.is_empty() {
+        return Ok(Value::Null);
+    }
+    let sum = sum_values(values)?;
+    let total = match sum {
+        Value::Int(value) => value as f64,
+        Value::Float(bits) => f64::from_bits(bits),
+        _ => unreachable!(),
+    };
+    Ok(Value::from_f64(total / values.len() as f64))
+}
+
+fn extreme_value(values: &[Value], desired: std::cmp::Ordering) -> Value {
+    values
+        .iter()
+        .cloned()
+        .reduce(|current, value| {
+            if value.partial_cmp(&current) == Some(desired) {
+                value
+            } else {
+                current
+            }
+        })
+        .unwrap_or(Value::Null)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1359,6 +1535,141 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].fields.contains_key("o"));
+    }
+
+    fn seed_aggregation_graph(zega: &Zega) {
+        let mut graph = zega.graph.lock().unwrap();
+        let user_1 = graph.create_node(
+            vec!["User".to_string()],
+            HashMap::from([("id".to_string(), Value::String("u1".to_string()))]),
+        );
+        let user_2 = graph.create_node(
+            vec!["User".to_string()],
+            HashMap::from([("id".to_string(), Value::String("u2".to_string()))]),
+        );
+        let order_1 = graph.create_node(
+            vec!["Order".to_string()],
+            HashMap::from([
+                ("total".to_string(), Value::Int(10)),
+                ("category".to_string(), Value::String("book".to_string())),
+            ]),
+        );
+        let order_2 = graph.create_node(
+            vec!["Order".to_string()],
+            HashMap::from([
+                ("total".to_string(), Value::Int(20)),
+                ("category".to_string(), Value::String("book".to_string())),
+            ]),
+        );
+        let order_3 = graph.create_node(
+            vec!["Order".to_string()],
+            HashMap::from([
+                ("total".to_string(), Value::Int(30)),
+                ("category".to_string(), Value::String("game".to_string())),
+            ]),
+        );
+        graph.create_relationship("PLACED".to_string(), user_1, order_1, HashMap::new());
+        graph.create_relationship("PLACED".to_string(), user_1, order_2, HashMap::new());
+        graph.create_relationship("PLACED".to_string(), user_2, order_3, HashMap::new());
+    }
+
+    #[test]
+    fn test_aggregate_count_star() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query("MATCH (o:Order) RETURN count(*) AS count", HashMap::new())
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fields["count"], Value::Int(3));
+    }
+
+    #[test]
+    fn test_aggregate_sum() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query("MATCH (o:Order) RETURN sum(o.total) AS total", HashMap::new())
+            .unwrap();
+
+        assert_eq!(rows[0].fields["total"], Value::Int(60));
+    }
+
+    #[test]
+    fn test_aggregate_avg_min_max() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query(
+                "MATCH (o:Order) RETURN avg(o.total) AS avg, min(o.total) AS min, max(o.total) AS max",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(rows[0].fields["avg"].to_f64(), Some(20.0));
+        assert_eq!(rows[0].fields["min"], Value::Int(10));
+        assert_eq!(rows[0].fields["max"], Value::Int(30));
+    }
+
+    #[test]
+    fn test_aggregate_implicit_group_by() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query(
+                "MATCH (u:User)-[:PLACED]->(o:Order) RETURN u.id AS user, count(o) AS count",
+                HashMap::new(),
+            )
+            .unwrap();
+        let counts: HashMap<_, _> = rows
+            .into_iter()
+            .map(|row| (row.fields["user"].clone(), row.fields["count"].clone()))
+            .collect();
+
+        assert_eq!(counts[&Value::String("u1".to_string())], Value::Int(2));
+        assert_eq!(counts[&Value::String("u2".to_string())], Value::Int(1));
+    }
+
+    #[test]
+    fn test_aggregate_count_distinct() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query(
+                "MATCH (o:Order) RETURN count(DISTINCT o.category) AS count",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(rows[0].fields["count"], Value::Int(2));
+    }
+
+    #[test]
+    fn test_aggregate_collect() {
+        let zega = Zega::in_memory().build().unwrap();
+        seed_aggregation_graph(&zega);
+
+        let rows = zega
+            .query(
+                "MATCH (o:Order) RETURN collect(o.total) AS totals",
+                HashMap::new(),
+            )
+            .unwrap();
+        let Value::List(mut totals) = rows[0].fields["totals"].clone() else {
+            panic!("expected collected list");
+        };
+        totals.sort_by(|left, right| left.partial_cmp(right).unwrap());
+
+        assert_eq!(
+            totals,
+            vec![Value::Int(10), Value::Int(20), Value::Int(30)]
+        );
     }
 
     #[test]
