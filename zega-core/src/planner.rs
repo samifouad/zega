@@ -42,6 +42,30 @@ impl<'a> Planner<'a> {
                 order_by,
                 limit,
             } => self.plan_match(pattern, where_clause, return_clause, order_by, limit, ctx),
+            Statement::MatchCreate {
+                match_pattern,
+                where_clause,
+                create_pattern,
+            } => {
+                let planned = self.plan_match(
+                    match_pattern,
+                    where_clause,
+                    &ReturnClause { items: vec![] },
+                    &None,
+                    &None,
+                    ctx,
+                )?;
+                match planned {
+                    Plan::Execute(Statement::Match { where_clause, .. }) => {
+                        Ok(Plan::Execute(Statement::MatchCreate {
+                            match_pattern: match_pattern.clone(),
+                            where_clause,
+                            create_pattern: create_pattern.clone(),
+                        }))
+                    }
+                    _ => unreachable!("MATCH planning always returns an executable MATCH"),
+                }
+            }
             Statement::KvGet { key } => self.plan_kv_get(key, params, ctx),
             _ => Ok(Plan::Execute(stmt.clone())),
         }

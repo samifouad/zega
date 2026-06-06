@@ -79,6 +79,15 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        if self.current == Token::Create {
+            self.advance();
+            let create_pattern = self.parse_pattern()?;
+            return Ok(Statement::MatchCreate {
+                match_pattern: pattern,
+                where_clause,
+                create_pattern,
+            });
+        }
         let return_clause = if self.current == Token::Return {
             self.advance();
             self.parse_return_clause()?
@@ -192,19 +201,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pattern(&mut self) -> Result<Vec<PatternElement>, ParseError> {
-        let mut elements = Vec::new();
-        loop {
-            elements.push(self.parse_pattern_element()?);
-            if self.current == Token::Arrow || self.current == Token::Dash {
-                // relationship + next node
-                break; // handled inside element
-            } else {
-                break;
-            }
-        }
-        // Actually, pattern elements can chain: (a)-[:REL]->(b)
-        // For simplicity in MVP, let's support chained patterns
-        let mut result = vec![elements.into_iter().next().unwrap()];
+        let mut result = vec![self.parse_pattern_element()?];
         while self.current == Token::Dash || self.current == Token::Arrow {
             if self.current == Token::Dash {
                 self.advance(); // -
@@ -247,9 +244,8 @@ impl<'a> Parser<'a> {
         let mut labels = Vec::new();
         if self.current == Token::Colon {
             self.advance();
-            if let Token::Identifier(lbl) = &self.current {
-                labels.push(lbl.clone());
-                self.advance();
+            if let Some(label) = self.take_symbolic_name() {
+                labels.push(label);
             }
         }
         let properties = if self.current == Token::LBrace {
@@ -279,9 +275,8 @@ impl<'a> Parser<'a> {
         let mut kinds = Vec::new();
         if self.current == Token::Colon {
             self.advance();
-            if let Token::Identifier(k) = &self.current {
-                kinds.push(k.clone());
-                self.advance();
+            if let Some(kind) = self.take_symbolic_name() {
+                kinds.push(kind);
             }
         }
         let properties = if self.current == Token::LBrace {
@@ -295,6 +290,16 @@ impl<'a> Parser<'a> {
             kinds,
             properties,
         })
+    }
+
+    fn take_symbolic_name(&mut self) -> Option<String> {
+        let name = match &self.current {
+            Token::Identifier(name) => name.clone(),
+            Token::Order => "Order".to_string(),
+            _ => return None,
+        };
+        self.advance();
+        Some(name)
     }
 
     fn parse_properties(&mut self) -> Result<HashMap<String, Expr>, ParseError> {
@@ -617,6 +622,49 @@ mod tests {
                 assert_eq!(pattern[0].labels, vec!["Label"]);
             }
             _ => panic!("expected CREATE"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_relationship() {
+        let mut p =
+            Parser::new("CREATE (u:User {id: $uid})-[:PLACED]->(o:Order {id: $oid})").unwrap();
+        let stmts = p.parse().unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::Create { pattern } => {
+                assert_eq!(pattern.len(), 2);
+                assert_eq!(
+                    pattern[1].relationship.as_ref().unwrap().kinds,
+                    vec!["PLACED"]
+                );
+            }
+            _ => panic!("expected CREATE"),
+        }
+    }
+
+    #[test]
+    fn test_parse_match_create() {
+        let mut p = Parser::new(
+            "MATCH (u:User {id: $uid}) CREATE (u)-[:PLACED]->(o:Order {id: $oid})",
+        )
+        .unwrap();
+        let stmts = p.parse().unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::MatchCreate {
+                match_pattern,
+                create_pattern,
+                ..
+            } => {
+                assert_eq!(match_pattern.len(), 1);
+                assert_eq!(create_pattern.len(), 2);
+                assert_eq!(
+                    create_pattern[1].relationship.as_ref().unwrap().kinds,
+                    vec!["PLACED"]
+                );
+            }
+            _ => panic!("expected MATCH...CREATE"),
         }
     }
 
