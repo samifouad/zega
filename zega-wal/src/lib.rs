@@ -1,11 +1,19 @@
+#[cfg(not(target_arch = "wasm32"))]
 use bincode::{deserialize_from, serialize_into};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::{BufReader, Read, Write};
+use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 use thiserror::Error;
-use zega_graph::{Graph, Node, NodeId, RelId, Relationship};
+use zega_graph::{Graph, NodeId, RelId};
+#[cfg(not(target_arch = "wasm32"))]
+use zega_graph::{Node, Relationship};
 use zega_kv::KvStore;
 use zega_parser::Value;
 
@@ -52,87 +60,140 @@ pub enum Operation {
 }
 
 pub struct Wal {
+    #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
+    #[cfg(not(target_arch = "wasm32"))]
     file: Option<File>,
+    #[cfg(not(target_arch = "wasm32"))]
     flush_every: bool,
 }
 
 impl Wal {
     pub fn new(path: &Path, flush_every: bool) -> Result<Self, WalError> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        Ok(Wal {
-            path: path.to_path_buf(),
-            file: Some(file),
-            flush_every,
-        })
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (path, flush_every);
+            Ok(Wal {})
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let file = OpenOptions::new().create(true).append(true).open(path)?;
+            Ok(Wal {
+                path: path.to_path_buf(),
+                file: Some(file),
+                flush_every,
+            })
+        }
     }
 
     pub fn append(&mut self, op: &Operation) -> Result<(), WalError> {
-        if let Some(ref mut file) = self.file {
-            let bytes = bincode::serialize(op)?;
-            let len = bytes.len() as u64;
-            file.write_all(&len.to_le_bytes())?;
-            file.write_all(&bytes)?;
-            if self.flush_every {
-                file.flush()?;
-                file.sync_all()?;
-            }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = op;
+            return Ok(());
         }
-        Ok(())
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(ref mut file) = self.file {
+                let bytes = bincode::serialize(op)?;
+                let len = bytes.len() as u64;
+                file.write_all(&len.to_le_bytes())?;
+                file.write_all(&bytes)?;
+                if self.flush_every {
+                    file.flush()?;
+                    file.sync_all()?;
+                }
+            }
+            Ok(())
+        }
     }
 
     pub fn flush(&mut self) -> Result<(), WalError> {
-        if let Some(ref mut file) = self.file {
-            file.flush()?;
-            file.sync_all()?;
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Ok(());
         }
-        Ok(())
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(ref mut file) = self.file {
+                file.flush()?;
+                file.sync_all()?;
+            }
+            Ok(())
+        }
     }
 
     pub fn iter(&self) -> Result<Vec<Operation>, WalError> {
-        let file = File::open(&self.path)?;
-        let mut reader = BufReader::new(file);
-        let mut ops = Vec::new();
-        loop {
-            let mut len_bytes = [0u8; 8];
-            if reader.read_exact(&mut len_bytes).is_err() {
-                break;
-            }
-            let len = u64::from_le_bytes(len_bytes) as usize;
-            let mut buf = vec![0u8; len];
-            reader.read_exact(&mut buf)?;
-            let op: Operation = bincode::deserialize(&buf)?;
-            ops.push(op);
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Ok(Vec::new());
         }
-        Ok(ops)
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let file = File::open(&self.path)?;
+            let mut reader = BufReader::new(file);
+            let mut ops = Vec::new();
+            loop {
+                let mut len_bytes = [0u8; 8];
+                if reader.read_exact(&mut len_bytes).is_err() {
+                    break;
+                }
+                let len = u64::from_le_bytes(len_bytes) as usize;
+                let mut buf = vec![0u8; len];
+                reader.read_exact(&mut buf)?;
+                let op: Operation = bincode::deserialize(&buf)?;
+                ops.push(op);
+            }
+            Ok(ops)
+        }
     }
 }
 
 pub fn snapshot(graph: &Graph, kv: &KvStore, path: &Path) -> Result<(), WalError> {
-    let snapshot = Snapshot {
-        nodes: graph.all_nodes().clone(),
-        relationships: graph.all_relationships().clone(),
-        kv_data: kv.snapshot(),
-    };
-    let file = File::create(path)?;
-    serialize_into(file, &snapshot)?;
-    Ok(())
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (graph, kv, path);
+        return Ok(());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let snapshot = Snapshot {
+            nodes: graph.all_nodes().clone(),
+            relationships: graph.all_relationships().clone(),
+            kv_data: kv.snapshot(),
+        };
+        let file = File::create(path)?;
+        serialize_into(file, &snapshot)?;
+        Ok(())
+    }
 }
 
 pub fn restore(graph: &mut Graph, kv: &KvStore, path: &Path) -> Result<bool, WalError> {
-    if !path.exists() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (graph, kv, path);
         return Ok(false);
     }
-    let file = File::open(path)?;
-    let snapshot: Snapshot = deserialize_from(file)?;
-    graph.set_state(snapshot.nodes, snapshot.relationships);
-    kv.restore(snapshot.kv_data);
-    Ok(true)
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let file = File::open(path)?;
+        let snapshot: Snapshot = deserialize_from(file)?;
+        graph.set_state(snapshot.nodes, snapshot.relationships);
+        kv.restore(snapshot.kv_data);
+        Ok(true)
+    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
     nodes: HashMap<NodeId, Node>,
@@ -157,12 +218,14 @@ mod tests {
             id: 1,
             labels: vec!["Person".to_string()],
             props,
-        }).unwrap();
+        })
+        .unwrap();
         wal.append(&Operation::KvSet {
             key: "foo".to_string(),
             value: Value::String("bar".to_string()),
             ttl: None,
-        }).unwrap();
+        })
+        .unwrap();
         drop(wal);
 
         let wal2 = Wal::new(&wal_path, false).unwrap();

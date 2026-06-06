@@ -2,8 +2,11 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::time::interval;
 use zega_parser::Value;
 
@@ -41,31 +44,39 @@ impl KvStore {
     }
 
     pub fn start_eviction_task(&self) {
-        let data = self.data.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-            rt.block_on(async move {
-                let mut ticker = interval(Duration::from_secs(1));
-                loop {
-                    ticker.tick().await;
-                    let now = Self::now_secs();
-                    let to_remove: Vec<String> = data
-                        .iter()
-                        .filter(|entry| {
-                            if let Some(exp) = entry.value().expires_at {
-                                exp <= now
-                            } else {
-                                false
-                            }
-                        })
-                        .map(|entry| entry.key().clone())
-                        .collect();
-                    for key in to_remove {
-                        data.remove(&key);
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Expired values are removed lazily on access in wasm builds.
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let data = self.data.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                rt.block_on(async move {
+                    let mut ticker = interval(Duration::from_secs(1));
+                    loop {
+                        ticker.tick().await;
+                        let now = Self::now_secs();
+                        let to_remove: Vec<String> = data
+                            .iter()
+                            .filter(|entry| {
+                                if let Some(exp) = entry.value().expires_at {
+                                    exp <= now
+                                } else {
+                                    false
+                                }
+                            })
+                            .map(|entry| entry.key().clone())
+                            .collect();
+                        for key in to_remove {
+                            data.remove(&key);
+                        }
                     }
-                }
+                });
             });
-        });
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
@@ -104,7 +115,13 @@ impl KvStore {
             }
         } else {
             let val = Value::Int(1);
-            self.data.insert(key.to_string(), KvEntry { value: val.clone(), expires_at: None });
+            self.data.insert(
+                key.to_string(),
+                KvEntry {
+                    value: val.clone(),
+                    expires_at: None,
+                },
+            );
             Some(val)
         }
     }
@@ -170,7 +187,10 @@ impl KvStore {
 
     /// Return a clone of all entries for snapshotting.
     pub fn snapshot(&self) -> HashMap<String, KvEntry> {
-        self.data.iter().map(|e| (e.key().clone(), e.value().clone())).collect()
+        self.data
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect()
     }
 
     /// Restore entries from a snapshot.
@@ -208,7 +228,10 @@ mod tests {
         let kv = KvStore::new();
         kv.lpush("mylist", Value::Int(1));
         kv.lpush("mylist", Value::Int(2));
-        assert_eq!(kv.lrange("mylist", 0, 10), Some(vec![Value::Int(2), Value::Int(1)]));
+        assert_eq!(
+            kv.lrange("mylist", 0, 10),
+            Some(vec![Value::Int(2), Value::Int(1)])
+        );
         kv.ltrim("mylist", 0, 1);
         assert_eq!(kv.lrange("mylist", 0, 10), Some(vec![Value::Int(2)]));
     }
