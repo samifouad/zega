@@ -84,8 +84,8 @@ impl Graph {
                         set.remove(&id);
                     });
             }
-            node.props.extend(props.clone());
-            for (k, v) in &props {
+            node.props.extend(props);
+            for (k, v) in &node.props {
                 self.property_index
                     .entry((k.clone(), v.clone()))
                     .or_default()
