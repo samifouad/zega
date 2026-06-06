@@ -47,6 +47,22 @@ pub struct Row {
     pub fields: HashMap<String, Value>,
 }
 
+#[derive(Clone, Debug)]
+enum BoundValue {
+    Node(NodeId),
+    Relationship(RelId),
+    Relationships(Vec<RelId>),
+}
+
+type Bindings = HashMap<String, BoundValue>;
+
+fn bound_node(bindings: &Bindings, variable: &str) -> Option<NodeId> {
+    match bindings.get(variable) {
+        Some(BoundValue::Node(id)) => Some(*id),
+        _ => None,
+    }
+}
+
 pub struct Zega {
     graph: Mutex<Graph>,
     kv: KvStore,
@@ -476,7 +492,7 @@ impl Zega {
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let mut created = false;
-        let mut var_map: HashMap<String, NodeId> = HashMap::new();
+        let mut var_map = Bindings::new();
 
         for element in pattern {
             let mut props = HashMap::new();
@@ -498,12 +514,12 @@ impl Zega {
 
             if let Some(id) = existing {
                 if !element.variable.is_empty() {
-                    var_map.insert(element.variable.clone(), id);
+                    var_map.insert(element.variable.clone(), BoundValue::Node(id));
                 }
             } else {
                 let id = graph.create_node(element.labels.clone(), props.clone());
                 if !element.variable.is_empty() {
-                    var_map.insert(element.variable.clone(), id);
+                    var_map.insert(element.variable.clone(), BoundValue::Node(id));
                 }
                 created = true;
                 wal.append(&Operation::InsertNode {
@@ -519,7 +535,7 @@ impl Zega {
                 let val = eval_expr(&clause.value, params, &var_map, &graph)?;
                 if let Expr::PropertyAccess(ref target, ref prop) = clause.target {
                     if let Expr::Identifier(ref var) = **target {
-                        if let Some(&node_id) = var_map.get(var) {
+                        if let Some(node_id) = bound_node(&var_map, var) {
                             let mut p = HashMap::new();
                             p.insert(prop.clone(), val.clone());
                             graph.update_node(node_id, p.clone());
@@ -734,7 +750,7 @@ fn resolve_match_bindings(
     where_clause: Option<&Expr>,
     params: &HashMap<String, Value>,
     traversal_budget: &mut TraversalWorkBudget,
-) -> Result<Vec<HashMap<String, NodeId>>> {
+) -> Result<Vec<Bindings>> {
     let mut bindings = vec![(HashMap::new(), HashSet::new())];
 
     for (index, element) in pattern.iter().enumerate() {
@@ -743,7 +759,7 @@ fn resolve_match_bindings(
             let candidates = if let Some(rel) = &element.relationship {
                 let Some(previous) = index.checked_sub(1).and_then(|i| {
                     let previous_var = &pattern[i].variable;
-                    binding.get(previous_var).copied()
+                    bound_node(binding, previous_var)
                 }) else {
                     continue;
                 };
@@ -757,23 +773,30 @@ fn resolve_match_bindings(
                     used_relationships,
                     traversal_budget,
                 )?
-            } else if let Some(&id) = binding.get(&element.variable) {
-                vec![(id, used_relationships.clone())]
+            } else if let Some(id) = bound_node(binding, &element.variable) {
+                vec![TraversalMatch {
+                    node_id: id,
+                    path_relationships: Vec::new(),
+                    used_relationships: used_relationships.clone(),
+                }]
             } else {
                 match_candidates(graph, element, where_clause, params, binding)?
                     .into_iter()
-                    .map(|id| (id, used_relationships.clone()))
+                    .map(|id| TraversalMatch {
+                        node_id: id,
+                        path_relationships: Vec::new(),
+                        used_relationships: used_relationships.clone(),
+                    })
                     .collect()
             };
 
-            for (candidate_id, path_relationships) in candidates {
-                if binding
-                    .get(&element.variable)
-                    .is_some_and(|bound| *bound != candidate_id)
+            for candidate in candidates {
+                if bound_node(binding, &element.variable)
+                    .is_some_and(|bound| bound != candidate.node_id)
                 {
                     continue;
                 }
-                let Some(node) = graph.get_node(candidate_id) else {
+                let Some(node) = graph.get_node(candidate.node_id) else {
                     continue;
                 };
                 if !element
@@ -797,9 +820,22 @@ fn resolve_match_bindings(
 
                 let mut new_binding = binding.clone();
                 if !element.variable.is_empty() {
-                    new_binding.insert(element.variable.clone(), candidate_id);
+                    new_binding.insert(element.variable.clone(), BoundValue::Node(candidate.node_id));
                 }
-                new_bindings.push((new_binding, path_relationships));
+                if let Some(rel) = &element.relationship {
+                    if !rel.variable.is_empty() {
+                        let value = if rel.length.is_some() {
+                            BoundValue::Relationships(candidate.path_relationships.clone())
+                        } else {
+                            let Some(rel_id) = candidate.path_relationships.first() else {
+                                continue;
+                            };
+                            BoundValue::Relationship(*rel_id)
+                        };
+                        new_binding.insert(rel.variable.clone(), value);
+                    }
+                }
+                new_bindings.push((new_binding, candidate.used_relationships));
             }
         }
         bindings = new_bindings;
@@ -820,6 +856,12 @@ fn resolve_match_bindings(
 struct TraversalWorkBudget {
     limit: usize,
     traversed: usize,
+}
+
+struct TraversalMatch {
+    node_id: NodeId,
+    path_relationships: Vec<RelId>,
+    used_relationships: HashSet<RelId>,
 }
 
 impl TraversalWorkBudget {
@@ -847,21 +889,30 @@ fn traverse_relationship(
     pattern: &RelationshipPattern,
     direction: &Option<Direction>,
     params: &HashMap<String, Value>,
-    binding: &HashMap<String, NodeId>,
+    binding: &Bindings,
     used_relationships: &HashSet<RelId>,
     budget: &mut TraversalWorkBudget,
-) -> Result<Vec<(NodeId, HashSet<RelId>)>> {
+) -> Result<Vec<TraversalMatch>> {
     let (min, max) = pattern
         .length
         .as_ref()
         .map(|length| (length.min, length.max))
         .unwrap_or((1, Some(1)));
     let mut endpoints = Vec::new();
-    let mut stack = vec![(start, used_relationships.clone(), 0_usize)];
+    let mut stack = vec![(
+        start,
+        Vec::<RelId>::new(),
+        used_relationships.clone(),
+        0_usize,
+    )];
 
-    while let Some((node_id, used_relationships, depth)) = stack.pop() {
+    while let Some((node_id, path_relationships, used_relationships, depth)) = stack.pop() {
         if depth >= min {
-            endpoints.push((node_id, used_relationships.clone()));
+            endpoints.push(TraversalMatch {
+                node_id,
+                path_relationships: path_relationships.clone(),
+                used_relationships: used_relationships.clone(),
+            });
         }
         if max.is_some_and(|max| depth >= max) {
             continue;
@@ -912,7 +963,9 @@ fn traverse_relationship(
             };
             let mut next_used = used_relationships.clone();
             next_used.insert(rel_id);
-            stack.push((next, next_used, depth + 1));
+            let mut next_path = path_relationships.clone();
+            next_path.push(rel_id);
+            stack.push((next, next_path, next_used, depth + 1));
         }
     }
 
@@ -924,12 +977,12 @@ fn create_pattern(
     wal: &mut Wal,
     pattern: &[PatternElement],
     params: &HashMap<String, Value>,
-    mut bindings: HashMap<String, NodeId>,
+    mut bindings: Bindings,
 ) -> Result<()> {
     let mut previous_id = None;
 
     for element in pattern {
-        let id = if let Some(&bound_id) = bindings.get(&element.variable) {
+        let id = if let Some(bound_id) = bound_node(&bindings, &element.variable) {
             bound_id
         } else {
             let props = element
@@ -949,7 +1002,7 @@ fn create_pattern(
                 props,
             })?;
             if !element.variable.is_empty() {
-                bindings.insert(element.variable.clone(), id);
+                bindings.insert(element.variable.clone(), BoundValue::Node(id));
             }
             id
         };
@@ -991,7 +1044,7 @@ fn match_candidates(
     element: &PatternElement,
     where_clause: Option<&Expr>,
     params: &HashMap<String, Value>,
-    binding: &HashMap<String, NodeId>,
+    binding: &Bindings,
 ) -> Result<Vec<NodeId>> {
     let mut properties = element.properties.iter()
         .map(|(key, expr)| Ok((key.clone(), eval_expr(expr, params, binding, graph)?)))
@@ -1023,7 +1076,7 @@ fn collect_indexed_equalities(
     expr: &Expr,
     variable: &str,
     params: &HashMap<String, Value>,
-    binding: &HashMap<String, NodeId>,
+    binding: &Bindings,
     graph: &Graph,
     equalities: &mut Vec<(String, Value)>,
 ) -> Result<()> {
@@ -1068,7 +1121,7 @@ fn references_variable(expr: &Expr, variable: &str) -> bool {
     }
 }
 
-fn can_eval_from_binding(expr: &Expr, binding: &HashMap<String, NodeId>) -> bool {
+fn can_eval_from_binding(expr: &Expr, binding: &Bindings) -> bool {
     match expr {
         Expr::Identifier(name) => binding.contains_key(name),
         Expr::PropertyAccess(target, _) => can_eval_from_binding(target, binding),
@@ -1083,18 +1136,18 @@ fn can_eval_from_binding(expr: &Expr, binding: &HashMap<String, NodeId>) -> bool
 fn eval_expr(
     expr: &Expr,
     params: &HashMap<String, Value>,
-    bindings: &HashMap<String, NodeId>,
+    bindings: &Bindings,
     graph: &Graph,
 ) -> Result<Value> {
     match expr {
         Expr::Parameter(name) => Ok(params.get(name).cloned().unwrap_or(Value::Null)),
         Expr::Literal(val) => Ok(val.clone()),
-        Expr::Identifier(name) => {
-            if let Some(&node_id) = bindings.get(name) {
-                if let Some(node) = graph.get_node(node_id) {
+        Expr::Identifier(name) => match bindings.get(name) {
+            Some(BoundValue::Node(node_id)) => {
+                if let Some(node) = graph.get_node(*node_id) {
                     // Return node as a map for identifier-level access
                     let mut m = HashMap::new();
-                    m.insert("id".to_string(), Value::Int(node_id as i64));
+                    m.insert("id".to_string(), Value::Int(*node_id as i64));
                     m.insert(
                         "labels".to_string(),
                         Value::List(
@@ -1111,10 +1164,20 @@ fn eval_expr(
                 } else {
                     Ok(Value::Null)
                 }
-            } else {
-                Ok(Value::Null)
             }
-        }
+            Some(BoundValue::Relationship(rel_id)) => Ok(graph
+                .get_relationship(*rel_id)
+                .map(relationship_value)
+                .unwrap_or(Value::Null)),
+            Some(BoundValue::Relationships(rel_ids)) => Ok(Value::List(
+                rel_ids
+                    .iter()
+                    .filter_map(|rel_id| graph.get_relationship(*rel_id))
+                    .map(relationship_value)
+                    .collect(),
+            )),
+            None => Ok(Value::Null),
+        },
         Expr::PropertyAccess(target, prop) => {
             let target_val = eval_expr(target, params, bindings, graph)?;
             match target_val {
@@ -1160,6 +1223,16 @@ fn eval_expr(
             "aggregate expression evaluated outside RETURN aggregation".to_string(),
         )),
     }
+}
+
+fn relationship_value(rel: &zega_graph::Relationship) -> Value {
+    let mut value = rel.props.clone();
+    value.insert("id".to_string(), Value::Int(rel.id as i64));
+    value.insert("type".to_string(), Value::String(rel.kind.clone()));
+    value.insert("from".to_string(), Value::Int(rel.from as i64));
+    value.insert("to".to_string(), Value::Int(rel.to as i64));
+    value.insert("props".to_string(), Value::Map(rel.props.clone()));
+    Value::Map(value)
 }
 
 fn eval_expr_from_row(expr: &Expr, params: &HashMap<String, Value>, row: &Row) -> Result<Value> {
@@ -1212,12 +1285,12 @@ fn expr_to_string(expr: &Expr) -> String {
 }
 
 fn project_rows(
-    bindings: &[HashMap<String, NodeId>],
+    bindings: &[Bindings],
     return_clause: &ReturnClause,
     params: &HashMap<String, Value>,
     graph: &Graph,
 ) -> Result<Vec<Row>> {
-    type AggregateGroup<'a> = (Vec<Value>, Vec<&'a HashMap<String, NodeId>>);
+    type AggregateGroup<'a> = (Vec<Value>, Vec<&'a Bindings>);
 
     let has_aggregates = return_clause
         .items
@@ -1265,8 +1338,8 @@ fn project_rows(
 }
 
 fn project_group(
-    representative: &HashMap<String, NodeId>,
-    group: &[&HashMap<String, NodeId>],
+    representative: &Bindings,
+    group: &[&Bindings],
     return_clause: &ReturnClause,
     params: &HashMap<String, Value>,
     graph: &Graph,
@@ -1294,7 +1367,7 @@ fn eval_aggregate(
     function: &AggregateFunction,
     argument: Option<&Expr>,
     distinct: bool,
-    group: &[&HashMap<String, NodeId>],
+    group: &[&Bindings],
     params: &HashMap<String, Value>,
     graph: &Graph,
 ) -> Result<Value> {
@@ -1590,6 +1663,102 @@ mod tests {
             rows[0].fields.get("id"),
             Some(&Value::String("o1".to_string()))
         );
+    }
+
+    #[test]
+    fn test_return_relationship_variable_returns_relationship() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let rel_id = {
+            let mut graph = zega.graph.lock().unwrap();
+            let a = graph.create_node(
+                Vec::new(),
+                HashMap::from([("id".to_string(), Value::String("a".to_string()))]),
+            );
+            let b = graph.create_node(Vec::new(), HashMap::new());
+            graph.create_relationship(
+                "R".to_string(),
+                a,
+                b,
+                HashMap::from([("weight".to_string(), Value::Int(7))]),
+            )
+        };
+
+        let rows = zega
+            .query("MATCH (a {id: 'a'})-[r:R]->(b) RETURN r", HashMap::new())
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        let Value::Map(rel) = rows[0].fields.get("r").unwrap() else {
+            panic!("relationship variable should return a map");
+        };
+        assert_eq!(rel.get("id"), Some(&Value::Int(rel_id as i64)));
+        assert_eq!(rel.get("type"), Some(&Value::String("R".to_string())));
+        assert_eq!(rel.get("weight"), Some(&Value::Int(7)));
+        assert_eq!(
+            rel.get("props"),
+            Some(&Value::Map(HashMap::from([(
+                "weight".to_string(),
+                Value::Int(7),
+            )])))
+        );
+    }
+
+    #[test]
+    fn test_return_relationship_property() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            let a = graph.create_node(
+                Vec::new(),
+                HashMap::from([("id".to_string(), Value::String("a".to_string()))]),
+            );
+            let b = graph.create_node(Vec::new(), HashMap::new());
+            graph.create_relationship(
+                "R".to_string(),
+                a,
+                b,
+                HashMap::from([("weight".to_string(), Value::Int(7))]),
+            );
+        }
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[r:R]->(b) RETURN r.weight AS weight",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fields.get("weight"), Some(&Value::Int(7)));
+    }
+
+    #[test]
+    fn test_return_variable_length_relationship_variable_returns_path_list() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        seed_relationships(&zega, &[("a", "b"), ("b", "c"), ("c", "d")]);
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[r:R*1..3]->(b) RETURN r",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        let mut path_lengths = rows
+            .iter()
+            .map(|row| match row.fields.get("r").unwrap() {
+                Value::List(rels) => {
+                    assert!(rels.iter().all(|rel| matches!(rel, Value::Map(_))));
+                    rels.len()
+                }
+                value => panic!("path relationship variable should return a list, got {value:?}"),
+            })
+            .collect::<Vec<_>>();
+        path_lengths.sort_unstable();
+        assert_eq!(path_lengths, vec![1, 2, 3]);
     }
 
     #[test]
