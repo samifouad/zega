@@ -776,6 +776,13 @@ fn resolve_match_bindings(
                 let Some(node) = graph.get_node(candidate_id) else {
                     continue;
                 };
+                if !element
+                    .labels
+                    .iter()
+                    .all(|label| node.labels.contains(label))
+                {
+                    continue;
+                }
                 let mut matched = true;
                 for (key, expr) in &element.properties {
                     let value = eval_expr(expr, params, binding, graph)?;
@@ -1547,6 +1554,78 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].fields.contains_key("o"));
+    }
+
+    #[test]
+    fn test_traversal_filters_endpoints_by_label() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            let user = graph.create_node(
+                vec!["User".to_string()],
+                HashMap::from([("id".to_string(), Value::String("u1".to_string()))]),
+            );
+            let order = graph.create_node(
+                vec!["Order".to_string()],
+                HashMap::from([("id".to_string(), Value::String("o1".to_string()))]),
+            );
+            let other = graph.create_node(
+                vec!["Other".to_string()],
+                HashMap::from([("id".to_string(), Value::String("x1".to_string()))]),
+            );
+            graph.create_relationship("R".to_string(), user, order, HashMap::new());
+            graph.create_relationship("R".to_string(), user, other, HashMap::new());
+        }
+
+        let rows = zega
+            .query(
+                "MATCH (u {id: 'u1'})-[:R]->(o:Order) RETURN o.id AS id",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].fields.get("id"),
+            Some(&Value::String("o1".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_update_node_keeps_unchanged_properties_findable() {
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            let user = graph.create_node(
+                vec!["User".to_string()],
+                HashMap::from([
+                    ("id".to_string(), Value::String("u1".to_string())),
+                    ("status".to_string(), Value::String("pending".to_string())),
+                ]),
+            );
+            graph.update_node(
+                user,
+                HashMap::from([(
+                    "status".to_string(),
+                    Value::String("active".to_string()),
+                )]),
+            );
+        }
+
+        let rows = zega
+            .query(
+                "MATCH (u {id: 'u1'}) RETURN u.status AS status",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].fields.get("status"),
+            Some(&Value::String("active".to_string()))
+        );
     }
 
     fn seed_aggregation_graph(zega: &Zega) {
