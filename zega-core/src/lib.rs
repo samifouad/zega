@@ -265,17 +265,6 @@ impl Zega {
         #[cfg(not(target_arch = "wasm32"))]
         let rt = None;
 
-        // Start KV eviction
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(ref _rt) = rt {
-            kv.start_eviction_task();
-        } else {
-            // Even without rt, we can still start eviction on a new thread with tokio runtime
-            let rt2 = tokio::runtime::Runtime::new()?;
-            kv.start_eviction_task();
-            std::mem::forget(rt2);
-        }
-
         Ok(Zega {
             graph: Mutex::new(graph),
             kv,
@@ -2818,6 +2807,22 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_secs(2));
         let rows2 = zega.query("GET KEY $key", params).unwrap();
         assert_eq!(rows2[0].fields.get("value"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn test_open_many_instances_without_runtime_leak() {
+        let mut instances = Vec::with_capacity(1_000);
+
+        for i in 0..1_000 {
+            let zega = Zega::in_memory().build().unwrap();
+            let key = format!("key-{i}");
+            let value = Value::Int(i);
+            zega.kv_set(key.clone(), value.clone(), None).unwrap();
+            assert_eq!(zega.kv_get(&key), Some(value));
+            instances.push(zega);
+        }
+
+        assert_eq!(instances.len(), 1_000);
     }
 
     #[test]

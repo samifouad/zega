@@ -2,12 +2,8 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
-#[cfg(not(target_arch = "wasm32"))]
-use tokio::time::interval;
 use zega_parser::Value;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,55 +39,25 @@ impl KvStore {
             .as_secs()
     }
 
-    pub fn start_eviction_task(&self) {
-        #[cfg(target_arch = "wasm32")]
-        {
-            // Expired values are removed lazily on access in wasm builds.
-        }
+    fn is_expired(entry: &KvEntry, now: u64) -> bool {
+        matches!(entry.expires_at, Some(expires_at) if expires_at <= now)
+    }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let data = self.data.clone();
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-                rt.block_on(async move {
-                    let mut ticker = interval(Duration::from_secs(1));
-                    loop {
-                        ticker.tick().await;
-                        let now = Self::now_secs();
-                        let to_remove: Vec<String> = data
-                            .iter()
-                            .filter(|entry| {
-                                if let Some(exp) = entry.value().expires_at {
-                                    exp <= now
-                                } else {
-                                    false
-                                }
-                            })
-                            .map(|entry| entry.key().clone())
-                            .collect();
-                        for key in to_remove {
-                            data.remove(&key);
-                        }
-                    }
-                });
-            });
-        }
+    fn remove_if_expired(&self, key: &str) -> bool {
+        let now = Self::now_secs();
+        self.data
+            .remove_if(key, |_, entry| Self::is_expired(entry, now))
+            .is_some()
+    }
+
+    fn purge_expired(&self) {
+        let now = Self::now_secs();
+        self.data.retain(|_, entry| !Self::is_expired(entry, now));
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
-        if let Some(entry) = self.data.get(key) {
-            if let Some(exp) = entry.expires_at {
-                if Self::now_secs() > exp {
-                    drop(entry);
-                    self.data.remove(key);
-                    return None;
-                }
-            }
-            Some(entry.value.clone())
-        } else {
-            None
-        }
+        self.remove_if_expired(key);
+        self.data.get(key).map(|entry| entry.value.clone())
     }
 
     pub fn set(&self, key: String, value: Value, ttl_secs: Option<u64>) {
@@ -100,10 +66,12 @@ impl KvStore {
     }
 
     pub fn del(&self, key: &str) -> bool {
+        self.remove_if_expired(key);
         self.data.remove(key).is_some()
     }
 
     pub fn incr(&self, key: &str) -> Option<Value> {
+        self.remove_if_expired(key);
         if let Some(mut entry) = self.data.get_mut(key) {
             match &entry.value {
                 Value::Int(n) => {
@@ -127,6 +95,7 @@ impl KvStore {
     }
 
     pub fn lpush(&self, key: &str, value: Value) {
+        self.remove_if_expired(key);
         let mut entry = self.data.entry(key.to_string()).or_insert_with(|| KvEntry {
             value: Value::List(vec![]),
             expires_at: None,
@@ -140,6 +109,7 @@ impl KvStore {
     }
 
     pub fn lrange(&self, key: &str, start: usize, stop: usize) -> Option<Vec<Value>> {
+        self.remove_if_expired(key);
         self.data.get(key).and_then(|entry| match &entry.value {
             Value::List(items) => {
                 let len = items.len();
@@ -152,6 +122,7 @@ impl KvStore {
     }
 
     pub fn ltrim(&self, key: &str, start: usize, stop: usize) -> bool {
+        self.remove_if_expired(key);
         if let Some(mut entry) = self.data.get_mut(key) {
             match &mut entry.value {
                 Value::List(items) => {
@@ -187,6 +158,7 @@ impl KvStore {
 
     /// Return a clone of all entries for snapshotting.
     pub fn snapshot(&self) -> HashMap<String, KvEntry> {
+        self.purge_expired();
         self.data
             .iter()
             .map(|e| (e.key().clone(), e.value().clone()))
@@ -234,5 +206,19 @@ mod tests {
         );
         kv.ltrim("mylist", 0, 1);
         assert_eq!(kv.lrange("mylist", 0, 10), Some(vec![Value::Int(2)]));
+    }
+
+    #[test]
+    fn test_expired_key_is_removed_lazily() {
+        let kv = KvStore::new();
+        kv.set(
+            "session".to_string(),
+            Value::String("abc".to_string()),
+            Some(0),
+        );
+
+        assert_eq!(kv.get("session"), None);
+        assert!(!kv.del("session"));
+        assert!(kv.snapshot().is_empty());
     }
 }
