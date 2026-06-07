@@ -1,3 +1,4 @@
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -56,8 +57,13 @@ impl KvStore {
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
-        self.remove_if_expired(key);
-        self.data.get(key).map(|entry| entry.value.clone())
+        let value = self.data.get(key).and_then(|entry| {
+            (!Self::is_expired(&entry, Self::now_secs())).then(|| entry.value.clone())
+        });
+        if value.is_none() {
+            self.remove_if_expired(key);
+        }
+        value
     }
 
     pub fn set(&self, key: String, value: Value, ttl_secs: Option<u64>) {
@@ -66,65 +72,97 @@ impl KvStore {
     }
 
     pub fn del(&self, key: &str) -> bool {
-        self.remove_if_expired(key);
-        self.data.remove(key).is_some()
+        match self.data.entry(key.to_string()) {
+            Entry::Occupied(entry) if Self::is_expired(entry.get(), Self::now_secs()) => {
+                entry.remove();
+                false
+            }
+            Entry::Occupied(entry) => {
+                entry.remove();
+                true
+            }
+            Entry::Vacant(_) => false,
+        }
     }
 
     pub fn incr(&self, key: &str) -> Option<Value> {
-        self.remove_if_expired(key);
-        if let Some(mut entry) = self.data.get_mut(key) {
-            match &entry.value {
-                Value::Int(n) => {
-                    let new_val = Value::Int(n + 1);
-                    entry.value = new_val.clone();
-                    Some(new_val)
-                }
-                _ => None,
-            }
-        } else {
-            let val = Value::Int(1);
-            self.data.insert(
-                key.to_string(),
-                KvEntry {
+        match self.data.entry(key.to_string()) {
+            Entry::Occupied(mut entry) if Self::is_expired(entry.get(), Self::now_secs()) => {
+                let val = Value::Int(1);
+                entry.insert(KvEntry {
                     value: val.clone(),
                     expires_at: None,
-                },
-            );
-            Some(val)
+                });
+                Some(val)
+            }
+            Entry::Occupied(mut entry) => match &mut entry.get_mut().value {
+                Value::Int(n) => {
+                    *n += 1;
+                    Some(Value::Int(*n))
+                }
+                _ => None,
+            },
+            Entry::Vacant(entry) => {
+                let val = Value::Int(1);
+                entry.insert(KvEntry {
+                    value: val.clone(),
+                    expires_at: None,
+                });
+                Some(val)
+            }
         }
     }
 
     pub fn lpush(&self, key: &str, value: Value) {
-        self.remove_if_expired(key);
-        let mut entry = self.data.entry(key.to_string()).or_insert_with(|| KvEntry {
-            value: Value::List(vec![]),
-            expires_at: None,
-        });
-        match &mut entry.value {
-            Value::List(ref mut items) => items.insert(0, value),
-            _ => {
-                entry.value = Value::List(vec![value]);
+        match self.data.entry(key.to_string()) {
+            Entry::Occupied(mut entry) if Self::is_expired(entry.get(), Self::now_secs()) => {
+                entry.insert(KvEntry {
+                    value: Value::List(vec![value]),
+                    expires_at: None,
+                });
+            }
+            Entry::Occupied(mut entry) => match &mut entry.get_mut().value {
+                Value::List(items) => items.insert(0, value),
+                current => *current = Value::List(vec![value]),
+            },
+            Entry::Vacant(entry) => {
+                entry.insert(KvEntry {
+                    value: Value::List(vec![value]),
+                    expires_at: None,
+                });
             }
         }
     }
 
     pub fn lrange(&self, key: &str, start: usize, stop: usize) -> Option<Vec<Value>> {
-        self.remove_if_expired(key);
-        self.data.get(key).and_then(|entry| match &entry.value {
-            Value::List(items) => {
-                let len = items.len();
-                let s = start.min(len);
-                let e = stop.min(len);
-                Some(items[s..e].to_vec())
+        let values = self.data.get(key).and_then(|entry| {
+            if Self::is_expired(&entry, Self::now_secs()) {
+                None
+            } else {
+                match &entry.value {
+                    Value::List(items) => {
+                        let len = items.len();
+                        let s = start.min(len);
+                        let e = stop.min(len);
+                        Some(items[s..e].to_vec())
+                    }
+                    _ => None,
+                }
             }
-            _ => None,
-        })
+        });
+        if values.is_none() {
+            self.remove_if_expired(key);
+        }
+        values
     }
 
     pub fn ltrim(&self, key: &str, start: usize, stop: usize) -> bool {
-        self.remove_if_expired(key);
-        if let Some(mut entry) = self.data.get_mut(key) {
-            match &mut entry.value {
+        match self.data.entry(key.to_string()) {
+            Entry::Occupied(entry) if Self::is_expired(entry.get(), Self::now_secs()) => {
+                entry.remove();
+                false
+            }
+            Entry::Occupied(mut entry) => match &mut entry.get_mut().value {
                 Value::List(items) => {
                     let len = items.len();
                     let s = start.min(len);
@@ -133,9 +171,8 @@ impl KvStore {
                     true
                 }
                 _ => false,
-            }
-        } else {
-            false
+            },
+            Entry::Vacant(_) => false,
         }
     }
 
@@ -158,11 +195,16 @@ impl KvStore {
 
     /// Return a clone of all entries for snapshotting.
     pub fn snapshot(&self) -> HashMap<String, KvEntry> {
-        self.purge_expired();
-        self.data
+        let snapshot = self
+            .data
             .iter()
-            .map(|e| (e.key().clone(), e.value().clone()))
-            .collect()
+            .filter_map(|entry| {
+                (!Self::is_expired(entry.value(), Self::now_secs()))
+                    .then(|| (entry.key().clone(), entry.value().clone()))
+            })
+            .collect();
+        self.purge_expired();
+        snapshot
     }
 
     /// Restore entries from a snapshot.
