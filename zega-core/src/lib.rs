@@ -1,6 +1,8 @@
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -55,7 +57,44 @@ enum BoundValue {
     Relationships(Vec<RelId>),
 }
 
-type Bindings = HashMap<String, BoundValue>;
+#[derive(Clone, Debug, Default)]
+struct Bindings {
+    entries: SmallVec<[(Rc<str>, BoundValue); 4]>,
+}
+
+impl Bindings {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, variable: &str) -> Option<&BoundValue> {
+        self.entries
+            .iter()
+            .rev()
+            .find_map(|(name, value)| (name.as_ref() == variable).then_some(value))
+    }
+
+    fn contains_key(&self, variable: &str) -> bool {
+        self.get(variable).is_some()
+    }
+
+    fn insert(&mut self, variable: String, value: BoundValue) {
+        self.insert_shared(Rc::from(variable), value);
+    }
+
+    fn insert_shared(&mut self, variable: Rc<str>, value: BoundValue) {
+        if let Some((_, existing)) = self
+            .entries
+            .iter_mut()
+            .rev()
+            .find(|(name, _)| name.as_ref() == variable.as_ref())
+        {
+            *existing = value;
+        } else {
+            self.entries.push((variable, value));
+        }
+    }
+}
 
 fn bound_node(bindings: &Bindings, variable: &str) -> Option<NodeId> {
     match bindings.get(variable) {
@@ -294,8 +333,7 @@ impl Zega {
         let mut results = Vec::new();
         let mut traversal_budget = TraversalWorkBudget::new(self.traversal_work_budget);
         for stmt in stmts {
-            let rows =
-                self.execute_statement(&stmt, &params, &resolved, &mut traversal_budget)?;
+            let rows = self.execute_statement(&stmt, &params, &resolved, &mut traversal_budget)?;
             results.extend(rows);
         }
         Ok(results)
@@ -437,7 +475,7 @@ impl Zega {
 
         // LIMIT
         if let Some(limit_expr) = limit {
-            let limit_val = eval_expr(limit_expr, params, &HashMap::new(), &graph)?;
+            let limit_val = eval_expr(limit_expr, params, &Bindings::new(), &graph)?;
             if let Value::Int(n) = limit_val {
                 let n = n as usize;
                 if n < rows.len() {
@@ -462,7 +500,7 @@ impl Zega {
             .wal
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        create_pattern(&mut graph, &mut wal, pattern, params, HashMap::new())?;
+        create_pattern(&mut graph, &mut wal, pattern, params, Bindings::new())?;
 
         Ok(vec![])
     }
@@ -626,7 +664,7 @@ impl Zega {
         let key = match eval_expr(
             key_expr,
             params,
-            &HashMap::new(),
+            &Bindings::new(),
             &self.graph.lock().unwrap(),
         )? {
             Value::String(s) => s,
@@ -649,13 +687,13 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let key = match eval_expr(key_expr, params, &HashMap::new(), &graph)? {
+        let key = match eval_expr(key_expr, params, &Bindings::new(), &graph)? {
             Value::String(s) => s,
             other => other.to_string(),
         };
-        let value = eval_expr(value_expr, params, &HashMap::new(), &graph)?;
+        let value = eval_expr(value_expr, params, &Bindings::new(), &graph)?;
         let ttl_secs = ttl.and_then(|expr| {
-            if let Ok(Value::Int(n)) = eval_expr(expr, params, &HashMap::new(), &graph) {
+            if let Ok(Value::Int(n)) = eval_expr(expr, params, &Bindings::new(), &graph) {
                 Some(n as u64)
             } else {
                 None
@@ -679,7 +717,7 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let key = match eval_expr(key_expr, params, &HashMap::new(), &graph)? {
+        let key = match eval_expr(key_expr, params, &Bindings::new(), &graph)? {
             Value::String(s) => s,
             other => other.to_string(),
         };
@@ -697,7 +735,7 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let key = match eval_expr(key_expr, params, &HashMap::new(), &graph)? {
+        let key = match eval_expr(key_expr, params, &Bindings::new(), &graph)? {
             Value::String(s) => s,
             other => other.to_string(),
         };
@@ -775,9 +813,41 @@ fn resolve_match_bindings(
     params: &HashMap<String, Value>,
     traversal_budget: &mut TraversalWorkBudget,
 ) -> Result<Vec<Bindings>> {
-    let mut bindings = vec![(HashMap::new(), Vec::new())];
+    if let [start_element, end_element] = pattern {
+        if where_clause.is_none()
+            && start_element.relationship.is_none()
+            && end_element
+                .relationship
+                .as_ref()
+                .is_some_and(|relationship| {
+                    relationship.variable.is_empty()
+                        && relationship
+                            .length
+                            .as_ref()
+                            .is_none_or(|length| length.min == 1 && length.max == Some(1))
+                })
+        {
+            return resolve_anonymous_single_hop_bindings(
+                graph,
+                start_element,
+                end_element,
+                params,
+                traversal_budget,
+            );
+        }
+    }
+
+    let mut bindings = vec![(Bindings::new(), SmallVec::<[RelId; 4]>::new())];
 
     for (index, element) in pattern.iter().enumerate() {
+        let node_variable: Rc<str> = Rc::from(element.variable.as_str());
+        let relationship_variable: Option<Rc<str>> = element
+            .relationship
+            .as_ref()
+            .map(|relationship| Rc::from(relationship.variable.as_str()));
+        let retain_used_relationships = pattern[index + 1..]
+            .iter()
+            .any(|element| element.relationship.is_some());
         let mut new_bindings = Vec::new();
         for (binding, used_relationships) in &bindings {
             let candidates = if let Some(rel) = &element.relationship {
@@ -795,12 +865,14 @@ fn resolve_match_bindings(
                     params,
                     binding,
                     used_relationships,
+                    !rel.variable.is_empty(),
+                    retain_used_relationships,
                     traversal_budget,
                 )?
             } else if let Some(id) = bound_node(binding, &element.variable) {
                 vec![TraversalMatch {
                     node_id: id,
-                    path_relationships: Vec::new(),
+                    path_relationships: SmallVec::new(),
                     used_relationships: used_relationships.clone(),
                 }]
             } else {
@@ -808,7 +880,7 @@ fn resolve_match_bindings(
                     .into_iter()
                     .map(|id| TraversalMatch {
                         node_id: id,
-                        path_relationships: Vec::new(),
+                        path_relationships: SmallVec::new(),
                         used_relationships: used_relationships.clone(),
                     })
                     .collect()
@@ -844,22 +916,35 @@ fn resolve_match_bindings(
 
                 let mut new_binding = binding.clone();
                 if !element.variable.is_empty() {
-                    new_binding.insert(element.variable.clone(), BoundValue::Node(candidate.node_id));
+                    new_binding.insert_shared(
+                        Rc::clone(&node_variable),
+                        BoundValue::Node(candidate.node_id),
+                    );
                 }
                 if let Some(rel) = &element.relationship {
                     if !rel.variable.is_empty() {
                         let value = if rel.length.is_some() {
-                            BoundValue::Relationships(candidate.path_relationships.clone())
+                            BoundValue::Relationships(candidate.path_relationships.to_vec())
                         } else {
                             let Some(rel_id) = candidate.path_relationships.first() else {
                                 continue;
                             };
                             BoundValue::Relationship(*rel_id)
                         };
-                        new_binding.insert(rel.variable.clone(), value);
+                        new_binding.insert_shared(
+                            Rc::clone(relationship_variable.as_ref().unwrap()),
+                            value,
+                        );
                     }
                 }
-                new_bindings.push((new_binding, candidate.used_relationships));
+                new_bindings.push((
+                    new_binding,
+                    if retain_used_relationships {
+                        candidate.used_relationships
+                    } else {
+                        SmallVec::new()
+                    },
+                ));
             }
         }
         bindings = new_bindings;
@@ -877,6 +962,93 @@ fn resolve_match_bindings(
     Ok(bindings.into_iter().map(|(binding, _)| binding).collect())
 }
 
+fn resolve_anonymous_single_hop_bindings(
+    graph: &Graph,
+    start_element: &PatternElement,
+    end_element: &PatternElement,
+    params: &HashMap<String, Value>,
+    traversal_budget: &mut TraversalWorkBudget,
+) -> Result<Vec<Bindings>> {
+    let relationship = end_element.relationship.as_ref().unwrap();
+    let start_variable: Rc<str> = Rc::from(start_element.variable.as_str());
+    let end_variable: Rc<str> = Rc::from(end_element.variable.as_str());
+    let mut results = Vec::new();
+
+    for start_id in match_candidates(graph, start_element, None, params, &Bindings::new())? {
+        let mut start_binding = Bindings::new();
+        if !start_element.variable.is_empty() {
+            start_binding.insert_shared(Rc::clone(&start_variable), BoundValue::Node(start_id));
+        }
+
+        let mut add_relationship = |rel_id| -> Result<()> {
+            traversal_budget.consume()?;
+            let Some(rel) = graph.get_relationship(rel_id) else {
+                return Ok(());
+            };
+            if !relationship.kinds.is_empty() && !relationship.kinds.contains(&rel.kind) {
+                return Ok(());
+            }
+            for (key, expr) in &relationship.properties {
+                if rel.props.get(key) != Some(&eval_expr(expr, params, &start_binding, graph)?) {
+                    return Ok(());
+                }
+            }
+            let end_id = match end_element.direction {
+                Some(Direction::Incoming) if rel.to == start_id => rel.from,
+                Some(Direction::Both) if rel.from == start_id => rel.to,
+                Some(Direction::Both) if rel.to == start_id => rel.from,
+                Some(Direction::Outgoing) | None if rel.from == start_id => rel.to,
+                _ => return Ok(()),
+            };
+            let Some(node) = graph.get_node(end_id) else {
+                return Ok(());
+            };
+            if !end_element
+                .labels
+                .iter()
+                .all(|label| node.labels.contains(label))
+            {
+                return Ok(());
+            }
+            for (key, expr) in &end_element.properties {
+                if node.props.get(key) != Some(&eval_expr(expr, params, &start_binding, graph)?) {
+                    return Ok(());
+                }
+            }
+
+            let mut binding = start_binding.clone();
+            if !end_element.variable.is_empty() {
+                binding.insert_shared(Rc::clone(&end_variable), BoundValue::Node(end_id));
+            }
+            results.push(binding);
+            Ok(())
+        };
+
+        match end_element.direction {
+            Some(Direction::Incoming) => {
+                for &rel_id in graph.incoming_rels(start_id).into_iter().flatten() {
+                    add_relationship(rel_id)?;
+                }
+            }
+            Some(Direction::Both) => {
+                let mut adjacent = HashSet::new();
+                adjacent.extend(graph.outgoing_rels(start_id).into_iter().flatten().copied());
+                adjacent.extend(graph.incoming_rels(start_id).into_iter().flatten().copied());
+                for rel_id in adjacent {
+                    add_relationship(rel_id)?;
+                }
+            }
+            Some(Direction::Outgoing) | None => {
+                for &rel_id in graph.outgoing_rels(start_id).into_iter().flatten() {
+                    add_relationship(rel_id)?;
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 struct TraversalWorkBudget {
     limit: usize,
     traversed: usize,
@@ -884,8 +1056,8 @@ struct TraversalWorkBudget {
 
 struct TraversalMatch {
     node_id: NodeId,
-    path_relationships: Vec<RelId>,
-    used_relationships: Vec<RelId>,
+    path_relationships: SmallVec<[RelId; 4]>,
+    used_relationships: SmallVec<[RelId; 4]>,
 }
 
 impl TraversalWorkBudget {
@@ -915,6 +1087,8 @@ fn traverse_relationship(
     params: &HashMap<String, Value>,
     binding: &Bindings,
     used_relationships: &[RelId],
+    retain_path_relationships: bool,
+    retain_used_relationships: bool,
     budget: &mut TraversalWorkBudget,
 ) -> Result<Vec<TraversalMatch>> {
     let (min, max) = pattern
@@ -976,11 +1150,18 @@ fn traverse_relationship(
                 Some(Direction::Outgoing) | None if rel.from == start => rel.to,
                 _ => return Ok(()),
             };
-            let mut next_used = used_relationships.to_vec();
-            next_used.push(rel_id);
+            let mut path_relationships = SmallVec::new();
+            if retain_path_relationships {
+                path_relationships.push(rel_id);
+            }
+            let mut next_used = SmallVec::new();
+            if retain_used_relationships {
+                next_used.extend_from_slice(used_relationships);
+                next_used.push(rel_id);
+            }
             endpoints.push(TraversalMatch {
                 node_id: next,
-                path_relationships: vec![rel_id],
+                path_relationships,
                 used_relationships: next_used,
             });
             Ok(())
@@ -1008,8 +1189,8 @@ fn traverse_relationship(
     let mut endpoints = Vec::new();
     let mut stack = vec![(
         start,
-        Vec::<RelId>::new(),
-        used_relationships.to_vec(),
+        SmallVec::<[RelId; 4]>::new(),
+        SmallVec::<[RelId; 4]>::from_slice(used_relationships),
         0_usize,
     )];
 
@@ -1081,12 +1262,7 @@ fn create_pattern(
             let props = element
                 .properties
                 .iter()
-                .map(|(key, expr)| {
-                    Ok((
-                        key.clone(),
-                        eval_expr(expr, params, &bindings, graph)?,
-                    ))
-                })
+                .map(|(key, expr)| Ok((key.clone(), eval_expr(expr, params, &bindings, graph)?)))
                 .collect::<Result<HashMap<_, _>>>()?;
             let id = graph.create_node(element.labels.clone(), props.clone());
             wal.append(&Operation::InsertNode {
@@ -1104,12 +1280,7 @@ fn create_pattern(
             let props = rel
                 .properties
                 .iter()
-                .map(|(key, expr)| {
-                    Ok((
-                        key.clone(),
-                        eval_expr(expr, params, &bindings, graph)?,
-                    ))
-                })
+                .map(|(key, expr)| Ok((key.clone(), eval_expr(expr, params, &bindings, graph)?)))
                 .collect::<Result<HashMap<_, _>>>()?;
             let kind = rel.kinds.first().cloned().unwrap_or_default();
             let (from, to) = match element.direction {
@@ -1139,28 +1310,58 @@ fn match_candidates(
     params: &HashMap<String, Value>,
     binding: &Bindings,
 ) -> Result<Vec<NodeId>> {
-    let mut properties = element.properties.iter()
+    let mut properties = element
+        .properties
+        .iter()
         .map(|(key, expr)| Ok((key.clone(), eval_expr(expr, params, binding, graph)?)))
         .collect::<Result<Vec<_>>>()?;
     if let Some(expr) = where_clause {
-        collect_indexed_equalities(expr, &element.variable, params, binding, graph, &mut properties)?;
+        collect_indexed_equalities(
+            expr,
+            &element.variable,
+            params,
+            binding,
+            graph,
+            &mut properties,
+        )?;
     }
 
     let mut smallest: Option<(usize, Vec<NodeId>)> = None;
-    for ids in element.labels.iter().map(|label| graph.nodes_by_label(label))
-        .chain(properties.iter().map(|(key, value)| graph.nodes_by_property(key, value)))
+    for ids in element
+        .labels
+        .iter()
+        .map(|label| graph.nodes_by_label(label))
+        .chain(
+            properties
+                .iter()
+                .map(|(key, value)| graph.nodes_by_property(key, value)),
+        )
     {
         let len = ids.map_or(0, |set| set.len());
-        if smallest.as_ref().is_none_or(|(smallest_len, _)| len < *smallest_len) {
-            smallest = Some((len, ids.map_or_else(Vec::new, |set| set.iter().copied().collect())));
+        if smallest
+            .as_ref()
+            .is_none_or(|(smallest_len, _)| len < *smallest_len)
+        {
+            smallest = Some((
+                len,
+                ids.map_or_else(Vec::new, |set| set.iter().copied().collect()),
+            ));
         }
     }
 
-    let mut candidates = smallest.map(|(_, ids)| ids)
+    let mut candidates = smallest
+        .map(|(_, ids)| ids)
         .unwrap_or_else(|| graph.all_nodes().keys().copied().collect());
     candidates.retain(|id| {
-        element.labels.iter().all(|label| graph.nodes_by_label(label).is_some_and(|ids| ids.contains(id)))
-            && properties.iter().all(|(key, value)| graph.nodes_by_property(key, value).is_some_and(|ids| ids.contains(id)))
+        element.labels.iter().all(|label| {
+            graph
+                .nodes_by_label(label)
+                .is_some_and(|ids| ids.contains(id))
+        }) && properties.iter().all(|(key, value)| {
+            graph
+                .nodes_by_property(key, value)
+                .is_some_and(|ids| ids.contains(id))
+        })
     });
     Ok(candidates)
 }
@@ -1181,13 +1382,19 @@ fn collect_indexed_equalities(
         Expr::BinaryOp(left, BinaryOperator::Eq, right) => {
             if let Some(property) = property_for_variable(left, variable) {
                 if !references_variable(right, variable) && can_eval_from_binding(right, binding) {
-                    equalities.push((property.to_string(), eval_expr(right, params, binding, graph)?));
+                    equalities.push((
+                        property.to_string(),
+                        eval_expr(right, params, binding, graph)?,
+                    ));
                     return Ok(());
                 }
             }
             if let Some(property) = property_for_variable(right, variable) {
                 if !references_variable(left, variable) && can_eval_from_binding(left, binding) {
-                    equalities.push((property.to_string(), eval_expr(left, params, binding, graph)?));
+                    equalities.push((
+                        property.to_string(),
+                        eval_expr(left, params, binding, graph)?,
+                    ));
                 }
             }
         }
@@ -1198,8 +1405,9 @@ fn collect_indexed_equalities(
 
 fn property_for_variable<'a>(expr: &'a Expr, variable: &str) -> Option<&'a str> {
     match expr {
-        Expr::PropertyAccess(target, property)
-            if matches!(target.as_ref(), Expr::Identifier(name) if name == variable) => Some(property),
+        Expr::PropertyAccess(target, property) if matches!(target.as_ref(), Expr::Identifier(name) if name == variable) => {
+            Some(property)
+        }
         _ => None,
     }
 }
@@ -1208,8 +1416,12 @@ fn references_variable(expr: &Expr, variable: &str) -> bool {
     match expr {
         Expr::Identifier(name) => name == variable,
         Expr::PropertyAccess(target, _) => references_variable(target, variable),
-        Expr::BinaryOp(left, _, right) => references_variable(left, variable) || references_variable(right, variable),
-        Expr::Aggregate { argument, .. } => argument.as_deref().is_some_and(|expr| references_variable(expr, variable)),
+        Expr::BinaryOp(left, _, right) => {
+            references_variable(left, variable) || references_variable(right, variable)
+        }
+        Expr::Aggregate { argument, .. } => argument
+            .as_deref()
+            .is_some_and(|expr| references_variable(expr, variable)),
         Expr::Parameter(_) | Expr::Literal(_) => false,
     }
 }
@@ -1483,7 +1695,6 @@ fn project_rows(
             })
             .collect();
     }
-
     let non_aggregate_items: Vec<_> = return_clause
         .items
         .iter()
@@ -1525,7 +1736,7 @@ fn project_rows(
     groups
         .into_iter()
         .map(|(_, group)| {
-            let empty_binding = HashMap::new();
+            let empty_binding = Bindings::new();
             let representative = group.first().copied().unwrap_or(&empty_binding);
             project_group(
                 representative,
@@ -1554,7 +1765,14 @@ fn project_group(
                 function,
                 argument,
                 distinct,
-            } => eval_aggregate(function, argument.as_deref(), *distinct, group, params, graph)?,
+            } => eval_aggregate(
+                function,
+                argument.as_deref(),
+                *distinct,
+                group,
+                params,
+                graph,
+            )?,
             expr => eval_expr(expr, params, representative, graph)?,
         };
         fields.insert(key.clone(), value);
@@ -1655,9 +1873,9 @@ fn sum_values(values: &[Value]) -> Result<Value> {
     for value in values {
         match value {
             Value::Int(value) => {
-                integer_sum = integer_sum.checked_add(*value).ok_or_else(|| {
-                    ZegaError::Execution("integer overflow in sum()".to_string())
-                })?;
+                integer_sum = integer_sum
+                    .checked_add(*value)
+                    .ok_or_else(|| ZegaError::Execution("integer overflow in sum()".to_string()))?;
             }
             Value::Float(bits) => {
                 has_float = true;
@@ -1790,12 +2008,16 @@ mod tests {
         }
 
         let params = HashMap::from([("id".to_string(), Value::Int(7_777))]);
-        let rows = zega.query("MATCH (u:User {id: $id}) RETURN u", params.clone()).unwrap();
+        let rows = zega
+            .query("MATCH (u:User {id: $id}) RETURN u", params.clone())
+            .unwrap();
         assert_eq!(rows.len(), 1);
 
         let started = std::time::Instant::now();
         for _ in 0..10_000 {
-            let rows = zega.query("MATCH (u:User {id: $id}) RETURN u", params.clone()).unwrap();
+            let rows = zega
+                .query("MATCH (u:User {id: $id}) RETURN u", params.clone())
+                .unwrap();
             assert_eq!(rows.len(), 1);
         }
         println!("10,000 indexed MATCH lookups: {:?}", started.elapsed());
@@ -1816,7 +2038,9 @@ mod tests {
         }
 
         let params = HashMap::from([("id".to_string(), Value::Int(42))]);
-        let rows = zega.query("MATCH (u:User) WHERE u.id = $id RETURN u", params).unwrap();
+        let rows = zega
+            .query("MATCH (u:User) WHERE u.id = $id RETURN u", params)
+            .unwrap();
         assert_eq!(rows.len(), 1);
     }
 
@@ -1870,8 +2094,10 @@ mod tests {
     #[test]
     fn test_multi_match_create_reuses_both_endpoints_deterministically() {
         let zega = Zega::in_memory().build().unwrap();
-        zega.query("CREATE (a:Category {id: 'parent'})", HashMap::new()).unwrap();
-        zega.query("CREATE (b:Category {id: 'child'})", HashMap::new()).unwrap();
+        zega.query("CREATE (a:Category {id: 'parent'})", HashMap::new())
+            .unwrap();
+        zega.query("CREATE (b:Category {id: 'child'})", HashMap::new())
+            .unwrap();
 
         for _ in 0..5 {
             zega.query(
@@ -2036,10 +2262,7 @@ mod tests {
             );
             graph.update_node(
                 user,
-                HashMap::from([(
-                    "status".to_string(),
-                    Value::String("active".to_string()),
-                )]),
+                HashMap::from([("status".to_string(), Value::String("active".to_string()))]),
             );
         }
 
@@ -2127,7 +2350,10 @@ mod tests {
         seed_aggregation_graph(&zega);
 
         let rows = zega
-            .query("MATCH (o:Order) RETURN sum(o.total) AS total", HashMap::new())
+            .query(
+                "MATCH (o:Order) RETURN sum(o.total) AS total",
+                HashMap::new(),
+            )
             .unwrap();
 
         assert_eq!(rows[0].fields["total"], Value::Int(60));
@@ -2201,10 +2427,7 @@ mod tests {
         };
         totals.sort_by(|left, right| left.partial_cmp(right).unwrap());
 
-        assert_eq!(
-            totals,
-            vec![Value::Int(10), Value::Int(20), Value::Int(30)]
-        );
+        assert_eq!(totals, vec![Value::Int(10), Value::Int(20), Value::Int(30)]);
     }
 
     #[test]
@@ -2281,12 +2504,7 @@ mod tests {
             .unwrap();
         let pairs: HashSet<_> = rows
             .into_iter()
-            .map(|row| {
-                (
-                    row.fields["user"].clone(),
-                    row.fields["order_id"].clone(),
-                )
-            })
+            .map(|row| (row.fields["user"].clone(), row.fields["order_id"].clone()))
             .collect();
 
         assert_eq!(
@@ -2338,12 +2556,7 @@ mod tests {
                 })
                 .collect();
             for (from, to) in [("a", "b"), ("b", "c"), ("c", "d")] {
-                graph.create_relationship(
-                    "R".to_string(),
-                    nodes[from],
-                    nodes[to],
-                    HashMap::new(),
-                );
+                graph.create_relationship("R".to_string(), nodes[from], nodes[to], HashMap::new());
             }
         }
 
@@ -2439,10 +2652,7 @@ mod tests {
         seed_relationships(&zega, &[("a", "b"), ("b", "c"), ("c", "a")]);
 
         let rows = zega
-            .query(
-                "MATCH (a {id: 'a'})-[:R*]->(x) RETURN x",
-                HashMap::new(),
-            )
+            .query("MATCH (a {id: 'a'})-[:R*]->(x) RETURN x", HashMap::new())
             .unwrap();
 
         assert_eq!(returned_ids(&rows, "x"), vec!["a", "b", "c"]);
@@ -2454,10 +2664,7 @@ mod tests {
         seed_relationships(&zega, &[("a", "b"), ("a", "c"), ("b", "d")]);
 
         let rows = zega
-            .query(
-                "MATCH (a {id: 'a'})-[*]->(x) RETURN x",
-                HashMap::new(),
-            )
+            .query("MATCH (a {id: 'a'})-[*]->(x) RETURN x", HashMap::new())
             .unwrap();
 
         assert_eq!(returned_ids(&rows, "x"), vec!["b", "c", "d"]);
@@ -2466,10 +2673,7 @@ mod tests {
     #[test]
     fn test_variable_length_traversal_returns_all_matching_paths() {
         let zega = Zega::in_memory().build().unwrap();
-        seed_relationships(
-            &zega,
-            &[("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")],
-        );
+        seed_relationships(&zega, &[("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")]);
 
         let rows = zega
             .query(
@@ -2493,10 +2697,7 @@ mod tests {
             )
             .unwrap();
         let undirected = zega
-            .query(
-                "MATCH (b {id: 'b'})-[:R*1..1]-(x) RETURN x",
-                HashMap::new(),
-            )
+            .query("MATCH (b {id: 'b'})-[:R*1..1]-(x) RETURN x", HashMap::new())
             .unwrap();
 
         assert_eq!(returned_ids(&incoming, "x"), vec!["a", "b"]);
@@ -2520,17 +2721,11 @@ mod tests {
 
     #[test]
     fn test_variable_length_traversal_aborts_at_work_budget() {
-        let zega = Zega::in_memory()
-            .traversal_work_budget(2)
-            .build()
-            .unwrap();
+        let zega = Zega::in_memory().traversal_work_budget(2).build().unwrap();
         seed_relationships(&zega, &[("a", "b"), ("b", "c"), ("c", "d")]);
 
         let error = zega
-            .query(
-                "MATCH (a {id: 'a'})-[:R*]->(x) RETURN x",
-                HashMap::new(),
-            )
+            .query("MATCH (a {id: 'a'})-[:R*]->(x) RETURN x", HashMap::new())
             .unwrap_err();
 
         assert!(matches!(
@@ -3091,12 +3286,7 @@ mod tests {
                     )
                 });
             }
-            graph.create_relationship(
-                "R".to_string(),
-                nodes[from],
-                nodes[to],
-                HashMap::new(),
-            );
+            graph.create_relationship("R".to_string(), nodes[from], nodes[to], HashMap::new());
         }
     }
 
