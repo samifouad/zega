@@ -41,6 +41,67 @@ fn genuine_value_difference_is_reported() {
     assert!(diff.contains("\"value\":3"));
 }
 
+#[test]
+fn type_only_difference_is_reported() {
+    let zega = vec![canonical::row([("count".into(), canonical::integer(2))])];
+    let oracle = vec![canonical::row([("count".into(), canonical::float(2.0))])];
+    let diff = canonical::compare(&zega, &oracle).expect_err("types differ");
+    assert!(diff.contains("\"type\":\"integer\""));
+    assert!(diff.contains("\"type\":\"float\""));
+}
+
+#[test]
+fn ordered_rows_are_not_reordered_before_comparison() {
+    let zega = canonical::normalize(
+        vec![
+            canonical::row([("id".into(), canonical::string("a"))]),
+            canonical::row([("id".into(), canonical::string("b"))]),
+        ],
+        true,
+    );
+    let oracle = canonical::normalize(
+        vec![
+            canonical::row([("id".into(), canonical::string("b"))]),
+            canonical::row([("id".into(), canonical::string("a"))]),
+        ],
+        true,
+    );
+    let diff = canonical::compare(&zega, &oracle).expect_err("ordered rows differ");
+    assert!(diff.contains("first difference at row 0"));
+}
+
+#[test]
+fn float_last_digit_difference_is_reported() {
+    let zega = vec![canonical::row([("average".into(), canonical::float(1.0))])];
+    let oracle = vec![canonical::row([(
+        "average".into(),
+        canonical::float(f64::from_bits(1.0f64.to_bits() + 1)),
+    )])];
+    assert!(canonical::compare(&zega, &oracle).is_err());
+}
+
+#[test]
+fn non_finite_float_difference_is_reported() {
+    let zega = vec![canonical::row([(
+        "average".into(),
+        canonical::float(f64::INFINITY),
+    )])];
+    let oracle = vec![canonical::row([(
+        "average".into(),
+        canonical::float(f64::NEG_INFINITY),
+    )])];
+    assert!(canonical::compare(&zega, &oracle).is_err());
+}
+
+#[test]
+fn missing_null_and_empty_string_are_not_equal() {
+    let missing = vec![canonical::row([])];
+    let null = vec![canonical::row([("value".into(), canonical::null())])];
+    let empty = vec![canonical::row([("value".into(), canonical::string(""))])];
+    assert!(canonical::compare(&missing, &null).is_err());
+    assert!(canonical::compare(&null, &empty).is_err());
+}
+
 #[tokio::test]
 async fn live_zega_neo4j_redis_parity() {
     if env::var("ZEGA_PARITY_LIVE").as_deref() != Ok("1") {
