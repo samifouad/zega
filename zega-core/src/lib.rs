@@ -837,7 +837,11 @@ fn resolve_match_bindings(
         }
     }
 
-    let mut bindings = vec![(Bindings::new(), SmallVec::<[RelId; 4]>::new())];
+    let mut bindings = vec![(
+        Bindings::new(),
+        SmallVec::<[RelId; 4]>::new(),
+        None::<NodeId>,
+    )];
 
     for (index, element) in pattern.iter().enumerate() {
         let node_variable: Rc<str> = Rc::from(element.variable.as_str());
@@ -849,17 +853,14 @@ fn resolve_match_bindings(
             .iter()
             .any(|element| element.relationship.is_some());
         let mut new_bindings = Vec::new();
-        for (binding, used_relationships) in &bindings {
+        for (binding, used_relationships, previous_node) in &bindings {
             let candidates = if let Some(rel) = &element.relationship {
-                let Some(previous) = index.checked_sub(1).and_then(|i| {
-                    let previous_var = &pattern[i].variable;
-                    bound_node(binding, previous_var)
-                }) else {
+                let Some(previous) = previous_node else {
                     continue;
                 };
                 traverse_relationship(
                     graph,
-                    previous,
+                    *previous,
                     rel,
                     &element.direction,
                     params,
@@ -944,6 +945,7 @@ fn resolve_match_bindings(
                     } else {
                         SmallVec::new()
                     },
+                    Some(candidate.node_id),
                 ));
             }
         }
@@ -951,7 +953,7 @@ fn resolve_match_bindings(
     }
 
     if let Some(where_expr) = where_clause {
-        bindings.retain(|(binding, _)| {
+        bindings.retain(|(binding, _, _)| {
             matches!(
                 eval_expr(where_expr, params, binding, graph),
                 Ok(Value::Bool(true))
@@ -959,7 +961,10 @@ fn resolve_match_bindings(
         });
     }
 
-    Ok(bindings.into_iter().map(|(binding, _)| binding).collect())
+    Ok(bindings
+        .into_iter()
+        .map(|(binding, _, _)| binding)
+        .collect())
 }
 
 fn resolve_anonymous_single_hop_bindings(
@@ -2149,6 +2154,102 @@ mod tests {
             rows[0].fields.get("id"),
             Some(&Value::String("o1".to_string()))
         );
+    }
+
+    #[test]
+    fn test_traversal_through_one_anonymous_intermediate_node() {
+        let zega = Zega::in_memory().build().unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            let a = graph.create_node(
+                Vec::new(),
+                HashMap::from([("id".to_string(), Value::String("a".to_string()))]),
+            );
+            let intermediate = graph.create_node(Vec::new(), HashMap::new());
+            let c = graph.create_node(
+                Vec::new(),
+                HashMap::from([("id".to_string(), Value::String("c".to_string()))]),
+            );
+            graph.create_relationship("R".to_string(), a, intermediate, HashMap::new());
+            graph.create_relationship("R".to_string(), intermediate, c, HashMap::new());
+        }
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[:R]->()-[:R]->(c) RETURN c.id AS id",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fields["id"], Value::String("c".to_string()));
+    }
+
+    #[test]
+    fn test_traversal_through_two_anonymous_intermediate_nodes() {
+        let zega = Zega::in_memory().build().unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            let a = graph.create_node(
+                Vec::new(),
+                HashMap::from([("id".to_string(), Value::String("a".to_string()))]),
+            );
+            let first = graph.create_node(Vec::new(), HashMap::new());
+            let second = graph.create_node(Vec::new(), HashMap::new());
+            let d = graph.create_node(
+                Vec::new(),
+                HashMap::from([("id".to_string(), Value::String("d".to_string()))]),
+            );
+            graph.create_relationship("R".to_string(), a, first, HashMap::new());
+            graph.create_relationship("R".to_string(), first, second, HashMap::new());
+            graph.create_relationship("R".to_string(), second, d, HashMap::new());
+        }
+
+        let rows = zega
+            .query(
+                "MATCH (a {id: 'a'})-[:R]->()-[:R]->()-[:R]->(d) RETURN d.id AS id",
+                HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fields["id"], Value::String("d".to_string()));
+    }
+
+    #[test]
+    fn test_customers_like_you_traverses_anonymous_intermediate_nodes() {
+        let zega = Zega::in_memory().build().unwrap();
+        {
+            let mut graph = zega.graph.lock().unwrap();
+            let user_1 = graph.create_node(
+                vec!["User".to_string()],
+                HashMap::from([("id".to_string(), Value::String("u1".to_string()))]),
+            );
+            let user_2 = graph.create_node(
+                vec!["User".to_string()],
+                HashMap::from([("id".to_string(), Value::String("u2".to_string()))]),
+            );
+            let order_1 = graph.create_node(vec!["Order".to_string()], HashMap::new());
+            let order_2 = graph.create_node(vec!["Order".to_string()], HashMap::new());
+            let product = graph.create_node(vec!["Product".to_string()], HashMap::new());
+            graph.create_relationship("PLACED".to_string(), user_1, order_1, HashMap::new());
+            graph.create_relationship("PLACED".to_string(), user_2, order_2, HashMap::new());
+            graph.create_relationship("CONTAINS".to_string(), order_1, product, HashMap::new());
+            graph.create_relationship("CONTAINS".to_string(), order_2, product, HashMap::new());
+        }
+
+        let rows = zega
+            .query(
+                "MATCH (u:User {id: 'u1'})-[:PLACED]->(:Order)-[:CONTAINS]->(:Product)<-[:CONTAINS]-(:Order)<-[:PLACED]-(other:User) RETURN other.id AS id",
+                HashMap::new(),
+            )
+            .unwrap();
+        let ids = rows
+            .iter()
+            .map(|row| row.fields["id"].clone())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(ids, HashSet::from([Value::String("u2".to_string())]));
     }
 
     #[test]
