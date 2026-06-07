@@ -649,7 +649,6 @@ fn seed_scores(zega: &Zega) {
 }
 
 #[test]
-#[ignore = "source bug: ORDER BY expressions evaluate as null after projection; see zega #14"]
 fn order_by_ascending_sorts_low_to_high() {
     let zega = db();
     seed_scores(&zega);
@@ -667,7 +666,6 @@ fn order_by_ascending_sorts_low_to_high() {
 }
 
 #[test]
-#[ignore = "source bug: ORDER BY expressions evaluate as null after projection; see zega #14"]
 fn order_by_descending_sorts_high_to_low() {
     let zega = db();
     seed_scores(&zega);
@@ -685,7 +683,6 @@ fn order_by_descending_sorts_high_to_low() {
 }
 
 #[test]
-#[ignore = "source bug: ORDER BY expressions evaluate as null after projection; see zega #14"]
 fn order_by_defaults_to_ascending() {
     let zega = db();
     seed_scores(&zega);
@@ -701,7 +698,6 @@ fn order_by_defaults_to_ascending() {
 }
 
 #[test]
-#[ignore = "source bug: ORDER BY expressions evaluate as null after projection; see zega #14"]
 fn order_by_multi_key_secondary_breaks_ties() {
     let zega = db();
     seed_scores(&zega);
@@ -726,7 +722,6 @@ fn order_by_multi_key_secondary_breaks_ties() {
 }
 
 #[test]
-#[ignore = "source bug: ORDER BY expressions evaluate as null after projection; see zega #14"]
 fn order_by_string_field() {
     let zega = db();
     seed_scores(&zega);
@@ -748,12 +743,57 @@ fn order_by_string_field() {
     );
 }
 
+#[test]
+fn order_by_return_alias() {
+    let zega = db();
+    seed_scores(&zega);
+    let rows = zega
+        .query(
+            "MATCH (n:S) RETURN n.name AS name, n.score AS score ORDER BY score DESC",
+            no_params(),
+        )
+        .unwrap();
+    assert_eq!(
+        collect_field(&rows, "score"),
+        vec![Value::Int(3), Value::Int(2), Value::Int(1), Value::Int(1)]
+    );
+}
+
+#[test]
+fn order_by_nulls_last_ascending_and_first_descending() {
+    let zega = db();
+    zega.query("CREATE (n:S {score: 2})", no_params()).unwrap();
+    zega.query("CREATE (n:S)", no_params()).unwrap();
+    zega.query("CREATE (n:S {score: 1})", no_params()).unwrap();
+
+    let ascending = zega
+        .query(
+            "MATCH (n:S) RETURN n.score AS score ORDER BY n.score ASC",
+            no_params(),
+        )
+        .unwrap();
+    assert_eq!(
+        collect_field(&ascending, "score"),
+        vec![Value::Int(1), Value::Int(2), Value::Null]
+    );
+
+    let descending = zega
+        .query(
+            "MATCH (n:S) RETURN n.score AS score ORDER BY n.score DESC",
+            no_params(),
+        )
+        .unwrap();
+    assert_eq!(
+        collect_field(&descending, "score"),
+        vec![Value::Null, Value::Int(2), Value::Int(1)]
+    );
+}
+
 // ===========================================================================
 // 9. LIMIT
 // ===========================================================================
 
 #[test]
-#[ignore = "source bug: ORDER BY expressions evaluate as null after projection; see zega #14"]
 fn limit_truncates_result_set() {
     let zega = db();
     seed_scores(&zega);
@@ -2323,7 +2363,6 @@ fn unbounded_star_traversal_reaches_all_reachable_endpoints() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "source bug: ORDER BY expressions evaluate as null after projection; see zega #14"]
 fn order_by_float_field_sorts_numerically() {
     let zega = db();
     for v in [2.5_f64, 0.5, 1.5] {
@@ -2344,7 +2383,6 @@ fn order_by_float_field_sorts_numerically() {
 }
 
 #[test]
-#[ignore = "source bug: ORDER BY expressions evaluate as null after projection; see zega #14"]
 fn order_by_bool_field_orders_false_before_true() {
     let zega = db();
     for b in [true, false, true] {
@@ -2366,7 +2404,6 @@ fn order_by_bool_field_orders_false_before_true() {
 }
 
 #[test]
-#[ignore = "source bug: ORDER BY expressions evaluate as null after projection; see zega #14"]
 fn order_by_descending_float() {
     let zega = db();
     for v in [1.0_f64, 3.0, 2.0] {
@@ -2398,7 +2435,6 @@ fn order_by_incomparable_types_does_not_panic_and_preserves_all_rows() {
 }
 
 #[test]
-#[ignore = "source bug: ORDER BY expressions evaluate as null after projection; see zega #14"]
 fn order_by_then_limit_applies_limit_after_sort() {
     let zega = db();
     for v in [5_i64, 1, 3, 2, 4] {
