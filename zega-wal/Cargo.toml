@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 bincode = { workspace = true }
+crc32fast = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 zega-graph = { workspace = true }

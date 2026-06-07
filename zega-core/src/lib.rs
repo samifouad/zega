@@ -3,8 +3,6 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
 use std::sync::Mutex;
 use thiserror::Error;
 use zega_graph::{Graph, NodeId, RelId};
@@ -106,7 +104,7 @@ fn bound_node(bindings: &Bindings, variable: &str) -> Option<NodeId> {
 pub struct Zega {
     graph: Mutex<Graph>,
     kv: KvStore,
-    wal: Mutex<Wal>,
+    wal: Wal,
     #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
     in_memory: bool,
@@ -249,10 +247,13 @@ impl Zega {
         let wal = if builder.in_memory {
             Wal::in_memory()
         } else {
-            Wal::new(&wal_path, builder.wal_flush_every)?
+            Wal::with_group_commit(
+                &wal_path,
+                builder.wal_flush_every,
+                std::time::Duration::from_millis(builder.wal_flush_interval_ms.unwrap_or(5)),
+                64,
+            )?
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut wal = wal;
         #[cfg(not(target_arch = "wasm32"))]
         if !builder.in_memory && wal_path.exists() {
             let ops = wal.iter()?;
@@ -261,34 +262,8 @@ impl Zega {
             }
         }
 
-        // If interval flushing, start background task
         #[cfg(not(target_arch = "wasm32"))]
-        let rt = if let Some(interval_ms) = builder.wal_flush_interval_ms {
-            let rt = tokio::runtime::Runtime::new()?;
-            let wal_arc = Arc::new(Mutex::new(wal));
-            let wal_clone = wal_arc.clone();
-            rt.spawn(async move {
-                let mut ticker =
-                    tokio::time::interval(std::time::Duration::from_millis(interval_ms));
-                loop {
-                    ticker.tick().await;
-                    if let Ok(mut w) = wal_clone.lock() {
-                        let _ = w.flush();
-                    }
-                }
-            });
-            // Re-create wal for the struct (we keep the arc in a field? No, keep simple)
-            // Actually for MVP, interval flush spawns task but we keep original wal.
-            // To avoid double-ownership issues, we'll skip interval flush for now and just keep simple.
-            wal = if builder.in_memory {
-                Wal::in_memory()
-            } else {
-                Wal::new(&wal_path, false)?
-            };
-            Some(rt)
-        } else {
-            None
-        };
+        let rt = None;
 
         // Start KV eviction
         #[cfg(not(target_arch = "wasm32"))]
@@ -304,7 +279,7 @@ impl Zega {
         Ok(Zega {
             graph: Mutex::new(graph),
             kv,
-            wal: Mutex::new(wal),
+            wal,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             in_memory: builder.in_memory,
@@ -496,11 +471,7 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut wal = self
-            .wal
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        create_pattern(&mut graph, &mut wal, pattern, params, Bindings::new())?;
+        create_pattern(&mut graph, &self.wal, pattern, params, Bindings::new())?;
 
         Ok(vec![])
     }
@@ -524,13 +495,8 @@ impl Zega {
             params,
             traversal_budget,
         )?;
-        let mut wal = self
-            .wal
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-
         for binding in bindings {
-            create_pattern(&mut graph, &mut wal, create_elements, params, binding)?;
+            create_pattern(&mut graph, &self.wal, create_elements, params, binding)?;
         }
 
         Ok(vec![])
@@ -544,10 +510,6 @@ impl Zega {
     ) -> Result<Vec<Row>> {
         let mut graph = self
             .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut wal = self
-            .wal
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let mut created = false;
@@ -581,7 +543,7 @@ impl Zega {
                     var_map.insert(element.variable.clone(), BoundValue::Node(id));
                 }
                 created = true;
-                wal.append(&Operation::InsertNode {
+                self.wal.append(&Operation::InsertNode {
                     id,
                     labels: element.labels.clone(),
                     props: props.clone(),
@@ -598,7 +560,7 @@ impl Zega {
                             let mut p = HashMap::new();
                             p.insert(prop.clone(), val.clone());
                             graph.update_node(node_id, p.clone());
-                            wal.append(&Operation::UpdateNode {
+                            self.wal.append(&Operation::UpdateNode {
                                 id: node_id,
                                 props: p,
                             })?;
@@ -620,10 +582,7 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let _wal = self
-            .wal
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let _wal = &self.wal;
         for _clause in _assignments {
             if let Expr::PropertyAccess(ref _target, ref _prop) = _clause.target {
                 if let Expr::Identifier(ref _var) = **_target {
@@ -650,10 +609,7 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let _wal = self
-            .wal
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let _wal = &self.wal;
         for _id_str in _identifiers {
             // For MVP, delete by variable name requires session context.
         }
@@ -700,11 +656,7 @@ impl Zega {
             }
         });
         self.kv.set(key.clone(), value.clone(), ttl_secs);
-        let mut wal = self
-            .wal
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        wal.append(&Operation::KvSet {
+        self.wal.append(&Operation::KvSet {
             key,
             value,
             ttl: ttl_secs,
@@ -722,11 +674,7 @@ impl Zega {
             other => other.to_string(),
         };
         self.kv.del(&key);
-        let mut wal = self
-            .wal
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        wal.append(&Operation::KvDel { key })?;
+        self.wal.append(&Operation::KvDel { key })?;
         Ok(vec![])
     }
 
@@ -740,11 +688,7 @@ impl Zega {
             other => other.to_string(),
         };
         let val = self.kv.incr(&key).unwrap_or(Value::Null);
-        let mut wal = self
-            .wal
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        wal.append(&Operation::KvSet {
+        self.wal.append(&Operation::KvSet {
             key,
             value: val.clone(),
             ttl: None,
@@ -760,11 +704,7 @@ impl Zega {
 
     pub fn kv_set(&self, key: String, value: Value, ttl_secs: Option<u64>) -> Result<()> {
         self.kv.set(key.clone(), value.clone(), ttl_secs);
-        let mut wal = self
-            .wal
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        wal.append(&Operation::KvSet {
+        self.wal.append(&Operation::KvSet {
             key,
             value,
             ttl: ttl_secs,
@@ -774,11 +714,7 @@ impl Zega {
 
     pub fn kv_del(&self, key: &str) -> Result<bool> {
         let deleted = self.kv.del(key);
-        let mut wal = self
-            .wal
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        wal.append(&Operation::KvDel {
+        self.wal.append(&Operation::KvDel {
             key: key.to_string(),
         })?;
         Ok(deleted)
@@ -1253,7 +1189,7 @@ fn traverse_relationship(
 
 fn create_pattern(
     graph: &mut Graph,
-    wal: &mut Wal,
+    wal: &Wal,
     pattern: &[PatternElement],
     params: &HashMap<String, Value>,
     mut bindings: Bindings,
