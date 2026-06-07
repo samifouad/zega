@@ -23,7 +23,11 @@ use zega_graph::{Node, Relationship};
 use zega_kv::KvStore;
 use zega_parser::Value;
 
-const HEADER_LEN: u64 = 12;
+const WAL_MAGIC: &[u8; 4] = b"ZWAL";
+const WAL_VERSION: u16 = 2;
+const WAL_FILE_HEADER: &[u8; 6] = b"ZWAL\x02\x00";
+const WAL_FILE_HEADER_LEN: u64 = WAL_FILE_HEADER.len() as u64;
+const ENTRY_HEADER_LEN: u64 = 12;
 #[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_GROUP_COMMIT_INTERVAL: Duration = Duration::from_millis(5);
 const DEFAULT_GROUP_COMMIT_BATCH_SIZE: usize = 64;
@@ -161,11 +165,8 @@ impl Wal {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let file = OpenOptions::new()
-                .create(true)
-                .read(true)
-                .append(true)
-                .open(path)?;
+            prepare_wal(path)?;
+            let file = OpenOptions::new().read(true).append(true).open(path)?;
             let group = Arc::new(GroupCommit {
                 state: Mutex::new(WalState {
                     file: Some(file),
@@ -217,13 +218,19 @@ impl Wal {
             if state.file.is_none() {
                 return Ok(());
             }
-            let file = state
-                .file
-                .as_mut()
-                .ok_or_else(|| WalError::Durability("WAL file is not available".to_string()))?;
-            file.write_all(&len.to_le_bytes())?;
-            file.write_all(&crc.to_le_bytes())?;
-            file.write_all(&bytes)?;
+            let append_result = {
+                let file = state
+                    .file
+                    .as_mut()
+                    .ok_or_else(|| WalError::Durability("WAL file is not available".to_string()))?;
+                append_entry(file, len, crc, &bytes)
+            };
+            if let Err(error) = append_result {
+                if matches!(error, WalError::Durability(_)) {
+                    state.durability_error = Some(error.to_string());
+                }
+                return Err(error);
+            }
             state.next_sequence += 1;
             let sequence = state.next_sequence;
             state.pending_entries += 1;
@@ -278,12 +285,20 @@ impl Wal {
             let file_len = file.metadata()?.len();
             let mut reader = BufReader::new(file.try_clone()?);
             let mut ops = Vec::new();
-            let mut valid_end = 0u64;
+            let mut header = [0u8; WAL_FILE_HEADER.len()];
+            reader.read_exact(&mut header)?;
+            if &header != WAL_FILE_HEADER {
+                return Err(WalError::Corruption {
+                    offset: 0,
+                    reason: "invalid WAL header".to_string(),
+                });
+            }
+            let mut valid_end = WAL_FILE_HEADER_LEN;
 
             while valid_end < file_len {
                 let entry_start = valid_end;
                 let remaining = file_len - entry_start;
-                if remaining < HEADER_LEN {
+                if remaining < ENTRY_HEADER_LEN {
                     truncate_tail(&file, valid_end)?;
                     break;
                 }
@@ -295,7 +310,7 @@ impl Wal {
                 reader.read_exact(&mut crc_bytes)?;
                 let expected_crc = u32::from_le_bytes(crc_bytes);
                 let entry_end = entry_start
-                    .checked_add(HEADER_LEN)
+                    .checked_add(ENTRY_HEADER_LEN)
                     .and_then(|offset| offset.checked_add(len))
                     .ok_or_else(|| WalError::Corruption {
                         offset: entry_start,
@@ -335,6 +350,140 @@ impl Wal {
             Ok(ops)
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn prepare_wal(path: &Path) -> Result<(), WalError> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len == 0 {
+        file.write_all(WAL_FILE_HEADER)?;
+        file.sync_all()?;
+        return Ok(());
+    }
+
+    let mut magic = [0u8; WAL_MAGIC.len()];
+    let magic_len = file.read(&mut magic)?;
+    if magic_len == WAL_MAGIC.len() && &magic == WAL_MAGIC {
+        let mut version = [0u8; 2];
+        file.read_exact(&mut version)
+            .map_err(|_| WalError::Corruption {
+                offset: 0,
+                reason: "truncated WAL header".to_string(),
+            })?;
+        let version = u16::from_le_bytes(version);
+        if version != WAL_VERSION {
+            return Err(WalError::Corruption {
+                offset: 0,
+                reason: format!("unsupported WAL version {version}"),
+            });
+        }
+        return Ok(());
+    }
+
+    migrate_legacy_wal(path, file_len)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn migrate_legacy_wal(path: &Path, file_len: u64) -> Result<(), WalError> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut entries = Vec::new();
+    let mut offset = 0u64;
+    while offset < file_len {
+        let remaining = file_len - offset;
+        if remaining < 8 {
+            break;
+        }
+        let mut len_bytes = [0u8; 8];
+        reader.read_exact(&mut len_bytes)?;
+        let len = u64::from_le_bytes(len_bytes);
+        let entry_end = offset
+            .checked_add(8)
+            .and_then(|start| start.checked_add(len))
+            .ok_or_else(|| WalError::Corruption {
+                offset,
+                reason: "legacy entry length overflow".to_string(),
+            })?;
+        if entry_end > file_len {
+            break;
+        }
+        let len = usize::try_from(len).map_err(|_| WalError::Corruption {
+            offset,
+            reason: "legacy entry is too large for this platform".to_string(),
+        })?;
+        let mut payload = vec![0u8; len];
+        reader.read_exact(&mut payload)?;
+        bincode::deserialize::<Operation>(&payload).map_err(|error| WalError::Corruption {
+            offset,
+            reason: format!("invalid legacy operation payload: {error}"),
+        })?;
+        entries.push(payload);
+        offset = entry_end;
+    }
+
+    let tmp_path = path.with_extension("wal.migrate.tmp");
+    let mut migrated = File::create(&tmp_path)?;
+    migrated.write_all(WAL_FILE_HEADER)?;
+    for payload in entries {
+        let len = u64::try_from(payload.len())
+            .map_err(|_| WalError::Durability("WAL entry exceeds u64 length".to_string()))?;
+        let crc = crc32fast::hash(&payload);
+        migrated.write_all(&len.to_le_bytes())?;
+        migrated.write_all(&crc.to_le_bytes())?;
+        migrated.write_all(&payload)?;
+    }
+    migrated.sync_all()?;
+    drop(migrated);
+    std::fs::rename(&tmp_path, path)?;
+    if let Some(parent) = path.parent() {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+trait AppendTarget: Write {
+    fn len(&self) -> io::Result<u64>;
+    fn truncate(&mut self, len: u64) -> io::Result<()>;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AppendTarget for File {
+    fn len(&self) -> io::Result<u64> {
+        Ok(self.metadata()?.len())
+    }
+
+    fn truncate(&mut self, len: u64) -> io::Result<()> {
+        self.set_len(len)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn append_entry<T: AppendTarget>(
+    target: &mut T,
+    len: u64,
+    crc: u32,
+    payload: &[u8],
+) -> Result<(), WalError> {
+    let offset = target.len()?;
+    let result = target
+        .write_all(&len.to_le_bytes())
+        .and_then(|()| target.write_all(&crc.to_le_bytes()))
+        .and_then(|()| target.write_all(payload));
+    if let Err(write_error) = result {
+        target.truncate(offset).map_err(|truncate_error| {
+            WalError::Durability(format!(
+                "WAL append failed ({write_error}); rollback failed ({truncate_error})"
+            ))
+        })?;
+        return Err(WalError::Io(write_error));
+    }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -474,6 +623,15 @@ mod tests {
         }
     }
 
+    fn kv_keys(ops: &[Operation]) -> Vec<&str> {
+        ops.iter()
+            .map(|op| match op {
+                Operation::KvSet { key, .. } => key.as_str(),
+                _ => panic!("expected KvSet operation"),
+            })
+            .collect()
+    }
+
     #[test]
     fn test_wal_roundtrip() {
         let dir = tempdir().unwrap();
@@ -492,6 +650,95 @@ mod tests {
 
         let wal2 = Wal::new(&wal_path, false).unwrap();
         assert_eq!(wal2.iter().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn legacy_wal_is_migrated_without_data_loss() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("wal.bin");
+        let expected = [kv_set("legacy-one"), kv_set("legacy-two")];
+        let mut legacy = File::create(&wal_path).unwrap();
+        for op in &expected {
+            let payload = bincode::serialize(op).unwrap();
+            legacy
+                .write_all(&(payload.len() as u64).to_le_bytes())
+                .unwrap();
+            legacy.write_all(&payload).unwrap();
+        }
+        legacy.sync_all().unwrap();
+        drop(legacy);
+
+        let wal = Wal::new(&wal_path, true).unwrap();
+        let recovered = wal.iter().unwrap();
+        assert_eq!(kv_keys(&recovered), ["legacy-one", "legacy-two"]);
+        assert!(std::fs::read(&wal_path)
+            .unwrap()
+            .starts_with(WAL_FILE_HEADER));
+    }
+
+    struct PartialWriteTarget {
+        file: File,
+        bytes_before_error: usize,
+        failed: bool,
+    }
+
+    impl Write for PartialWriteTarget {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.failed {
+                return Err(io::Error::other("injected partial write failure"));
+            }
+            let written = self.bytes_before_error.min(buf.len());
+            let written = self.file.write(&buf[..written])?;
+            self.bytes_before_error -= written;
+            if self.bytes_before_error == 0 {
+                self.failed = true;
+            }
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.file.flush()
+        }
+    }
+
+    impl AppendTarget for PartialWriteTarget {
+        fn len(&self) -> io::Result<u64> {
+            Ok(self.file.metadata()?.len())
+        }
+
+        fn truncate(&mut self, len: u64) -> io::Result<()> {
+            self.file.set_len(len)
+        }
+    }
+
+    #[test]
+    fn partial_append_is_truncated_before_later_append() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("wal.bin");
+        let wal = Wal::new(&wal_path, true).unwrap();
+        wal.append(&kv_set("before")).unwrap();
+        drop(wal);
+        let valid_len = std::fs::metadata(&wal_path).unwrap().len();
+
+        let payload = bincode::serialize(&kv_set("partial")).unwrap();
+        let mut target = PartialWriteTarget {
+            file: OpenOptions::new().append(true).open(&wal_path).unwrap(),
+            bytes_before_error: 10,
+            failed: false,
+        };
+        assert!(append_entry(
+            &mut target,
+            payload.len() as u64,
+            crc32fast::hash(&payload),
+            &payload
+        )
+        .is_err());
+        assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), valid_len);
+        drop(target);
+
+        let wal = Wal::new(&wal_path, true).unwrap();
+        wal.append(&kv_set("after")).unwrap();
+        assert_eq!(kv_keys(&wal.iter().unwrap()), ["before", "after"]);
     }
 
     #[test]
@@ -538,7 +785,7 @@ mod tests {
         wal.append(&kv_set("second")).unwrap();
         drop(wal);
         let mut bytes = std::fs::read(&wal_path).unwrap();
-        bytes[HEADER_LEN as usize] ^= 0xff;
+        bytes[(WAL_FILE_HEADER_LEN + ENTRY_HEADER_LEN) as usize] ^= 0xff;
         std::fs::write(&wal_path, bytes).unwrap();
 
         let wal = Wal::new(&wal_path, false).unwrap();
