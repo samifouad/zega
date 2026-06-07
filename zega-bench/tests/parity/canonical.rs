@@ -13,7 +13,7 @@ pub fn zega_value(value: &Value) -> Json {
     match value {
         Value::String(value) => typed("string", json!(value)),
         Value::Int(value) => typed("integer", json!(value)),
-        Value::Float(bits) => typed("float", json!(f64::from_bits(*bits))),
+        Value::Float(bits) => float(f64::from_bits(*bits)),
         Value::Bool(value) => typed("boolean", json!(value)),
         Value::List(values) => typed("list", Json::Array(values.iter().map(zega_value).collect())),
         Value::Map(values) => {
@@ -53,7 +53,19 @@ pub fn integer(value: i64) -> Json {
 }
 
 pub fn float(value: f64) -> Json {
-    typed("float", json!(value))
+    // serde_json renders non-finite floats as null, which would collapse
+    // +inf / -inf / NaN into one value and hide real mismatches. Encode them
+    // as distinct string sentinels so a non-finite divergence is always caught.
+    let encoded = if value.is_finite() {
+        json!(value)
+    } else if value.is_nan() {
+        json!("NaN")
+    } else if value.is_sign_positive() {
+        json!("+inf")
+    } else {
+        json!("-inf")
+    };
+    typed("float", encoded)
 }
 
 pub fn boolean(value: bool) -> Json {
