@@ -87,13 +87,42 @@ pub fn normalize(mut rows: CanonicalRows, ordered: bool) -> CanonicalRows {
     rows
 }
 
+#[allow(dead_code)]
 pub fn compare(left: &CanonicalRows, right: &CanonicalRows) -> Result<(), String> {
-    if left == right {
+    compare_with(left, right, |left, right| left == right)
+}
+
+#[allow(dead_code)]
+pub fn compare_tolerant(left: &CanonicalRows, right: &CanonicalRows) -> Result<(), String> {
+    const REL_EPS: f64 = 1e-9;
+    const ABS_EPS: f64 = 1e-12;
+
+    // Aggregate float accumulation order differs between Zega and Neo4j, so
+    // ULP-level divergence is expected and accepted by live differential tests.
+    compare_with(left, right, |left, right| {
+        json_equal_tolerant(left, right, false, REL_EPS, ABS_EPS)
+    })
+}
+
+fn compare_with(
+    left: &CanonicalRows,
+    right: &CanonicalRows,
+    equal: impl Fn(&Json, &Json) -> bool,
+) -> Result<(), String> {
+    if left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| equal(left, right))
+    {
         return Ok(());
     }
 
     let max = left.len().max(right.len());
-    let first = (0..max).find(|index| left.get(*index) != right.get(*index));
+    let first = (0..max).find(|index| match (left.get(*index), right.get(*index)) {
+        (Some(left), Some(right)) => !equal(left, right),
+        _ => true,
+    });
     Err(format!(
         "first difference at row {}:\n  zega: {}\n  reference: {}",
         first.unwrap_or(0),
@@ -106,4 +135,47 @@ pub fn compare(left: &CanonicalRows, right: &CanonicalRows) -> Result<(), String
             .map(Json::to_string)
             .unwrap_or_else(|| "<missing>".into())
     ))
+}
+
+fn json_equal_tolerant(
+    left: &Json,
+    right: &Json,
+    float_value: bool,
+    rel_eps: f64,
+    abs_eps: f64,
+) -> bool {
+    match (left, right) {
+        (Json::Number(left), Json::Number(right)) if float_value => {
+            let (Some(left), Some(right)) = (left.as_f64(), right.as_f64()) else {
+                return left == right;
+            };
+            (left - right).abs() <= abs_eps.max(rel_eps * left.abs().max(right.abs()))
+        }
+        (Json::Array(left), Json::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| json_equal_tolerant(left, right, false, rel_eps, abs_eps))
+        }
+        (Json::Object(left), Json::Object(right)) => {
+            if left.len() != right.len() {
+                return false;
+            }
+            let tagged_float =
+                left.get("type") == Some(&json!("float")) && right.get("type") == left.get("type");
+            left.iter().all(|(key, left)| {
+                right.get(key).is_some_and(|right| {
+                    json_equal_tolerant(
+                        left,
+                        right,
+                        tagged_float && key == "value",
+                        rel_eps,
+                        abs_eps,
+                    )
+                })
+            })
+        }
+        _ => left == right,
+    }
 }

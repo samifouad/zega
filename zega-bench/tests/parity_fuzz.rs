@@ -152,6 +152,56 @@ fn rejected_queries_are_not_counted_as_parity() {
     assert!(diff.contains("Zega error") && diff.contains("Neo4j error"));
 }
 
+#[test]
+fn live_comparison_tolerates_float_accumulation_noise_recursively() {
+    let left = vec![canonical::row([
+        ("sum".into(), canonical::float(63.900000000000006)),
+        (
+            "nested".into(),
+            serde_json::json!({
+                "type": "map",
+                "value": {
+                    "values": {
+                        "type": "list",
+                        "value": [canonical::float(18.333333333333332)]
+                    }
+                }
+            }),
+        ),
+    ])];
+    let right = vec![canonical::row([
+        ("sum".into(), canonical::float(63.9)),
+        (
+            "nested".into(),
+            serde_json::json!({
+                "type": "map",
+                "value": {
+                    "values": {
+                        "type": "list",
+                        "value": [canonical::float(18.333333333333336)]
+                    }
+                }
+            }),
+        ),
+    ])];
+
+    assert!(canonical::compare_tolerant(&left, &right).is_ok());
+}
+
+#[test]
+fn live_comparison_keeps_real_values_and_type_tags_exact() {
+    assert!(canonical::compare_tolerant(
+        &vec![canonical::row([("value".into(), canonical::float(1.0))])],
+        &vec![canonical::row([("value".into(), canonical::float(1.001))])],
+    )
+    .is_err());
+    assert!(canonical::compare_tolerant(
+        &vec![canonical::row([("value".into(), canonical::integer(1))])],
+        &vec![canonical::row([("value".into(), canonical::float(1.0))])],
+    )
+    .is_err());
+}
+
 #[tokio::test]
 async fn generative_differential_parity() {
     let seed = env_u64("ZEGA_PARITY_SEED", DEFAULT_SEED);
@@ -272,7 +322,7 @@ fn compare_results(
     neo4j: Result<CanonicalRows, String>,
 ) -> Option<String> {
     match (zega, neo4j) {
-        (Ok(left), Ok(right)) => canonical::compare(&left, &right).err(),
+        (Ok(left), Ok(right)) => canonical::compare_tolerant(&left, &right).err(),
         (Err(left), Err(right)) => Some(format!("Zega error: {left}\nNeo4j error: {right}")),
         (Err(error), Ok(rows)) => Some(format!("Zega error: {error}\nNeo4j rows: {rows:?}")),
         (Ok(rows), Err(error)) => Some(format!("Zega rows: {rows:?}\nNeo4j error: {error}")),
