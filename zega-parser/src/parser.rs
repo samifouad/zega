@@ -97,11 +97,12 @@ impl<'a> Parser<'a> {
         if self.current == Token::Create {
             self.advance()?;
             let create_pattern = self.parse_pattern()?;
-            return Ok(Statement::MatchCreate {
+            let write = Statement::MatchCreate {
                 match_pattern: pattern,
                 where_clause,
                 create_pattern,
-            });
+            };
+            return self.parse_trailing_return(write);
         }
         let return_clause = if self.current == Token::Return {
             self.advance()?;
@@ -132,7 +133,7 @@ impl<'a> Parser<'a> {
     fn parse_create(&mut self) -> Result<Statement, ParseError> {
         self.advance()?; // CREATE
         let pattern = self.parse_pattern()?;
-        Ok(Statement::Create { pattern })
+        self.parse_trailing_return(Statement::Create { pattern })
     }
 
     fn parse_merge(&mut self) -> Result<Statement, ParseError> {
@@ -151,7 +152,7 @@ impl<'a> Parser<'a> {
                 return Err(ParseError::Message("expected CREATE after ON".to_string()));
             }
         }
-        Ok(Statement::Merge { pattern, on_create })
+        self.parse_trailing_return(Statement::Merge { pattern, on_create })
     }
 
     fn parse_set_or_kv(&mut self) -> Result<Statement, ParseError> {
@@ -160,7 +161,7 @@ impl<'a> Parser<'a> {
             self.parse_kv_set_after_key()
         } else {
             let assignments = self.parse_set_clauses()?;
-            Ok(Statement::Set { assignments })
+            self.parse_trailing_return(Statement::Set { assignments })
         }
     }
 
@@ -189,7 +190,34 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(Statement::Delete { identifiers: ids })
+        self.parse_trailing_return(Statement::Delete { identifiers: ids })
+    }
+
+    fn parse_trailing_return(&mut self, write: Statement) -> Result<Statement, ParseError> {
+        if self.current != Token::Return {
+            return Ok(write);
+        }
+        self.advance()?;
+        let return_clause = self.parse_return_clause()?;
+        let order_by = if self.current == Token::Order {
+            self.advance()?;
+            self.expect(Token::By)?;
+            Some(self.parse_order_by()?)
+        } else {
+            None
+        };
+        let limit = if self.current == Token::Limit {
+            self.advance()?;
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+        Ok(Statement::WriteThenReturn {
+            write: Box::new(write),
+            return_clause,
+            order_by,
+            limit,
+        })
     }
 
     fn parse_kv_get(&mut self) -> Result<Statement, ParseError> {

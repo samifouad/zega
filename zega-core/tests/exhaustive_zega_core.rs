@@ -35,6 +35,18 @@ fn no_params() -> HashMap<String, Value> {
     HashMap::new()
 }
 
+#[test]
+fn create_then_return_projects_created_binding() {
+    let zega = db();
+    let rows = zega
+        .query(
+            "CREATE (n:T {a: $x}) RETURN n.a AS a",
+            params(&[("x", Value::Int(42))]),
+        )
+        .unwrap();
+    assert_eq!(one_field(&rows, "a"), Value::Int(42));
+}
+
 fn claims(entries: &[(&str, &str)]) -> HashMap<String, Value> {
     entries
         .iter()

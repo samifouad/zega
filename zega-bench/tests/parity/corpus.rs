@@ -68,6 +68,14 @@ pub fn graph_ops(run: &str) -> Vec<GraphOp> {
             ordered: false,
         },
         GraphOp {
+            name: "graph.create_then_return",
+            query: format!(
+                "CREATE (n:ParityProbe {{id:'{run}-returned', parity_run:'{run}'}}) RETURN n.id AS id"
+            ),
+            columns: &[("id", STRING)],
+            ordered: false,
+        },
+        GraphOp {
             name: "graph.match_by_property",
             query: format!(
                 "MATCH (n:ParityProbe {{id:'{run}-probe'}}) RETURN n.id AS id"

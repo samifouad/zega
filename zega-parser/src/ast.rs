@@ -64,6 +64,12 @@ pub enum Statement {
     Delete {
         identifiers: Vec<String>,
     },
+    WriteThenReturn {
+        write: Box<Statement>,
+        return_clause: ReturnClause,
+        order_by: Option<Vec<(Expr, OrderDirection)>>,
+        limit: Option<Expr>,
+    },
     KvGet {
         key: Expr,
     },

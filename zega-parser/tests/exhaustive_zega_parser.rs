@@ -1433,6 +1433,24 @@ fn parse_create_relationship() {
     }
 }
 
+#[test]
+fn parse_create_then_return_with_order_and_limit() {
+    let stmt = parse_one("CREATE (n:T {v: 1}) RETURN n.v AS v ORDER BY v DESC LIMIT 1");
+    let Statement::WriteThenReturn {
+        write,
+        return_clause,
+        order_by,
+        limit,
+    } = stmt
+    else {
+        panic!("expected WriteThenReturn");
+    };
+    assert!(matches!(*write, Statement::Create { .. }));
+    assert_eq!(return_clause.items[0].alias.as_deref(), Some("v"));
+    assert_eq!(order_by.unwrap().len(), 1);
+    assert!(limit.is_some());
+}
+
 // =====================================================================
 // PARSER: MATCH ... CREATE (MatchCreate)
 // =====================================================================
@@ -1526,6 +1544,36 @@ fn parse_merge_on_create_multiple_assignments() {
         Statement::Merge { on_create, .. } => assert_eq!(on_create.len(), 2),
         other => panic!("got {other:?}"),
     }
+}
+
+#[test]
+fn parse_merge_then_return() {
+    let stmt = parse_one("MERGE (n:T {v: 1}) RETURN n.v AS v");
+    let Statement::WriteThenReturn {
+        write,
+        return_clause,
+        ..
+    } = stmt
+    else {
+        panic!("expected WriteThenReturn");
+    };
+    assert!(matches!(*write, Statement::Merge { .. }));
+    assert_eq!(return_clause.items[0].alias.as_deref(), Some("v"));
+}
+
+#[test]
+fn parse_set_then_return() {
+    let stmt = parse_one("SET n.v = 2 RETURN n.v AS v");
+    let Statement::WriteThenReturn {
+        write,
+        return_clause,
+        ..
+    } = stmt
+    else {
+        panic!("expected WriteThenReturn");
+    };
+    assert!(matches!(*write, Statement::Set { .. }));
+    assert_eq!(return_clause.items[0].alias.as_deref(), Some("v"));
 }
 
 #[test]

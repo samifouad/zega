@@ -387,6 +387,19 @@ impl Zega {
             Statement::Merge { pattern, on_create } => self.exec_merge(pattern, on_create, params),
             Statement::Set { assignments } => self.exec_set(assignments, params),
             Statement::Delete { identifiers } => self.exec_delete(identifiers),
+            Statement::WriteThenReturn {
+                write,
+                return_clause,
+                order_by,
+                limit,
+            } => self.exec_write_then_return(
+                write,
+                return_clause,
+                order_by.as_deref(),
+                limit.as_ref(),
+                params,
+                traversal_budget,
+            ),
             Statement::KvGet { key } => self.exec_kv_get(key, params),
             Statement::KvSet { key, value, ttl } => {
                 self.exec_kv_set(key, value, ttl.as_ref(), params)
@@ -414,56 +427,77 @@ impl Zega {
         let bindings =
             resolve_match_bindings(&graph, pattern, where_clause, params, traversal_budget)?;
 
-        let rows = project_rows(&bindings, return_clause, params, &graph)?;
-        let has_aggregates = return_clause
-            .items
-            .iter()
-            .any(|item| matches!(item.expr, Expr::Aggregate { .. }));
-        let mut scoped_rows: Vec<_> = if has_aggregates {
-            rows.into_iter().map(|row| (None, row)).collect()
-        } else {
-            bindings.iter().map(Some).zip(rows).collect()
-        };
+        project_bound_rows(
+            &graph,
+            &bindings,
+            return_clause,
+            order_by.map(Vec::as_slice),
+            limit,
+            params,
+        )
+    }
 
-        // ORDER BY
-        if let Some(ob) = order_by {
-            for (expr, dir) in ob.iter().rev() {
-                let mut keyed_rows: Vec<_> = scoped_rows
-                    .into_iter()
-                    .map(|(binding, row)| {
-                        let key =
-                            eval_order_expr(expr, params, binding, &row, &graph, return_clause)
-                                .unwrap_or(Value::Null);
-                        (key, binding, row)
-                    })
-                    .collect();
-                keyed_rows.sort_by(|(a, _, _), (b, _, _)| {
-                    let cmp = compare_order_values(a, b);
-                    match dir {
-                        OrderDirection::Asc => cmp,
-                        OrderDirection::Desc => cmp.reverse(),
-                    }
-                });
-                scoped_rows = keyed_rows
-                    .into_iter()
-                    .map(|(_, binding, row)| (binding, row))
-                    .collect();
+    #[allow(clippy::too_many_arguments)]
+    fn exec_write_then_return(
+        &self,
+        write: &Statement,
+        return_clause: &ReturnClause,
+        order_by: Option<&[(Expr, OrderDirection)]>,
+        limit: Option<&Expr>,
+        params: &HashMap<String, Value>,
+        traversal_budget: &mut TraversalWorkBudget,
+    ) -> Result<Vec<Row>> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let bindings = match write {
+            Statement::Create { pattern } => {
+                vec![create_pattern(
+                    &mut graph,
+                    &self.wal,
+                    pattern,
+                    params,
+                    Bindings::new(),
+                )?]
             }
-        }
-        let mut rows: Vec<_> = scoped_rows.into_iter().map(|(_, row)| row).collect();
-
-        // LIMIT
-        if let Some(limit_expr) = limit {
-            let limit_val = eval_expr(limit_expr, params, &Bindings::new(), &graph)?;
-            if let Value::Int(n) = limit_val {
-                let n = n as usize;
-                if n < rows.len() {
-                    rows.truncate(n);
+            Statement::MatchCreate {
+                match_pattern,
+                where_clause,
+                create_pattern: create_elements,
+            } => {
+                let matched = resolve_match_bindings(
+                    &graph,
+                    match_pattern,
+                    where_clause.as_ref(),
+                    params,
+                    traversal_budget,
+                )?;
+                let mut created = Vec::with_capacity(matched.len());
+                for binding in matched {
+                    created.push(create_pattern(
+                        &mut graph,
+                        &self.wal,
+                        create_elements,
+                        params,
+                        binding,
+                    )?);
                 }
+                created
             }
-        }
-
-        Ok(rows)
+            Statement::Merge { pattern, on_create } => {
+                vec![merge_pattern(
+                    &mut graph, &self.wal, pattern, on_create, params,
+                )?]
+            }
+            Statement::Set { .. } | Statement::Delete { .. } => vec![Bindings::new()],
+            _ => {
+                return Err(ZegaError::Execution(
+                    "RETURN can only follow a graph write clause".to_string(),
+                ));
+            }
+        };
+        project_bound_rows(&graph, &bindings, return_clause, order_by, limit, params)
     }
 
     fn exec_create(
@@ -516,64 +550,7 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut created = false;
-        let mut var_map = Bindings::new();
-
-        for element in pattern {
-            let mut props = HashMap::new();
-            for (k, expr) in &element.properties {
-                let val = eval_expr(expr, params, &var_map, &graph)?;
-                props.insert(k.clone(), val);
-            }
-            // Try to find existing node
-            let existing = if !element.labels.is_empty() {
-                let label = &element.labels[0];
-                let candidates = graph.nodes_by_label(label).cloned().unwrap_or_default();
-                candidates.into_iter().find(|&id| {
-                    let node = graph.get_node(id).unwrap();
-                    node.props == props
-                })
-            } else {
-                None
-            };
-
-            if let Some(id) = existing {
-                if !element.variable.is_empty() {
-                    var_map.insert(element.variable.clone(), BoundValue::Node(id));
-                }
-            } else {
-                let id = graph.create_node(element.labels.clone(), props.clone());
-                if !element.variable.is_empty() {
-                    var_map.insert(element.variable.clone(), BoundValue::Node(id));
-                }
-                created = true;
-                self.wal.append(&Operation::InsertNode {
-                    id,
-                    labels: element.labels.clone(),
-                    props: props.clone(),
-                })?;
-            }
-        }
-
-        if created {
-            for clause in on_create {
-                let val = eval_expr(&clause.value, params, &var_map, &graph)?;
-                if let Expr::PropertyAccess(ref target, ref prop) = clause.target {
-                    if let Expr::Identifier(ref var) = **target {
-                        if let Some(node_id) = bound_node(&var_map, var) {
-                            let mut p = HashMap::new();
-                            p.insert(prop.clone(), val.clone());
-                            graph.update_node(node_id, p.clone());
-                            self.wal.append(&Operation::UpdateNode {
-                                id: node_id,
-                                props: p,
-                            })?;
-                        }
-                    }
-                }
-            }
-        }
-
+        merge_pattern(&mut graph, &self.wal, pattern, on_create, params)?;
         Ok(vec![])
     }
 
@@ -1265,7 +1242,7 @@ fn create_pattern(
     pattern: &[PatternElement],
     params: &HashMap<String, Value>,
     mut bindings: Bindings,
-) -> Result<()> {
+) -> Result<Bindings> {
     let mut previous_id = None;
 
     for element in pattern {
@@ -1313,7 +1290,69 @@ fn create_pattern(
         previous_id = Some(id);
     }
 
-    Ok(())
+    Ok(bindings)
+}
+
+fn merge_pattern(
+    graph: &mut Graph,
+    wal: &Wal,
+    pattern: &[PatternElement],
+    on_create: &[SetClause],
+    params: &HashMap<String, Value>,
+) -> Result<Bindings> {
+    let mut created = false;
+    let mut bindings = Bindings::new();
+
+    for element in pattern {
+        let mut props = HashMap::new();
+        for (key, expr) in &element.properties {
+            props.insert(key.clone(), eval_expr(expr, params, &bindings, graph)?);
+        }
+        let existing = if !element.labels.is_empty() {
+            let candidates = graph
+                .nodes_by_label(&element.labels[0])
+                .cloned()
+                .unwrap_or_default();
+            candidates
+                .into_iter()
+                .find(|&id| graph.get_node(id).is_some_and(|node| node.props == props))
+        } else {
+            None
+        };
+
+        let id = if let Some(id) = existing {
+            id
+        } else {
+            let id = graph.create_node(element.labels.clone(), props.clone());
+            created = true;
+            wal.append(&Operation::InsertNode {
+                id,
+                labels: element.labels.clone(),
+                props,
+            })?;
+            id
+        };
+        if !element.variable.is_empty() {
+            bindings.insert(element.variable.clone(), BoundValue::Node(id));
+        }
+    }
+
+    if created {
+        for clause in on_create {
+            let value = eval_expr(&clause.value, params, &bindings, graph)?;
+            if let Expr::PropertyAccess(target, prop) = &clause.target {
+                if let Expr::Identifier(var) = &**target {
+                    if let Some(node_id) = bound_node(&bindings, var) {
+                        let props = HashMap::from([(prop.clone(), value)]);
+                        graph.update_node(node_id, props.clone());
+                        wal.append(&Operation::UpdateNode { id: node_id, props })?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(bindings)
 }
 
 fn match_candidates(
@@ -1878,6 +1917,62 @@ fn project_rows(
             )
         })
         .collect()
+}
+
+fn project_bound_rows(
+    graph: &Graph,
+    bindings: &[Bindings],
+    return_clause: &ReturnClause,
+    order_by: Option<&[(Expr, OrderDirection)]>,
+    limit: Option<&Expr>,
+    params: &HashMap<String, Value>,
+) -> Result<Vec<Row>> {
+    let rows = project_rows(bindings, return_clause, params, graph)?;
+    let has_aggregates = return_clause
+        .items
+        .iter()
+        .any(|item| matches!(item.expr, Expr::Aggregate { .. }));
+    let mut scoped_rows: Vec<_> = if has_aggregates {
+        rows.into_iter().map(|row| (None, row)).collect()
+    } else {
+        bindings.iter().map(Some).zip(rows).collect()
+    };
+
+    if let Some(order_by) = order_by {
+        for (expr, direction) in order_by.iter().rev() {
+            let mut keyed_rows: Vec<_> = scoped_rows
+                .into_iter()
+                .map(|(binding, row)| {
+                    let key = eval_order_expr(expr, params, binding, &row, graph, return_clause)
+                        .unwrap_or(Value::Null);
+                    (key, binding, row)
+                })
+                .collect();
+            keyed_rows.sort_by(|(left, _, _), (right, _, _)| {
+                let comparison = compare_order_values(left, right);
+                match direction {
+                    OrderDirection::Asc => comparison,
+                    OrderDirection::Desc => comparison.reverse(),
+                }
+            });
+            scoped_rows = keyed_rows
+                .into_iter()
+                .map(|(_, binding, row)| (binding, row))
+                .collect();
+        }
+    }
+    let mut rows: Vec<_> = scoped_rows.into_iter().map(|(_, row)| row).collect();
+
+    if let Some(limit) = limit {
+        if let Value::Int(limit) = eval_expr(limit, params, &Bindings::new(), graph)? {
+            let limit = limit as usize;
+            if limit < rows.len() {
+                rows.truncate(limit);
+            }
+        }
+    }
+
+    Ok(rows)
 }
 
 fn project_group(
