@@ -6,8 +6,10 @@ mod generator;
 mod shrink;
 
 use canonical::CanonicalRows;
-use generator::{ColumnKind, GeneratedGraph, GeneratedQuery, Rng};
-use neo4rs::{query, Graph};
+use generator::{
+    ColumnKind, GeneratedGraph, GeneratedQuery, QueryShape, Rng, SortValue, TraversalLength,
+};
+use neo4rs::{query, BoltType, Graph};
 use std::collections::HashMap;
 use std::env;
 use zega_core::Zega;
@@ -63,6 +65,91 @@ fn generated_cypher_parses() {
             .parse()
             .unwrap_or_else(|error| panic!("case {case}: {statement}: {error}"));
     }
+}
+
+#[test]
+fn generated_grammar_covers_v2_shapes() {
+    let mut rng = Rng::new(DEFAULT_SEED);
+    let mut null_sort = false;
+    let mut sort_kinds = std::collections::HashSet::new();
+    let mut raw_order = false;
+    let mut alias_order = false;
+    let mut order_lengths = [false; 4];
+    let mut mixed_directions = false;
+    let mut aggregates = std::collections::HashSet::new();
+    let mut grouped = [false; 2];
+    let mut aggregate_order = false;
+    let mut traversal = [false; 4];
+    for _ in 0..1000 {
+        let (graph, query) = generator::generate_case(&mut rng);
+        for node in graph.nodes {
+            match node.sort {
+                SortValue::Null => null_sort = true,
+                SortValue::String(_) => {
+                    sort_kinds.insert("string");
+                }
+                SortValue::Integer(_) => {
+                    sort_kinds.insert("integer");
+                }
+                SortValue::Float(_) => {
+                    sort_kinds.insert("float");
+                }
+                SortValue::Boolean(_) => {
+                    sort_kinds.insert("boolean");
+                }
+            }
+        }
+        for key in &query.order {
+            raw_order |= key.expression.starts_with("n.");
+            alias_order |= !key.expression.contains('.');
+        }
+        order_lengths[query.order.len().min(3)] = true;
+        mixed_directions |= query
+            .order
+            .windows(2)
+            .any(|keys| keys[0].desc != keys[1].desc);
+        if matches!(&query.shape, QueryShape::Aggregate) {
+            grouped[(query.columns.len() > 1) as usize] = true;
+            aggregates.insert(query.columns.last().unwrap().expression);
+            aggregate_order |= query.is_ordered();
+        }
+        if let QueryShape::Traversal { length, .. } = &query.shape {
+            traversal[match length {
+                TraversalLength::Unbounded => 0,
+                TraversalLength::Bounded(_, _) => 1,
+                TraversalLength::UpTo(_) => 2,
+                TraversalLength::AtLeast(_) => 3,
+            }] = true;
+        }
+    }
+    assert!(null_sort && sort_kinds.len() == 4);
+    assert!(raw_order && alias_order && order_lengths[2] && order_lengths[3]);
+    assert!(mixed_directions);
+    assert_eq!(aggregates.len(), 7);
+    assert!(grouped.into_iter().all(|covered| covered) && aggregate_order);
+    assert!(traversal.into_iter().all(|covered| covered));
+}
+
+#[test]
+fn v2_shrink_candidates_keep_queries_parseable() {
+    let mut rng = Rng::new(DEFAULT_SEED);
+    for case in 0..200 {
+        let (_, query) = generator::generate_case(&mut rng);
+        for candidate in shrink::query_candidates(&query) {
+            let statement = candidate.cypher("shrink-parse-self-test");
+            Parser::new(&statement)
+                .unwrap()
+                .parse()
+                .unwrap_or_else(|error| panic!("case {case}: {statement}: {error}"));
+        }
+    }
+}
+
+#[test]
+fn rejected_queries_are_not_counted_as_parity() {
+    let diff = compare_results(Err("zega error".into()), Err("neo4j error".into()))
+        .expect("two rejected executions are not a successful differential comparison");
+    assert!(diff.contains("Zega error") && diff.contains("Neo4j error"));
 }
 
 #[tokio::test]
@@ -138,7 +225,7 @@ async fn run_case(
     let cypher = generated_query.cypher(run);
     let zega_result = zega
         .query(&cypher, HashMap::new())
-        .map(|rows| canonical::zega_rows(rows, generated_query.order.is_some()))
+        .map(|rows| canonical::zega_rows(rows, generated_query.is_ordered()))
         .map_err(|error| error.to_string());
     let neo4j_result = neo4j_rows(graph, &cypher, generated_query).await;
     compare_results(zega_result, neo4j_result)
@@ -157,25 +244,27 @@ async fn neo4j_rows(
     while let Some(row) = stream.next().await.map_err(|error| error.to_string())? {
         let mut fields = Vec::new();
         for column in &generated_query.columns {
-            let value = match column.kind {
-                ColumnKind::String => {
-                    canonical::string(row.get::<String>(column.alias).map_err(|e| e.to_string())?)
-                }
-                ColumnKind::Integer => {
-                    canonical::integer(row.get::<i64>(column.alias).map_err(|e| e.to_string())?)
-                }
-                ColumnKind::Float => {
-                    canonical::float(row.get::<f64>(column.alias).map_err(|e| e.to_string())?)
-                }
-                ColumnKind::Boolean => {
-                    canonical::boolean(row.get::<bool>(column.alias).map_err(|e| e.to_string())?)
-                }
-            };
+            let value = neo4j_value(
+                row.get::<BoltType>(column.alias)
+                    .map_err(|e| format!("{}: {e}", column.alias))?,
+                column.kind,
+            )?;
             fields.push((column.alias.to_string(), value));
         }
         rows.push(canonical::row(fields));
     }
-    Ok(canonical::normalize(rows, generated_query.order.is_some()))
+    Ok(canonical::normalize(rows, generated_query.is_ordered()))
+}
+
+fn neo4j_value(value: BoltType, expected: ColumnKind) -> Result<serde_json::Value, String> {
+    Ok(match value {
+        BoltType::Null(_) => canonical::null(),
+        BoltType::String(value) => canonical::string(value.value),
+        BoltType::Integer(value) => canonical::integer(value.value),
+        BoltType::Float(value) => canonical::float(value.value),
+        BoltType::Boolean(value) => canonical::boolean(value.value),
+        other => return Err(format!("unexpected {expected:?} Neo4j value: {other:?}")),
+    })
 }
 
 fn compare_results(
@@ -184,7 +273,7 @@ fn compare_results(
 ) -> Option<String> {
     match (zega, neo4j) {
         (Ok(left), Ok(right)) => canonical::compare(&left, &right).err(),
-        (Err(_), Err(_)) => None,
+        (Err(left), Err(right)) => Some(format!("Zega error: {left}\nNeo4j error: {right}")),
         (Err(error), Ok(rows)) => Some(format!("Zega error: {error}\nNeo4j rows: {rows:?}")),
         (Ok(rows), Err(error)) => Some(format!("Zega rows: {rows:?}\nNeo4j error: {error}")),
     }

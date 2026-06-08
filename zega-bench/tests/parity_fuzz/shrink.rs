@@ -18,6 +18,19 @@ pub fn graph_candidates(graph: &GeneratedGraph) -> Vec<GeneratedGraph> {
             .retain(|rel| rel.from < keep && rel.to < keep);
         candidates.push(candidate);
     }
+    for removed in &graph.nodes {
+        let mut candidate = graph.clone();
+        candidate.nodes.retain(|node| node.id != removed.id);
+        candidate
+            .relationships
+            .retain(|rel| rel.from != removed.id && rel.to != removed.id);
+        candidates.push(candidate);
+    }
+    for index in 0..graph.relationships.len() {
+        let mut candidate = graph.clone();
+        candidate.relationships.remove(index);
+        candidates.push(candidate);
+    }
     candidates
 }
 
@@ -28,10 +41,15 @@ pub fn query_candidates(query: &GeneratedQuery) -> Vec<GeneratedQuery> {
         candidate.limit = None;
         candidates.push(candidate);
     }
-    if query.order.is_some() {
+    if !query.order.is_empty() {
         let mut candidate = query.clone();
-        candidate.order = None;
+        candidate.order.clear();
         candidate.limit = None;
+        candidates.push(candidate);
+    }
+    if query.order.len() > 1 {
+        let mut candidate = query.clone();
+        candidate.order.truncate(1);
         candidates.push(candidate);
     }
     if query.predicates.len() > 1 {
@@ -47,7 +65,7 @@ pub fn query_candidates(query: &GeneratedQuery) -> Vec<GeneratedQuery> {
     if query.columns.len() > 1 {
         let mut candidate = query.clone();
         candidate.columns.truncate(1);
-        candidate.order = None;
+        candidate.order.clear();
         candidate.limit = None;
         candidates.push(candidate);
     }
