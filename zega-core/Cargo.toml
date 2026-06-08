@@ -26,3 +26,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+serde_json = { workspace = true }
