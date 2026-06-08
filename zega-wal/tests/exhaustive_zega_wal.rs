@@ -96,6 +96,16 @@ fn handcraft_legacy_wal(path: &Path, ops: &[Operation]) {
     file.sync_all().unwrap();
 }
 
+fn assert_snapshot_corruption(path: &Path) {
+    let mut graph = Graph::new();
+    let kv = KvStore::new();
+    match restore(&mut graph, &kv, path) {
+        Err(WalError::Corruption { .. }) => {}
+        Ok(restored) => panic!("expected snapshot corruption, got Ok({restored})"),
+        Err(other) => panic!("expected snapshot corruption, got {other:?}"),
+    }
+}
+
 // ===========================================================================
 // SECTION 1 — Basic construction & header invariants
 // ===========================================================================
@@ -1155,20 +1165,28 @@ fn snapshot_of_empty_db_restores_empty() {
 }
 
 #[test]
-#[ignore = "source bug: corrupt snapshot length triggers an unbounded allocation and aborts the process"]
 fn restore_from_corrupt_snapshot_is_error_not_panic() {
     let dir = tempdir().unwrap();
     let snap = dir.path().join("snap.bin");
     fs::write(&snap, b"this is not a valid bincode snapshot at all").unwrap();
 
-    let mut g = Graph::new();
-    let kv = KvStore::new();
-    // Must surface as a Bincode/Io error value, never a panic.
-    assert!(restore(&mut g, &kv, &snap).is_err());
+    assert_snapshot_corruption(&snap);
 }
 
 #[test]
-fn restore_from_truncated_snapshot_is_error_not_panic() {
+fn restore_from_gigabyte_length_prefix_is_corruption() {
+    let dir = tempdir().unwrap();
+    let snap = dir.path().join("snap.bin");
+
+    // The first snapshot field is the node map count. Claim 4 Gi entries in
+    // an otherwise tiny file; restore must reject it before any large reserve.
+    fs::write(&snap, (4_u64 * 1024 * 1024 * 1024).to_le_bytes()).unwrap();
+
+    assert_snapshot_corruption(&snap);
+}
+
+#[test]
+fn restore_from_truncated_mid_record_snapshot_is_corruption() {
     let dir = tempdir().unwrap();
     let snap = dir.path().join("snap.bin");
 
@@ -1182,9 +1200,7 @@ fn restore_from_truncated_snapshot_is_error_not_panic() {
     let bytes = fs::read(&snap).unwrap();
     fs::write(&snap, &bytes[..bytes.len() / 2]).unwrap();
 
-    let mut g2 = Graph::new();
-    let kv2 = KvStore::new();
-    assert!(restore(&mut g2, &kv2, &snap).is_err());
+    assert_snapshot_corruption(&snap);
 }
 
 #[test]

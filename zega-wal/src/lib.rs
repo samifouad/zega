@@ -1,5 +1,5 @@
 #[cfg(not(target_arch = "wasm32"))]
-use bincode::{deserialize_from, serialize_into};
+use bincode::{serialize_into, Options};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -592,7 +592,16 @@ pub fn restore(graph: &mut Graph, kv: &KvStore, path: &Path) -> Result<bool, Wal
             return Ok(false);
         }
         let file = File::open(path)?;
-        let snapshot: Snapshot = deserialize_from(file)?;
+        let file_len = file.metadata()?.len();
+        let snapshot: Snapshot = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .allow_trailing_bytes()
+            .with_limit(file_len)
+            .deserialize_from(file)
+            .map_err(|error| WalError::Corruption {
+                offset: 0,
+                reason: format!("invalid snapshot: {error}"),
+            })?;
         graph.set_state(snapshot.nodes, snapshot.relationships);
         kv.restore(snapshot.kv_data);
         Ok(true)
