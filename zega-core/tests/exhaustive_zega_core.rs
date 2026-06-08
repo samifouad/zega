@@ -1042,6 +1042,42 @@ fn group_by_single_key_counts_per_group() {
 }
 
 #[test]
+fn group_by_order_by_count_star_then_mixed_key_matches_neo4j() {
+    let zega = db();
+    for key in [
+        Value::String("str".into()),
+        Value::String("str".into()),
+        Value::Bool(false),
+        Value::Bool(false),
+        Value::Bool(false),
+        Value::Int(1),
+        Value::Int(1),
+    ] {
+        zega.query("CREATE (n:G {k: $k})", params(&[("k", key)]))
+            .unwrap();
+    }
+    zega.query("CREATE (n:G)", no_params()).unwrap();
+
+    let rows = zega
+        .query(
+            "MATCH (n:G) RETURN n.k AS k, count(*) AS c ORDER BY count(*) ASC, n.k ASC",
+            no_params(),
+        )
+        .unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.fields["k"].clone(), row.fields["c"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (Value::Null, Value::Int(1)),
+            (Value::String("str".into()), Value::Int(2)),
+            (Value::Int(1), Value::Int(2)),
+            (Value::Bool(false), Value::Int(3)),
+        ]
+    );
+}
+
+#[test]
 fn group_by_with_sum_aggregates_per_group() {
     let zega = db();
     seed_orders(&zega);
@@ -2421,17 +2457,149 @@ fn order_by_descending_float() {
 }
 
 #[test]
-fn order_by_incomparable_types_does_not_panic_and_preserves_all_rows() {
-    // Mixed int + string ordering keys are incomparable (partial_cmp None ->
-    // treated as Equal); the engine must not panic and must keep every row.
+fn order_by_mixed_types_uses_neo4j_orderability_with_null_last() {
     let zega = db();
-    zega.query("CREATE (n:M {k: 1})", no_params()).unwrap();
-    zega.query("CREATE (n:M {k: 'x'})", no_params()).unwrap();
-    zega.query("CREATE (n:M {k: 2})", no_params()).unwrap();
-    let rows = zega
+    for (id, value) in [
+        ("int", Value::Int(2)),
+        ("str", Value::String("x".into())),
+        ("bool", Value::Bool(false)),
+        ("float", Value::from_f64(1.5)),
+    ] {
+        zega.query(
+            "CREATE (n:M {id: $id, k: $k})",
+            params(&[("id", Value::String(id.into())), ("k", value)]),
+        )
+        .unwrap();
+    }
+    zega.query("CREATE (n:M {id: 'null'})", no_params())
+        .unwrap();
+
+    let ascending = zega
         .query("MATCH (n:M) RETURN n.k AS k ORDER BY n.k ASC", no_params())
         .unwrap();
-    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        collect_field(&ascending, "k"),
+        vec![
+            Value::String("x".into()),
+            Value::Bool(false),
+            Value::from_f64(1.5),
+            Value::Int(2),
+            Value::Null,
+        ]
+    );
+
+    let descending = zega
+        .query("MATCH (n:M) RETURN n.k AS k ORDER BY n.k DESC", no_params())
+        .unwrap();
+    assert_eq!(
+        collect_field(&descending, "k"),
+        vec![
+            Value::Null,
+            Value::Int(2),
+            Value::from_f64(1.5),
+            Value::Bool(false),
+            Value::String("x".into()),
+        ]
+    );
+}
+
+#[test]
+fn order_by_int_and_float_compares_exact_numeric_values() {
+    let zega = db();
+    for (id, key) in [
+        ("int_hi", Value::Int(9_007_199_254_740_993)),
+        ("float_lo", Value::from_f64(9_007_199_254_740_992.0)),
+        ("int_neg", Value::Int(-9_007_199_254_740_993)),
+        ("float_neg", Value::from_f64(-9_007_199_254_740_992.0)),
+    ] {
+        zega.query(
+            "CREATE (n:M {id: $id, k: $k})",
+            params(&[("id", Value::String(id.into())), ("k", key)]),
+        )
+        .unwrap();
+    }
+    let rows = zega
+        .query(
+            "MATCH (n:M) RETURN n.id AS id ORDER BY n.k ASC",
+            no_params(),
+        )
+        .unwrap();
+    assert_eq!(
+        collect_field(&rows, "id"),
+        ["int_neg", "float_neg", "float_lo", "int_hi"]
+            .into_iter()
+            .map(|id| Value::String(id.into()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn order_by_mixed_primary_and_secondary_directions_match_neo4j() {
+    let zega = db();
+    for (id, key, tie) in [
+        ("s_b", Value::String("same".into()), 2),
+        ("s_a", Value::String("same".into()), 1),
+        ("b_b", Value::Bool(false), 2),
+        ("b_a", Value::Bool(false), 1),
+        ("n_b", Value::Int(1), 2),
+        ("n_a", Value::from_f64(1.0), 1),
+    ] {
+        zega.query(
+            "CREATE (n:M {id: $id, k: $k, tie: $tie})",
+            params(&[
+                ("id", Value::String(id.into())),
+                ("k", key),
+                ("tie", Value::Int(tie)),
+            ]),
+        )
+        .unwrap();
+    }
+    let rows = zega
+        .query(
+            "MATCH (n:M) RETURN n.id AS id ORDER BY n.k ASC, n.tie DESC",
+            no_params(),
+        )
+        .unwrap();
+    assert_eq!(
+        collect_field(&rows, "id"),
+        ["s_b", "s_a", "b_b", "b_a", "n_b", "n_a"]
+            .into_iter()
+            .map(|id| Value::String(id.into()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn order_by_maps_and_lists_precede_scalar_values() {
+    let zega = db();
+    let mut map = HashMap::new();
+    map.insert("a".into(), Value::Int(1));
+    for (id, key) in [
+        ("map", Value::Map(map)),
+        ("list", Value::List(vec![Value::Int(1)])),
+        ("str", Value::String("a".into())),
+        ("bool", Value::Bool(false)),
+        ("num", Value::Int(1)),
+    ] {
+        zega.query(
+            "CREATE (n:M {id: $id, k: $k})",
+            params(&[("id", Value::String(id.into())), ("k", key)]),
+        )
+        .unwrap();
+    }
+    let rows = zega
+        .query(
+            "MATCH (n:M) RETURN n.id AS id ORDER BY n.k ASC",
+            no_params(),
+        )
+        .unwrap();
+    assert_eq!(
+        collect_field(&rows, "id"),
+        ["map", "list", "str", "bool", "num"]
+            .into_iter()
+            .map(|id| Value::String(id.into()))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

@@ -431,8 +431,9 @@ impl Zega {
                 let mut keyed_rows: Vec<_> = scoped_rows
                     .into_iter()
                     .map(|(binding, row)| {
-                        let key = eval_order_expr(expr, params, binding, &row, &graph)
-                            .unwrap_or(Value::Null);
+                        let key =
+                            eval_order_expr(expr, params, binding, &row, &graph, return_clause)
+                                .unwrap_or(Value::Null);
                         (key, binding, row)
                     })
                     .collect();
@@ -1526,7 +1527,17 @@ fn eval_order_expr(
     bindings: Option<&Bindings>,
     row: &Row,
     graph: &Graph,
+    return_clause: &ReturnClause,
 ) -> Result<Value> {
+    if let Some(item) = return_clause.items.iter().find(|item| item.expr == *expr) {
+        let field_name = item
+            .alias
+            .clone()
+            .unwrap_or_else(|| expr_to_string(&item.expr));
+        if let Some(value) = row.fields.get(&field_name) {
+            return Ok(value.clone());
+        }
+    }
     match expr {
         Expr::Identifier(name) => {
             if let Some(value) = row.fields.get(name) {
@@ -1535,7 +1546,7 @@ fn eval_order_expr(
             eval_expr(expr, params, bindings.unwrap_or(&Bindings::new()), graph)
         }
         Expr::PropertyAccess(target, prop) => {
-            let target = eval_order_expr(target, params, bindings, row, graph)?;
+            let target = eval_order_expr(target, params, bindings, row, graph, return_clause)?;
             match target {
                 Value::Map(mut map) => Ok(map.remove(prop).unwrap_or(Value::Null)),
                 _ => Ok(Value::Null),
@@ -1544,31 +1555,108 @@ fn eval_order_expr(
         Expr::Parameter(name) => Ok(params.get(name).cloned().unwrap_or(Value::Null)),
         Expr::Literal(v) => Ok(v.clone()),
         Expr::BinaryOp(left, op, right) => {
-            let left = eval_order_expr(left, params, bindings, row, graph)?;
-            let right = eval_order_expr(right, params, bindings, row, graph)?;
+            let left = eval_order_expr(left, params, bindings, row, graph, return_clause)?;
+            let right = eval_order_expr(right, params, bindings, row, graph, return_clause)?;
             eval_binary_op(left, op.clone(), right)
         }
-        Expr::Aggregate { .. } => Ok(row
-            .fields
-            .get(&expr_to_string(expr))
-            .cloned()
-            .unwrap_or(Value::Null)),
+        Expr::Aggregate { .. } => Ok(Value::Null),
     }
 }
 
 fn compare_order_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     match (a, b) {
-        (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
-        (Value::Null, _) => std::cmp::Ordering::Greater,
-        (_, Value::Null) => std::cmp::Ordering::Less,
-        (Value::Int(a), Value::Float(b)) => (*a as f64)
-            .partial_cmp(&f64::from_bits(*b))
-            .unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Float(a), Value::Int(b)) => f64::from_bits(*a)
-            .partial_cmp(&(*b as f64))
-            .unwrap_or(std::cmp::Ordering::Equal),
-        _ => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Map(a), Value::Map(b)) => compare_order_maps(a, b),
+        (Value::List(a), Value::List(b)) => compare_order_lists(a, b),
+        (Value::String(a), Value::String(b)) => a.cmp(b),
+        (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+        (Value::Int(a), Value::Int(b)) => a.cmp(b),
+        (Value::Float(a), Value::Float(b)) => {
+            compare_order_floats(f64::from_bits(*a), f64::from_bits(*b))
+        }
+        (Value::Int(a), Value::Float(b)) => compare_order_int_float(*a, f64::from_bits(*b)),
+        (Value::Float(a), Value::Int(b)) => {
+            compare_order_int_float(*b, f64::from_bits(*a)).reverse()
+        }
+        _ => order_type_rank(a).cmp(&order_type_rank(b)),
     }
+}
+
+fn compare_order_floats(a: f64, b: f64) -> std::cmp::Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => a.total_cmp(&b),
+    }
+}
+
+fn compare_order_int_float(integer: i64, float: f64) -> std::cmp::Ordering {
+    if float.is_nan() {
+        return std::cmp::Ordering::Less;
+    }
+    if float >= 2_f64.powi(63) {
+        return std::cmp::Ordering::Less;
+    }
+    if float < -(2_f64.powi(63)) {
+        return std::cmp::Ordering::Greater;
+    }
+    let truncated = float.trunc() as i64;
+    let fraction = float.fract();
+    match integer.cmp(&truncated) {
+        std::cmp::Ordering::Equal if fraction.is_sign_positive() && fraction != 0.0 => {
+            std::cmp::Ordering::Less
+        }
+        std::cmp::Ordering::Equal if fraction.is_sign_negative() && fraction != 0.0 => {
+            std::cmp::Ordering::Greater
+        }
+        ordering => ordering,
+    }
+}
+
+fn order_type_rank(value: &Value) -> u8 {
+    match value {
+        Value::Map(_) => 0,
+        Value::List(_) => 1,
+        Value::String(_) => 2,
+        Value::Bool(_) => 3,
+        Value::Int(_) | Value::Float(_) => 4,
+        Value::Null => 5,
+    }
+}
+
+fn compare_order_lists(a: &[Value], b: &[Value]) -> std::cmp::Ordering {
+    for (a, b) in a.iter().zip(b) {
+        let ordering = compare_order_values(a, b);
+        if !ordering.is_eq() {
+            return ordering;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+fn compare_order_maps(
+    a: &HashMap<String, Value>,
+    b: &HashMap<String, Value>,
+) -> std::cmp::Ordering {
+    let by_len = a.len().cmp(&b.len());
+    if !by_len.is_eq() {
+        return by_len;
+    }
+    let mut a_entries: Vec<_> = a.iter().collect();
+    let mut b_entries: Vec<_> = b.iter().collect();
+    a_entries.sort_by_key(|(key, _)| *key);
+    b_entries.sort_by_key(|(key, _)| *key);
+    for ((a_key, a_value), (b_key, b_value)) in a_entries.into_iter().zip(b_entries) {
+        let by_key = a_key.cmp(b_key);
+        if !by_key.is_eq() {
+            return by_key;
+        }
+        let by_value = compare_order_values(a_value, b_value);
+        if !by_value.is_eq() {
+            return by_value;
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 fn expr_to_string(expr: &Expr) -> String {
