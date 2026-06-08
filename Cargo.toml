@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["zega-core","zega-graph","zega-kv","zega-parser","zega-wal","zega-bench"]
+members = ["zega-core","zega-graph","zega-kv","zega-parser","zega-wal","zega-bench","zega-server"]
 exclude = ["zega-bridge","zega-wasm"]
 
 [workspace.package]

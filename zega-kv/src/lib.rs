@@ -66,6 +66,39 @@ impl KvStore {
         value
     }
 
+    pub fn exists(&self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+
+    pub fn ttl(&self, key: &str) -> Option<u64> {
+        let now = Self::now_secs();
+        let ttl = self.data.get(key).and_then(|entry| {
+            if Self::is_expired(&entry, now) {
+                None
+            } else {
+                entry.expires_at.map(|expires_at| expires_at - now)
+            }
+        });
+        if ttl.is_none() {
+            self.remove_if_expired(key);
+        }
+        ttl
+    }
+
+    pub fn expire(&self, key: &str, ttl_secs: u64) -> bool {
+        match self.data.entry(key.to_string()) {
+            Entry::Occupied(entry) if Self::is_expired(entry.get(), Self::now_secs()) => {
+                entry.remove();
+                false
+            }
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().expires_at = Some(Self::now_secs() + ttl_secs);
+                true
+            }
+            Entry::Vacant(_) => false,
+        }
+    }
+
     pub fn set(&self, key: String, value: Value, ttl_secs: Option<u64>) {
         let expires_at = ttl_secs.map(|secs| Self::now_secs() + secs);
         self.data.insert(key, KvEntry { value, expires_at });

@@ -1,0 +1,19 @@
+[package]
+name = "zega-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axum = "0.7"
+num_cpus = "1.16"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+subtle = "2.6"
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
+zega-core = { workspace = true }
+zega-parser = { workspace = true }
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+tempfile = "3"

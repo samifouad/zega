@@ -724,6 +724,69 @@ impl Zega {
         Ok(deleted)
     }
 
+    pub fn kv_incr(&self, key: &str) -> Result<Value> {
+        let value = self.kv.incr(key).unwrap_or(Value::Null);
+        self.wal.append(&Operation::KvSet {
+            key: key.to_string(),
+            value: value.clone(),
+            ttl: self.kv.ttl(key),
+        })?;
+        Ok(value)
+    }
+
+    pub fn kv_exists(&self, key: &str) -> bool {
+        self.kv.exists(key)
+    }
+
+    pub fn kv_ttl(&self, key: &str) -> Option<u64> {
+        self.kv.ttl(key)
+    }
+
+    pub fn kv_expire(&self, key: &str, ttl_secs: u64) -> Result<bool> {
+        let updated = self.kv.expire(key, ttl_secs);
+        if updated {
+            let value = self.kv.get(key).unwrap_or(Value::Null);
+            self.wal.append(&Operation::KvSet {
+                key: key.to_string(),
+                value,
+                ttl: Some(ttl_secs),
+            })?;
+        }
+        Ok(updated)
+    }
+
+    pub fn kv_lpush(&self, key: &str, value: Value) -> Result<usize> {
+        self.kv.lpush(key, value);
+        let value = self.kv.get(key).unwrap_or(Value::List(Vec::new()));
+        let len = match &value {
+            Value::List(items) => items.len(),
+            _ => 0,
+        };
+        self.wal.append(&Operation::KvSet {
+            key: key.to_string(),
+            value,
+            ttl: self.kv.ttl(key),
+        })?;
+        Ok(len)
+    }
+
+    pub fn kv_lrange(&self, key: &str, start: usize, stop: usize) -> Option<Vec<Value>> {
+        self.kv.lrange(key, start, stop)
+    }
+
+    pub fn kv_ltrim(&self, key: &str, start: usize, stop: usize) -> Result<bool> {
+        let updated = self.kv.ltrim(key, start, stop);
+        if updated {
+            let value = self.kv.get(key).unwrap_or(Value::List(Vec::new()));
+            self.wal.append(&Operation::KvSet {
+                key: key.to_string(),
+                value,
+                ttl: self.kv.ttl(key),
+            })?;
+        }
+        Ok(updated)
+    }
+
     pub fn snapshot(&self) -> Result<()> {
         #[cfg(target_arch = "wasm32")]
         {
