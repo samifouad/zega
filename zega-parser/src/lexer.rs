@@ -1,5 +1,12 @@
 use std::iter::Peekable;
 use std::str::Chars;
+use thiserror::Error;
+
+#[derive(Error, Debug, PartialEq)]
+pub enum LexError {
+    #[error("integer literal is out of range for i64: {0}")]
+    IntegerOutOfRange(String),
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Token {
@@ -39,18 +46,18 @@ pub enum Token {
     RBrace,
     LBracket,
     RBracket,
-    Arrow,      // ->
-    LeftArrow,  // <-
-    Dash,       // -
+    Arrow,     // ->
+    LeftArrow, // <-
+    Dash,      // -
     Dot,
-    Dollar,     // $
+    Dollar, // $
     Star,
     Eq,
-    Ne,         // !=
+    Ne, // !=
     Gt,
     Lt,
-    Gte,        // >=
-    Lte,        // <=
+    Gte, // >=
+    Lte, // <=
     Plus,
     Eof,
 }
@@ -129,7 +136,7 @@ impl<'a> Lexer<'a> {
         Token::StringLiteral(s)
     }
 
-    fn read_number(&mut self, first: char) -> Token {
+    fn read_number(&mut self, first: char) -> Result<Token, LexError> {
         let mut s = String::new();
         s.push(first);
         while let Some(&c) = self.peek() {
@@ -150,12 +157,16 @@ impl<'a> Lexer<'a> {
                         break;
                     }
                 }
-                return Token::Float(s.replace('_', "").parse().unwrap_or(0.0));
+                return Ok(Token::Float(s.replace('_', "").parse().unwrap_or(0.0)));
             } else {
                 break;
             }
         }
-        Token::Integer(s.replace('_', "").parse().unwrap_or(0))
+        let normalized = s.replace('_', "");
+        normalized
+            .parse()
+            .map(Token::Integer)
+            .map_err(|_| LexError::IntegerOutOfRange(s))
     }
 
     fn read_identifier(&mut self, first: char) -> Token {
@@ -195,25 +206,64 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn next_token(&mut self) -> Token {
+    pub fn next_token(&mut self) -> Result<Token, LexError> {
         self.skip_whitespace();
         match self.peek() {
-            None => Token::Eof,
+            None => Ok(Token::Eof),
             Some(&c) => {
-                match c {
-                    '(' => { self.advance(); Token::LParen }
-                    ')' => { self.advance(); Token::RParen }
-                    '{' => { self.advance(); Token::LBrace }
-                    '}' => { self.advance(); Token::RBrace }
-                    '[' => { self.advance(); Token::LBracket }
-                    ']' => { self.advance(); Token::RBracket }
-                    ',' => { self.advance(); Token::Comma }
-                    ';' => { self.advance(); Token::Semicolon }
-                    ':' => { self.advance(); Token::Colon }
-                    '.' => { self.advance(); Token::Dot }
-                    '$' => { self.advance(); Token::Dollar }
-                    '*' => { self.advance(); Token::Star }
-                    '+' => { self.advance(); Token::Plus }
+                let token = match c {
+                    '(' => {
+                        self.advance();
+                        Token::LParen
+                    }
+                    ')' => {
+                        self.advance();
+                        Token::RParen
+                    }
+                    '{' => {
+                        self.advance();
+                        Token::LBrace
+                    }
+                    '}' => {
+                        self.advance();
+                        Token::RBrace
+                    }
+                    '[' => {
+                        self.advance();
+                        Token::LBracket
+                    }
+                    ']' => {
+                        self.advance();
+                        Token::RBracket
+                    }
+                    ',' => {
+                        self.advance();
+                        Token::Comma
+                    }
+                    ';' => {
+                        self.advance();
+                        Token::Semicolon
+                    }
+                    ':' => {
+                        self.advance();
+                        Token::Colon
+                    }
+                    '.' => {
+                        self.advance();
+                        Token::Dot
+                    }
+                    '$' => {
+                        self.advance();
+                        Token::Dollar
+                    }
+                    '*' => {
+                        self.advance();
+                        Token::Star
+                    }
+                    '+' => {
+                        self.advance();
+                        Token::Plus
+                    }
                     '-' => {
                         self.advance();
                         if let Some(&'>') = self.peek() {
@@ -263,7 +313,7 @@ impl<'a> Lexer<'a> {
                     '"' | '\'' => self.read_string(c),
                     c if c.is_ascii_digit() => {
                         let ch = self.advance().unwrap();
-                        self.read_number(ch)
+                        return self.read_number(ch);
                     }
                     c if c.is_alphabetic() || c == '_' => {
                         let ch = self.advance().unwrap();
@@ -271,9 +321,10 @@ impl<'a> Lexer<'a> {
                     }
                     _ => {
                         self.advance();
-                        self.next_token()
+                        return self.next_token();
                     }
-                }
+                };
+                Ok(token)
             }
         }
     }
@@ -286,27 +337,39 @@ mod tests {
     #[test]
     fn test_basic_tokens() {
         let mut lex = Lexer::new("MATCH (n:Label) RETURN n");
-        assert_eq!(lex.next_token(), Token::Match);
-        assert_eq!(lex.next_token(), Token::LParen);
-        assert_eq!(lex.next_token(), Token::Identifier("n".to_string()));
-        assert_eq!(lex.next_token(), Token::Colon);
-        assert_eq!(lex.next_token(), Token::Identifier("Label".to_string()));
-        assert_eq!(lex.next_token(), Token::RParen);
-        assert_eq!(lex.next_token(), Token::Return);
-        assert_eq!(lex.next_token(), Token::Identifier("n".to_string()));
-        assert_eq!(lex.next_token(), Token::Eof);
+        assert_eq!(lex.next_token().unwrap(), Token::Match);
+        assert_eq!(lex.next_token().unwrap(), Token::LParen);
+        assert_eq!(
+            lex.next_token().unwrap(),
+            Token::Identifier("n".to_string())
+        );
+        assert_eq!(lex.next_token().unwrap(), Token::Colon);
+        assert_eq!(
+            lex.next_token().unwrap(),
+            Token::Identifier("Label".to_string())
+        );
+        assert_eq!(lex.next_token().unwrap(), Token::RParen);
+        assert_eq!(lex.next_token().unwrap(), Token::Return);
+        assert_eq!(
+            lex.next_token().unwrap(),
+            Token::Identifier("n".to_string())
+        );
+        assert_eq!(lex.next_token().unwrap(), Token::Eof);
     }
 
     #[test]
     fn test_string_literal() {
         let mut lex = Lexer::new("'hello world'");
-        assert_eq!(lex.next_token(), Token::StringLiteral("hello world".to_string()));
+        assert_eq!(
+            lex.next_token().unwrap(),
+            Token::StringLiteral("hello world".to_string())
+        );
     }
 
     #[test]
     fn test_number() {
         let mut lex = Lexer::new("42 3.125");
-        assert_eq!(lex.next_token(), Token::Integer(42));
-        assert_eq!(lex.next_token(), Token::Float(3.125));
+        assert_eq!(lex.next_token().unwrap(), Token::Integer(42));
+        assert_eq!(lex.next_token().unwrap(), Token::Float(3.125));
     }
 }
