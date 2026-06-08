@@ -4,9 +4,9 @@
 //! (`Parser` / `Statement` / `Expr` / AST nodes) against the crate's
 //! PUBLIC API only (`use zega_parser::...`).
 //!
-//! Errors in Zega are VALUES: the parser returns `Result<_, ParseError>`,
-//! the lexer never errors (it returns `Token::Eof` at end and skips
-//! unknown characters). These tests assert on `Result`/`Option` shapes and
+//! Errors in Zega are VALUES: the parser returns `Result<_, ParseError>` and
+//! the lexer returns `Result<_, LexError>`. These tests assert on
+//! `Result`/`Option` shapes and
 //! never expect panics from well-formed-but-semantically-odd input. The
 //! goal is breadth + depth: every token kind, keyword case-insensitivity,
 //! literals/escapes, parameters, operator precedence/associativity, every
@@ -21,7 +21,7 @@ use zega_parser::{
 // `Token` and `ParseError` are NOT re-exported at the crate root (lib.rs only
 // `pub use`s ast::*, Lexer, Parser, Value). Their defining modules ARE public
 // (`pub mod lexer`, `pub mod parser`), so reach them by full module path.
-use zega_parser::lexer::Token;
+use zega_parser::lexer::{LexError, Token};
 use zega_parser::parser::ParseError;
 
 // =====================================================================
@@ -29,18 +29,30 @@ use zega_parser::parser::ParseError;
 // =====================================================================
 
 /// Tokenize an entire input string into a Vec of tokens (excluding the
-/// trailing `Eof`). The lexer never errors.
+/// trailing `Eof`), unwrapping for tests whose input is known to be valid.
 fn lex_all(input: &str) -> Vec<Token> {
     let mut lex = Lexer::new(input);
     let mut out = Vec::new();
     loop {
-        let t = lex.next_token();
+        let t = lex.next_token().expect("lexing should succeed");
         if t == Token::Eof {
             break;
         }
         out.push(t);
     }
     out
+}
+
+fn try_lex(input: &str) -> Result<Vec<Token>, LexError> {
+    let mut lex = Lexer::new(input);
+    let mut out = Vec::new();
+    loop {
+        let t = lex.next_token()?;
+        if t == Token::Eof {
+            return Ok(out);
+        }
+        out.push(t);
+    }
 }
 
 /// Parse and unwrap the first statement, panicking the test on parse error.
@@ -57,8 +69,7 @@ fn parse_one(input: &str) -> Statement {
 
 /// Parse, returning the full Result for error-path assertions.
 fn try_parse(input: &str) -> Result<Vec<Statement>, ParseError> {
-    let mut p = Parser::new(input).expect("Parser::new should always succeed");
-    p.parse()
+    Parser::new(input).and_then(|mut p| p.parse())
 }
 
 /// Convenience: extract the `Match` variant fields or panic.
@@ -354,10 +365,12 @@ fn lex_integer_dot_identifier_property_access_shape() {
 }
 
 #[test]
-fn lex_integer_overflow_saturates_to_zero_via_unwrap_or() {
-    // parse::<i64> fails on overflow; read_number uses unwrap_or(0).
+fn lex_integer_overflow_returns_error() {
     let huge = "99999999999999999999999999";
-    assert_eq!(lex_all(huge), vec![Token::Integer(0)]);
+    assert_eq!(
+        try_lex(huge),
+        Err(LexError::IntegerOutOfRange(huge.to_string()))
+    );
 }
 
 #[test]
@@ -365,6 +378,41 @@ fn lex_i64_max_parses() {
     assert_eq!(
         lex_all("9223372036854775807"),
         vec![Token::Integer(i64::MAX)]
+    );
+}
+
+#[test]
+fn lex_i64_max_plus_one_errors() {
+    let literal = "9223372036854775808";
+    assert_eq!(
+        try_lex(literal),
+        Err(LexError::IntegerOutOfRange(literal.to_string()))
+    );
+}
+
+#[test]
+fn lex_i64_boundary_with_leading_zeroes() {
+    assert_eq!(
+        lex_all("0009223372036854775807"),
+        vec![Token::Integer(i64::MAX)]
+    );
+    let overflow = "0009223372036854775808";
+    assert_eq!(
+        try_lex(overflow),
+        Err(LexError::IntegerOutOfRange(overflow.to_string()))
+    );
+}
+
+#[test]
+fn lex_i64_boundary_with_underscores() {
+    assert_eq!(
+        lex_all("9_223_372_036_854_775_807"),
+        vec![Token::Integer(i64::MAX)]
+    );
+    let overflow = "9_223_372_036_854_775_808";
+    assert_eq!(
+        try_lex(overflow),
+        Err(LexError::IntegerOutOfRange(overflow.to_string()))
     );
 }
 
@@ -523,9 +571,9 @@ fn lex_unknown_chars_are_skipped() {
 #[test]
 fn lex_eof_is_idempotent() {
     let mut lex = Lexer::new("");
-    assert_eq!(lex.next_token(), Token::Eof);
-    assert_eq!(lex.next_token(), Token::Eof);
-    assert_eq!(lex.next_token(), Token::Eof);
+    assert_eq!(lex.next_token().unwrap(), Token::Eof);
+    assert_eq!(lex.next_token().unwrap(), Token::Eof);
+    assert_eq!(lex.next_token().unwrap(), Token::Eof);
 }
 
 // =====================================================================
@@ -1842,7 +1890,7 @@ fn parse_lone_symbols_is_error() {
 #[test]
 fn robustness_deeply_nested_parentheses_in_where() {
     let mut q = String::from("MATCH (n) WHERE ");
-    let depth = 200;
+    let depth = 32;
     for _ in 0..depth {
         q.push('(');
     }
@@ -1854,6 +1902,38 @@ fn robustness_deeply_nested_parentheses_in_where() {
     // Should parse successfully (balanced) without stack issues for this depth.
     let res = try_parse(&q);
     assert!(res.is_ok(), "deeply nested balanced parens should parse");
+}
+
+#[test]
+fn robustness_parentheses_beyond_nesting_limit_returns_error() {
+    let mut q = String::from("MATCH (n) WHERE ");
+    for _ in 0..128 {
+        q.push('(');
+    }
+    q.push_str("n.x = 1");
+    for _ in 0..128 {
+        q.push(')');
+    }
+    q.push_str(" RETURN n");
+
+    assert!(matches!(
+        try_parse(&q),
+        Err(ParseError::Message(message)) if message == "query nesting too deep"
+    ));
+}
+
+#[test]
+fn robustness_hundred_thousand_parentheses_returns_error_not_abort() {
+    let mut q = String::from("MATCH (n) WHERE ");
+    q.extend(std::iter::repeat_n('(', 100_000));
+    q.push_str("n.x = 1");
+    q.extend(std::iter::repeat_n(')', 100_000));
+    q.push_str(" RETURN n");
+
+    assert!(matches!(
+        try_parse(&q),
+        Err(ParseError::Message(message)) if message == "query nesting too deep"
+    ));
 }
 
 #[test]
@@ -1934,14 +2014,12 @@ fn robustness_garbage_punctuation_only() {
 }
 
 #[test]
-fn robustness_huge_integer_in_property_lexes_to_zero_not_panic() {
-    // Overflowing integer literal -> Integer(0) via unwrap_or, no panic.
-    let stmt = parse_one("MATCH (n {big: 99999999999999999999999999}) RETURN n");
-    let (pattern, _, _) = as_match(&stmt);
-    assert_eq!(
-        pattern[0].properties.get("big"),
-        Some(&Expr::Literal(Value::Int(0)))
-    );
+fn robustness_huge_integer_in_property_returns_parse_error() {
+    let result = try_parse("MATCH (n {big: 99999999999999999999999999}) RETURN n");
+    assert!(matches!(
+        result,
+        Err(ParseError::Lex(LexError::IntegerOutOfRange(_)))
+    ));
 }
 
 // =====================================================================

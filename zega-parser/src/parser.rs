@@ -1,11 +1,16 @@
 use crate::ast::*;
-use crate::lexer::{Lexer, Token};
+use crate::lexer::{LexError, Lexer, Token};
 use crate::value::Value;
 use std::collections::HashMap;
 use thiserror::Error;
 
+const MAX_EXPRESSION_DEPTH: usize = 64;
+const NESTING_TOO_DEEP: &str = "query nesting too deep";
+
 #[derive(Error, Debug)]
 pub enum ParseError {
+    #[error(transparent)]
+    Lex(#[from] LexError),
     #[error("unexpected token: expected {expected:?}, got {got:?}")]
     UnexpectedToken { expected: String, got: Token },
     #[error("unexpected end of input")]
@@ -17,22 +22,28 @@ pub enum ParseError {
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
     current: Token,
+    expression_depth: usize,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Result<Self, ParseError> {
         let mut lexer = Lexer::new(input);
-        let current = lexer.next_token();
-        Ok(Parser { lexer, current })
+        let current = lexer.next_token()?;
+        Ok(Parser {
+            lexer,
+            current,
+            expression_depth: 0,
+        })
     }
 
-    fn advance(&mut self) {
-        self.current = self.lexer.next_token();
+    fn advance(&mut self) -> Result<(), ParseError> {
+        self.current = self.lexer.next_token()?;
+        Ok(())
     }
 
     fn expect(&mut self, expected: Token) -> Result<(), ParseError> {
         if std::mem::discriminant(&self.current) == std::mem::discriminant(&expected) {
-            self.advance();
+            self.advance()?;
             Ok(())
         } else {
             Err(ParseError::UnexpectedToken {
@@ -47,7 +58,7 @@ impl<'a> Parser<'a> {
         while self.current != Token::Eof {
             stmts.push(self.parse_statement()?);
             if self.current == Token::Semicolon {
-                self.advance();
+                self.advance()?;
             }
         }
         Ok(stmts)
@@ -71,20 +82,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_match(&mut self) -> Result<Statement, ParseError> {
-        self.advance(); // MATCH
+        self.advance()?; // MATCH
         let mut pattern = self.parse_pattern()?;
         while self.current == Token::Match {
-            self.advance();
+            self.advance()?;
             pattern.extend(self.parse_pattern()?);
         }
         let where_clause = if self.current == Token::Where {
-            self.advance();
+            self.advance()?;
             Some(self.parse_expression()?)
         } else {
             None
         };
         if self.current == Token::Create {
-            self.advance();
+            self.advance()?;
             let create_pattern = self.parse_pattern()?;
             return Ok(Statement::MatchCreate {
                 match_pattern: pattern,
@@ -93,20 +104,20 @@ impl<'a> Parser<'a> {
             });
         }
         let return_clause = if self.current == Token::Return {
-            self.advance();
+            self.advance()?;
             self.parse_return_clause()?
         } else {
             ReturnClause { items: vec![] }
         };
         let mut order_by = None;
         if self.current == Token::Order {
-            self.advance();
+            self.advance()?;
             self.expect(Token::By)?;
             order_by = Some(self.parse_order_by()?);
         }
         let mut limit = None;
         if self.current == Token::Limit {
-            self.advance();
+            self.advance()?;
             limit = Some(self.parse_expression()?);
         }
         Ok(Statement::Match {
@@ -119,19 +130,21 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_create(&mut self) -> Result<Statement, ParseError> {
-        self.advance(); // CREATE
+        self.advance()?; // CREATE
         let pattern = self.parse_pattern()?;
         Ok(Statement::Create { pattern })
     }
 
     fn parse_merge(&mut self) -> Result<Statement, ParseError> {
-        self.advance(); // MERGE
+        self.advance()?; // MERGE
         let pattern = self.parse_pattern()?;
         let mut on_create = Vec::new();
         if self.current == Token::On {
-            self.advance();
-            if self.current == Token::Create || matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("CREATE")) {
-                self.advance();
+            self.advance()?;
+            if self.current == Token::Create
+                || matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("CREATE"))
+            {
+                self.advance()?;
                 self.expect(Token::Set)?;
                 on_create = self.parse_set_clauses()?;
             } else {
@@ -142,7 +155,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_set_or_kv(&mut self) -> Result<Statement, ParseError> {
-        self.advance(); // SET
+        self.advance()?; // SET
         if self.current == Token::Key {
             self.parse_kv_set_after_key()
         } else {
@@ -158,20 +171,20 @@ impl<'a> Parser<'a> {
         let value = self.parse_primary()?;
         let mut ttl = None;
         if self.current == Token::Ttl {
-            self.advance();
+            self.advance()?;
             ttl = Some(self.parse_primary()?);
         }
         Ok(Statement::KvSet { key, value, ttl })
     }
 
     fn parse_delete(&mut self) -> Result<Statement, ParseError> {
-        self.advance(); // DELETE
+        self.advance()?; // DELETE
         let mut ids = Vec::new();
         while let Token::Identifier(id) = &self.current {
             ids.push(id.clone());
-            self.advance();
+            self.advance()?;
             if self.current == Token::Comma {
-                self.advance();
+                self.advance()?;
             } else {
                 break;
             }
@@ -180,21 +193,21 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_kv_get(&mut self) -> Result<Statement, ParseError> {
-        self.advance(); // GET
+        self.advance()?; // GET
         self.expect(Token::Key)?;
         let key = self.parse_primary()?;
         Ok(Statement::KvGet { key })
     }
 
     fn parse_kv_del(&mut self) -> Result<Statement, ParseError> {
-        self.advance(); // DEL
+        self.advance()?; // DEL
         self.expect(Token::Key)?;
         let key = self.parse_primary()?;
         Ok(Statement::KvDel { key })
     }
 
     fn parse_kv_incr(&mut self) -> Result<Statement, ParseError> {
-        self.advance(); // INCR
+        self.advance()?; // INCR
         self.expect(Token::Key)?;
         let key = self.parse_primary()?;
         Ok(Statement::KvIncr { key })
@@ -204,7 +217,7 @@ impl<'a> Parser<'a> {
         let mut result = vec![self.parse_pattern_element()?];
         while self.current == Token::Dash || self.current == Token::LeftArrow {
             let incoming = self.current == Token::LeftArrow;
-            self.advance();
+            self.advance()?;
             let rel = if self.current == Token::LBracket {
                 Some(self.parse_relationship()?)
             } else {
@@ -214,10 +227,10 @@ impl<'a> Parser<'a> {
                 self.expect(Token::Dash)?;
                 Some(Direction::Incoming)
             } else if self.current == Token::Arrow {
-                self.advance();
+                self.advance()?;
                 Some(Direction::Outgoing)
             } else if self.current == Token::Dash {
-                self.advance();
+                self.advance()?;
                 Some(Direction::Both)
             } else {
                 return Err(ParseError::UnexpectedToken {
@@ -237,15 +250,15 @@ impl<'a> Parser<'a> {
         self.expect(Token::LParen)?;
         let variable = if let Token::Identifier(id) = &self.current {
             let v = id.clone();
-            self.advance();
+            self.advance()?;
             v
         } else {
             String::new()
         };
         let mut labels = Vec::new();
         if self.current == Token::Colon {
-            self.advance();
-            if let Some(label) = self.take_symbolic_name() {
+            self.advance()?;
+            if let Some(label) = self.take_symbolic_name()? {
                 labels.push(label);
             }
         }
@@ -268,20 +281,20 @@ impl<'a> Parser<'a> {
         self.expect(Token::LBracket)?;
         let variable = if let Token::Identifier(id) = &self.current {
             let v = id.clone();
-            self.advance();
+            self.advance()?;
             v
         } else {
             String::new()
         };
         let mut kinds = Vec::new();
         if self.current == Token::Colon {
-            self.advance();
-            if let Some(kind) = self.take_symbolic_name() {
+            self.advance()?;
+            if let Some(kind) = self.take_symbolic_name()? {
                 kinds.push(kind);
             }
         }
         let length = if self.current == Token::Star {
-            self.advance();
+            self.advance()?;
             Some(self.parse_relationship_length()?)
         } else {
             None
@@ -309,7 +322,7 @@ impl<'a> Parser<'a> {
             });
         }
 
-        self.advance();
+        self.advance()?;
         self.expect(Token::Dot)?;
         let max = self.take_non_negative_integer()?;
         let min = first.unwrap_or(1);
@@ -324,7 +337,7 @@ impl<'a> Parser<'a> {
     fn take_non_negative_integer(&mut self) -> Result<Option<usize>, ParseError> {
         match self.current.clone() {
             Token::Integer(value) if value >= 0 => {
-                self.advance();
+                self.advance()?;
                 Ok(Some(value as usize))
             }
             Token::Integer(_) => Err(ParseError::Message(
@@ -334,14 +347,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn take_symbolic_name(&mut self) -> Option<String> {
+    fn take_symbolic_name(&mut self) -> Result<Option<String>, ParseError> {
         let name = match &self.current {
             Token::Identifier(name) => name.clone(),
             Token::Order => "Order".to_string(),
-            _ => return None,
+            _ => return Ok(None),
         };
-        self.advance();
-        Some(name)
+        self.advance()?;
+        Ok(Some(name))
     }
 
     fn parse_properties(&mut self) -> Result<HashMap<String, Expr>, ParseError> {
@@ -349,32 +362,90 @@ impl<'a> Parser<'a> {
         let mut props = HashMap::new();
         while self.current != Token::RBrace {
             let key = match &self.current {
-                Token::Identifier(id) => { let k = id.clone(); self.advance(); k }
-                Token::Key => { self.advance(); "key".to_string() }
-                Token::Get => { self.advance(); "get".to_string() }
-                Token::Set => { self.advance(); "set".to_string() }
-                Token::Del => { self.advance(); "del".to_string() }
-                Token::Incr => { self.advance(); "incr".to_string() }
-                Token::Ttl => { self.advance(); "ttl".to_string() }
-                Token::Match => { self.advance(); "match".to_string() }
-                Token::Return => { self.advance(); "return".to_string() }
-                Token::Create => { self.advance(); "create".to_string() }
-                Token::Merge => { self.advance(); "merge".to_string() }
-                Token::Delete => { self.advance(); "delete".to_string() }
-                Token::Where => { self.advance(); "where".to_string() }
-                Token::Limit => { self.advance(); "limit".to_string() }
-                Token::Order => { self.advance(); "order".to_string() }
-                Token::By => { self.advance(); "by".to_string() }
-                Token::Asc => { self.advance(); "asc".to_string() }
-                Token::Desc => { self.advance(); "desc".to_string() }
-                Token::On => { self.advance(); "on".to_string() }
+                Token::Identifier(id) => {
+                    let k = id.clone();
+                    self.advance()?;
+                    k
+                }
+                Token::Key => {
+                    self.advance()?;
+                    "key".to_string()
+                }
+                Token::Get => {
+                    self.advance()?;
+                    "get".to_string()
+                }
+                Token::Set => {
+                    self.advance()?;
+                    "set".to_string()
+                }
+                Token::Del => {
+                    self.advance()?;
+                    "del".to_string()
+                }
+                Token::Incr => {
+                    self.advance()?;
+                    "incr".to_string()
+                }
+                Token::Ttl => {
+                    self.advance()?;
+                    "ttl".to_string()
+                }
+                Token::Match => {
+                    self.advance()?;
+                    "match".to_string()
+                }
+                Token::Return => {
+                    self.advance()?;
+                    "return".to_string()
+                }
+                Token::Create => {
+                    self.advance()?;
+                    "create".to_string()
+                }
+                Token::Merge => {
+                    self.advance()?;
+                    "merge".to_string()
+                }
+                Token::Delete => {
+                    self.advance()?;
+                    "delete".to_string()
+                }
+                Token::Where => {
+                    self.advance()?;
+                    "where".to_string()
+                }
+                Token::Limit => {
+                    self.advance()?;
+                    "limit".to_string()
+                }
+                Token::Order => {
+                    self.advance()?;
+                    "order".to_string()
+                }
+                Token::By => {
+                    self.advance()?;
+                    "by".to_string()
+                }
+                Token::Asc => {
+                    self.advance()?;
+                    "asc".to_string()
+                }
+                Token::Desc => {
+                    self.advance()?;
+                    "desc".to_string()
+                }
+                Token::On => {
+                    self.advance()?;
+                    "on".to_string()
+                }
                 _ => break,
             };
             self.expect(Token::Colon)?;
             let val = self.parse_expression()?;
             props.insert(key, val);
             if self.current == Token::Comma {
-                self.advance();
+                self.advance()?;
             }
         }
         self.expect(Token::RBrace)?;
@@ -387,10 +458,10 @@ impl<'a> Parser<'a> {
             let expr = self.parse_expression()?;
             let alias = if let Token::Identifier(ref id) = self.current {
                 if id.eq_ignore_ascii_case("AS") {
-                    self.advance();
+                    self.advance()?;
                     if let Token::Identifier(a) = &self.current {
                         let a = a.clone();
-                        self.advance();
+                        self.advance()?;
                         Some(a)
                     } else {
                         None
@@ -403,30 +474,30 @@ impl<'a> Parser<'a> {
             };
             items.push(ReturnItem { expr, alias });
             if self.current == Token::Comma {
-                self.advance();
+                self.advance()?;
             } else {
                 break;
             }
         }
         Ok(ReturnClause { items })
     }
-    
+
     fn parse_order_by(&mut self) -> Result<Vec<(Expr, OrderDirection)>, ParseError> {
         let mut items = Vec::new();
         loop {
             let expr = self.parse_expression()?;
             let dir = if self.current == Token::Asc {
-                self.advance();
+                self.advance()?;
                 OrderDirection::Asc
             } else if self.current == Token::Desc {
-                self.advance();
+                self.advance()?;
                 OrderDirection::Desc
             } else {
                 OrderDirection::Asc
             };
             items.push((expr, dir));
             if self.current == Token::Comma {
-                self.advance();
+                self.advance()?;
             } else {
                 break;
             }
@@ -442,7 +513,7 @@ impl<'a> Parser<'a> {
             let value = self.parse_expression()?;
             clauses.push(SetClause { target, value });
             if self.current == Token::Comma {
-                self.advance();
+                self.advance()?;
             } else {
                 break;
             }
@@ -451,14 +522,21 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
-        self.parse_or()
+        if self.expression_depth >= MAX_EXPRESSION_DEPTH {
+            return Err(ParseError::Message(NESTING_TOO_DEEP.to_string()));
+        }
+
+        self.expression_depth += 1;
+        let result = self.parse_or();
+        self.expression_depth -= 1;
+        result
     }
 
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_and()?;
         while let Token::Identifier(ref id) = self.current {
             if id.eq_ignore_ascii_case("OR") {
-                self.advance();
+                self.advance()?;
                 let right = self.parse_and()?;
                 left = Expr::BinaryOp(Box::new(left), BinaryOperator::Or, Box::new(right));
             } else {
@@ -472,7 +550,7 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_equality()?;
         while let Token::Identifier(ref id) = self.current {
             if id.eq_ignore_ascii_case("AND") {
-                self.advance();
+                self.advance()?;
                 let right = self.parse_equality()?;
                 left = Expr::BinaryOp(Box::new(left), BinaryOperator::And, Box::new(right));
             } else {
@@ -487,12 +565,12 @@ impl<'a> Parser<'a> {
         loop {
             match &self.current {
                 Token::Eq => {
-                    self.advance();
+                    self.advance()?;
                     let right = self.parse_comparison()?;
                     left = Expr::BinaryOp(Box::new(left), BinaryOperator::Eq, Box::new(right));
                 }
                 Token::Ne => {
-                    self.advance();
+                    self.advance()?;
                     let right = self.parse_comparison()?;
                     left = Expr::BinaryOp(Box::new(left), BinaryOperator::Ne, Box::new(right));
                 }
@@ -507,22 +585,22 @@ impl<'a> Parser<'a> {
         loop {
             match &self.current {
                 Token::Gt => {
-                    self.advance();
+                    self.advance()?;
                     let right = self.parse_add()?;
                     left = Expr::BinaryOp(Box::new(left), BinaryOperator::Gt, Box::new(right));
                 }
                 Token::Lt => {
-                    self.advance();
+                    self.advance()?;
                     let right = self.parse_add()?;
                     left = Expr::BinaryOp(Box::new(left), BinaryOperator::Lt, Box::new(right));
                 }
                 Token::Gte => {
-                    self.advance();
+                    self.advance()?;
                     let right = self.parse_add()?;
                     left = Expr::BinaryOp(Box::new(left), BinaryOperator::Gte, Box::new(right));
                 }
                 Token::Lte => {
-                    self.advance();
+                    self.advance()?;
                     let right = self.parse_add()?;
                     left = Expr::BinaryOp(Box::new(left), BinaryOperator::Lte, Box::new(right));
                 }
@@ -541,75 +619,139 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         match &self.current {
             Token::Dollar => {
-                self.advance();
+                self.advance()?;
                 let name = match &self.current {
-                    Token::Identifier(id) => { let n = id.clone(); self.advance(); n }
-                    Token::Key => { self.advance(); "key".to_string() }
-                    Token::Get => { self.advance(); "get".to_string() }
-                    Token::Set => { self.advance(); "set".to_string() }
-                    Token::Del => { self.advance(); "del".to_string() }
-                    Token::Incr => { self.advance(); "incr".to_string() }
-                    Token::Ttl => { self.advance(); "ttl".to_string() }
-                    Token::Match => { self.advance(); "match".to_string() }
-                    Token::Return => { self.advance(); "return".to_string() }
-                    Token::Create => { self.advance(); "create".to_string() }
-                    Token::Merge => { self.advance(); "merge".to_string() }
-                    Token::Delete => { self.advance(); "delete".to_string() }
-                    Token::Where => { self.advance(); "where".to_string() }
-                    Token::Limit => { self.advance(); "limit".to_string() }
-                    Token::Order => { self.advance(); "order".to_string() }
-                    Token::By => { self.advance(); "by".to_string() }
-                    Token::Asc => { self.advance(); "asc".to_string() }
-                    Token::Desc => { self.advance(); "desc".to_string() }
-                    Token::On => { self.advance(); "on".to_string() }
-                    _ => return Err(ParseError::Message("expected parameter name after $".to_string())),
+                    Token::Identifier(id) => {
+                        let n = id.clone();
+                        self.advance()?;
+                        n
+                    }
+                    Token::Key => {
+                        self.advance()?;
+                        "key".to_string()
+                    }
+                    Token::Get => {
+                        self.advance()?;
+                        "get".to_string()
+                    }
+                    Token::Set => {
+                        self.advance()?;
+                        "set".to_string()
+                    }
+                    Token::Del => {
+                        self.advance()?;
+                        "del".to_string()
+                    }
+                    Token::Incr => {
+                        self.advance()?;
+                        "incr".to_string()
+                    }
+                    Token::Ttl => {
+                        self.advance()?;
+                        "ttl".to_string()
+                    }
+                    Token::Match => {
+                        self.advance()?;
+                        "match".to_string()
+                    }
+                    Token::Return => {
+                        self.advance()?;
+                        "return".to_string()
+                    }
+                    Token::Create => {
+                        self.advance()?;
+                        "create".to_string()
+                    }
+                    Token::Merge => {
+                        self.advance()?;
+                        "merge".to_string()
+                    }
+                    Token::Delete => {
+                        self.advance()?;
+                        "delete".to_string()
+                    }
+                    Token::Where => {
+                        self.advance()?;
+                        "where".to_string()
+                    }
+                    Token::Limit => {
+                        self.advance()?;
+                        "limit".to_string()
+                    }
+                    Token::Order => {
+                        self.advance()?;
+                        "order".to_string()
+                    }
+                    Token::By => {
+                        self.advance()?;
+                        "by".to_string()
+                    }
+                    Token::Asc => {
+                        self.advance()?;
+                        "asc".to_string()
+                    }
+                    Token::Desc => {
+                        self.advance()?;
+                        "desc".to_string()
+                    }
+                    Token::On => {
+                        self.advance()?;
+                        "on".to_string()
+                    }
+                    _ => {
+                        return Err(ParseError::Message(
+                            "expected parameter name after $".to_string(),
+                        ))
+                    }
                 };
                 Ok(Expr::Parameter(name))
             }
             Token::StringLiteral(s) => {
                 let val = Value::String(s.clone());
-                self.advance();
+                self.advance()?;
                 Ok(Expr::Literal(val))
             }
             Token::Integer(i) => {
                 let val = Value::Int(*i);
-                self.advance();
+                self.advance()?;
                 Ok(Expr::Literal(val))
             }
             Token::Float(f) => {
                 let val = Value::from_f64(*f);
-                self.advance();
+                self.advance()?;
                 Ok(Expr::Literal(val))
             }
             Token::Bool(b) => {
                 let val = Value::Bool(*b);
-                self.advance();
+                self.advance()?;
                 Ok(Expr::Literal(val))
             }
             Token::Null => {
-                self.advance();
+                self.advance()?;
                 Ok(Expr::Literal(Value::Null))
             }
             Token::Identifier(id) => {
                 let name = id.clone();
-                self.advance();
+                self.advance()?;
                 if self.current == Token::LParen {
                     self.parse_function_call(name)
                 } else if self.current == Token::Dot {
-                    self.advance();
+                    self.advance()?;
                     if let Token::Identifier(prop) = &self.current {
                         let p = prop.clone();
-                        self.advance();
+                        self.advance()?;
                         Ok(Expr::PropertyAccess(Box::new(Expr::Identifier(name)), p))
                     } else {
-                        Err(ParseError::Message("expected property name after .".to_string()))
+                        Err(ParseError::Message(
+                            "expected property name after .".to_string(),
+                        ))
                     }
                 } else {
                     Ok(Expr::Identifier(name))
                 }
             }
             Token::LParen => {
-                self.advance();
+                self.advance()?;
                 let expr = self.parse_expression()?;
                 self.expect(Token::RParen)?;
                 Ok(expr)
@@ -633,12 +775,13 @@ impl<'a> Parser<'a> {
         };
 
         self.expect(Token::LParen)?;
-        let distinct = matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DISTINCT"));
+        let distinct =
+            matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DISTINCT"));
         if distinct {
-            self.advance();
+            self.advance()?;
         }
         let argument = if self.current == Token::Star {
-            self.advance();
+            self.advance()?;
             if function != AggregateFunction::Count || distinct {
                 return Err(ParseError::Message(
                     "only count(*) supports a star argument".to_string(),
@@ -667,7 +810,11 @@ mod tests {
         let stmts = p.parse().unwrap();
         assert_eq!(stmts.len(), 1);
         match &stmts[0] {
-            Statement::Match { pattern, return_clause, .. } => {
+            Statement::Match {
+                pattern,
+                return_clause,
+                ..
+            } => {
                 assert_eq!(pattern.len(), 1);
                 assert_eq!(pattern[0].variable, "n");
                 assert_eq!(pattern[0].labels, vec!["Label"]);
@@ -724,11 +871,36 @@ mod tests {
     #[test]
     fn test_parse_variable_length_relationship_ranges_and_directions() {
         let cases = [
-            ("MATCH (a)-[:REL*]->(b) RETURN b", 1, None, Direction::Outgoing),
-            ("MATCH (a)-[:REL*1..5]->(b) RETURN b", 1, Some(5), Direction::Outgoing),
-            ("MATCH (a)-[:REL*..3]->(b) RETURN b", 1, Some(3), Direction::Outgoing),
-            ("MATCH (a)<-[:REL*2..]-(b) RETURN b", 2, None, Direction::Incoming),
-            ("MATCH (a)-[*1..3]-(b) RETURN b", 1, Some(3), Direction::Both),
+            (
+                "MATCH (a)-[:REL*]->(b) RETURN b",
+                1,
+                None,
+                Direction::Outgoing,
+            ),
+            (
+                "MATCH (a)-[:REL*1..5]->(b) RETURN b",
+                1,
+                Some(5),
+                Direction::Outgoing,
+            ),
+            (
+                "MATCH (a)-[:REL*..3]->(b) RETURN b",
+                1,
+                Some(3),
+                Direction::Outgoing,
+            ),
+            (
+                "MATCH (a)<-[:REL*2..]-(b) RETURN b",
+                2,
+                None,
+                Direction::Incoming,
+            ),
+            (
+                "MATCH (a)-[*1..3]-(b) RETURN b",
+                1,
+                Some(3),
+                Direction::Both,
+            ),
         ];
 
         for (query, min, max, direction) in cases {
@@ -777,10 +949,9 @@ mod tests {
 
     #[test]
     fn test_parse_match_create() {
-        let mut p = Parser::new(
-            "MATCH (u:User {id: $uid}) CREATE (u)-[:PLACED]->(o:Order {id: $oid})",
-        )
-        .unwrap();
+        let mut p =
+            Parser::new("MATCH (u:User {id: $uid}) CREATE (u)-[:PLACED]->(o:Order {id: $oid})")
+                .unwrap();
         let stmts = p.parse().unwrap();
         assert_eq!(stmts.len(), 1);
         match &stmts[0] {
@@ -807,7 +978,12 @@ mod tests {
         ).unwrap();
         let stmts = p.parse().unwrap();
         assert_eq!(stmts.len(), 1);
-        let Statement::MatchCreate { match_pattern, create_pattern, .. } = &stmts[0] else {
+        let Statement::MatchCreate {
+            match_pattern,
+            create_pattern,
+            ..
+        } = &stmts[0]
+        else {
             panic!("expected MATCH...MATCH...CREATE");
         };
         assert_eq!(match_pattern.len(), 2);
@@ -818,7 +994,8 @@ mod tests {
 
     #[test]
     fn test_parse_merge() {
-        let mut p = Parser::new("MERGE (n:Label {key: $param}) ON CREATE SET n.prop = $val").unwrap();
+        let mut p =
+            Parser::new("MERGE (n:Label {key: $param}) ON CREATE SET n.prop = $val").unwrap();
         let stmts = p.parse().unwrap();
         assert_eq!(stmts.len(), 1);
         match &stmts[0] {
