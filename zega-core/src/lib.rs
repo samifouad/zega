@@ -414,28 +414,43 @@ impl Zega {
         let bindings =
             resolve_match_bindings(&graph, pattern, where_clause, params, traversal_budget)?;
 
-        let mut rows = project_rows(&bindings, return_clause, params, &graph)?;
+        let rows = project_rows(&bindings, return_clause, params, &graph)?;
+        let has_aggregates = return_clause
+            .items
+            .iter()
+            .any(|item| matches!(item.expr, Expr::Aggregate { .. }));
+        let mut scoped_rows: Vec<_> = if has_aggregates {
+            rows.into_iter().map(|row| (None, row)).collect()
+        } else {
+            bindings.iter().map(Some).zip(rows).collect()
+        };
 
         // ORDER BY
         if let Some(ob) = order_by {
             for (expr, dir) in ob.iter().rev() {
-                let mut keyed_rows: Vec<_> = rows
+                let mut keyed_rows: Vec<_> = scoped_rows
                     .into_iter()
-                    .map(|row| {
-                        let key = eval_expr_from_row(expr, params, &row).unwrap_or(Value::Null);
-                        (key, row)
+                    .map(|(binding, row)| {
+                        let key =
+                            eval_order_expr(expr, params, binding, &row, &graph, return_clause)
+                                .unwrap_or(Value::Null);
+                        (key, binding, row)
                     })
                     .collect();
-                keyed_rows.sort_by(|(a, _), (b, _)| {
-                    let cmp = a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+                keyed_rows.sort_by(|(a, _, _), (b, _, _)| {
+                    let cmp = compare_order_values(a, b);
                     match dir {
                         OrderDirection::Asc => cmp,
                         OrderDirection::Desc => cmp.reverse(),
                     }
                 });
-                rows = keyed_rows.into_iter().map(|(_, row)| row).collect();
+                scoped_rows = keyed_rows
+                    .into_iter()
+                    .map(|(_, binding, row)| (binding, row))
+                    .collect();
             }
         }
+        let mut rows: Vec<_> = scoped_rows.into_iter().map(|(_, row)| row).collect();
 
         // LIMIT
         if let Some(limit_expr) = limit {
@@ -1429,39 +1444,39 @@ fn eval_expr(
         Expr::BinaryOp(left, op, right) => {
             let lv = eval_expr(left, params, bindings, graph)?;
             let rv = eval_expr(right, params, bindings, graph)?;
-            match op {
-                BinaryOperator::Eq => Ok(Value::Bool(lv == rv)),
-                BinaryOperator::Ne => Ok(Value::Bool(lv != rv)),
-                BinaryOperator::Gt => Ok(Value::Bool(
-                    lv.partial_cmp(&rv) == Some(std::cmp::Ordering::Greater),
-                )),
-                BinaryOperator::Lt => Ok(Value::Bool(
-                    lv.partial_cmp(&rv) == Some(std::cmp::Ordering::Less),
-                )),
-                BinaryOperator::Gte => Ok(Value::Bool(
-                    lv.partial_cmp(&rv)
-                        .map(|o| o == std::cmp::Ordering::Greater || o == std::cmp::Ordering::Equal)
-                        .unwrap_or(false),
-                )),
-                BinaryOperator::Lte => Ok(Value::Bool(
-                    lv.partial_cmp(&rv)
-                        .map(|o| o == std::cmp::Ordering::Less || o == std::cmp::Ordering::Equal)
-                        .unwrap_or(false),
-                )),
-                BinaryOperator::And => {
-                    let lb = lv.as_bool().unwrap_or(false);
-                    let rb = rv.as_bool().unwrap_or(false);
-                    Ok(Value::Bool(lb && rb))
-                }
-                BinaryOperator::Or => {
-                    let lb = lv.as_bool().unwrap_or(false);
-                    let rb = rv.as_bool().unwrap_or(false);
-                    Ok(Value::Bool(lb || rb))
-                }
-            }
+            eval_binary_op(lv, op.clone(), rv)
         }
         Expr::Aggregate { .. } => Err(ZegaError::Execution(
             "aggregate expression evaluated outside RETURN aggregation".to_string(),
+        )),
+    }
+}
+
+fn eval_binary_op(left: Value, op: BinaryOperator, right: Value) -> Result<Value> {
+    match op {
+        BinaryOperator::Eq => Ok(Value::Bool(left == right)),
+        BinaryOperator::Ne => Ok(Value::Bool(left != right)),
+        BinaryOperator::Gt => Ok(Value::Bool(
+            left.partial_cmp(&right) == Some(std::cmp::Ordering::Greater),
+        )),
+        BinaryOperator::Lt => Ok(Value::Bool(
+            left.partial_cmp(&right) == Some(std::cmp::Ordering::Less),
+        )),
+        BinaryOperator::Gte => Ok(Value::Bool(
+            left.partial_cmp(&right)
+                .map(|ordering| ordering.is_ge())
+                .unwrap_or(false),
+        )),
+        BinaryOperator::Lte => Ok(Value::Bool(
+            left.partial_cmp(&right)
+                .map(|ordering| ordering.is_le())
+                .unwrap_or(false),
+        )),
+        BinaryOperator::And => Ok(Value::Bool(
+            left.as_bool().unwrap_or(false) && right.as_bool().unwrap_or(false),
+        )),
+        BinaryOperator::Or => Ok(Value::Bool(
+            left.as_bool().unwrap_or(false) || right.as_bool().unwrap_or(false),
         )),
     }
 }
@@ -1506,25 +1521,142 @@ fn relationship_value(rel: &zega_graph::Relationship) -> Value {
     Value::Map(value)
 }
 
-fn eval_expr_from_row(expr: &Expr, params: &HashMap<String, Value>, row: &Row) -> Result<Value> {
-    // Simplified: assume expr is an identifier or property access
+fn eval_order_expr(
+    expr: &Expr,
+    params: &HashMap<String, Value>,
+    bindings: Option<&Bindings>,
+    row: &Row,
+    graph: &Graph,
+    return_clause: &ReturnClause,
+) -> Result<Value> {
+    if let Some(item) = return_clause.items.iter().find(|item| item.expr == *expr) {
+        let field_name = item
+            .alias
+            .clone()
+            .unwrap_or_else(|| expr_to_string(&item.expr));
+        if let Some(value) = row.fields.get(&field_name) {
+            return Ok(value.clone());
+        }
+    }
     match expr {
-        Expr::Identifier(name) => Ok(row.fields.get(name).cloned().unwrap_or(Value::Null)),
+        Expr::Identifier(name) => {
+            if let Some(value) = row.fields.get(name) {
+                return Ok(value.clone());
+            }
+            eval_expr(expr, params, bindings.unwrap_or(&Bindings::new()), graph)
+        }
         Expr::PropertyAccess(target, prop) => {
-            if let Expr::Identifier(var) = target.as_ref() {
-                if let Some(Value::Map(mut m)) = row.fields.get(var).cloned() {
-                    Ok(m.remove(prop).unwrap_or(Value::Null))
-                } else {
-                    Ok(Value::Null)
-                }
-            } else {
-                Ok(Value::Null)
+            let target = eval_order_expr(target, params, bindings, row, graph, return_clause)?;
+            match target {
+                Value::Map(mut map) => Ok(map.remove(prop).unwrap_or(Value::Null)),
+                _ => Ok(Value::Null),
             }
         }
         Expr::Parameter(name) => Ok(params.get(name).cloned().unwrap_or(Value::Null)),
         Expr::Literal(v) => Ok(v.clone()),
-        _ => Ok(Value::Null),
+        Expr::BinaryOp(left, op, right) => {
+            let left = eval_order_expr(left, params, bindings, row, graph, return_clause)?;
+            let right = eval_order_expr(right, params, bindings, row, graph, return_clause)?;
+            eval_binary_op(left, op.clone(), right)
+        }
+        Expr::Aggregate { .. } => Ok(Value::Null),
     }
+}
+
+fn compare_order_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    match (a, b) {
+        (Value::Map(a), Value::Map(b)) => compare_order_maps(a, b),
+        (Value::List(a), Value::List(b)) => compare_order_lists(a, b),
+        (Value::String(a), Value::String(b)) => a.cmp(b),
+        (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+        (Value::Int(a), Value::Int(b)) => a.cmp(b),
+        (Value::Float(a), Value::Float(b)) => {
+            compare_order_floats(f64::from_bits(*a), f64::from_bits(*b))
+        }
+        (Value::Int(a), Value::Float(b)) => compare_order_int_float(*a, f64::from_bits(*b)),
+        (Value::Float(a), Value::Int(b)) => {
+            compare_order_int_float(*b, f64::from_bits(*a)).reverse()
+        }
+        _ => order_type_rank(a).cmp(&order_type_rank(b)),
+    }
+}
+
+fn compare_order_floats(a: f64, b: f64) -> std::cmp::Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => a.total_cmp(&b),
+    }
+}
+
+fn compare_order_int_float(integer: i64, float: f64) -> std::cmp::Ordering {
+    if float.is_nan() {
+        return std::cmp::Ordering::Less;
+    }
+    if float >= 2_f64.powi(63) {
+        return std::cmp::Ordering::Less;
+    }
+    if float < -(2_f64.powi(63)) {
+        return std::cmp::Ordering::Greater;
+    }
+    let truncated = float.trunc() as i64;
+    let fraction = float.fract();
+    match integer.cmp(&truncated) {
+        std::cmp::Ordering::Equal if fraction.is_sign_positive() && fraction != 0.0 => {
+            std::cmp::Ordering::Less
+        }
+        std::cmp::Ordering::Equal if fraction.is_sign_negative() && fraction != 0.0 => {
+            std::cmp::Ordering::Greater
+        }
+        ordering => ordering,
+    }
+}
+
+fn order_type_rank(value: &Value) -> u8 {
+    match value {
+        Value::Map(_) => 0,
+        Value::List(_) => 1,
+        Value::String(_) => 2,
+        Value::Bool(_) => 3,
+        Value::Int(_) | Value::Float(_) => 4,
+        Value::Null => 5,
+    }
+}
+
+fn compare_order_lists(a: &[Value], b: &[Value]) -> std::cmp::Ordering {
+    for (a, b) in a.iter().zip(b) {
+        let ordering = compare_order_values(a, b);
+        if !ordering.is_eq() {
+            return ordering;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+fn compare_order_maps(
+    a: &HashMap<String, Value>,
+    b: &HashMap<String, Value>,
+) -> std::cmp::Ordering {
+    let by_len = a.len().cmp(&b.len());
+    if !by_len.is_eq() {
+        return by_len;
+    }
+    let mut a_entries: Vec<_> = a.iter().collect();
+    let mut b_entries: Vec<_> = b.iter().collect();
+    a_entries.sort_by_key(|(key, _)| *key);
+    b_entries.sort_by_key(|(key, _)| *key);
+    for ((a_key, a_value), (b_key, b_value)) in a_entries.into_iter().zip(b_entries) {
+        let by_key = a_key.cmp(b_key);
+        if !by_key.is_eq() {
+            return by_key;
+        }
+        let by_value = compare_order_values(a_value, b_value);
+        if !by_value.is_eq() {
+            return by_value;
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 fn expr_to_string(expr: &Expr) -> String {
