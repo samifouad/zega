@@ -44,26 +44,10 @@ impl KvStore {
         matches!(entry.expires_at, Some(expires_at) if expires_at <= now)
     }
 
-    fn remove_if_expired(&self, key: &str) -> bool {
-        let now = Self::now_secs();
-        self.data
-            .remove_if(key, |_, entry| Self::is_expired(entry, now))
-            .is_some()
-    }
-
-    fn purge_expired(&self) {
-        let now = Self::now_secs();
-        self.data.retain(|_, entry| !Self::is_expired(entry, now));
-    }
-
     pub fn get(&self, key: &str) -> Option<Value> {
-        let value = self.data.get(key).and_then(|entry| {
+        self.data.get(key).and_then(|entry| {
             (!Self::is_expired(&entry, Self::now_secs())).then(|| entry.value.clone())
-        });
-        if value.is_none() {
-            self.remove_if_expired(key);
-        }
-        value
+        })
     }
 
     pub fn exists(&self, key: &str) -> bool {
@@ -72,17 +56,13 @@ impl KvStore {
 
     pub fn ttl(&self, key: &str) -> Option<u64> {
         let now = Self::now_secs();
-        let ttl = self.data.get(key).and_then(|entry| {
+        self.data.get(key).and_then(|entry| {
             if Self::is_expired(&entry, now) {
                 None
             } else {
                 entry.expires_at.map(|expires_at| expires_at - now)
             }
-        });
-        if ttl.is_none() {
-            self.remove_if_expired(key);
-        }
-        ttl
+        })
     }
 
     pub fn expire(&self, key: &str, ttl_secs: u64) -> bool {
@@ -167,45 +147,45 @@ impl KvStore {
         }
     }
 
-    pub fn lrange(&self, key: &str, start: usize, stop: usize) -> Option<Vec<Value>> {
-        let values = self.data.get(key).and_then(|entry| {
-            if Self::is_expired(&entry, Self::now_secs()) {
-                None
-            } else {
-                match &entry.value {
-                    Value::List(items) => {
-                        let len = items.len();
-                        let s = start.min(len);
-                        let e = stop.min(len);
-                        Some(items[s..e].to_vec())
+    pub fn lrange(
+        &self,
+        key: &str,
+        start: usize,
+        stop: usize,
+    ) -> Result<Option<Vec<Value>>, String> {
+        self.data
+            .get(key)
+            .map(|entry| {
+                if Self::is_expired(&entry, Self::now_secs()) {
+                    Ok(None)
+                } else {
+                    match &entry.value {
+                        Value::List(items) => {
+                            let (start, stop) = checked_range(items.len(), start, stop)?;
+                            Ok(Some(items[start..stop].to_vec()))
+                        }
+                        _ => Ok(None),
                     }
-                    _ => None,
                 }
-            }
-        });
-        if values.is_none() {
-            self.remove_if_expired(key);
-        }
-        values
+            })
+            .unwrap_or(Ok(None))
     }
 
-    pub fn ltrim(&self, key: &str, start: usize, stop: usize) -> bool {
+    pub fn ltrim(&self, key: &str, start: usize, stop: usize) -> Result<bool, String> {
         match self.data.entry(key.to_string()) {
             Entry::Occupied(entry) if Self::is_expired(entry.get(), Self::now_secs()) => {
                 entry.remove();
-                false
+                Ok(false)
             }
             Entry::Occupied(mut entry) => match &mut entry.get_mut().value {
                 Value::List(items) => {
-                    let len = items.len();
-                    let s = start.min(len);
-                    let e = stop.min(len);
-                    *items = items[s..e].to_vec();
-                    true
+                    let (start, stop) = checked_range(items.len(), start, stop)?;
+                    *items = items[start..stop].to_vec();
+                    Ok(true)
                 }
-                _ => false,
+                _ => Ok(false),
             },
-            Entry::Vacant(_) => false,
+            Entry::Vacant(_) => Ok(false),
         }
     }
 
@@ -228,16 +208,13 @@ impl KvStore {
 
     /// Return a clone of all entries for snapshotting.
     pub fn snapshot(&self) -> HashMap<String, KvEntry> {
-        let snapshot = self
-            .data
+        self.data
             .iter()
             .filter_map(|entry| {
                 (!Self::is_expired(entry.value(), Self::now_secs()))
                     .then(|| (entry.key().clone(), entry.value().clone()))
             })
-            .collect();
-        self.purge_expired();
-        snapshot
+            .collect()
     }
 
     /// Restore entries from a snapshot.
@@ -247,6 +224,17 @@ impl KvStore {
             self.data.insert(k, v);
         }
     }
+}
+
+fn checked_range(len: usize, start: usize, stop: usize) -> Result<(usize, usize), String> {
+    let start = start.min(len);
+    let stop = stop.min(len);
+    if start > stop {
+        return Err(format!(
+            "invalid list range: start ({start}) exceeds stop ({stop})"
+        ));
+    }
+    Ok((start, stop))
 }
 
 #[cfg(test)]
@@ -276,15 +264,18 @@ mod tests {
         kv.lpush("mylist", Value::Int(1));
         kv.lpush("mylist", Value::Int(2));
         assert_eq!(
-            kv.lrange("mylist", 0, 10),
+            kv.lrange("mylist", 0, 10).unwrap(),
             Some(vec![Value::Int(2), Value::Int(1)])
         );
-        kv.ltrim("mylist", 0, 1);
-        assert_eq!(kv.lrange("mylist", 0, 10), Some(vec![Value::Int(2)]));
+        kv.ltrim("mylist", 0, 1).unwrap();
+        assert_eq!(
+            kv.lrange("mylist", 0, 10).unwrap(),
+            Some(vec![Value::Int(2)])
+        );
     }
 
     #[test]
-    fn test_expired_key_is_removed_lazily() {
+    fn write_paths_remove_expired_keys() {
         let kv = KvStore::new();
         kv.set(
             "session".to_string(),
@@ -295,5 +286,44 @@ mod tests {
         assert_eq!(kv.get("session"), None);
         assert!(!kv.del("session"));
         assert!(kv.snapshot().is_empty());
+    }
+
+    #[test]
+    fn malformed_list_ranges_return_errors_without_mutating() {
+        let kv = KvStore::new();
+        kv.lpush("list", Value::Int(1));
+        kv.lpush("list", Value::Int(2));
+
+        for (start, stop) in [(1, 0), (usize::MAX, 0), (usize::MAX, 1)] {
+            assert!(kv.lrange("list", start, stop).is_err());
+            assert!(kv.ltrim("list", start, stop).is_err());
+        }
+        assert_eq!(
+            kv.lrange("list", 0, usize::MAX).unwrap(),
+            Some(vec![Value::Int(2), Value::Int(1)])
+        );
+        assert_eq!(
+            kv.lrange("list", usize::MAX, usize::MAX).unwrap(),
+            Some(vec![])
+        );
+    }
+
+    #[test]
+    fn reads_do_not_remove_expired_entries() {
+        let kv = KvStore::new();
+        kv.set("value".to_string(), Value::Int(1), Some(0));
+        kv.set(
+            "list".to_string(),
+            Value::List(vec![Value::Int(1)]),
+            Some(0),
+        );
+
+        assert_eq!(kv.get("value"), None);
+        assert!(!kv.exists("value"));
+        assert_eq!(kv.ttl("value"), None);
+        assert_eq!(kv.lrange("list", 0, 1).unwrap(), None);
+        assert!(kv.snapshot().is_empty());
+        assert!(kv.data.contains_key("value"));
+        assert!(kv.data.contains_key("list"));
     }
 }

@@ -170,9 +170,9 @@ fn zega_op(zega: &KvStore, key: &str, op: &Op) -> Obs {
             Obs::Unit
         }
         Op::Lrange { start, stop, .. } => {
-            Obs::Value(zega.lrange(key, *start, *stop).map(Value::List))
+            Obs::Value(zega.lrange(key, *start, *stop).unwrap().map(Value::List))
         }
-        Op::Ltrim { start, stop, .. } => Obs::Bool(zega.ltrim(key, *start, *stop)),
+        Op::Ltrim { start, stop, .. } => Obs::Bool(zega.ltrim(key, *start, *stop).unwrap()),
     }
 }
 

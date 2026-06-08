@@ -259,6 +259,101 @@ async fn malformed_json_is_json_error() {
     assert!(body["error"].is_string());
 }
 
+#[tokio::test]
+async fn malformed_list_ranges_are_json_errors_not_server_failures() {
+    let server = start_server().await;
+    let client = Client::new();
+    post_kv(
+        &client,
+        &server.base_url,
+        json!({"op": "lpush", "key": "items", "value": {"Int": 1}}),
+    )
+    .await;
+
+    for body in [
+        json!({"op": "lrange", "key": "items", "start": 1, "stop": 0}),
+        json!({"op": "ltrim", "key": "items", "start": usize::MAX, "stop": 0}),
+        json!({"op": "lrange", "key": "items", "start": -1, "stop": 0}),
+    ] {
+        let response = authed(
+            &client,
+            reqwest::Method::POST,
+            format!("{}/kv", server.base_url),
+        )
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.json::<Value>().await.unwrap()["ok"], false);
+    }
+
+    let health = authed(
+        &client,
+        reqwest::Method::GET,
+        format!("{}/health", server.base_url),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert!(health.status().is_success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn parallel_expiry_readers_and_writers_remain_consistent() {
+    let server = start_server().await;
+    let client = Arc::new(Client::new());
+    let base_url = Arc::new(server.base_url.clone());
+
+    let writer_client = Arc::clone(&client);
+    let writer_url = Arc::clone(&base_url);
+    let writer = tokio::spawn(async move {
+        for value in 0..200 {
+            for body in [
+                json!({"op": "set", "key": "value", "value": {"Int": value}, "ttl": 0}),
+                json!({"op": "set", "key": "list", "value": {"List": [{"Int": value}]}, "ttl": 0}),
+                json!({"op": "set", "key": "value", "value": {"Int": value}}),
+                json!({"op": "set", "key": "list", "value": {"List": [{"Int": value}]}}),
+            ] {
+                assert_eq!(post_kv(&writer_client, &writer_url, body).await["ok"], true);
+            }
+        }
+    });
+
+    let mut readers = Vec::new();
+    for _ in 0..16 {
+        let client = Arc::clone(&client);
+        let base_url = Arc::clone(&base_url);
+        readers.push(tokio::spawn(async move {
+            for _ in 0..200 {
+                let get = post_kv(&client, &base_url, json!({"op": "get", "key": "value"})).await;
+                assert_eq!(get["ok"], true);
+                assert!(get["result"].is_null() || get["result"]["Int"].is_number());
+
+                let range = post_kv(
+                    &client,
+                    &base_url,
+                    json!({"op": "lrange", "key": "list", "start": 0, "stop": 1}),
+                )
+                .await;
+                assert_eq!(range["ok"], true);
+                let result = &range["result"];
+                assert!(
+                    result.is_null()
+                        || result
+                            .as_array()
+                            .is_some_and(|items| items.len() == 1 && items[0]["Int"].is_number())
+                );
+            }
+        }));
+    }
+
+    writer.await.unwrap();
+    for reader in readers {
+        reader.await.unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parallel_readers_never_observe_half_applied_write() {
     let server = start_server().await;

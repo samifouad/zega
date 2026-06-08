@@ -3,7 +3,7 @@
 //! Targets the public API of `KvStore` plus the `KvEntry` snapshot type.
 //! Semantics mirror Redis: missing-key reads are absent, overwrite replaces,
 //! `incr` auto-creates, lists are head-pushed, and TTL'd keys read ABSENT once
-//! the clock advances past their expiry (lazy expiry on read).
+//! the clock advances past their expiry (reads filter expired entries).
 //!
 //! Notes on intentionally-uncovered behavior:
 //!   * `incr` performs `n + 1` with no checked-add, so calling it on
@@ -28,6 +28,14 @@ use zega_parser::Value;
 
 fn s(v: &str) -> Value {
     Value::String(v.to_string())
+}
+
+fn lrange(kv: &KvStore, key: &str, start: usize, stop: usize) -> Option<Vec<Value>> {
+    kv.lrange(key, start, stop).unwrap()
+}
+
+fn ltrim(kv: &KvStore, key: &str, start: usize, stop: usize) -> bool {
+    kv.ltrim(key, start, stop).unwrap()
 }
 
 // ===========================================================================
@@ -76,10 +84,13 @@ fn set_then_get_returns_bool_values() {
 #[test]
 fn set_then_get_returns_float_value() {
     let kv = KvStore::new();
-    let f = Value::from_f64(3.14159);
+    let f = Value::from_f64(std::f64::consts::PI);
     kv.set("pi".to_string(), f.clone(), None);
     assert_eq!(kv.get("pi"), Some(f));
-    assert_eq!(kv.get("pi").and_then(|v| v.to_f64()), Some(3.14159));
+    assert_eq!(
+        kv.get("pi").and_then(|v| v.to_f64()),
+        Some(std::f64::consts::PI)
+    );
 }
 
 #[test]
@@ -349,8 +360,7 @@ fn get_past_ttl_reads_absent() {
 }
 
 #[test]
-fn get_lazily_removes_expired_entry_from_store() {
-    // After a read on an expired key, the entry should be physically gone.
+fn get_and_snapshot_hide_expired_entry() {
     let kv = KvStore::new();
     let mut entries = HashMap::new();
     entries.insert(
@@ -361,9 +371,7 @@ fn get_lazily_removes_expired_entry_from_store() {
         },
     );
     kv.restore(entries);
-    // Trigger lazy expiry.
     assert_eq!(kv.get("stale"), None);
-    // It is now absent from the snapshot too.
     assert!(!kv.snapshot().contains_key("stale"));
 }
 
@@ -473,7 +481,7 @@ fn set_get_large_list_value() {
 fn lpush_creates_list_when_missing() {
     let kv = KvStore::new();
     kv.lpush("l", Value::Int(1));
-    assert_eq!(kv.lrange("l", 0, 100), Some(vec![Value::Int(1)]));
+    assert_eq!(lrange(&kv, "l", 0, 100), Some(vec![Value::Int(1)]));
 }
 
 #[test]
@@ -484,7 +492,7 @@ fn lpush_inserts_at_head() {
     kv.lpush("l", Value::Int(3));
     // Most-recently pushed is at index 0.
     assert_eq!(
-        kv.lrange("l", 0, 100),
+        lrange(&kv, "l", 0, 100),
         Some(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
     );
 }
@@ -495,7 +503,7 @@ fn lpush_replaces_non_list_value_with_single_element_list() {
     let kv = KvStore::new();
     kv.set("l".to_string(), s("scalar"), None);
     kv.lpush("l", Value::Int(9));
-    assert_eq!(kv.lrange("l", 0, 100), Some(vec![Value::Int(9)]));
+    assert_eq!(lrange(&kv, "l", 0, 100), Some(vec![Value::Int(9)]));
 }
 
 #[test]
@@ -505,7 +513,7 @@ fn lpush_mixed_value_types() {
     kv.lpush("l", Value::Bool(true));
     kv.lpush("l", Value::Null);
     assert_eq!(
-        kv.lrange("l", 0, 100),
+        lrange(&kv, "l", 0, 100),
         Some(vec![Value::Null, Value::Bool(true), s("a")])
     );
 }
@@ -513,14 +521,14 @@ fn lpush_mixed_value_types() {
 #[test]
 fn lrange_on_missing_key_is_none() {
     let kv = KvStore::new();
-    assert_eq!(kv.lrange("nope", 0, 10), None);
+    assert_eq!(lrange(&kv, "nope", 0, 10), None);
 }
 
 #[test]
 fn lrange_on_non_list_value_is_none() {
     let kv = KvStore::new();
     kv.set("k".to_string(), Value::Int(5), None);
-    assert_eq!(kv.lrange("k", 0, 10), None);
+    assert_eq!(lrange(&kv, "k", 0, 10), None);
 }
 
 #[test]
@@ -529,7 +537,7 @@ fn lrange_full_window_returns_all() {
     kv.lpush("l", Value::Int(1));
     kv.lpush("l", Value::Int(2));
     assert_eq!(
-        kv.lrange("l", 0, 2),
+        lrange(&kv, "l", 0, 2),
         Some(vec![Value::Int(2), Value::Int(1)])
     );
 }
@@ -542,14 +550,14 @@ fn lrange_partial_window() {
     kv.lpush("l", Value::Int(2));
     kv.lpush("l", Value::Int(3));
     // stop is exclusive: [1..2) -> index 1 only.
-    assert_eq!(kv.lrange("l", 1, 2), Some(vec![Value::Int(2)]));
+    assert_eq!(lrange(&kv, "l", 1, 2), Some(vec![Value::Int(2)]));
 }
 
 #[test]
 fn lrange_start_equals_stop_returns_empty() {
     let kv = KvStore::new();
     kv.lpush("l", Value::Int(1));
-    assert_eq!(kv.lrange("l", 0, 0), Some(vec![]));
+    assert_eq!(lrange(&kv, "l", 0, 0), Some(vec![]));
 }
 
 #[test]
@@ -557,7 +565,7 @@ fn lrange_start_beyond_len_returns_empty() {
     let kv = KvStore::new();
     kv.lpush("l", Value::Int(1));
     // start clamps to len; s == e -> empty slice.
-    assert_eq!(kv.lrange("l", 50, 100), Some(vec![]));
+    assert_eq!(lrange(&kv, "l", 50, 100), Some(vec![]));
 }
 
 #[test]
@@ -566,7 +574,7 @@ fn lrange_stop_beyond_len_clamps_to_len() {
     kv.lpush("l", Value::Int(1));
     kv.lpush("l", Value::Int(2));
     assert_eq!(
-        kv.lrange("l", 0, 999),
+        lrange(&kv, "l", 0, 999),
         Some(vec![Value::Int(2), Value::Int(1)])
     );
 }
@@ -584,7 +592,7 @@ fn lrange_on_empty_list_returns_empty() {
         },
     );
     kv.restore(entries);
-    assert_eq!(kv.lrange("l", 0, 10), Some(vec![]));
+    assert_eq!(lrange(&kv, "l", 0, 10), Some(vec![]));
 }
 
 // ===========================================================================
@@ -597,9 +605,9 @@ fn ltrim_keeps_requested_window() {
     kv.lpush("l", Value::Int(1));
     kv.lpush("l", Value::Int(2));
     kv.lpush("l", Value::Int(3)); // [3,2,1]
-    assert!(kv.ltrim("l", 0, 2));
+    assert!(ltrim(&kv, "l", 0, 2));
     assert_eq!(
-        kv.lrange("l", 0, 100),
+        lrange(&kv, "l", 0, 100),
         Some(vec![Value::Int(3), Value::Int(2)])
     );
 }
@@ -609,16 +617,16 @@ fn ltrim_to_single_element() {
     let kv = KvStore::new();
     kv.lpush("l", Value::Int(1));
     kv.lpush("l", Value::Int(2)); // [2,1]
-    assert!(kv.ltrim("l", 0, 1));
-    assert_eq!(kv.lrange("l", 0, 100), Some(vec![Value::Int(2)]));
+    assert!(ltrim(&kv, "l", 0, 1));
+    assert_eq!(lrange(&kv, "l", 0, 100), Some(vec![Value::Int(2)]));
 }
 
 #[test]
 fn ltrim_to_empty_when_start_equals_stop() {
     let kv = KvStore::new();
     kv.lpush("l", Value::Int(1));
-    assert!(kv.ltrim("l", 0, 0));
-    assert_eq!(kv.lrange("l", 0, 100), Some(vec![]));
+    assert!(ltrim(&kv, "l", 0, 0));
+    assert_eq!(lrange(&kv, "l", 0, 100), Some(vec![]));
 }
 
 #[test]
@@ -627,9 +635,9 @@ fn ltrim_clamps_out_of_range_bounds() {
     kv.lpush("l", Value::Int(1));
     kv.lpush("l", Value::Int(2)); // [2,1]
                                   // stop beyond len clamps to len; whole list retained.
-    assert!(kv.ltrim("l", 0, 999));
+    assert!(ltrim(&kv, "l", 0, 999));
     assert_eq!(
-        kv.lrange("l", 0, 100),
+        lrange(&kv, "l", 0, 100),
         Some(vec![Value::Int(2), Value::Int(1)])
     );
 }
@@ -638,21 +646,21 @@ fn ltrim_clamps_out_of_range_bounds() {
 fn ltrim_start_beyond_len_yields_empty_list() {
     let kv = KvStore::new();
     kv.lpush("l", Value::Int(1));
-    assert!(kv.ltrim("l", 10, 20));
-    assert_eq!(kv.lrange("l", 0, 100), Some(vec![]));
+    assert!(ltrim(&kv, "l", 10, 20));
+    assert_eq!(lrange(&kv, "l", 0, 100), Some(vec![]));
 }
 
 #[test]
 fn ltrim_missing_key_returns_false() {
     let kv = KvStore::new();
-    assert!(!kv.ltrim("nope", 0, 1));
+    assert!(!ltrim(&kv, "nope", 0, 1));
 }
 
 #[test]
 fn ltrim_non_list_value_returns_false() {
     let kv = KvStore::new();
     kv.set("k".to_string(), Value::Int(5), None);
-    assert!(!kv.ltrim("k", 0, 1));
+    assert!(!ltrim(&kv, "k", 0, 1));
     // Value untouched.
     assert_eq!(kv.get("k"), Some(Value::Int(5)));
 }
@@ -859,7 +867,7 @@ fn list_and_scalar_keys_coexist_independently() {
     kv.lpush("list", s("a"));
     kv.lpush("list", s("b"));
     assert_eq!(kv.get("scalar"), Some(Value::Int(1)));
-    assert_eq!(kv.lrange("list", 0, 10), Some(vec![s("b"), s("a")]));
+    assert_eq!(lrange(&kv, "list", 0, 10), Some(vec![s("b"), s("a")]));
     // get on a list key returns the whole list value.
     assert_eq!(kv.get("list"), Some(Value::List(vec![s("b"), s("a")])));
 }
@@ -990,7 +998,7 @@ fn lpush_preserves_existing_ttl_on_existing_list() {
     let snap = kv.snapshot();
     assert_eq!(snap.get("l").and_then(|e| e.expires_at), Some(future));
     assert_eq!(
-        kv.lrange("l", 0, 100),
+        lrange(&kv, "l", 0, 100),
         Some(vec![Value::Int(2), Value::Int(1)])
     );
 }
@@ -1013,7 +1021,7 @@ fn lpush_replacing_non_list_keeps_old_ttl() {
     kv.lpush("k", Value::Int(7));
     let snap = kv.snapshot();
     assert_eq!(snap.get("k").and_then(|e| e.expires_at), Some(future));
-    assert_eq!(kv.lrange("k", 0, 100), Some(vec![Value::Int(7)]));
+    assert_eq!(lrange(&kv, "k", 0, 100), Some(vec![Value::Int(7)]));
 }
 
 #[test]
@@ -1029,7 +1037,7 @@ fn lpush_onto_expired_list_creates_fresh_list() {
     );
     kv.restore(entries);
     kv.lpush("l", Value::Int(2));
-    assert_eq!(kv.lrange("l", 0, 100), Some(vec![Value::Int(2)]));
+    assert_eq!(lrange(&kv, "l", 0, 100), Some(vec![Value::Int(2)]));
 }
 
 #[test]
@@ -1044,7 +1052,7 @@ fn lrange_on_expired_list_is_absent() {
         },
     );
     kv.restore(entries);
-    assert_eq!(kv.lrange("l", 0, 100), None);
+    assert_eq!(lrange(&kv, "l", 0, 100), None);
     assert!(!kv.snapshot().contains_key("l"));
 }
 
@@ -1060,8 +1068,8 @@ fn ltrim_on_expired_list_returns_false() {
         },
     );
     kv.restore(entries);
-    assert!(!kv.ltrim("l", 0, 1));
-    assert_eq!(kv.lrange("l", 0, 100), None);
+    assert!(!ltrim(&kv, "l", 0, 1));
+    assert_eq!(lrange(&kv, "l", 0, 100), None);
 }
 
 // ===========================================================================
@@ -1080,7 +1088,7 @@ fn lrange_zero_zero_on_empty_list_is_empty() {
         },
     );
     kv.restore(entries);
-    assert_eq!(kv.lrange("l", 0, 0), Some(vec![]));
+    assert_eq!(lrange(&kv, "l", 0, 0), Some(vec![]));
 }
 
 #[test]
@@ -1089,7 +1097,7 @@ fn lrange_both_bounds_beyond_len_is_empty() {
     let kv = KvStore::new();
     kv.lpush("l", Value::Int(1));
     kv.lpush("l", Value::Int(2));
-    assert_eq!(kv.lrange("l", 100, 200), Some(vec![]));
+    assert_eq!(lrange(&kv, "l", 100, 200), Some(vec![]));
 }
 
 #[test]
@@ -1099,7 +1107,7 @@ fn lrange_single_index_window_returns_one_element() {
     kv.lpush("l", Value::Int(1));
     kv.lpush("l", Value::Int(2));
     kv.lpush("l", Value::Int(3));
-    assert_eq!(kv.lrange("l", 2, 3), Some(vec![Value::Int(1)]));
+    assert_eq!(lrange(&kv, "l", 2, 3), Some(vec![Value::Int(1)]));
 }
 
 #[test]
@@ -1107,9 +1115,9 @@ fn ltrim_keeps_whole_list_with_full_window() {
     let kv = KvStore::new();
     kv.lpush("l", Value::Int(1));
     kv.lpush("l", Value::Int(2)); // [2,1]
-    assert!(kv.ltrim("l", 0, 2));
+    assert!(ltrim(&kv, "l", 0, 2));
     assert_eq!(
-        kv.lrange("l", 0, 100),
+        lrange(&kv, "l", 0, 100),
         Some(vec![Value::Int(2), Value::Int(1)])
     );
 }
@@ -1121,9 +1129,9 @@ fn ltrim_drops_head_keeping_tail_window() {
     kv.lpush("l", Value::Int(1));
     kv.lpush("l", Value::Int(2));
     kv.lpush("l", Value::Int(3));
-    assert!(kv.ltrim("l", 1, 3));
+    assert!(ltrim(&kv, "l", 1, 3));
     assert_eq!(
-        kv.lrange("l", 0, 100),
+        lrange(&kv, "l", 0, 100),
         Some(vec![Value::Int(2), Value::Int(1)])
     );
 }
@@ -1141,15 +1149,15 @@ fn ltrim_on_empty_list_returns_true_and_stays_empty() {
         },
     );
     kv.restore(entries);
-    assert!(kv.ltrim("l", 0, 0));
-    assert_eq!(kv.lrange("l", 0, 100), Some(vec![]));
+    assert!(ltrim(&kv, "l", 0, 0));
+    assert_eq!(lrange(&kv, "l", 0, 100), Some(vec![]));
 }
 
 #[test]
 fn ltrim_null_value_returns_false() {
     let kv = KvStore::new();
     kv.set("k".to_string(), Value::Null, None);
-    assert!(!kv.ltrim("k", 0, 1));
+    assert!(!ltrim(&kv, "k", 0, 1));
     assert_eq!(kv.get("k"), Some(Value::Null));
 }
 
@@ -1157,7 +1165,7 @@ fn ltrim_null_value_returns_false() {
 fn lrange_on_null_value_is_none() {
     let kv = KvStore::new();
     kv.set("k".to_string(), Value::Null, None);
-    assert_eq!(kv.lrange("k", 0, 10), None);
+    assert_eq!(lrange(&kv, "k", 0, 10), None);
 }
 
 #[test]
@@ -1466,7 +1474,7 @@ fn del_then_lpush_creates_fresh_list() {
     kv.lpush("l", Value::Int(2));
     assert!(kv.del("l"));
     kv.lpush("l", Value::Int(9));
-    assert_eq!(kv.lrange("l", 0, 100), Some(vec![Value::Int(9)]));
+    assert_eq!(lrange(&kv, "l", 0, 100), Some(vec![Value::Int(9)]));
 }
 
 #[test]
@@ -1475,7 +1483,7 @@ fn set_clears_list_semantics_so_lrange_reads_none() {
     let kv = KvStore::new();
     kv.lpush("l", Value::Int(1));
     kv.set("l".to_string(), Value::Int(5), None);
-    assert_eq!(kv.lrange("l", 0, 10), None);
+    assert_eq!(lrange(&kv, "l", 0, 10), None);
     assert_eq!(kv.get("l"), Some(Value::Int(5)));
 }
 

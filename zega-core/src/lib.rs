@@ -770,12 +770,17 @@ impl Zega {
         Ok(len)
     }
 
-    pub fn kv_lrange(&self, key: &str, start: usize, stop: usize) -> Option<Vec<Value>> {
-        self.kv.lrange(key, start, stop)
+    pub fn kv_lrange(&self, key: &str, start: usize, stop: usize) -> Result<Option<Vec<Value>>> {
+        self.kv
+            .lrange(key, start, stop)
+            .map_err(ZegaError::Execution)
     }
 
     pub fn kv_ltrim(&self, key: &str, start: usize, stop: usize) -> Result<bool> {
-        let updated = self.kv.ltrim(key, start, stop);
+        let updated = self
+            .kv
+            .ltrim(key, start, stop)
+            .map_err(ZegaError::Execution)?;
         if updated {
             let value = self.kv.get(key).unwrap_or(Value::List(Vec::new()));
             self.wal.append(&Operation::KvSet {

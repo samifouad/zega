@@ -140,11 +140,13 @@ fn execute_kv(zega: &zega_core::Zega, request: KvRequest) -> Result<JsonValue, S
         "lpush" => json!(zega
             .kv_lpush(&request.key, required(request.value, "value")?)
             .map_err(|error| error.to_string())?),
-        "lrange" => json!(zega.kv_lrange(
-            &request.key,
-            required(request.start, "start")?,
-            required(request.stop, "stop")?
-        )),
+        "lrange" => json!(zega
+            .kv_lrange(
+                &request.key,
+                required(request.start, "start")?,
+                required(request.stop, "stop")?
+            )
+            .map_err(|error| error.to_string())?),
         "ltrim" => json!(zega
             .kv_ltrim(
                 &request.key,
