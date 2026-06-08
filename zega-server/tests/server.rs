@@ -81,7 +81,7 @@ async fn cql_create_then_match_returns_node() {
     .unwrap();
     assert_eq!(body["ok"], true);
     assert_eq!(body["count"], 1);
-    assert_eq!(body["rows"][0]["name"]["String"], "Ada");
+    assert_eq!(body["rows"][0]["name"], "Ada");
 }
 
 #[tokio::test]
@@ -93,7 +93,7 @@ async fn kv_set_then_get_round_trips() {
         reqwest::Method::POST,
         format!("{}/kv", server.base_url),
     )
-    .json(&json!({"op": "set", "key": "name", "value": {"String": "Ada"}}))
+    .json(&json!({"op": "set", "key": "name", "value": "Ada"}))
     .send()
     .await
     .unwrap()
@@ -114,7 +114,131 @@ async fn kv_set_then_get_round_trips() {
     .json()
     .await
     .unwrap();
-    assert_eq!(get["result"]["String"], "Ada");
+    assert_eq!(get["result"], "Ada");
+}
+
+#[tokio::test]
+async fn cql_raw_json_params_round_trip() {
+    let server = start_server().await;
+    let client = Client::new();
+    let params = json!({
+        "string": "x",
+        "int": 42,
+        "float": 2.5,
+        "bool": true,
+        "null_value": null,
+        "array": ["nested", 7, false, null],
+        "object": {"name": "Ada", "scores": [1, 2.5]}
+    });
+    let body: Value = authed(
+        &client,
+        reqwest::Method::POST,
+        format!("{}/cql", server.base_url),
+    )
+    .json(&json!({
+        "query": "CREATE (n:RawParams {string: $string, int: $int, float: $float, bool: $bool, null_value: $null_value, array: $array, object: $object})",
+        "params": params
+    }))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(body["ok"], true, "{body}");
+
+    let matched: Value = authed(
+        &client,
+        reqwest::Method::POST,
+        format!("{}/cql", server.base_url),
+    )
+    .json(&json!({
+        "query": "MATCH (n:RawParams) RETURN n.string AS string, n.int AS int, n.float AS float, n.bool AS bool, n.null_value AS null_value, n.array AS array, n.object AS object"
+    }))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(matched["ok"], true);
+    assert_eq!(matched["rows"][0]["string"], "x");
+    assert_eq!(matched["rows"][0]["int"], 42);
+    assert_eq!(matched["rows"][0]["float"], 2.5);
+    assert_eq!(matched["rows"][0]["bool"], true);
+    assert_eq!(matched["rows"][0]["null_value"], Value::Null);
+    assert_eq!(
+        matched["rows"][0]["array"],
+        json!(["nested", 7, false, null])
+    );
+    assert_eq!(
+        matched["rows"][0]["object"],
+        json!({"name": "Ada", "scores": [1, 2.5]})
+    );
+}
+
+#[tokio::test]
+async fn kv_set_accepts_explicit_raw_null() {
+    let server = start_server().await;
+    let client = Client::new();
+    let set = post_kv(
+        &client,
+        &server.base_url,
+        json!({"op": "set", "key": "nothing", "value": null}),
+    )
+    .await;
+    assert_eq!(set["ok"], true);
+
+    let get = post_kv(
+        &client,
+        &server.base_url,
+        json!({"op": "get", "key": "nothing"}),
+    )
+    .await;
+    assert_eq!(get["ok"], true);
+    assert_eq!(get["result"], Value::Null);
+}
+
+#[tokio::test]
+async fn create_with_raw_params_then_match_returns_raw_json() {
+    let server = start_server().await;
+    let client = Client::new();
+    let create: Value = authed(
+        &client,
+        reqwest::Method::POST,
+        format!("{}/cql", server.base_url),
+    )
+    .json(&json!({
+        "query": "CREATE (n:Person {name: $name, age: $age, active: $active})",
+        "params": {"name": "Ada", "age": 37, "active": true}
+    }))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(create["ok"], true);
+
+    let matched: Value = authed(
+        &client,
+        reqwest::Method::POST,
+        format!("{}/cql", server.base_url),
+    )
+    .json(&json!({
+        "query": "MATCH (n:Person {name: $name}) RETURN n.name AS name, n.age AS age, n.active AS active",
+        "params": {"name": "Ada"}
+    }))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        matched["rows"][0],
+        json!({"name": "Ada", "age": 37, "active": true})
+    );
 }
 
 #[tokio::test]
@@ -125,14 +249,14 @@ async fn kv_list_counter_and_expiry_operations_work() {
     let first = post_kv(
         &client,
         &server.base_url,
-        json!({"op": "lpush", "key": "items", "value": {"Int": 1}}),
+        json!({"op": "lpush", "key": "items", "value": 1}),
     )
     .await;
     assert_eq!(first["result"], 1);
     post_kv(
         &client,
         &server.base_url,
-        json!({"op": "lpush", "key": "items", "value": {"Int": 2}}),
+        json!({"op": "lpush", "key": "items", "value": 2}),
     )
     .await;
     let range = post_kv(
@@ -141,7 +265,7 @@ async fn kv_list_counter_and_expiry_operations_work() {
         json!({"op": "lrange", "key": "items", "start": 0, "stop": 10}),
     )
     .await;
-    assert_eq!(range["result"], json!([{"Int": 2}, {"Int": 1}]));
+    assert_eq!(range["result"], json!([2, 1]));
     post_kv(
         &client,
         &server.base_url,
@@ -174,7 +298,7 @@ async fn kv_list_counter_and_expiry_operations_work() {
         json!({"op": "incr", "key": "counter"}),
     )
     .await;
-    assert_eq!(incremented["result"]["Int"], 1);
+    assert_eq!(incremented["result"], 1);
     let deleted = post_kv(
         &client,
         &server.base_url,
@@ -266,7 +390,7 @@ async fn malformed_list_ranges_are_json_errors_not_server_failures() {
     post_kv(
         &client,
         &server.base_url,
-        json!({"op": "lpush", "key": "items", "value": {"Int": 1}}),
+        json!({"op": "lpush", "key": "items", "value": 1}),
     )
     .await;
 
@@ -310,10 +434,10 @@ async fn parallel_expiry_readers_and_writers_remain_consistent() {
     let writer = tokio::spawn(async move {
         for value in 0..200 {
             for body in [
-                json!({"op": "set", "key": "value", "value": {"Int": value}, "ttl": 0}),
-                json!({"op": "set", "key": "list", "value": {"List": [{"Int": value}]}, "ttl": 0}),
-                json!({"op": "set", "key": "value", "value": {"Int": value}}),
-                json!({"op": "set", "key": "list", "value": {"List": [{"Int": value}]}}),
+                json!({"op": "set", "key": "value", "value": value, "ttl": 0}),
+                json!({"op": "set", "key": "list", "value": [value], "ttl": 0}),
+                json!({"op": "set", "key": "value", "value": value}),
+                json!({"op": "set", "key": "list", "value": [value]}),
             ] {
                 assert_eq!(post_kv(&writer_client, &writer_url, body).await["ok"], true);
             }
@@ -328,7 +452,7 @@ async fn parallel_expiry_readers_and_writers_remain_consistent() {
             for _ in 0..200 {
                 let get = post_kv(&client, &base_url, json!({"op": "get", "key": "value"})).await;
                 assert_eq!(get["ok"], true);
-                assert!(get["result"].is_null() || get["result"]["Int"].is_number());
+                assert!(get["result"].is_null() || get["result"].is_number());
 
                 let range = post_kv(
                     &client,
@@ -342,7 +466,7 @@ async fn parallel_expiry_readers_and_writers_remain_consistent() {
                     result.is_null()
                         || result
                             .as_array()
-                            .is_some_and(|items| items.len() == 1 && items[0]["Int"].is_number())
+                            .is_some_and(|items| items.len() == 1 && items[0].is_number())
                 );
             }
         }));
@@ -396,7 +520,7 @@ async fn parallel_readers_never_observe_half_applied_write() {
                     .await
                     .unwrap();
                 assert_eq!(body["ok"], true);
-                let count = body["rows"][0]["count"]["Int"].as_i64().unwrap();
+                let count = body["rows"][0]["count"].as_i64().unwrap();
                 assert_eq!(count % 2, 0, "reader observed a half-applied pair");
             }
         }));
