@@ -64,7 +64,9 @@ impl Graph {
             labels: labels.clone(),
             props: props.clone(),
         };
-        self.nodes.insert(id, node);
+        if let Some(previous) = self.nodes.insert(id, node) {
+            self.remove_node_indexes(&previous);
+        }
         for lbl in &labels {
             self.label_index
                 .entry(lbl.clone())
@@ -97,18 +99,22 @@ impl Graph {
         }
     }
 
+    fn remove_node_indexes(&mut self, node: &Node) {
+        for lbl in &node.labels {
+            if let Some(set) = self.label_index.get_mut(lbl) {
+                set.remove(&node.id);
+            }
+        }
+        for (k, v) in &node.props {
+            if let Some(set) = self.property_index.get_mut(&(k.clone(), v.clone())) {
+                set.remove(&node.id);
+            }
+        }
+    }
+
     pub fn delete_node(&mut self, id: NodeId) {
         if let Some(node) = self.nodes.remove(&id) {
-            for lbl in &node.labels {
-                if let Some(set) = self.label_index.get_mut(lbl) {
-                    set.remove(&id);
-                }
-            }
-            for (k, v) in &node.props {
-                if let Some(set) = self.property_index.get_mut(&(k.clone(), v.clone())) {
-                    set.remove(&id);
-                }
-            }
+            self.remove_node_indexes(&node);
             // Remove connected relationships
             let out_rels: Vec<RelId> = self.outgoing.remove(&id).unwrap_or_default().into_iter().collect();
             let in_rels: Vec<RelId> = self.incoming.remove(&id).unwrap_or_default().into_iter().collect();
@@ -148,20 +154,26 @@ impl Graph {
             to,
             props,
         };
-        self.relationships.insert(id, rel);
+        if let Some(previous) = self.relationships.insert(id, rel) {
+            self.remove_relationship_indexes(&previous);
+        }
         self.outgoing.entry(from).or_default().insert(id);
         self.incoming.entry(to).or_default().insert(id);
         self.next_rel_id.fetch_max(id + 1, Ordering::SeqCst);
     }
 
+    fn remove_relationship_indexes(&mut self, rel: &Relationship) {
+        if let Some(set) = self.outgoing.get_mut(&rel.from) {
+            set.remove(&rel.id);
+        }
+        if let Some(set) = self.incoming.get_mut(&rel.to) {
+            set.remove(&rel.id);
+        }
+    }
+
     pub fn delete_relationship(&mut self, id: RelId) {
         if let Some(rel) = self.relationships.remove(&id) {
-            if let Some(set) = self.outgoing.get_mut(&rel.from) {
-                set.remove(&id);
-            }
-            if let Some(set) = self.incoming.get_mut(&rel.to) {
-                set.remove(&id);
-            }
+            self.remove_relationship_indexes(&rel);
         }
     }
 

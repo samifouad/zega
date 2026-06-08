@@ -1397,64 +1397,59 @@ fn update_node_adds_first_prop_to_propless_node() {
 }
 
 // ===========================================================================
-// restore_node / restore_relationship overwrite: stale-index behavior.
-// Unlike update_node and delete_node, restore_* does NOT scrub the prior
-// entries for an id before re-inserting. These tests pin that observable
-// behavior so a future "fix" is a conscious choice, not an accident.
+// restore_node / restore_relationship overwrite: stale-index prevention.
 // ===========================================================================
 
 #[test]
-fn restore_node_overwrite_leaves_stale_label_index_entry() {
+fn restore_node_overwrite_removes_stale_label_index_entry() {
     let mut g = Graph::new();
+    g.restore_node(6, labels(&["First"]), HashMap::new());
     g.restore_node(5, labels(&["First"]), HashMap::new());
     g.restore_node(5, labels(&["Second"]), HashMap::new());
-    // The node itself now carries only the new label.
     assert_eq!(g.get_node(5).unwrap().labels, vec!["Second".to_string()]);
-    // New label indexed.
     assert!(g.nodes_by_label("Second").unwrap().contains(&5));
-    // restore_node does not remove the old label index entry, so the stale
-    // "First" bucket still references id 5 even though the node lost the label.
     assert!(
-        g.nodes_by_label("First").unwrap().contains(&5),
-        "restore_node does not scrub prior label index entries"
+        !g.nodes_by_label("First").unwrap().contains(&5),
+        "restore_node must scrub prior label index entries"
     );
+    assert!(g.nodes_by_label("First").unwrap().contains(&6));
 }
 
 #[test]
-fn restore_node_overwrite_leaves_stale_property_index_entry() {
+fn restore_node_overwrite_removes_stale_property_index_entry() {
     let mut g = Graph::new();
+    g.restore_node(6, vec![], props(&[("v", Value::Int(1))]));
     g.restore_node(5, vec![], props(&[("v", Value::Int(1))]));
     g.restore_node(5, vec![], props(&[("v", Value::Int(2))]));
     assert_eq!(g.get_node(5).unwrap().props.get("v"), Some(&Value::Int(2)));
     assert!(g.nodes_by_property("v", &Value::Int(2)).unwrap().contains(&5));
-    // Stale old-value bucket persists (no scrub on restore).
     assert!(
-        g.nodes_by_property("v", &Value::Int(1)).unwrap().contains(&5),
-        "restore_node leaves the prior property value indexed"
+        !g.nodes_by_property("v", &Value::Int(1)).unwrap().contains(&5),
+        "restore_node must scrub the prior property value"
     );
+    assert!(g.nodes_by_property("v", &Value::Int(1)).unwrap().contains(&6));
 }
 
 #[test]
-fn restore_relationship_overwrite_leaves_stale_adjacency() {
-    // Restore rel 7 as 1->2, then overwrite as 3->4. The relationship record
-    // is replaced, but the old (1->2) adjacency entries are not scrubbed.
+fn restore_relationship_overwrite_removes_stale_adjacency() {
     let mut g = Graph::new();
+    g.restore_relationship(8, "R".to_string(), 1, 2, HashMap::new());
     g.restore_relationship(7, "R".to_string(), 1, 2, HashMap::new());
     g.restore_relationship(7, "R".to_string(), 3, 4, HashMap::new());
     let rel = g.get_relationship(7).unwrap();
     assert_eq!((rel.from, rel.to), (3, 4));
-    // New adjacency present.
     assert!(g.outgoing_rels(3).unwrap().contains(&7));
     assert!(g.incoming_rels(4).unwrap().contains(&7));
-    // Stale old adjacency still references rel 7.
     assert!(
-        g.outgoing_rels(1).unwrap().contains(&7),
-        "restore_relationship leaves the prior 'from' adjacency"
+        !g.outgoing_rels(1).unwrap().contains(&7),
+        "restore_relationship must scrub the prior 'from' adjacency"
     );
     assert!(
-        g.incoming_rels(2).unwrap().contains(&7),
-        "restore_relationship leaves the prior 'to' adjacency"
+        !g.incoming_rels(2).unwrap().contains(&7),
+        "restore_relationship must scrub the prior 'to' adjacency"
     );
+    assert!(g.outgoing_rels(1).unwrap().contains(&8));
+    assert!(g.incoming_rels(2).unwrap().contains(&8));
 }
 
 #[test]
