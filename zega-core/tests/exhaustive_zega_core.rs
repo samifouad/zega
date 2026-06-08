@@ -1345,14 +1345,14 @@ fn kv_helper_methods_set_get_del() {
     zega.kv_set("hk".into(), Value::String("hv".into()), None)
         .unwrap();
     assert_eq!(zega.kv_get("hk"), Some(Value::String("hv".into())));
-    assert_eq!(zega.kv_del("hk").unwrap(), true);
+    assert!(zega.kv_del("hk").unwrap());
     assert_eq!(zega.kv_get("hk"), None);
 }
 
 #[test]
 fn kv_helper_del_missing_returns_false() {
     let zega = db();
-    assert_eq!(zega.kv_del("never-existed").unwrap(), false);
+    assert!(!zega.kv_del("never-existed").unwrap());
 }
 
 #[test]

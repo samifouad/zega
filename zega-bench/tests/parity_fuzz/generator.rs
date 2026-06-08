@@ -146,7 +146,7 @@ pub fn generate_case(rng: &mut Rng) -> (GeneratedGraph, GeneratedQuery) {
         relationships,
     };
     let query = match rng.usize(5) {
-        0 | 1 | 2 => generate_ordered_scan(rng),
+        0..=2 => generate_ordered_scan(rng),
         3 => generate_aggregate(rng),
         _ => generate_traversal(rng),
     };
@@ -212,27 +212,26 @@ fn generate_aggregate(rng: &mut Rng) -> GeneratedQuery {
         _ => column("max(n.ratio)", "aggregate", ColumnKind::Float),
     };
     columns.push(aggregate);
-    let order = rng
-        .bool()
-        .then(|| {
-            let desc = rng.bool();
-            let mut keys = vec![OrderKey {
-                expression: if rng.bool() {
-                    "aggregate"
-                } else {
-                    columns.last().unwrap().expression
-                },
-                desc,
-            }];
-            if grouped {
-                keys.push(OrderKey {
-                    expression: "group_key",
-                    desc: !desc,
-                });
-            }
-            keys
-        })
-        .unwrap_or_default();
+    let order = if rng.bool() {
+        let desc = rng.bool();
+        let mut keys = vec![OrderKey {
+            expression: if rng.bool() {
+                "aggregate"
+            } else {
+                columns.last().unwrap().expression
+            },
+            desc,
+        }];
+        if grouped {
+            keys.push(OrderKey {
+                expression: "group_key",
+                desc: !desc,
+            });
+        }
+        keys
+    } else {
+        Vec::new()
+    };
     GeneratedQuery {
         shape: QueryShape::Aggregate,
         label: random_label(rng),

@@ -2085,7 +2085,10 @@ fn value_partial_ord_same_types() {
     assert!(Value::Int(1) < Value::Int(2));
     assert!(Value::from_f64(1.0) < Value::from_f64(2.0));
     assert!(Value::String("a".to_string()) < Value::String("b".to_string()));
-    assert!(!(Value::Bool(true) < Value::Bool(false)));
+    assert_ne!(
+        Value::Bool(true).partial_cmp(&Value::Bool(false)),
+        Some(std::cmp::Ordering::Less)
+    );
 }
 
 #[test]

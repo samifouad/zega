@@ -157,7 +157,7 @@ fn delete_node_clears_from_label_index() {
     g.delete_node(id);
     // Index entry may persist but must no longer contain the id.
     let set = g.nodes_by_label("Person");
-    assert!(set.map_or(true, |s| !s.contains(&id)));
+    assert!(set.is_none_or(|s| !s.contains(&id)));
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn delete_node_clears_from_property_index() {
     let id = g.create_node(vec![], props(&[("name", s("Carol"))]));
     g.delete_node(id);
     let set = g.nodes_by_property("name", &s("Carol"));
-    assert!(set.map_or(true, |s| !s.contains(&id)));
+    assert!(set.is_none_or(|s| !s.contains(&id)));
 }
 
 #[test]
@@ -218,7 +218,7 @@ fn update_node_reindexes_property_old_value_dropped() {
     g.update_node(id, props(&[("name", s("new"))]));
     // Old value no longer maps to the node.
     let old = g.nodes_by_property("name", &s("old"));
-    assert!(old.map_or(true, |set| !set.contains(&id)));
+    assert!(old.is_none_or(|set| !set.contains(&id)));
     // New value does.
     let new = g.nodes_by_property("name", &s("new")).unwrap();
     assert!(new.contains(&id));
@@ -375,11 +375,11 @@ fn prop_roundtrip_int_including_extremes() {
 #[test]
 fn prop_roundtrip_float_via_bits() {
     let mut g = Graph::new();
-    let v = Value::from_f64(3.14159);
+    let v = Value::from_f64(std::f64::consts::PI);
     let id = g.create_node(vec![], props(&[("pi", v.clone())]));
     let got = g.get_node(id).unwrap().props.get("pi").cloned().unwrap();
     assert_eq!(got, v);
-    assert_eq!(got.to_f64(), Some(3.14159));
+    assert_eq!(got.to_f64(), Some(std::f64::consts::PI));
 }
 
 #[test]
@@ -507,8 +507,8 @@ fn create_relationship_updates_adjacency() {
     assert!(g.outgoing_rels(a).unwrap().contains(&rid));
     assert!(g.incoming_rels(b).unwrap().contains(&rid));
     // No reverse direction.
-    assert!(g.incoming_rels(a).map_or(true, |s| !s.contains(&rid)));
-    assert!(g.outgoing_rels(b).map_or(true, |s| !s.contains(&rid)));
+    assert!(g.incoming_rels(a).is_none_or(|s| !s.contains(&rid)));
+    assert!(g.outgoing_rels(b).is_none_or(|s| !s.contains(&rid)));
 }
 
 #[test]
@@ -566,8 +566,8 @@ fn delete_relationship_removes_and_clears_adjacency() {
     let rid = g.create_relationship("R".to_string(), a, b, HashMap::new());
     g.delete_relationship(rid);
     assert!(g.get_relationship(rid).is_none());
-    assert!(g.outgoing_rels(a).map_or(true, |s| !s.contains(&rid)));
-    assert!(g.incoming_rels(b).map_or(true, |s| !s.contains(&rid)));
+    assert!(g.outgoing_rels(a).is_none_or(|s| !s.contains(&rid)));
+    assert!(g.incoming_rels(b).is_none_or(|s| !s.contains(&rid)));
 }
 
 #[test]
@@ -618,7 +618,7 @@ fn delete_node_cascades_outgoing_relationships() {
     g.delete_node(a);
     assert!(g.get_relationship(rid).is_none());
     // The surviving endpoint's incoming adjacency no longer references rid.
-    assert!(g.incoming_rels(b).map_or(true, |s| !s.contains(&rid)));
+    assert!(g.incoming_rels(b).is_none_or(|s| !s.contains(&rid)));
 }
 
 #[test]
@@ -629,7 +629,7 @@ fn delete_node_cascades_incoming_relationships() {
     let rid = g.create_relationship("R".to_string(), a, b, HashMap::new());
     g.delete_node(b); // b is the target
     assert!(g.get_relationship(rid).is_none());
-    assert!(g.outgoing_rels(a).map_or(true, |s| !s.contains(&rid)));
+    assert!(g.outgoing_rels(a).is_none_or(|s| !s.contains(&rid)));
 }
 
 #[test]
@@ -815,7 +815,7 @@ fn set_state_replaces_prior_contents() {
     assert!(g.all_nodes().is_empty());
     assert!(g.all_relationships().is_empty());
     // Old label index entry must no longer match.
-    assert!(g.nodes_by_label("Old").map_or(true, |s| s.is_empty()));
+    assert!(g.nodes_by_label("Old").is_none_or(|s| s.is_empty()));
 }
 
 #[test]
@@ -1276,12 +1276,12 @@ fn end_to_end_social_graph_scenario() {
     assert!(g.nodes_by_property("name", &s("Alicia")).unwrap().contains(&alice));
     assert!(g
         .nodes_by_property("name", &s("Alice"))
-        .map_or(true, |set| !set.contains(&alice)));
+        .is_none_or(|set| !set.contains(&alice)));
 
     // Delete the company; the WORKS_AT edge must cascade away.
     g.delete_node(acme);
     assert!(g.get_relationship(employs).is_none());
-    assert!(g.nodes_by_label("Company").map_or(true, |s| s.is_empty()));
+    assert!(g.nodes_by_label("Company").is_none_or(|s| s.is_empty()));
 
     // KNOWS chain still intact.
     assert_eq!(match_out_by_kind(&g, bob, "KNOWS"), [carol].into_iter().collect());
@@ -1382,7 +1382,7 @@ fn update_node_overwrite_keeps_untouched_props_indexed() {
     // Untouched prop still indexed; old value of a dropped.
     assert!(g.nodes_by_property("b", &s("keep")).unwrap().contains(&id));
     assert!(g.nodes_by_property("a", &Value::Int(2)).unwrap().contains(&id));
-    assert!(g.nodes_by_property("a", &Value::Int(1)).map_or(true, |set| !set.contains(&id)));
+    assert!(g.nodes_by_property("a", &Value::Int(1)).is_none_or(|set| !set.contains(&id)));
 }
 
 #[test]
@@ -1481,8 +1481,8 @@ fn restore_node_then_delete_scrubs_indexes() {
     g.restore_node(9, labels(&["R"]), props(&[("k", s("v"))]));
     g.delete_node(9);
     assert!(g.get_node(9).is_none());
-    assert!(g.nodes_by_label("R").map_or(true, |s| !s.contains(&9)));
-    assert!(g.nodes_by_property("k", &s("v")).map_or(true, |s| !s.contains(&9)));
+    assert!(g.nodes_by_label("R").is_none_or(|s| !s.contains(&9)));
+    assert!(g.nodes_by_property("k", &s("v")).is_none_or(|s| !s.contains(&9)));
 }
 
 // ===========================================================================
@@ -1680,8 +1680,8 @@ fn self_loop_delete_clears_both_adjacency_sets() {
     let rid = g.create_relationship("SELF".to_string(), a, a, HashMap::new());
     g.delete_relationship(rid);
     assert!(g.get_relationship(rid).is_none());
-    assert!(g.outgoing_rels(a).map_or(true, |s| !s.contains(&rid)));
-    assert!(g.incoming_rels(a).map_or(true, |s| !s.contains(&rid)));
+    assert!(g.outgoing_rels(a).is_none_or(|s| !s.contains(&rid)));
+    assert!(g.incoming_rels(a).is_none_or(|s| !s.contains(&rid)));
     // The node itself survives the edge deletion.
     assert!(g.get_node(a).is_some());
 }
@@ -1766,8 +1766,8 @@ fn set_state_overwrites_indexes_not_merges() {
     g.set_state(second, HashMap::new());
     assert!(g.get_node(1).is_none());
     assert!(g.get_node(2).is_some());
-    assert!(g.nodes_by_label("Gone").map_or(true, |s| !s.contains(&1)));
-    assert!(g.nodes_by_property("k", &s("v")).map_or(true, |s| !s.contains(&1)));
+    assert!(g.nodes_by_label("Gone").is_none_or(|s| !s.contains(&1)));
+    assert!(g.nodes_by_property("k", &s("v")).is_none_or(|s| !s.contains(&1)));
     assert!(g.nodes_by_label("Here").unwrap().contains(&2));
 }
 

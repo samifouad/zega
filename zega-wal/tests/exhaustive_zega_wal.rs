@@ -785,7 +785,7 @@ fn bincode_garbage_as_final_entry_is_truncated_as_torn_tail() {
         file.write_all(WAL_FILE_HEADER).unwrap();
         write_framed_entry(&mut file, &payload_of(&kv_set("survivor")));
         // A non-deserializable final entry with a correct CRC.
-        write_framed_entry(&mut file, &vec![0xFFu8; 4]);
+        write_framed_entry(&mut file, &[0xFFu8; 4]);
         file.sync_all().unwrap();
     }
     // The final-entry deserialize failure is NOT in the tail-truncation branch
@@ -1043,7 +1043,7 @@ fn nested_and_float_values_roundtrip() {
     let wal = Wal::new(&path, true).unwrap();
 
     let mut inner = HashMap::new();
-    inner.insert("flt".to_string(), Value::from_f64(3.141592653589793));
+    inner.insert("flt".to_string(), Value::from_f64(std::f64::consts::PI));
     inner.insert("nan".to_string(), Value::from_f64(f64::NAN));
     inner.insert("inf".to_string(), Value::from_f64(f64::INFINITY));
     let nested = Value::Map(inner);
@@ -1062,7 +1062,10 @@ fn nested_and_float_values_roundtrip() {
             match &items[0] {
                 Value::Map(m) => {
                     // Pi survives bit-exactly through the bits-based Float repr.
-                    assert_eq!(m.get("flt").and_then(Value::to_f64), Some(3.141592653589793));
+                    assert_eq!(
+                        m.get("flt").and_then(Value::to_f64),
+                        Some(std::f64::consts::PI)
+                    );
                     assert!(m.get("nan").and_then(Value::to_f64).unwrap().is_nan());
                     assert_eq!(m.get("inf").and_then(Value::to_f64), Some(f64::INFINITY));
                 }
@@ -1119,7 +1122,7 @@ fn restore_missing_file_returns_false() {
     let missing = dir.path().join("nope.bin");
     let mut g = Graph::new();
     let kv = KvStore::new();
-    assert_eq!(restore(&mut g, &kv, &missing).unwrap(), false);
+    assert!(!restore(&mut g, &kv, &missing).unwrap());
     assert!(g.all_nodes().is_empty());
 }
 
@@ -1873,11 +1876,11 @@ fn restored_relationship_endpoints_are_queryable_via_rebuilt_index() {
     let kvr = KvStore::new();
     assert!(restore(&mut gr, &kvr, &snap).unwrap());
     assert!(
-        gr.outgoing_rels(a).map_or(false, |set| set.contains(&rid)),
+        gr.outgoing_rels(a).is_some_and(|set| set.contains(&rid)),
         "restored rel must be in the rebuilt outgoing index of its source"
     );
     assert!(
-        gr.incoming_rels(b).map_or(false, |set| set.contains(&rid)),
+        gr.incoming_rels(b).is_some_and(|set| set.contains(&rid)),
         "restored rel must be in the rebuilt incoming index of its target"
     );
 }
