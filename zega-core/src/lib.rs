@@ -2215,6 +2215,107 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_label_node_create_and_match() {
+        // zega#23 gap 1: Tana's identity model uses :User:Agent / :User:Human.
+        // CREATE must store all labels; MATCH must require ALL listed labels
+        // (Neo4j AND semantics), and match on any subset.
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let p = HashMap::from([("e".to_string(), Value::String("idris@tana.gg".to_string()))]);
+        zega.query("CREATE (n:User:Agent {email: $e})", p.clone())
+            .unwrap();
+        // matchable by either label alone and by both together
+        for q in [
+            "MATCH (n:User {email: $e}) RETURN n",
+            "MATCH (n:Agent {email: $e}) RETURN n",
+            "MATCH (n:User:Agent {email: $e}) RETURN n",
+            "MATCH (n:Agent:User {email: $e}) RETURN n", // order-independent
+        ] {
+            let rows = zega.query(q, p.clone()).unwrap();
+            assert_eq!(rows.len(), 1, "expected 1 row for `{q}`");
+        }
+        // a label it does NOT carry must exclude it (AND semantics)
+        let rows = zega
+            .query("MATCH (n:User:Human {email: $e}) RETURN n", p.clone())
+            .unwrap();
+        assert_eq!(rows.len(), 0, "User:Human must not match a User:Agent node");
+        // n.labels pseudo-property returns the stored label list (used for
+        // parity verification against Neo4j's labels(n) during the export)
+        let rows = zega
+            .query("MATCH (n:User:Agent {email: $e}) RETURN n.labels", p)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let labels = rows[0].fields.values().next().unwrap();
+        match labels {
+            Value::List(items) => {
+                assert_eq!(items.len(), 2, "expected 2 labels, got {items:?}");
+                assert!(items.contains(&Value::String("User".to_string())));
+                assert!(items.contains(&Value::String("Agent".to_string())));
+            }
+            other => panic!("expected n.labels to be a list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_comma_match_connects_existing_nodes() {
+        // zega#23 gap 2: MATCH (a),(b) CREATE (a)-[:R]->(b) — the exact shape the
+        // relationship export uses to connect two already-loaded nodes by _nid.
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (n:User {_nid: $x})",
+            HashMap::from([("x".to_string(), Value::String("u1".to_string()))]),
+        )
+        .unwrap();
+        zega.query(
+            "CREATE (n:Shop {_nid: $y})",
+            HashMap::from([("y".to_string(), Value::String("s1".to_string()))]),
+        )
+        .unwrap();
+        let both = HashMap::from([
+            ("x".to_string(), Value::String("u1".to_string())),
+            ("y".to_string(), Value::String("s1".to_string())),
+        ]);
+        zega.query(
+            "MATCH (a {_nid: $x}), (b {_nid: $y}) CREATE (a)-[:HAS_SHOP]->(b)",
+            both,
+        )
+        .unwrap();
+        let rows = zega
+            .query(
+                "MATCH (a:User)-[:HAS_SHOP]->(b:Shop) RETURN a, b",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1, "the HAS_SHOP relationship must connect u1->s1");
+    }
+
+    #[test]
+    fn test_comma_match_is_cartesian_product() {
+        // MATCH (a:A), (b:B) with no relationship = cross product (Neo4j semantics).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        for i in 0..3 {
+            zega.query(
+                "CREATE (n:A {i: $i})",
+                HashMap::from([("i".to_string(), Value::Int(i))]),
+            )
+            .unwrap();
+        }
+        for i in 0..4 {
+            zega.query(
+                "CREATE (n:B {i: $i})",
+                HashMap::from([("i".to_string(), Value::Int(i))]),
+            )
+            .unwrap();
+        }
+        let rows = zega
+            .query("MATCH (a:A), (b:B) RETURN a, b", HashMap::new())
+            .unwrap();
+        assert_eq!(rows.len(), 12, "3 A x 4 B = 12 rows");
+    }
+
+    #[test]
     fn test_match_property_index_lookup_performance() {
         let dir = tempdir().unwrap();
         let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();

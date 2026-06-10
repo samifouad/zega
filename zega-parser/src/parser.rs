@@ -83,10 +83,10 @@ impl<'a> Parser<'a> {
 
     fn parse_match(&mut self) -> Result<Statement, ParseError> {
         self.advance()?; // MATCH
-        let mut pattern = self.parse_pattern()?;
+        let mut pattern = self.parse_comma_patterns()?;
         while self.current == Token::Match {
             self.advance()?;
-            pattern.extend(self.parse_pattern()?);
+            pattern.extend(self.parse_comma_patterns()?);
         }
         let where_clause = if self.current == Token::Where {
             self.advance()?;
@@ -96,7 +96,7 @@ impl<'a> Parser<'a> {
         };
         if self.current == Token::Create {
             self.advance()?;
-            let create_pattern = self.parse_pattern()?;
+            let create_pattern = self.parse_comma_patterns()?;
             let write = Statement::MatchCreate {
                 match_pattern: pattern,
                 where_clause,
@@ -132,7 +132,7 @@ impl<'a> Parser<'a> {
 
     fn parse_create(&mut self) -> Result<Statement, ParseError> {
         self.advance()?; // CREATE
-        let pattern = self.parse_pattern()?;
+        let pattern = self.parse_comma_patterns()?;
         self.parse_trailing_return(Statement::Create { pattern })
     }
 
@@ -241,6 +241,19 @@ impl<'a> Parser<'a> {
         Ok(Statement::KvIncr { key })
     }
 
+    /// Parse one or more comma-separated path patterns into a single flat
+    /// element list. `MATCH (a), (b)` / `CREATE (a), (b)` produce disconnected
+    /// components; the executor cross-products them (matching Neo4j semantics,
+    /// the same shape produced by repeated `MATCH ... MATCH ...`).
+    fn parse_comma_patterns(&mut self) -> Result<Vec<PatternElement>, ParseError> {
+        let mut pattern = self.parse_pattern()?;
+        while self.current == Token::Comma {
+            self.advance()?;
+            pattern.extend(self.parse_pattern()?);
+        }
+        Ok(pattern)
+    }
+
     fn parse_pattern(&mut self) -> Result<Vec<PatternElement>, ParseError> {
         let mut result = vec![self.parse_pattern_element()?];
         while self.current == Token::Dash || self.current == Token::LeftArrow {
@@ -284,7 +297,7 @@ impl<'a> Parser<'a> {
             String::new()
         };
         let mut labels = Vec::new();
-        if self.current == Token::Colon {
+        while self.current == Token::Colon {
             self.advance()?;
             if let Some(label) = self.take_symbolic_name()? {
                 labels.push(label);
@@ -1055,6 +1068,88 @@ mod tests {
         match &stmts[0] {
             Statement::KvGet { .. } => {}
             _ => panic!("expected KvGet"),
+        }
+    }
+
+    #[test]
+    fn test_parse_multi_label_node() {
+        // zega#23: multi-label nodes (Tana identity model: :User:Agent, :User:Human)
+        let mut p = Parser::new("CREATE (n:User:Agent {a: $x})").unwrap();
+        let stmts = p.parse().unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::Create { pattern } => {
+                assert_eq!(pattern[0].labels, vec!["User", "Agent"]);
+            }
+            _ => panic!("expected CREATE"),
+        }
+    }
+
+    #[test]
+    fn test_parse_multi_label_match_three() {
+        let mut p = Parser::new("MATCH (n:A:B:C) RETURN n").unwrap();
+        let stmts = p.parse().unwrap();
+        match &stmts[0] {
+            Statement::Match { pattern, .. } => {
+                assert_eq!(pattern[0].labels, vec!["A", "B", "C"]);
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_parse_comma_match() {
+        // zega#23: comma-separated MATCH patterns — how you connect two existing
+        // nodes; blocked all 165 relationships in the real export.
+        let mut p =
+            Parser::new("MATCH (a {_nid: $x}), (b {_nid: $y}) CREATE (a)-[:R]->(b)").unwrap();
+        let stmts = p.parse().unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::MatchCreate {
+                match_pattern,
+                create_pattern,
+                ..
+            } => {
+                // two disconnected match components
+                assert_eq!(match_pattern.len(), 2);
+                assert!(match_pattern[0].relationship.is_none());
+                assert!(match_pattern[1].relationship.is_none());
+                assert_eq!(create_pattern.len(), 2);
+                assert_eq!(
+                    create_pattern[1].relationship.as_ref().unwrap().kinds,
+                    vec!["R"]
+                );
+            }
+            _ => panic!("expected MATCH...CREATE"),
+        }
+    }
+
+    #[test]
+    fn test_parse_comma_match_three_return() {
+        let mut p = Parser::new("MATCH (a), (b), (c) RETURN a, b, c").unwrap();
+        let stmts = p.parse().unwrap();
+        match &stmts[0] {
+            Statement::Match { pattern, .. } => {
+                assert_eq!(pattern.len(), 3);
+                assert!(pattern.iter().all(|e| e.relationship.is_none()));
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_parse_comma_create() {
+        let mut p = Parser::new("CREATE (a:X), (b:Y)").unwrap();
+        let stmts = p.parse().unwrap();
+        match &stmts[0] {
+            Statement::Create { pattern } => {
+                assert_eq!(pattern.len(), 2);
+                assert_eq!(pattern[0].labels, vec!["X"]);
+                assert_eq!(pattern[1].labels, vec!["Y"]);
+                assert!(pattern[1].relationship.is_none());
+            }
+            _ => panic!("expected CREATE"),
         }
     }
 }
