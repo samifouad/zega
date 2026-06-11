@@ -1362,14 +1362,16 @@ fn parse_aggregate_function_name_case_insensitive() {
 }
 
 #[test]
-fn parse_unsupported_function_is_error() {
-    // Only the six aggregates are recognized as function calls.
+fn parse_scalar_function_call_parses() {
+    // Non-aggregate function names now parse into Expr::FunctionCall (scalar
+    // functions like toString/coalesce/datetime). Unknown names still parse —
+    // the "unsupported function" error is raised at execution time, not parse.
     let res = try_parse("MATCH (n) RETURN foobar(n.x)");
-    assert!(res.is_err());
-    match res.unwrap_err() {
-        ParseError::Message(m) => assert!(m.contains("unsupported function"), "msg: {m}"),
-        other => panic!("got {other:?}"),
-    }
+    assert!(res.is_ok(), "scalar function should parse: {res:?}");
+    let res = try_parse("MATCH (n) RETURN coalesce(n.a, n.b, \"x\") AS v");
+    assert!(res.is_ok(), "coalesce should parse: {res:?}");
+    let res = try_parse("MATCH (n) RETURN datetime() AS v");
+    assert!(res.is_ok(), "zero-arg function should parse: {res:?}");
 }
 
 #[test]

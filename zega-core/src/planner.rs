@@ -50,7 +50,10 @@ impl<'a> Planner<'a> {
                 let planned = self.plan_match(
                     match_pattern,
                     where_clause,
-                    &ReturnClause { items: vec![] },
+                    &ReturnClause {
+                        items: vec![],
+                        distinct: false,
+                    },
                     &None,
                     &None,
                     ctx,

@@ -386,7 +386,31 @@ impl Zega {
             ),
             Statement::Merge { pattern, on_create } => self.exec_merge(pattern, on_create, params),
             Statement::Set { assignments } => self.exec_set(assignments, params),
+            Statement::MatchSet {
+                match_pattern,
+                where_clause,
+                assignments,
+            } => self.exec_match_set(
+                match_pattern,
+                where_clause.as_ref(),
+                assignments,
+                params,
+                traversal_budget,
+            ),
             Statement::Delete { identifiers } => self.exec_delete(identifiers),
+            Statement::MatchDelete {
+                match_pattern,
+                where_clause,
+                detach,
+                identifiers,
+            } => self.exec_match_delete(
+                match_pattern,
+                where_clause.as_ref(),
+                *detach,
+                identifiers,
+                params,
+                traversal_budget,
+            ),
             Statement::WriteThenReturn {
                 write,
                 return_clause,
@@ -490,6 +514,49 @@ impl Zega {
                     &mut graph, &self.wal, pattern, on_create, params,
                 )?]
             }
+            Statement::MatchSet {
+                match_pattern,
+                where_clause,
+                assignments,
+            } => {
+                let matched = resolve_match_bindings(
+                    &graph,
+                    match_pattern,
+                    where_clause.as_ref(),
+                    params,
+                    traversal_budget,
+                )?;
+                for binding in &matched {
+                    set_pattern(&mut graph, &self.wal, assignments, params, binding)?;
+                }
+                matched
+            }
+            Statement::MatchDelete {
+                match_pattern,
+                where_clause,
+                detach,
+                identifiers,
+            } => {
+                let matched = resolve_match_bindings(
+                    &graph,
+                    match_pattern,
+                    where_clause.as_ref(),
+                    params,
+                    traversal_budget,
+                )?;
+                let mut deleted = std::collections::HashSet::new();
+                for binding in &matched {
+                    delete_pattern(
+                        &mut graph,
+                        &self.wal,
+                        *detach,
+                        identifiers,
+                        binding,
+                        &mut deleted,
+                    )?;
+                }
+                matched
+            }
             Statement::Set { .. } | Statement::Delete { .. } => vec![Bindings::new()],
             _ => {
                 return Err(ZegaError::Execution(
@@ -586,13 +653,57 @@ impl Zega {
     }
 
     fn exec_delete(&self, _identifiers: &[String]) -> Result<Vec<Row>> {
-        let _graph = self
+        // Standalone DELETE (no preceding MATCH) has no bound variables to act
+        // on — a no-op. Real deletes come through MATCH ... [DETACH] DELETE
+        // (Statement::MatchDelete / exec_match_delete).
+        Ok(vec![])
+    }
+
+    fn exec_match_set(
+        &self,
+        match_pattern: &[PatternElement],
+        where_clause: Option<&Expr>,
+        assignments: &[SetClause],
+        params: &HashMap<String, Value>,
+        traversal_budget: &mut TraversalWorkBudget,
+    ) -> Result<Vec<Row>> {
+        let mut graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let _wal = &self.wal;
-        for _id_str in _identifiers {
-            // For MVP, delete by variable name requires session context.
+        let bindings =
+            resolve_match_bindings(&graph, match_pattern, where_clause, params, traversal_budget)?;
+        for binding in &bindings {
+            set_pattern(&mut graph, &self.wal, assignments, params, binding)?;
+        }
+        Ok(vec![])
+    }
+
+    fn exec_match_delete(
+        &self,
+        match_pattern: &[PatternElement],
+        where_clause: Option<&Expr>,
+        detach: bool,
+        identifiers: &[String],
+        params: &HashMap<String, Value>,
+        traversal_budget: &mut TraversalWorkBudget,
+    ) -> Result<Vec<Row>> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let bindings =
+            resolve_match_bindings(&graph, match_pattern, where_clause, params, traversal_budget)?;
+        let mut deleted = std::collections::HashSet::new();
+        for binding in &bindings {
+            delete_pattern(
+                &mut graph,
+                &self.wal,
+                detach,
+                identifiers,
+                binding,
+                &mut deleted,
+            )?;
         }
         Ok(vec![])
     }
@@ -1355,6 +1466,76 @@ fn merge_pattern(
     Ok(bindings)
 }
 
+/// Apply `SET` assignments to the nodes bound in one match binding. Values are
+/// evaluated first (immutable graph borrow), then written (mutable borrow).
+fn set_pattern(
+    graph: &mut Graph,
+    wal: &Wal,
+    assignments: &[SetClause],
+    params: &HashMap<String, Value>,
+    binding: &Bindings,
+) -> Result<()> {
+    let mut updates: Vec<(NodeId, String, Value)> = Vec::new();
+    for clause in assignments {
+        if let Expr::PropertyAccess(target, prop) = &clause.target {
+            if let Expr::Identifier(var) = target.as_ref() {
+                if let Some(node_id) = bound_node(binding, var) {
+                    let value = eval_expr(&clause.value, params, binding, graph)?;
+                    updates.push((node_id, prop.clone(), value));
+                }
+            }
+        }
+    }
+    for (node_id, prop, value) in updates {
+        let props = HashMap::from([(prop, value)]);
+        graph.update_node(node_id, props.clone());
+        wal.append(&Operation::UpdateNode { id: node_id, props })?;
+    }
+    Ok(())
+}
+
+/// Delete the nodes/relationships bound to `identifiers` in one binding. With
+/// `detach`, a node's relationships are removed first; without it, deleting a
+/// node that still has relationships is an error (Neo4j semantics). `deleted`
+/// guards against double-deleting a node matched via multiple bindings.
+fn delete_pattern(
+    graph: &mut Graph,
+    wal: &Wal,
+    detach: bool,
+    identifiers: &[String],
+    binding: &Bindings,
+    deleted: &mut std::collections::HashSet<NodeId>,
+) -> Result<()> {
+    for ident in identifiers {
+        match binding.get(ident) {
+            Some(BoundValue::Node(node_id)) => {
+                let node_id = *node_id;
+                if !deleted.insert(node_id) {
+                    continue;
+                }
+                let rel_ids = graph.node_relationship_ids(node_id);
+                if !rel_ids.is_empty() && !detach {
+                    return Err(ZegaError::Execution(format!(
+                        "Cannot delete node {node_id} because it still has relationships. Use DETACH DELETE."
+                    )));
+                }
+                for rid in &rel_ids {
+                    wal.append(&Operation::DeleteRel { id: *rid })?;
+                }
+                graph.delete_node(node_id);
+                wal.append(&Operation::DeleteNode { id: node_id })?;
+            }
+            Some(BoundValue::Relationship(rel_id)) => {
+                let rel_id = *rel_id;
+                graph.delete_relationship(rel_id);
+                wal.append(&Operation::DeleteRel { id: rel_id })?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn match_candidates(
     graph: &Graph,
     element: &PatternElement,
@@ -1474,6 +1655,9 @@ fn references_variable(expr: &Expr, variable: &str) -> bool {
         Expr::Aggregate { argument, .. } => argument
             .as_deref()
             .is_some_and(|expr| references_variable(expr, variable)),
+        Expr::FunctionCall { args, .. } => {
+            args.iter().any(|arg| references_variable(arg, variable))
+        }
         Expr::Parameter(_) | Expr::Literal(_) => false,
     }
 }
@@ -1486,6 +1670,9 @@ fn can_eval_from_binding(expr: &Expr, binding: &Bindings) -> bool {
             can_eval_from_binding(left, binding) && can_eval_from_binding(right, binding)
         }
         Expr::Aggregate { .. } => false,
+        Expr::FunctionCall { args, .. } => {
+            args.iter().all(|arg| can_eval_from_binding(arg, binding))
+        }
         Expr::Parameter(_) | Expr::Literal(_) => true,
     }
 }
@@ -1553,10 +1740,167 @@ fn eval_expr(
             let rv = eval_expr(right, params, bindings, graph)?;
             eval_binary_op(lv, op.clone(), rv)
         }
+        Expr::FunctionCall { name, args } => {
+            let mut argv = Vec::with_capacity(args.len());
+            for a in args {
+                argv.push(eval_expr(a, params, bindings, graph)?);
+            }
+            eval_scalar_function(name, argv)
+        }
         Expr::Aggregate { .. } => Err(ZegaError::Execution(
             "aggregate expression evaluated outside RETURN aggregation".to_string(),
         )),
     }
+}
+
+/// Neo4j-compatible scalar (non-aggregate) functions. Null-in → Null-out for
+/// the string/numeric coercions, matching Neo4j semantics. Unknown names return
+/// an error rather than silently producing null.
+fn eval_scalar_function(name: &str, args: Vec<Value>) -> Result<Value> {
+    let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Null);
+    let result = match name {
+        // coalesce(a, b, ...) -> first non-null argument
+        "coalesce" => args
+            .iter()
+            .find(|v| !matches!(v, Value::Null))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "tostring" => scalar_to_string(&arg(0))
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+        "tolower" => match arg(0) {
+            Value::String(s) => Value::String(s.to_lowercase()),
+            _ => Value::Null,
+        },
+        "toupper" => match arg(0) {
+            Value::String(s) => Value::String(s.to_uppercase()),
+            _ => Value::Null,
+        },
+        "trim" => match arg(0) {
+            Value::String(s) => Value::String(s.trim().to_string()),
+            _ => Value::Null,
+        },
+        "ltrim" => match arg(0) {
+            Value::String(s) => Value::String(s.trim_start().to_string()),
+            _ => Value::Null,
+        },
+        "rtrim" => match arg(0) {
+            Value::String(s) => Value::String(s.trim_end().to_string()),
+            _ => Value::Null,
+        },
+        "replace" => match (arg(0), arg(1), arg(2)) {
+            (Value::String(s), Value::String(search), Value::String(rep)) => {
+                Value::String(s.replace(&search, &rep))
+            }
+            _ => Value::Null,
+        },
+        "split" => match (arg(0), arg(1)) {
+            (Value::String(s), Value::String(delim)) => {
+                let parts: Vec<Value> = if delim.is_empty() {
+                    s.chars().map(|c| Value::String(c.to_string())).collect()
+                } else {
+                    s.split(delim.as_str())
+                        .map(|p| Value::String(p.to_string()))
+                        .collect()
+                };
+                Value::List(parts)
+            }
+            _ => Value::Null,
+        },
+        "substring" => match arg(0) {
+            Value::String(s) => {
+                let chars: Vec<char> = s.chars().collect();
+                let start = arg(1).as_int().unwrap_or(0).max(0) as usize;
+                let end = match args.get(2).and_then(|v| v.as_int()) {
+                    Some(len) => (start + len.max(0) as usize).min(chars.len()),
+                    None => chars.len(),
+                };
+                let start = start.min(chars.len());
+                Value::String(chars[start..end].iter().collect())
+            }
+            _ => Value::Null,
+        },
+        "size" => match arg(0) {
+            Value::List(l) => Value::Int(l.len() as i64),
+            Value::String(s) => Value::Int(s.chars().count() as i64),
+            _ => Value::Null,
+        },
+        "tointeger" => match arg(0) {
+            Value::Int(i) => Value::Int(i),
+            Value::Float(_) => arg(0).to_f64().map(|f| Value::Int(f as i64)).unwrap_or(Value::Null),
+            Value::String(s) => s.trim().parse::<i64>().map(Value::Int).unwrap_or(Value::Null),
+            _ => Value::Null,
+        },
+        "tofloat" => match arg(0) {
+            Value::Float(_) => arg(0),
+            Value::Int(i) => Value::from_f64(i as f64),
+            Value::String(s) => s.trim().parse::<f64>().map(Value::from_f64).unwrap_or(Value::Null),
+            _ => Value::Null,
+        },
+        // exists(expr) -> the expr resolved to a non-null value
+        "exists" => Value::Bool(!matches!(arg(0), Value::Null)),
+        // Temporal: wall-clock now. This is the injectable-clock seam for the
+        // deferred DST/determinism work — today it matches Neo4j's own
+        // non-deterministic datetime()/timestamp().
+        "datetime" => Value::String(now_iso8601()),
+        "timestamp" => Value::Int(now_millis()),
+        other => {
+            return Err(ZegaError::Execution(format!("unsupported function: {other}")));
+        }
+    };
+    Ok(result)
+}
+
+/// Neo4j `toString` coercion: strings/numbers/bools stringify; everything else
+/// (null, list, map) -> null.
+fn scalar_to_string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Int(i) => Some(i.to_string()),
+        Value::Float(_) => v.to_f64().map(|f| {
+            if f.is_finite() && f == f.trunc() {
+                format!("{f:.1}")
+            } else {
+                format!("{f}")
+            }
+        }),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn now_millis() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Format the current UTC instant as ISO-8601 (`YYYY-MM-DDTHH:MM:SS.mmmZ`)
+/// without a date dependency, via the civil-from-days algorithm.
+fn now_iso8601() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let total_secs = dur.as_secs() as i64;
+    let millis = dur.subsec_millis();
+    let days = total_secs.div_euclid(86_400);
+    let sod = total_secs.rem_euclid(86_400);
+    let (hour, minute, second) = (sod / 3600, (sod % 3600) / 60, sod % 60);
+    // civil_from_days (Howard Hinnant), epoch 1970-01-01
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
 fn eval_binary_op(left: Value, op: BinaryOperator, right: Value) -> Result<Value> {
@@ -1665,6 +2009,13 @@ fn eval_order_expr(
             let left = eval_order_expr(left, params, bindings, row, graph, return_clause)?;
             let right = eval_order_expr(right, params, bindings, row, graph, return_clause)?;
             eval_binary_op(left, op.clone(), right)
+        }
+        Expr::FunctionCall { name, args } => {
+            let mut argv = Vec::with_capacity(args.len());
+            for a in args {
+                argv.push(eval_order_expr(a, params, bindings, row, graph, return_clause)?);
+            }
+            eval_scalar_function(name, argv)
         }
         Expr::Aggregate { .. } => Ok(Value::Null),
     }
@@ -1962,6 +2313,19 @@ fn project_bound_rows(
         }
     }
     let mut rows: Vec<_> = scoped_rows.into_iter().map(|(_, row)| row).collect();
+
+    if return_clause.distinct {
+        let mut seen = std::collections::HashSet::new();
+        rows.retain(|row| {
+            let mut signature: Vec<(String, Value)> = row
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            signature.sort_by(|a, b| a.0.cmp(&b.0));
+            seen.insert(signature)
+        });
+    }
 
     if let Some(limit) = limit {
         if let Value::Int(limit) = eval_expr(limit, params, &Bindings::new(), graph)? {
@@ -2313,6 +2677,176 @@ mod tests {
             .query("MATCH (a:A), (b:B) RETURN a, b", HashMap::new())
             .unwrap();
         assert_eq!(rows.len(), 12, "3 A x 4 B = 12 rows");
+    }
+
+    #[test]
+    fn test_scalar_functions() {
+        // zega#23 follow-up: scalar functions the Next.js apps use against canonical.
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (n:T {name: $n, num: $m})",
+            HashMap::from([
+                ("n".to_string(), Value::String("  Hello World  ".to_string())),
+                ("m".to_string(), Value::Int(42)),
+            ]),
+        )
+        .unwrap();
+        let cases: [(&str, Value); 10] = [
+            ("MATCH (n:T) RETURN toLower(n.name) AS v", Value::String("  hello world  ".to_string())),
+            ("MATCH (n:T) RETURN toUpper(trim(n.name)) AS v", Value::String("HELLO WORLD".to_string())),
+            ("MATCH (n:T) RETURN trim(n.name) AS v", Value::String("Hello World".to_string())),
+            ("MATCH (n:T) RETURN toString(n.num) AS v", Value::String("42".to_string())),
+            ("MATCH (n:T) RETURN coalesce(n.missing, n.num) AS v", Value::Int(42)),
+            ("MATCH (n:T) RETURN replace(trim(n.name), \"l\", \"L\") AS v", Value::String("HeLLo WorLd".to_string())),
+            ("MATCH (n:T) RETURN substring(trim(n.name), 0, 5) AS v", Value::String("Hello".to_string())),
+            ("MATCH (n:T) RETURN size(trim(n.name)) AS v", Value::Int(11)),
+            ("MATCH (n:T) RETURN exists(n.name) AS v", Value::Bool(true)),
+            ("MATCH (n:T) RETURN exists(n.nope) AS v", Value::Bool(false)),
+        ];
+        for (q, expected) in cases {
+            let rows = zega.query(q, HashMap::new()).unwrap();
+            assert_eq!(rows.len(), 1, "row count for `{q}`");
+            let got = rows[0].fields.values().next().unwrap();
+            assert_eq!(got, &expected, "value for `{q}`");
+        }
+        // split -> list of 3
+        let rows = zega
+            .query("MATCH (n:T) RETURN split(\"a,b,c\", \",\") AS v", HashMap::new())
+            .unwrap();
+        match rows[0].fields.values().next().unwrap() {
+            Value::List(l) => assert_eq!(l.len(), 3),
+            o => panic!("expected list, got {o:?}"),
+        }
+        // datetime() -> ISO-8601 UTC string
+        let rows = zega
+            .query("MATCH (n:T) RETURN datetime() AS v", HashMap::new())
+            .unwrap();
+        match rows[0].fields.values().next().unwrap() {
+            Value::String(s) => assert!(
+                s.contains('T') && s.ends_with('Z') && s.len() >= 20,
+                "datetime() shape: {s}"
+            ),
+            o => panic!("expected datetime string, got {o:?}"),
+        }
+    }
+
+    #[test]
+    fn test_return_distinct() {
+        // zega#23 follow-up: RETURN DISTINCT (apps use it for shard lookups).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        for g in [1, 1, 2, 2, 2, 3] {
+            zega.query(
+                "CREATE (n:D {g: $g})",
+                HashMap::from([("g".to_string(), Value::Int(g))]),
+            )
+            .unwrap();
+        }
+        let all = zega
+            .query("MATCH (n:D) RETURN n.g AS g", HashMap::new())
+            .unwrap();
+        assert_eq!(all.len(), 6, "without DISTINCT: all rows");
+        let distinct = zega
+            .query("MATCH (n:D) RETURN DISTINCT n.g AS g", HashMap::new())
+            .unwrap();
+        assert_eq!(distinct.len(), 3, "DISTINCT collapses to 1,2,3");
+    }
+
+    #[test]
+    fn test_match_set_updates_node() {
+        // zega#23 follow-up: MATCH ... SET was a silent no-op stub; the apps
+        // SET constantly (apple_email, last_used_at, password, ...).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let email = || Value::String("a@b.c".to_string());
+        zega.query(
+            "CREATE (n:User {email: $e, name: $n})",
+            HashMap::from([
+                ("e".to_string(), email()),
+                ("n".to_string(), Value::String("Old".to_string())),
+            ]),
+        )
+        .unwrap();
+        zega.query(
+            "MATCH (n:User {email: $e}) SET n.name = $new, n.verified = true",
+            HashMap::from([
+                ("e".to_string(), email()),
+                ("new".to_string(), Value::String("New".to_string())),
+            ]),
+        )
+        .unwrap();
+        let rows = zega
+            .query(
+                "MATCH (n:User {email: $e}) RETURN n.name AS name, n.verified AS v, n.email AS email",
+                HashMap::from([("e".to_string(), email())]),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fields.get("name"), Some(&Value::String("New".to_string())));
+        assert_eq!(rows[0].fields.get("v"), Some(&Value::Bool(true)));
+        // merge, not replace — untouched property survives
+        assert_eq!(rows[0].fields.get("email"), Some(&email()));
+        // SET ... RETURN projects the updated value
+        let rows = zega
+            .query(
+                "MATCH (n:User {email: $e}) SET n.name = $z RETURN n.name AS name",
+                HashMap::from([
+                    ("e".to_string(), email()),
+                    ("z".to_string(), Value::String("Final".to_string())),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(rows[0].fields.get("name"), Some(&Value::String("Final".to_string())));
+    }
+
+    #[test]
+    fn test_match_detach_delete() {
+        // zega#23 gap 3: DELETE was a stub; DETACH DELETE used for shop deletion.
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (u:User {id: $u})",
+            HashMap::from([("u".to_string(), Value::String("u1".to_string()))]),
+        )
+        .unwrap();
+        zega.query(
+            "CREATE (s:Shop {id: $s})",
+            HashMap::from([("s".to_string(), Value::String("s1".to_string()))]),
+        )
+        .unwrap();
+        zega.query(
+            "MATCH (u {id: $u}), (s {id: $s}) CREATE (u)-[:OWNS]->(s)",
+            HashMap::from([
+                ("u".to_string(), Value::String("u1".to_string())),
+                ("s".to_string(), Value::String("s1".to_string())),
+            ]),
+        )
+        .unwrap();
+        // plain DELETE on a node with relationships must error (Neo4j semantics)
+        let res = zega.query(
+            "MATCH (s:Shop {id: $s}) DELETE s",
+            HashMap::from([("s".to_string(), Value::String("s1".to_string()))]),
+        );
+        assert!(res.is_err(), "plain DELETE on a node with rels must error");
+        // DETACH DELETE removes the node AND its relationship
+        zega.query(
+            "MATCH (s:Shop {id: $s}) DETACH DELETE s",
+            HashMap::from([("s".to_string(), Value::String("s1".to_string()))]),
+        )
+        .unwrap();
+        let shops = zega
+            .query("MATCH (s:Shop) RETURN count(s) AS c", HashMap::new())
+            .unwrap();
+        assert_eq!(shops[0].fields.get("c"), Some(&Value::Int(0)), "shop gone");
+        let owns = zega
+            .query("MATCH (:User)-[:OWNS]->() RETURN count(*) AS c", HashMap::new())
+            .unwrap();
+        assert_eq!(owns[0].fields.values().next(), Some(&Value::Int(0)), "rel gone");
+        let users = zega
+            .query("MATCH (u:User) RETURN count(u) AS c", HashMap::new())
+            .unwrap();
+        assert_eq!(users[0].fields.get("c"), Some(&Value::Int(1)), "user survives");
     }
 
     #[test]

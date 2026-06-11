@@ -104,11 +104,50 @@ impl<'a> Parser<'a> {
             };
             return self.parse_trailing_return(write);
         }
+        if self.current == Token::Set {
+            self.advance()?;
+            let assignments = self.parse_set_clauses()?;
+            let write = Statement::MatchSet {
+                match_pattern: pattern,
+                where_clause,
+                assignments,
+            };
+            return self.parse_trailing_return(write);
+        }
+        // [DETACH] DELETE var[, var ...]. DETACH lexes as an identifier.
+        let detach =
+            matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DETACH"));
+        if detach {
+            self.advance()?;
+        }
+        if detach || self.current == Token::Delete {
+            self.expect(Token::Delete)?;
+            let mut identifiers = Vec::new();
+            while let Token::Identifier(id) = &self.current {
+                identifiers.push(id.clone());
+                self.advance()?;
+                if self.current == Token::Comma {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
+            let write = Statement::MatchDelete {
+                match_pattern: pattern,
+                where_clause,
+                detach,
+                identifiers,
+            };
+            return self.parse_trailing_return(write);
+        }
         let return_clause = if self.current == Token::Return {
             self.advance()?;
             self.parse_return_clause()?
         } else {
-            ReturnClause { items: vec![] }
+            ReturnClause {
+                items: vec![],
+                distinct: false,
+            }
         };
         let mut order_by = None;
         if self.current == Token::Order {
@@ -494,6 +533,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_return_clause(&mut self) -> Result<ReturnClause, ParseError> {
+        let distinct =
+            matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DISTINCT"));
+        if distinct {
+            self.advance()?;
+        }
         let mut items = Vec::new();
         loop {
             let expr = self.parse_expression()?;
@@ -520,7 +564,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(ReturnClause { items })
+        Ok(ReturnClause { items, distinct })
     }
 
     fn parse_order_by(&mut self) -> Result<Vec<(Expr, OrderDirection)>, ParseError> {
@@ -805,39 +849,55 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_function_call(&mut self, name: String) -> Result<Expr, ParseError> {
-        let function = match name.to_ascii_lowercase().as_str() {
-            "count" => AggregateFunction::Count,
-            "sum" => AggregateFunction::Sum,
-            "avg" => AggregateFunction::Avg,
-            "min" => AggregateFunction::Min,
-            "max" => AggregateFunction::Max,
-            "collect" => AggregateFunction::Collect,
-            _ => return Err(ParseError::Message(format!("unsupported function: {name}"))),
+        let lname = name.to_ascii_lowercase();
+        let aggregate = match lname.as_str() {
+            "count" => Some(AggregateFunction::Count),
+            "sum" => Some(AggregateFunction::Sum),
+            "avg" => Some(AggregateFunction::Avg),
+            "min" => Some(AggregateFunction::Min),
+            "max" => Some(AggregateFunction::Max),
+            "collect" => Some(AggregateFunction::Collect),
+            _ => None,
         };
 
-        self.expect(Token::LParen)?;
-        let distinct =
-            matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DISTINCT"));
-        if distinct {
-            self.advance()?;
-        }
-        let argument = if self.current == Token::Star {
-            self.advance()?;
-            if function != AggregateFunction::Count || distinct {
-                return Err(ParseError::Message(
-                    "only count(*) supports a star argument".to_string(),
-                ));
+        if let Some(function) = aggregate {
+            self.expect(Token::LParen)?;
+            let distinct = matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DISTINCT"));
+            if distinct {
+                self.advance()?;
             }
-            None
-        } else {
-            Some(Box::new(self.parse_expression()?))
-        };
+            let argument = if self.current == Token::Star {
+                self.advance()?;
+                if function != AggregateFunction::Count || distinct {
+                    return Err(ParseError::Message(
+                        "only count(*) supports a star argument".to_string(),
+                    ));
+                }
+                None
+            } else {
+                Some(Box::new(self.parse_expression()?))
+            };
+            self.expect(Token::RParen)?;
+            return Ok(Expr::Aggregate {
+                function,
+                argument,
+                distinct,
+            });
+        }
+
+        // General scalar function call: name(arg, arg, ...) — zero or more args.
+        // Evaluation + Neo4j-semantics dispatch happens in the executor (eval_expr).
+        self.expect(Token::LParen)?;
+        let mut args = Vec::new();
+        if self.current != Token::RParen {
+            args.push(self.parse_expression()?);
+            while self.current == Token::Comma {
+                self.advance()?;
+                args.push(self.parse_expression()?);
+            }
+        }
         self.expect(Token::RParen)?;
-        Ok(Expr::Aggregate {
-            function,
-            argument,
-            distinct,
-        })
+        Ok(Expr::FunctionCall { name: lname, args })
     }
 }
 

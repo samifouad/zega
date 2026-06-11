@@ -13,6 +13,10 @@ pub enum Expr {
         argument: Option<Box<Expr>>, // None represents count(*)
         distinct: bool,
     },
+    FunctionCall {
+        name: String, // lowercased scalar function name (toString, coalesce, datetime, ...)
+        args: Vec<Expr>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,7 +65,21 @@ pub enum Statement {
     Set {
         assignments: Vec<SetClause>,
     },
+    /// `MATCH ... [WHERE ...] SET ...` — update matched nodes' properties.
+    MatchSet {
+        match_pattern: Vec<PatternElement>,
+        where_clause: Option<Expr>,
+        assignments: Vec<SetClause>,
+    },
     Delete {
+        identifiers: Vec<String>,
+    },
+    /// `MATCH ... [WHERE ...] [DETACH] DELETE var[, ...]` — delete matched
+    /// nodes (and, with DETACH, their relationships first).
+    MatchDelete {
+        match_pattern: Vec<PatternElement>,
+        where_clause: Option<Expr>,
+        detach: bool,
         identifiers: Vec<String>,
     },
     WriteThenReturn {
@@ -125,6 +143,7 @@ pub struct SetClause {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReturnClause {
     pub items: Vec<ReturnItem>,
+    pub distinct: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

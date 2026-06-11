@@ -112,6 +112,21 @@ impl Graph {
         }
     }
 
+    /// All relationship ids incident to a node (outgoing + incoming). Used by
+    /// DETACH DELETE to remove a node's relationships before the node itself.
+    pub fn node_relationship_ids(&self, id: NodeId) -> Vec<RelId> {
+        let mut ids: Vec<RelId> = Vec::new();
+        if let Some(out) = self.outgoing.get(&id) {
+            ids.extend(out.iter().copied());
+        }
+        if let Some(inc) = self.incoming.get(&id) {
+            ids.extend(inc.iter().copied());
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     pub fn delete_node(&mut self, id: NodeId) {
         if let Some(node) = self.nodes.remove(&id) {
             self.remove_node_indexes(&node);
