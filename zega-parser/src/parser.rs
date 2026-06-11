@@ -103,7 +103,15 @@ impl<'a> Parser<'a> {
         };
         if self.current == Token::Create {
             self.advance()?;
-            let create_pattern = self.parse_comma_patterns()?;
+            // Multiple consecutive CREATE clauses share the match bindings and
+            // thread created-variable bindings through (e.g. signup's
+            // CREATE (s:Shop) CREATE (u)-[:OWNS]->(s)). Flattening is correct:
+            // create_pattern processes elements sequentially, reusing bound vars.
+            let mut create_pattern = self.parse_comma_patterns()?;
+            while self.current == Token::Create {
+                self.advance()?;
+                create_pattern.extend(self.parse_comma_patterns()?);
+            }
             let write = Statement::MatchCreate {
                 match_pattern: pattern,
                 where_clause,
@@ -198,7 +206,11 @@ impl<'a> Parser<'a> {
 
     fn parse_create(&mut self) -> Result<Statement, ParseError> {
         self.advance()?; // CREATE
-        let pattern = self.parse_comma_patterns()?;
+        let mut pattern = self.parse_comma_patterns()?;
+        while self.current == Token::Create {
+            self.advance()?;
+            pattern.extend(self.parse_comma_patterns()?);
+        }
         self.parse_trailing_return(Statement::Create { pattern })
     }
 
@@ -206,19 +218,33 @@ impl<'a> Parser<'a> {
         self.advance()?; // MERGE
         let pattern = self.parse_pattern()?;
         let mut on_create = Vec::new();
-        if self.current == Token::On {
-            self.advance()?;
-            if self.current == Token::Create
-                || matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("CREATE"))
-            {
+        let mut on_match = Vec::new();
+        // Zero or more ON CREATE SET / ON MATCH SET clauses, in any order.
+        while self.current == Token::On {
+            self.advance()?; // ON
+            let is_create = self.current == Token::Create
+                || matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("CREATE"));
+            let is_match = self.current == Token::Match
+                || matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("MATCH"));
+            if is_create {
                 self.advance()?;
                 self.expect(Token::Set)?;
                 on_create = self.parse_set_clauses()?;
+            } else if is_match {
+                self.advance()?;
+                self.expect(Token::Set)?;
+                on_match = self.parse_set_clauses()?;
             } else {
-                return Err(ParseError::Message("expected CREATE after ON".to_string()));
+                return Err(ParseError::Message(
+                    "expected CREATE or MATCH after ON".to_string(),
+                ));
             }
         }
-        self.parse_trailing_return(Statement::Merge { pattern, on_create })
+        self.parse_trailing_return(Statement::Merge {
+            pattern,
+            on_create,
+            on_match,
+        })
     }
 
     fn parse_set_or_kv(&mut self) -> Result<Statement, ParseError> {

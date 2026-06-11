@@ -395,7 +395,11 @@ impl Zega {
                 params,
                 traversal_budget,
             ),
-            Statement::Merge { pattern, on_create } => self.exec_merge(pattern, on_create, params),
+            Statement::Merge {
+                pattern,
+                on_create,
+                on_match,
+            } => self.exec_merge(pattern, on_create, on_match, params),
             Statement::Set { assignments } => self.exec_set(assignments, params),
             Statement::MatchSet {
                 match_pattern,
@@ -587,9 +591,13 @@ impl Zega {
                 }
                 created
             }
-            Statement::Merge { pattern, on_create } => {
+            Statement::Merge {
+                pattern,
+                on_create,
+                on_match,
+            } => {
                 vec![merge_pattern(
-                    &mut graph, &self.wal, pattern, on_create, params,
+                    &mut graph, &self.wal, pattern, on_create, on_match, params,
                 )?]
             }
             Statement::MatchSet {
@@ -689,13 +697,14 @@ impl Zega {
         &self,
         pattern: &[PatternElement],
         on_create: &[SetClause],
+        on_match: &[SetClause],
         params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
         let mut graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        merge_pattern(&mut graph, &self.wal, pattern, on_create, params)?;
+        merge_pattern(&mut graph, &self.wal, pattern, on_create, on_match, params)?;
         Ok(vec![])
     }
 
@@ -1511,6 +1520,7 @@ fn merge_pattern(
     wal: &Wal,
     pattern: &[PatternElement],
     on_create: &[SetClause],
+    on_match: &[SetClause],
     params: &HashMap<String, Value>,
 ) -> Result<Bindings> {
     let mut created = false;
@@ -1526,9 +1536,14 @@ fn merge_pattern(
                 .nodes_by_label(&element.labels[0])
                 .cloned()
                 .unwrap_or_default();
-            candidates
-                .into_iter()
-                .find(|&id| graph.get_node(id).is_some_and(|node| node.props == props))
+            candidates.into_iter().find(|&id| {
+                // MERGE matches a node whose properties include the pattern's
+                // (subset), not exact equality — the stored node may carry
+                // extra props (e.g. password, created) beyond the merge key.
+                graph
+                    .get_node(id)
+                    .is_some_and(|node| props.iter().all(|(k, v)| node.props.get(k) == Some(v)))
+            })
         } else {
             None
         };
@@ -1550,20 +1565,10 @@ fn merge_pattern(
         }
     }
 
-    if created {
-        for clause in on_create {
-            let value = eval_expr(&clause.value, params, &bindings, graph)?;
-            if let Expr::PropertyAccess(target, prop) = &clause.target {
-                if let Expr::Identifier(var) = &**target {
-                    if let Some(node_id) = bound_node(&bindings, var) {
-                        let props = HashMap::from([(prop.clone(), value)]);
-                        graph.update_node(node_id, props.clone());
-                        wal.append(&Operation::UpdateNode { id: node_id, props })?;
-                    }
-                }
-            }
-        }
-    }
+    // ON CREATE SET when the node was just created; ON MATCH SET when it
+    // already existed (Neo4j MERGE semantics).
+    let clauses = if created { on_create } else { on_match };
+    set_pattern(graph, wal, clauses, params, &bindings)?;
 
     Ok(bindings)
 }
@@ -3447,6 +3452,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!(r[0].fields.values().next(), Some(&Value::Int(9_000_000)));
+    }
+
+    #[test]
+    fn test_signup_pattern() {
+        // The real signup flow: MERGE ON CREATE/ON MATCH SET, then
+        // MATCH (u) CREATE (s:Shop) CREATE (u)-[:OWNS]->(s) (multi-CREATE).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let s = |v: &str| Value::String(v.to_string());
+        let p = |e: &str, pw: &str| {
+            HashMap::from([("e".to_string(), s(e)), ("p".to_string(), s(pw))])
+        };
+        let merge = "MERGE (u:User {email: $e}) ON CREATE SET u.password = $p, u.created = datetime() ON MATCH SET u.password = coalesce(u.password, $p)";
+        // first MERGE → creates the user, ON CREATE sets password
+        zega.query(merge, p("a@b.c", "hash1")).unwrap();
+        let pw = |zega: &Zega| {
+            zega.query(
+                "MATCH (u:User {email: $e}) RETURN u.password AS pw",
+                HashMap::from([("e".to_string(), s("a@b.c"))]),
+            )
+            .unwrap()[0]
+                .fields
+                .get("pw")
+                .cloned()
+        };
+        assert_eq!(pw(&zega), Some(s("hash1")), "ON CREATE set password");
+        // second MERGE on the same email → ON MATCH coalesce keeps the original
+        zega.query(merge, p("a@b.c", "hash2")).unwrap();
+        assert_eq!(pw(&zega), Some(s("hash1")), "ON MATCH coalesce keeps original");
+        let count = |zega: &Zega, q: &str| {
+            zega.query(q, HashMap::new()).unwrap()[0]
+                .fields
+                .values()
+                .next()
+                .cloned()
+        };
+        assert_eq!(
+            count(&zega, "MATCH (u:User) RETURN count(u) AS c"),
+            Some(Value::Int(1)),
+            "MERGE did not duplicate the user"
+        );
+        // multi-CREATE: link a shop to the existing user without duplicating it
+        zega.query(
+            "MATCH (u:User {email: $e}) CREATE (s:Shop {id: $sid}) CREATE (u)-[:OWNS]->(s)",
+            HashMap::from([("e".to_string(), s("a@b.c")), ("sid".to_string(), s("shop1"))]),
+        )
+        .unwrap();
+        assert_eq!(
+            count(&zega, "MATCH (u:User) RETURN count(u) AS c"),
+            Some(Value::Int(1)),
+            "multi-CREATE did NOT duplicate the user"
+        );
+        let owns = zega
+            .query(
+                "MATCH (u:User)-[:OWNS]->(s:Shop) RETURN s.id AS sid",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(owns.len(), 1, "exactly one OWNS edge");
+        assert_eq!(owns[0].fields.get("sid"), Some(&s("shop1")));
     }
 
     #[test]

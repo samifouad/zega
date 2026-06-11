@@ -88,6 +88,7 @@ pub enum Statement {
     Merge {
         pattern: Vec<PatternElement>,
         on_create: Vec<SetClause>,
+        on_match: Vec<SetClause>,
     },
     Set {
         assignments: Vec<SetClause>,

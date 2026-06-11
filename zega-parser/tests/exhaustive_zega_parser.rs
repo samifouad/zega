@@ -1511,9 +1511,14 @@ fn parse_multi_match_then_create() {
 fn parse_merge_without_on_create() {
     let stmt = parse_one("MERGE (n:User {email: $e})");
     match &stmt {
-        Statement::Merge { pattern, on_create } => {
+        Statement::Merge {
+            pattern,
+            on_create,
+            on_match,
+        } => {
             assert_eq!(pattern.len(), 1);
             assert!(on_create.is_empty());
+            assert!(on_match.is_empty());
         }
         other => panic!("expected Merge, got {other:?}"),
     }
@@ -1583,7 +1588,9 @@ fn parse_merge_on_without_create_is_error() {
     let res = try_parse("MERGE (n:User) ON DELETE SET n.x = 1");
     assert!(res.is_err());
     match res.unwrap_err() {
-        ParseError::Message(m) => assert!(m.contains("expected CREATE after ON"), "msg: {m}"),
+        ParseError::Message(m) => {
+            assert!(m.contains("expected CREATE or MATCH after ON"), "msg: {m}")
+        }
         other => panic!("got {other:?}"),
     }
 }
