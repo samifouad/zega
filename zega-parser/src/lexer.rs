@@ -39,6 +39,7 @@ pub enum Token {
     // Symbols
     Colon,
     Comma,
+    Pipe,
     Semicolon,
     LParen,
     RParen,
@@ -239,6 +240,10 @@ impl<'a> Lexer<'a> {
                     ',' => {
                         self.advance();
                         Token::Comma
+                    }
+                    '|' => {
+                        self.advance();
+                        Token::Pipe
                     }
                     ';' => {
                         self.advance();

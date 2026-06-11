@@ -101,6 +101,21 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        // FOREACH / UNWIND directly after the match → a write pipeline.
+        if matches!(&self.current, Token::Identifier(id)
+            if id.eq_ignore_ascii_case("FOREACH") || id.eq_ignore_ascii_case("UNWIND"))
+        {
+            let writes = self.parse_write_clauses()?;
+            let return_clause = self.parse_optional_return()?;
+            return Ok(Statement::MatchWrite {
+                match_pattern: pattern,
+                optional_patterns,
+                where_clause,
+                with_clause: None,
+                writes,
+                return_clause,
+            });
+        }
         if self.current == Token::Create {
             self.advance()?;
             // Multiple consecutive CREATE clauses share the match bindings and
@@ -122,6 +137,21 @@ impl<'a> Parser<'a> {
         if self.current == Token::Set {
             self.advance()?;
             let assignments = self.parse_set_clauses()?;
+            // A continuation (FOREACH / CREATE / REMOVE / ...) makes this a
+            // multi-clause write pipeline.
+            if self.at_write_clause() {
+                let mut writes = vec![WriteClause::Set(assignments)];
+                writes.extend(self.parse_write_clauses()?);
+                let return_clause = self.parse_optional_return()?;
+                return Ok(Statement::MatchWrite {
+                    match_pattern: pattern,
+                    optional_patterns,
+                    where_clause,
+                    with_clause: None,
+                    writes,
+                    return_clause,
+                });
+            }
             let write = Statement::MatchSet {
                 match_pattern: pattern,
                 where_clause,
@@ -197,6 +227,20 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        // WITH followed by write clauses (e.g. WITH r UNWIND $a AS a CREATE ...)
+        // → multi-clause write pipeline.
+        if with_clause.is_some() && self.at_write_clause() {
+            let writes = self.parse_write_clauses()?;
+            let return_clause = self.parse_optional_return()?;
+            return Ok(Statement::MatchWrite {
+                match_pattern: pattern,
+                optional_patterns,
+                where_clause,
+                with_clause,
+                writes,
+                return_clause,
+            });
+        }
         let return_clause = if self.current == Token::Return {
             self.advance()?;
             self.parse_return_clause()?
@@ -315,6 +359,18 @@ impl<'a> Parser<'a> {
         self.parse_trailing_return(Statement::Delete { identifiers: ids })
     }
 
+    fn parse_optional_return(&mut self) -> Result<ReturnClause, ParseError> {
+        if self.current == Token::Return {
+            self.advance()?;
+            self.parse_return_clause()
+        } else {
+            Ok(ReturnClause {
+                items: vec![],
+                distinct: false,
+            })
+        }
+    }
+
     fn parse_trailing_return(&mut self, write: Statement) -> Result<Statement, ParseError> {
         if self.current != Token::Return {
             return Ok(write);
@@ -361,6 +417,95 @@ impl<'a> Parser<'a> {
         self.expect(Token::Key)?;
         let key = self.parse_primary()?;
         Ok(Statement::KvIncr { key })
+    }
+
+    /// True if the current token begins a write clause (SET / CREATE / REMOVE /
+    /// FOREACH / UNWIND) — used to detect a multi-clause write pipeline.
+    fn at_write_clause(&self) -> bool {
+        match &self.current {
+            Token::Set | Token::Create => true,
+            Token::Identifier(id) => {
+                let id = id.to_ascii_uppercase();
+                id == "REMOVE" || id == "FOREACH" || id == "UNWIND"
+            }
+            _ => false,
+        }
+    }
+
+    fn parse_variable_name(&mut self) -> Result<String, ParseError> {
+        match &self.current {
+            Token::Identifier(v) => {
+                let v = v.clone();
+                self.advance()?;
+                Ok(v)
+            }
+            other => Err(ParseError::UnexpectedToken {
+                expected: "variable name".to_string(),
+                got: other.clone(),
+            }),
+        }
+    }
+
+    /// Parse a sequence of write clauses (the body of a MatchWrite pipeline or a
+    /// FOREACH body). Stops at the first non-write token.
+    fn parse_write_clauses(&mut self) -> Result<Vec<WriteClause>, ParseError> {
+        let mut clauses = Vec::new();
+        loop {
+            if self.current == Token::Set {
+                self.advance()?;
+                clauses.push(WriteClause::Set(self.parse_set_clauses()?));
+            } else if self.current == Token::Create {
+                self.advance()?;
+                let mut pattern = self.parse_comma_patterns()?;
+                while self.current == Token::Create {
+                    self.advance()?;
+                    pattern.extend(self.parse_comma_patterns()?);
+                }
+                clauses.push(WriteClause::Create(pattern));
+            } else if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("REMOVE"))
+            {
+                self.advance()?;
+                let mut assignments = Vec::new();
+                loop {
+                    let target = self.parse_primary()?;
+                    assignments.push(SetClause {
+                        target,
+                        value: Expr::Literal(Value::Null),
+                    });
+                    if self.current == Token::Comma {
+                        self.advance()?;
+                    } else {
+                        break;
+                    }
+                }
+                clauses.push(WriteClause::Set(assignments));
+            } else if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("FOREACH"))
+            {
+                self.advance()?; // FOREACH
+                self.expect(Token::LParen)?;
+                let variable = self.parse_variable_name()?;
+                self.expect_keyword("IN")?;
+                let list = self.parse_expression()?;
+                self.expect(Token::Pipe)?;
+                let body = self.parse_write_clauses()?;
+                self.expect(Token::RParen)?;
+                clauses.push(WriteClause::Foreach {
+                    variable,
+                    list,
+                    body,
+                });
+            } else if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("UNWIND"))
+            {
+                self.advance()?; // UNWIND
+                let list = self.parse_expression()?;
+                self.expect_keyword("AS")?;
+                let variable = self.parse_variable_name()?;
+                clauses.push(WriteClause::Unwind { variable, list });
+            } else {
+                break;
+            }
+        }
+        Ok(clauses)
     }
 
     /// Parse one or more comma-separated path patterns into a single flat
@@ -1005,6 +1150,19 @@ impl<'a> Parser<'a> {
             Token::LBrace => {
                 let props = self.parse_properties()?;
                 Ok(Expr::MapLiteral(props))
+            }
+            Token::LBracket => {
+                self.advance()?;
+                let mut items = Vec::new();
+                if self.current != Token::RBracket {
+                    items.push(self.parse_expression()?);
+                    while self.current == Token::Comma {
+                        self.advance()?;
+                        items.push(self.parse_expression()?);
+                    }
+                }
+                self.expect(Token::RBracket)?;
+                Ok(Expr::ListLiteral(items))
             }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "expression".to_string(),

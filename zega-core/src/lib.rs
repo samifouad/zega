@@ -414,6 +414,23 @@ impl Zega {
                 params,
                 traversal_budget,
             ),
+            Statement::MatchWrite {
+                match_pattern,
+                optional_patterns,
+                where_clause,
+                with_clause,
+                writes,
+                return_clause,
+            } => self.exec_match_write(
+                match_pattern,
+                optional_patterns,
+                where_clause.as_ref(),
+                with_clause.as_ref(),
+                writes,
+                return_clause,
+                params,
+                traversal_budget,
+            ),
             Statement::Delete { identifiers } => self.exec_delete(identifiers),
             Statement::MatchDelete {
                 match_pattern,
@@ -506,32 +523,9 @@ impl Zega {
             bindings
         };
 
-        // WITH boundary: project (with grouping/aggregation), re-bind each
-        // resulting row's columns as values for the RETURN stage, then apply
-        // the WITH-level WHERE.
+        // WITH boundary (carry node/rel identity for bare vars; value-bind the rest).
         let bindings = if let Some(with) = with_clause {
-            let with_projection = ReturnClause {
-                items: with.items.clone(),
-                distinct: false,
-            };
-            let with_rows = project_rows(&bindings, &with_projection, params, &graph)?;
-            let mut staged: Vec<Bindings> = Vec::with_capacity(with_rows.len());
-            for row in with_rows {
-                let mut binding = Bindings::new();
-                for (field, value) in row.fields {
-                    binding.insert(field, BoundValue::Value(value));
-                }
-                staged.push(binding);
-            }
-            if let Some(predicate) = with.where_clause.as_ref() {
-                staged.retain(|binding| {
-                    matches!(
-                        eval_expr(predicate, params, binding, &graph),
-                        Ok(Value::Bool(true))
-                    )
-                });
-            }
-            staged
+            stage_with(bindings, with, params, &graph)?
         } else {
             bindings
         };
@@ -797,6 +791,43 @@ impl Zega {
             )?;
         }
         Ok(vec![])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exec_match_write(
+        &self,
+        match_pattern: &[PatternElement],
+        optional_patterns: &[Vec<PatternElement>],
+        where_clause: Option<&Expr>,
+        with_clause: Option<&WithClause>,
+        writes: &[WriteClause],
+        return_clause: &ReturnClause,
+        params: &HashMap<String, Value>,
+        traversal_budget: &mut TraversalWorkBudget,
+    ) -> Result<Vec<Row>> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        // 1. resolve MATCH (+ OPTIONAL MATCH + WHERE)
+        let mut bindings = resolve_match_and_optional(
+            &graph,
+            match_pattern,
+            optional_patterns,
+            where_clause,
+            params,
+            traversal_budget,
+        )?;
+        // 2. WITH boundary
+        if let Some(with) = with_clause {
+            bindings = stage_with(bindings, with, params, &graph)?;
+        }
+        // 3. apply each write clause in order, threading bindings
+        for clause in writes {
+            bindings = apply_write_clause(&mut graph, &self.wal, clause, bindings, params)?;
+        }
+        // 4. RETURN
+        project_bound_rows(&graph, &bindings, return_clause, None, None, None, params)
     }
 
     fn exec_kv_get(&self, key_expr: &Expr, params: &HashMap<String, Value>) -> Result<Vec<Row>> {
@@ -1577,6 +1608,174 @@ fn merge_pattern(
     Ok(bindings)
 }
 
+/// Resolve a MATCH plus its OPTIONAL MATCH segments and WHERE, returning the
+/// assembled bindings (shared by exec_match and exec_match_write).
+fn resolve_match_and_optional(
+    graph: &Graph,
+    pattern: &[PatternElement],
+    optional_patterns: &[Vec<PatternElement>],
+    where_clause: Option<&Expr>,
+    params: &HashMap<String, Value>,
+    traversal_budget: &mut TraversalWorkBudget,
+) -> Result<Vec<Bindings>> {
+    if optional_patterns.is_empty() {
+        return resolve_match_bindings(graph, pattern, where_clause, params, traversal_budget);
+    }
+    let mut bindings = resolve_match_bindings(graph, pattern, None, params, traversal_budget)?;
+    for optional in optional_patterns {
+        let mut extended = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let ext = resolve_match_bindings_seeded(
+                graph,
+                optional,
+                None,
+                params,
+                traversal_budget,
+                &binding,
+            )?;
+            if ext.is_empty() {
+                extended.push(binding);
+            } else {
+                extended.extend(ext);
+            }
+        }
+        bindings = extended;
+    }
+    if let Some(predicate) = where_clause {
+        bindings.retain(|binding| {
+            matches!(
+                eval_expr(predicate, params, binding, graph),
+                Ok(Value::Bool(true))
+            )
+        });
+    }
+    Ok(bindings)
+}
+
+/// Apply a WITH boundary: project to a new binding scope, then the WITH-WHERE.
+/// A bare variable bound to a node/relationship is carried with its identity
+/// intact (so later CREATE/MATCH can use it as a node); aggregations and other
+/// expressions become value bindings. With aggregates, rows are grouped via the
+/// projection engine and all columns become values.
+fn stage_with(
+    bindings: Vec<Bindings>,
+    with: &WithClause,
+    params: &HashMap<String, Value>,
+    graph: &Graph,
+) -> Result<Vec<Bindings>> {
+    let has_aggregates = with
+        .items
+        .iter()
+        .any(|item| matches!(item.expr, Expr::Aggregate { .. }));
+    let mut staged: Vec<Bindings> = if has_aggregates {
+        let projection = ReturnClause {
+            items: with.items.clone(),
+            distinct: false,
+        };
+        project_rows(&bindings, &projection, params, graph)?
+            .into_iter()
+            .map(|row| {
+                let mut binding = Bindings::new();
+                for (field, value) in row.fields {
+                    binding.insert(field, BoundValue::Value(value));
+                }
+                binding
+            })
+            .collect()
+    } else {
+        let mut out = Vec::with_capacity(bindings.len());
+        for binding in &bindings {
+            let mut next = Bindings::new();
+            for item in &with.items {
+                let name = item
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| expr_to_string(&item.expr));
+                if let Expr::Identifier(var) = &item.expr {
+                    if let Some(bound) = binding.get(var) {
+                        next.insert(name, bound.clone());
+                        continue;
+                    }
+                }
+                let value = eval_expr(&item.expr, params, binding, graph)?;
+                next.insert(name, BoundValue::Value(value));
+            }
+            out.push(next);
+        }
+        out
+    };
+    if let Some(predicate) = with.where_clause.as_ref() {
+        staged.retain(|binding| {
+            matches!(
+                eval_expr(predicate, params, binding, graph),
+                Ok(Value::Bool(true))
+            )
+        });
+    }
+    Ok(staged)
+}
+
+/// Apply one write clause to a set of bindings, threading the (possibly
+/// expanded) bindings through. SET/CREATE mutate per binding; FOREACH loops the
+/// body per list element (row set unchanged); UNWIND expands the row set.
+fn apply_write_clause(
+    graph: &mut Graph,
+    wal: &Wal,
+    clause: &WriteClause,
+    bindings: Vec<Bindings>,
+    params: &HashMap<String, Value>,
+) -> Result<Vec<Bindings>> {
+    match clause {
+        WriteClause::Set(assignments) => {
+            for binding in &bindings {
+                set_pattern(graph, wal, assignments, params, binding)?;
+            }
+            Ok(bindings)
+        }
+        WriteClause::Create(pattern) => {
+            let mut out = Vec::with_capacity(bindings.len());
+            for binding in bindings {
+                out.push(create_pattern(graph, wal, pattern, params, binding)?);
+            }
+            Ok(out)
+        }
+        WriteClause::Foreach {
+            variable,
+            list,
+            body,
+        } => {
+            for binding in &bindings {
+                let Value::List(items) = eval_expr(list, params, binding, graph)? else {
+                    continue;
+                };
+                for item in items {
+                    let mut scoped = binding.clone();
+                    scoped.insert(variable.clone(), BoundValue::Value(item));
+                    let mut sub = vec![scoped];
+                    for inner in body {
+                        sub = apply_write_clause(graph, wal, inner, sub, params)?;
+                    }
+                }
+            }
+            Ok(bindings) // FOREACH is a write-loop; the outer row set is unchanged
+        }
+        WriteClause::Unwind { variable, list } => {
+            let mut out = Vec::new();
+            for binding in &bindings {
+                let Value::List(items) = eval_expr(list, params, binding, graph)? else {
+                    continue;
+                };
+                for item in items {
+                    let mut expanded = binding.clone();
+                    expanded.insert(variable.clone(), BoundValue::Value(item));
+                    out.push(expanded);
+                }
+            }
+            Ok(out) // UNWIND expands the row set
+        }
+    }
+}
+
 /// Apply `SET` assignments to the nodes bound in one match binding. Values are
 /// evaluated first (immutable graph borrow), then written (mutable borrow).
 fn set_pattern(
@@ -1788,6 +1987,7 @@ fn references_variable(expr: &Expr, variable: &str) -> bool {
         Expr::MapLiteral(entries) => {
             entries.values().any(|e| references_variable(e, variable))
         }
+        Expr::ListLiteral(items) => items.iter().any(|e| references_variable(e, variable)),
         Expr::Parameter(_) | Expr::Literal(_) => false,
     }
 }
@@ -1823,6 +2023,7 @@ fn can_eval_from_binding(expr: &Expr, binding: &Bindings) -> bool {
         Expr::MapLiteral(entries) => {
             entries.values().all(|e| can_eval_from_binding(e, binding))
         }
+        Expr::ListLiteral(items) => items.iter().all(|e| can_eval_from_binding(e, binding)),
         Expr::Parameter(_) | Expr::Literal(_) => true,
     }
 }
@@ -1933,6 +2134,13 @@ fn eval_expr(
                 map.insert(key.clone(), eval_expr(expr, params, bindings, graph)?);
             }
             Ok(Value::Map(map))
+        }
+        Expr::ListLiteral(items) => {
+            let mut list = Vec::with_capacity(items.len());
+            for item in items {
+                list.push(eval_expr(item, params, bindings, graph)?);
+            }
+            Ok(Value::List(list))
         }
         Expr::Aggregate { .. } => Err(ZegaError::Execution(
             "aggregate expression evaluated outside RETURN aggregation".to_string(),
@@ -2388,6 +2596,13 @@ fn eval_order_expr(
                 );
             }
             Ok(Value::Map(map))
+        }
+        Expr::ListLiteral(items) => {
+            let mut list = Vec::with_capacity(items.len());
+            for item in items {
+                list.push(eval_order_expr(item, params, bindings, row, graph, return_clause)?);
+            }
+            Ok(Value::List(list))
         }
         Expr::Aggregate { .. } => Ok(Value::Null),
     }
@@ -3625,6 +3840,87 @@ mod tests {
             .unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].fields.get("n"), Some(&Value::String("widget".to_string())));
+    }
+
+    #[test]
+    fn test_foreach_pipeline() {
+        // zega#24: FOREACH conditional-write (store-admin product-update idiom).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let k = || HashMap::from([("k".to_string(), Value::String("a".to_string()))]);
+        zega.query(
+            "CREATE (p:Product {sku: $k, stock: $s})",
+            HashMap::from([
+                ("k".to_string(), Value::String("a".to_string())),
+                ("s".to_string(), Value::Int(5)),
+            ]),
+        )
+        .unwrap();
+        // SET + conditional FOREACH (go=true → the stock FOREACH runs)
+        zega.query(
+            "MATCH (p:Product {sku: $k}) SET p.name = $n FOREACH (_ IN CASE WHEN $go = true THEN [1] ELSE [] END | SET p.stock = $new)",
+            HashMap::from([
+                ("k".to_string(), Value::String("a".to_string())),
+                ("n".to_string(), Value::String("Widget".to_string())),
+                ("go".to_string(), Value::Bool(true)),
+                ("new".to_string(), Value::Int(99)),
+            ]),
+        ).unwrap();
+        let r = zega
+            .query("MATCH (p:Product {sku: $k}) RETURN p.name AS n, p.stock AS s", k())
+            .unwrap();
+        assert_eq!(r[0].fields.get("n"), Some(&Value::String("Widget".to_string())));
+        assert_eq!(r[0].fields.get("s"), Some(&Value::Int(99)), "FOREACH ran (go=true)");
+        // go=false → FOREACH skips, stock unchanged
+        zega.query(
+            "MATCH (p:Product {sku: $k}) FOREACH (_ IN CASE WHEN $go = true THEN [1] ELSE [] END | SET p.stock = $new)",
+            HashMap::from([
+                ("k".to_string(), Value::String("a".to_string())),
+                ("go".to_string(), Value::Bool(false)),
+                ("new".to_string(), Value::Int(0)),
+            ]),
+        ).unwrap();
+        let r = zega.query("MATCH (p:Product {sku: $k}) RETURN p.stock AS s", k()).unwrap();
+        assert_eq!(r[0].fields.get("s"), Some(&Value::Int(99)), "FOREACH skipped (go=false)");
+        // REMOVE inside FOREACH (over a literal [1])
+        zega.query("MATCH (p:Product {sku: $k}) FOREACH (_ IN [1] | REMOVE p.stock)", k())
+            .unwrap();
+        let r = zega
+            .query("MATCH (p:Product {sku: $k}) WHERE p.stock IS NULL RETURN p.name AS n", k())
+            .unwrap();
+        assert_eq!(r.len(), 1, "REMOVE inside FOREACH cleared stock");
+    }
+
+    #[test]
+    fn test_unwind_pipeline() {
+        // zega#24: WITH r UNWIND $list AS a CREATE ... (website release-publish).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (r:Release {layer: $l})",
+            HashMap::from([("l".to_string(), Value::String("runtime".to_string()))]),
+        )
+        .unwrap();
+        let artifacts = Value::List(vec![
+            Value::Map(HashMap::from([("name".to_string(), Value::String("x".to_string()))])),
+            Value::Map(HashMap::from([("name".to_string(), Value::String("y".to_string()))])),
+        ]);
+        zega.query(
+            "MATCH (r:Release {layer: $l}) WITH r UNWIND $artifacts AS a CREATE (art:Artifact {name: a.name}) CREATE (r)-[:HAS_ART]->(art)",
+            HashMap::from([
+                ("l".to_string(), Value::String("runtime".to_string())),
+                ("artifacts".to_string(), artifacts),
+            ]),
+        ).unwrap();
+        let r = zega
+            .query("MATCH (:Release)-[:HAS_ART]->(a:Artifact) RETURN count(a) AS c", HashMap::new())
+            .unwrap();
+        assert_eq!(r[0].fields.get("c"), Some(&Value::Int(2)), "UNWIND created + linked 2 artifacts");
+        let r = zega
+            .query("MATCH (a:Artifact) RETURN a.name AS n ORDER BY a.name", HashMap::new())
+            .unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].fields.get("n"), Some(&Value::String("x".to_string())));
     }
 
     #[test]
