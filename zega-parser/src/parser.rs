@@ -188,6 +188,11 @@ impl<'a> Parser<'a> {
             self.expect(Token::By)?;
             order_by = Some(self.parse_order_by()?);
         }
+        let mut skip = None;
+        if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("SKIP")) {
+            self.advance()?;
+            skip = Some(self.parse_expression()?);
+        }
         let mut limit = None;
         if self.current == Token::Limit {
             self.advance()?;
@@ -200,6 +205,7 @@ impl<'a> Parser<'a> {
             with_clause,
             return_clause,
             order_by,
+            skip,
             limit,
         })
     }

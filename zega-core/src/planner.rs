@@ -45,9 +45,11 @@ impl<'a> Planner<'a> {
                 with_clause,
                 return_clause,
                 order_by,
+                skip,
                 limit,
             } => {
-                let planned = self.plan_match(pattern, where_clause, return_clause, order_by, limit, ctx)?;
+                let planned =
+                    self.plan_match(pattern, where_clause, return_clause, order_by, skip, limit, ctx)?;
                 // Re-attach OPTIONAL MATCH segments + WITH (plan_match only plans
                 // the required pattern's policy filtering).
                 if optional_patterns.is_empty() && with_clause.is_none() {
@@ -59,6 +61,7 @@ impl<'a> Planner<'a> {
                         where_clause,
                         return_clause,
                         order_by,
+                        skip,
                         limit,
                         ..
                     }) => Ok(Plan::Execute(Statement::Match {
@@ -68,6 +71,7 @@ impl<'a> Planner<'a> {
                         with_clause: with_clause.clone(),
                         return_clause,
                         order_by,
+                        skip,
                         limit,
                     })),
                     other => Ok(other),
@@ -85,6 +89,7 @@ impl<'a> Planner<'a> {
                         items: vec![],
                         distinct: false,
                     },
+                    &None,
                     &None,
                     &None,
                     ctx,
@@ -111,6 +116,7 @@ impl<'a> Planner<'a> {
         where_clause: &Option<ZqlExpr>,
         return_clause: &ReturnClause,
         order_by: &Option<Vec<(ZqlExpr, OrderDirection)>>,
+        skip: &Option<ZqlExpr>,
         limit: &Option<ZqlExpr>,
         ctx: &ResolvedContext,
     ) -> Result<Plan> {
@@ -166,6 +172,7 @@ impl<'a> Planner<'a> {
             with_clause: None,
             return_clause: return_clause.clone(),
             order_by: order_by.clone(),
+            skip: skip.clone(),
             limit: limit.clone(),
         }))
     }

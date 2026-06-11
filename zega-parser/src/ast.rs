@@ -78,6 +78,7 @@ pub enum Statement {
         with_clause: Option<WithClause>,
         return_clause: ReturnClause,
         order_by: Option<Vec<(Expr, OrderDirection)>>,
+        skip: Option<Expr>,
         limit: Option<Expr>,
     },
     Create {

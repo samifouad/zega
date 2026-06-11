@@ -371,6 +371,7 @@ impl Zega {
                 with_clause,
                 return_clause,
                 order_by,
+                skip,
                 limit,
             } => self.exec_match(
                 pattern,
@@ -379,6 +380,7 @@ impl Zega {
                 with_clause.as_ref(),
                 return_clause,
                 order_by.as_ref(),
+                skip.as_ref(),
                 limit.as_ref(),
                 params,
                 traversal_budget,
@@ -458,6 +460,7 @@ impl Zega {
         with_clause: Option<&WithClause>,
         return_clause: &ReturnClause,
         order_by: Option<&Vec<(Expr, OrderDirection)>>,
+        skip: Option<&Expr>,
         limit: Option<&Expr>,
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
@@ -538,6 +541,7 @@ impl Zega {
             &bindings,
             return_clause,
             order_by.map(Vec::as_slice),
+            skip,
             limit,
             params,
         )
@@ -650,7 +654,7 @@ impl Zega {
                 ));
             }
         };
-        project_bound_rows(&graph, &bindings, return_clause, order_by, limit, params)
+        project_bound_rows(&graph, &bindings, return_clause, order_by, None, limit, params)
     }
 
     fn exec_create(
@@ -2638,11 +2642,13 @@ fn project_rows(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn project_bound_rows(
     graph: &Graph,
     bindings: &[Bindings],
     return_clause: &ReturnClause,
     order_by: Option<&[(Expr, OrderDirection)]>,
+    skip: Option<&Expr>,
     limit: Option<&Expr>,
     params: &HashMap<String, Value>,
 ) -> Result<Vec<Row>> {
@@ -2693,6 +2699,14 @@ fn project_bound_rows(
             signature.sort_by(|a, b| a.0.cmp(&b.0));
             seen.insert(signature)
         });
+    }
+
+    // SKIP applies after ordering/dedup, before LIMIT (Neo4j order).
+    if let Some(skip) = skip {
+        if let Value::Int(skip) = eval_expr(skip, params, &Bindings::new(), graph)? {
+            let skip = (skip.max(0) as usize).min(rows.len());
+            rows.drain(0..skip);
+        }
     }
 
     if let Some(limit) = limit {
@@ -3544,6 +3558,38 @@ mod tests {
         assert_eq!(cnt("MATCH (n:W) WHERE n.name CONTAINS \"ph\" RETURN n"), 2);
         assert_eq!(cnt("MATCH (n:W) WHERE n.name <> \"beta\" RETURN n"), 2);
         assert_eq!(cnt("MATCH (n:W) WHERE n.name = \"beta\" RETURN n"), 1);
+    }
+
+    #[test]
+    fn test_skip_limit() {
+        // zega#23 follow-up: SKIP (pagination, with ORDER BY + LIMIT).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        for i in 0..10 {
+            zega.query(
+                "CREATE (n:P {i: $i})",
+                HashMap::from([("i".to_string(), Value::Int(i))]),
+            )
+            .unwrap();
+        }
+        // ORDER BY i SKIP 2 LIMIT 3 → 2,3,4
+        let rows = zega
+            .query(
+                "MATCH (n:P) RETURN n.i AS i ORDER BY n.i SKIP 2 LIMIT 3",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].fields.get("i"), Some(&Value::Int(2)));
+        assert_eq!(rows[2].fields.get("i"), Some(&Value::Int(4)));
+        // SKIP alone past most rows
+        let rows = zega
+            .query(
+                "MATCH (n:P) RETURN n.i AS i ORDER BY n.i SKIP 8",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2, "SKIP 8 of 10 → 2 rows");
     }
 
     #[test]
