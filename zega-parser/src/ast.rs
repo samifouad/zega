@@ -58,6 +58,10 @@ pub enum Statement {
         /// variables unbound (→ null) rather than dropping the row.
         optional_patterns: Vec<Vec<PatternElement>>,
         where_clause: Option<Expr>,
+        /// An optional `WITH ...` projection/aggregation boundary between the
+        /// match and the RETURN. Its items become the variable scope the
+        /// RETURN sees.
+        with_clause: Option<WithClause>,
         return_clause: ReturnClause,
         order_by: Option<Vec<(Expr, OrderDirection)>>,
         limit: Option<Expr>,
@@ -156,6 +160,12 @@ pub struct SetClause {
 pub struct ReturnClause {
     pub items: Vec<ReturnItem>,
     pub distinct: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WithClause {
+    pub items: Vec<ReturnItem>,
+    pub where_clause: Option<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

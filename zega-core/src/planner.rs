@@ -42,14 +42,15 @@ impl<'a> Planner<'a> {
                 pattern,
                 optional_patterns,
                 where_clause,
+                with_clause,
                 return_clause,
                 order_by,
                 limit,
             } => {
                 let planned = self.plan_match(pattern, where_clause, return_clause, order_by, limit, ctx)?;
-                // Re-attach OPTIONAL MATCH segments (plan_match only plans the
-                // required pattern's policy filtering).
-                if optional_patterns.is_empty() {
+                // Re-attach OPTIONAL MATCH segments + WITH (plan_match only plans
+                // the required pattern's policy filtering).
+                if optional_patterns.is_empty() && with_clause.is_none() {
                     return Ok(planned);
                 }
                 match planned {
@@ -64,6 +65,7 @@ impl<'a> Planner<'a> {
                         pattern,
                         optional_patterns: optional_patterns.clone(),
                         where_clause,
+                        with_clause: with_clause.clone(),
                         return_clause,
                         order_by,
                         limit,
@@ -161,6 +163,7 @@ impl<'a> Planner<'a> {
             pattern: pattern.to_vec(),
             optional_patterns: Vec::new(),
             where_clause: merged_where,
+            with_clause: None,
             return_clause: return_clause.clone(),
             order_by: order_by.clone(),
             limit: limit.clone(),

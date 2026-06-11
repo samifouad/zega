@@ -147,6 +147,24 @@ impl<'a> Parser<'a> {
             };
             return self.parse_trailing_return(write);
         }
+        // WITH ... [WHERE ...] — projection/aggregation boundary before RETURN.
+        let with_clause = if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("WITH"))
+        {
+            self.advance()?; // WITH
+            let projection = self.parse_return_clause()?;
+            let with_where = if self.current == Token::Where {
+                self.advance()?;
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            Some(WithClause {
+                items: projection.items,
+                where_clause: with_where,
+            })
+        } else {
+            None
+        };
         let return_clause = if self.current == Token::Return {
             self.advance()?;
             self.parse_return_clause()?
@@ -171,6 +189,7 @@ impl<'a> Parser<'a> {
             pattern,
             optional_patterns,
             where_clause,
+            with_clause,
             return_clause,
             order_by,
             limit,

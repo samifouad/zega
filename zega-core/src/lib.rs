@@ -53,6 +53,9 @@ enum BoundValue {
     Node(NodeId),
     Relationship(RelId),
     Relationships(Vec<RelId>),
+    /// A computed value carried across a WITH boundary (e.g. an aggregation
+    /// result, or a node projected to a property map).
+    Value(Value),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -365,6 +368,7 @@ impl Zega {
                 pattern,
                 optional_patterns,
                 where_clause,
+                with_clause,
                 return_clause,
                 order_by,
                 limit,
@@ -372,6 +376,7 @@ impl Zega {
                 pattern,
                 optional_patterns,
                 where_clause.as_ref(),
+                with_clause.as_ref(),
                 return_clause,
                 order_by.as_ref(),
                 limit.as_ref(),
@@ -446,6 +451,7 @@ impl Zega {
         pattern: &[PatternElement],
         optional_patterns: &[Vec<PatternElement>],
         where_clause: Option<&Expr>,
+        with_clause: Option<&WithClause>,
         return_clause: &ReturnClause,
         order_by: Option<&Vec<(Expr, OrderDirection)>>,
         limit: Option<&Expr>,
@@ -490,6 +496,36 @@ impl Zega {
                     )
                 });
             }
+            bindings
+        };
+
+        // WITH boundary: project (with grouping/aggregation), re-bind each
+        // resulting row's columns as values for the RETURN stage, then apply
+        // the WITH-level WHERE.
+        let bindings = if let Some(with) = with_clause {
+            let with_projection = ReturnClause {
+                items: with.items.clone(),
+                distinct: false,
+            };
+            let with_rows = project_rows(&bindings, &with_projection, params, &graph)?;
+            let mut staged: Vec<Bindings> = Vec::with_capacity(with_rows.len());
+            for row in with_rows {
+                let mut binding = Bindings::new();
+                for (field, value) in row.fields {
+                    binding.insert(field, BoundValue::Value(value));
+                }
+                staged.push(binding);
+            }
+            if let Some(predicate) = with.where_clause.as_ref() {
+                staged.retain(|binding| {
+                    matches!(
+                        eval_expr(predicate, params, binding, &graph),
+                        Ok(Value::Bool(true))
+                    )
+                });
+            }
+            staged
+        } else {
             bindings
         };
 
@@ -1788,6 +1824,7 @@ fn eval_expr(
                     .map(relationship_value)
                     .collect(),
             )),
+            Some(BoundValue::Value(value)) => Ok(value.clone()),
             None => Ok(Value::Null),
         },
         Expr::PropertyAccess(target, prop) => {
@@ -2093,6 +2130,8 @@ fn bound_property(value: &BoundValue, prop: &str, graph: &Graph) -> Option<Value
             }
         }
         BoundValue::Relationships(_) => None,
+        BoundValue::Value(Value::Map(map)) => map.get(prop).cloned(),
+        BoundValue::Value(_) => None,
     }
 }
 
@@ -3106,6 +3145,64 @@ mod tests {
         }
         assert_eq!(counts.get(&Some(Value::String("s1".to_string()))), Some(&Some(Value::Int(1))));
         assert_eq!(counts.get(&Some(Value::String("s2".to_string()))), Some(&Some(Value::Int(0))));
+    }
+
+    #[test]
+    fn test_with_aggregate_and_carry() {
+        // zega#23 keystone: WITH. The apps' real pattern —
+        //   MATCH (r) OPTIONAL MATCH (r)-[:HAS]->(a) WITH r, collect(a) AS xs RETURN r.v, xs
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let s = |v: &str| Value::String(v.to_string());
+        zega.query(
+            "CREATE (r:Release {layer: $l, version: $v})",
+            HashMap::from([("l".to_string(), s("runtime")), ("v".to_string(), s("1.0"))]),
+        )
+        .unwrap();
+        for name in ["x", "y"] {
+            zega.query(
+                "CREATE (a:Artifact {name: $n})",
+                HashMap::from([("n".to_string(), s(name))]),
+            )
+            .unwrap();
+            zega.query(
+                "MATCH (r:Release {layer: $l}), (a:Artifact {name: $n}) CREATE (r)-[:HAS_ARTIFACT]->(a)",
+                HashMap::from([("l".to_string(), s("runtime")), ("n".to_string(), s(name))]),
+            )
+            .unwrap();
+        }
+        // carry r + collect artifacts
+        let rows = zega.query(
+            "MATCH (r:Release {layer: $l}) OPTIONAL MATCH (r)-[:HAS_ARTIFACT]->(a:Artifact) WITH r, collect(a) AS artifacts RETURN r.version AS version, artifacts",
+            HashMap::from([("l".to_string(), s("runtime"))]),
+        ).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fields.get("version"), Some(&s("1.0")), "carried r.version");
+        match rows[0].fields.get("artifacts") {
+            Some(Value::List(l)) => assert_eq!(l.len(), 2, "collected 2 artifacts"),
+            o => panic!("expected list, got {o:?}"),
+        }
+        // a release with NO artifacts → collect over unmatched optional = empty list
+        zega.query(
+            "CREATE (r:Release {layer: $l, version: $v})",
+            HashMap::from([("l".to_string(), s("empty")), ("v".to_string(), s("0.1"))]),
+        )
+        .unwrap();
+        let rows = zega.query(
+            "MATCH (r:Release {layer: $l}) OPTIONAL MATCH (r)-[:HAS_ARTIFACT]->(a:Artifact) WITH r, collect(a) AS artifacts RETURN artifacts",
+            HashMap::from([("l".to_string(), s("empty"))]),
+        ).unwrap();
+        match rows[0].fields.get("artifacts") {
+            Some(Value::List(l)) => assert_eq!(l.len(), 0, "no artifacts → empty list"),
+            o => panic!("expected empty list, got {o:?}"),
+        }
+        // WITH ... WHERE filters the aggregated rows
+        let rows = zega.query(
+            "MATCH (r:Release) OPTIONAL MATCH (r)-[:HAS_ARTIFACT]->(a) WITH r, count(a) AS c WHERE c > 0 RETURN r.version AS v",
+            HashMap::new(),
+        ).unwrap();
+        assert_eq!(rows.len(), 1, "only the release with artifacts survives c>0");
+        assert_eq!(rows[0].fields.get("v"), Some(&s("1.0")));
     }
 
     #[test]
