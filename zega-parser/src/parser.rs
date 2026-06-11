@@ -765,10 +765,43 @@ impl<'a> Parser<'a> {
                     let right = self.parse_add()?;
                     left = Expr::BinaryOp(Box::new(left), BinaryOperator::Lte, Box::new(right));
                 }
+                // String predicates: STARTS WITH / ENDS WITH / CONTAINS (keywords)
+                Token::Identifier(id) if id.eq_ignore_ascii_case("STARTS") => {
+                    self.advance()?;
+                    self.expect_keyword("WITH")?;
+                    let right = self.parse_add()?;
+                    left =
+                        Expr::BinaryOp(Box::new(left), BinaryOperator::StartsWith, Box::new(right));
+                }
+                Token::Identifier(id) if id.eq_ignore_ascii_case("ENDS") => {
+                    self.advance()?;
+                    self.expect_keyword("WITH")?;
+                    let right = self.parse_add()?;
+                    left = Expr::BinaryOp(Box::new(left), BinaryOperator::EndsWith, Box::new(right));
+                }
+                Token::Identifier(id) if id.eq_ignore_ascii_case("CONTAINS") => {
+                    self.advance()?;
+                    let right = self.parse_add()?;
+                    left = Expr::BinaryOp(Box::new(left), BinaryOperator::Contains, Box::new(right));
+                }
                 _ => break,
             }
         }
         Ok(left)
+    }
+
+    /// Consume an identifier keyword (case-insensitive) or error.
+    fn expect_keyword(&mut self, keyword: &str) -> Result<(), ParseError> {
+        match &self.current {
+            Token::Identifier(id) if id.eq_ignore_ascii_case(keyword) => {
+                self.advance()?;
+                Ok(())
+            }
+            other => Err(ParseError::UnexpectedToken {
+                expected: keyword.to_string(),
+                got: other.clone(),
+            }),
+        }
     }
 
     fn parse_add(&mut self) -> Result<Expr, ParseError> {

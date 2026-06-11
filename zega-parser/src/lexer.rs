@@ -303,6 +303,10 @@ impl<'a> Lexer<'a> {
                         if let Some(&'=') = self.peek() {
                             self.advance();
                             Token::Lte
+                        } else if let Some(&'>') = self.peek() {
+                            // Cypher-standard inequality `<>` (zega#8)
+                            self.advance();
+                            Token::Ne
                         } else if let Some(&'-') = self.peek() {
                             self.advance();
                             Token::LeftArrow

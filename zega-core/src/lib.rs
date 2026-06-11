@@ -2180,6 +2180,18 @@ fn eval_binary_op(left: Value, op: BinaryOperator, right: Value) -> Result<Value
         BinaryOperator::Add => Ok(eval_add(left, right)),
         BinaryOperator::Sub => Ok(eval_numeric(left, right, |a, b| a - b)),
         BinaryOperator::Mul => Ok(eval_numeric(left, right, |a, b| a * b)),
+        BinaryOperator::StartsWith => Ok(string_predicate(&left, &right, |a, b| a.starts_with(b))),
+        BinaryOperator::EndsWith => Ok(string_predicate(&left, &right, |a, b| a.ends_with(b))),
+        BinaryOperator::Contains => Ok(string_predicate(&left, &right, |a, b| a.contains(b))),
+    }
+}
+
+/// Neo4j string predicates (STARTS WITH / ENDS WITH / CONTAINS): both operands
+/// must be strings; null or non-string → null (falsy in WHERE).
+fn string_predicate(left: &Value, right: &Value, f: fn(&str, &str) -> bool) -> Value {
+    match (left, right) {
+        (Value::String(a), Value::String(b)) => Value::Bool(f(a, b)),
+        _ => Value::Null,
     }
 }
 
@@ -3512,6 +3524,26 @@ mod tests {
             .unwrap();
         assert_eq!(owns.len(), 1, "exactly one OWNS edge");
         assert_eq!(owns[0].fields.get("sid"), Some(&s("shop1")));
+    }
+
+    #[test]
+    fn test_string_operators() {
+        // zega#23/#8 follow-ups: STARTS WITH / ENDS WITH / CONTAINS and <> .
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        for nm in ["alpha", "alphabet", "beta"] {
+            zega.query(
+                "CREATE (n:W {name: $n})",
+                HashMap::from([("n".to_string(), Value::String(nm.to_string()))]),
+            )
+            .unwrap();
+        }
+        let cnt = |q: &str| zega.query(q, HashMap::new()).unwrap().len();
+        assert_eq!(cnt("MATCH (n:W) WHERE n.name STARTS WITH \"alpha\" RETURN n"), 2);
+        assert_eq!(cnt("MATCH (n:W) WHERE n.name ENDS WITH \"bet\" RETURN n"), 1);
+        assert_eq!(cnt("MATCH (n:W) WHERE n.name CONTAINS \"ph\" RETURN n"), 2);
+        assert_eq!(cnt("MATCH (n:W) WHERE n.name <> \"beta\" RETURN n"), 2);
+        assert_eq!(cnt("MATCH (n:W) WHERE n.name = \"beta\" RETURN n"), 1);
     }
 
     #[test]

@@ -58,6 +58,9 @@ pub enum BinaryOperator {
     Add,
     Sub,
     Mul,
+    StartsWith,
+    EndsWith,
+    Contains,
 }
 
 #[derive(Clone, Debug, PartialEq)]
