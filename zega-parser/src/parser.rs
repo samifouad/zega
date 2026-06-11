@@ -667,6 +667,29 @@ impl<'a> Parser<'a> {
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_add()?;
+        // `expr IS NULL` / `expr IS NOT NULL` (IS / NOT / NULL lex as identifiers)
+        if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("IS")) {
+            self.advance()?;
+            let negated =
+                matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("NOT"));
+            if negated {
+                self.advance()?;
+            }
+            match &self.current {
+                Token::Null => self.advance()?,
+                Token::Identifier(id) if id.eq_ignore_ascii_case("NULL") => self.advance()?,
+                other => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "NULL after IS".to_string(),
+                        got: other.clone(),
+                    })
+                }
+            }
+            return Ok(Expr::IsNull {
+                operand: Box::new(left),
+                negated,
+            });
+        }
         loop {
             match &self.current {
                 Token::Gt => {
@@ -696,8 +719,29 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_add(&mut self) -> Result<Expr, ParseError> {
-        let left = self.parse_primary()?;
-        // MVP: no arithmetic needed beyond what's in primary
+        let mut left = self.parse_mul()?;
+        loop {
+            let op = match &self.current {
+                Token::Plus => BinaryOperator::Add,
+                Token::Dash => BinaryOperator::Sub,
+                _ => break,
+            };
+            self.advance()?;
+            let right = self.parse_mul()?;
+            left = Expr::BinaryOp(Box::new(left), op, Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_mul(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_primary()?;
+        // `*` only means multiply here; count(*) and rel-length [*..] are
+        // consumed in their own parsers before reaching expression position.
+        while self.current == Token::Star {
+            self.advance()?;
+            let right = self.parse_primary()?;
+            left = Expr::BinaryOp(Box::new(left), BinaryOperator::Mul, Box::new(right));
+        }
         Ok(left)
     }
 

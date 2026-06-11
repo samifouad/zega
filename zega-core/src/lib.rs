@@ -1658,6 +1658,7 @@ fn references_variable(expr: &Expr, variable: &str) -> bool {
         Expr::FunctionCall { args, .. } => {
             args.iter().any(|arg| references_variable(arg, variable))
         }
+        Expr::IsNull { operand, .. } => references_variable(operand, variable),
         Expr::Parameter(_) | Expr::Literal(_) => false,
     }
 }
@@ -1673,6 +1674,7 @@ fn can_eval_from_binding(expr: &Expr, binding: &Bindings) -> bool {
         Expr::FunctionCall { args, .. } => {
             args.iter().all(|arg| can_eval_from_binding(arg, binding))
         }
+        Expr::IsNull { operand, .. } => can_eval_from_binding(operand, binding),
         Expr::Parameter(_) | Expr::Literal(_) => true,
     }
 }
@@ -1746,6 +1748,10 @@ fn eval_expr(
                 argv.push(eval_expr(a, params, bindings, graph)?);
             }
             eval_scalar_function(name, argv)
+        }
+        Expr::IsNull { operand, negated } => {
+            let is_null = matches!(eval_expr(operand, params, bindings, graph)?, Value::Null);
+            Ok(Value::Bool(if *negated { !is_null } else { is_null }))
         }
         Expr::Aggregate { .. } => Err(ZegaError::Execution(
             "aggregate expression evaluated outside RETURN aggregation".to_string(),
@@ -1839,6 +1845,12 @@ fn eval_scalar_function(name: &str, args: Vec<Value>) -> Result<Value> {
         },
         // exists(expr) -> the expr resolved to a non-null value
         "exists" => Value::Bool(!matches!(arg(0), Value::Null)),
+        // labels(node) -> the node's label list (node evaluates to a Map with a
+        // "labels" key, injected by the identifier→node projection)
+        "labels" => match arg(0) {
+            Value::Map(m) => m.get("labels").cloned().unwrap_or(Value::List(Vec::new())),
+            _ => Value::Null,
+        },
         // Temporal: wall-clock now. This is the injectable-clock seam for the
         // deferred DST/determinism work — today it matches Neo4j's own
         // non-deterministic datetime()/timestamp().
@@ -1929,6 +1941,62 @@ fn eval_binary_op(left: Value, op: BinaryOperator, right: Value) -> Result<Value
         BinaryOperator::Or => Ok(Value::Bool(
             left.as_bool().unwrap_or(false) || right.as_bool().unwrap_or(false),
         )),
+        BinaryOperator::Add => Ok(eval_add(left, right)),
+        BinaryOperator::Sub => Ok(eval_numeric(left, right, |a, b| a - b)),
+        BinaryOperator::Mul => Ok(eval_numeric(left, right, |a, b| a * b)),
+    }
+}
+
+/// Coerce a value to f64 for arithmetic (Int or Float); None otherwise.
+fn as_number(v: &Value) -> Option<f64> {
+    match v {
+        Value::Int(i) => Some(*i as f64),
+        Value::Float(_) => v.to_f64(),
+        _ => None,
+    }
+}
+
+/// Neo4j `+`: null-propagating; Int+Int stays Int; numeric mix → Float; string
+/// concatenation (with the other side stringified); List+List concatenation.
+fn eval_add(left: Value, right: Value) -> Value {
+    match (&left, &right) {
+        (Value::Null, _) | (_, Value::Null) => Value::Null,
+        (Value::Int(a), Value::Int(b)) => Value::Int(a.wrapping_add(*b)),
+        (Value::String(a), _) => Value::String(format!("{a}{}", concat_str(&right))),
+        (_, Value::String(b)) => Value::String(format!("{}{b}", concat_str(&left))),
+        (Value::List(a), Value::List(b)) => {
+            let mut v = a.clone();
+            v.extend(b.clone());
+            Value::List(v)
+        }
+        _ => match (as_number(&left), as_number(&right)) {
+            (Some(a), Some(b)) => Value::from_f64(a + b),
+            _ => Value::Null,
+        },
+    }
+}
+
+/// Numeric `-`/`*`: null-propagating; Int op Int stays Int; otherwise Float.
+fn eval_numeric(left: Value, right: Value, f: fn(f64, f64) -> f64) -> Value {
+    match (&left, &right) {
+        (Value::Null, _) | (_, Value::Null) => Value::Null,
+        (Value::Int(a), Value::Int(b)) => Value::Int(f(*a as f64, *b as f64) as i64),
+        _ => match (as_number(&left), as_number(&right)) {
+            (Some(a), Some(b)) => Value::from_f64(f(a, b)),
+            _ => Value::Null,
+        },
+    }
+}
+
+/// How a non-string operand renders when concatenated to a string with `+`.
+fn concat_str(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(_) => v.to_f64().map(|f| format!("{f}")).unwrap_or_default(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -2016,6 +2084,13 @@ fn eval_order_expr(
                 argv.push(eval_order_expr(a, params, bindings, row, graph, return_clause)?);
             }
             eval_scalar_function(name, argv)
+        }
+        Expr::IsNull { operand, negated } => {
+            let is_null = matches!(
+                eval_order_expr(operand, params, bindings, row, graph, return_clause)?,
+                Value::Null
+            );
+            Ok(Value::Bool(if *negated { !is_null } else { is_null }))
         }
         Expr::Aggregate { .. } => Ok(Value::Null),
     }
@@ -2847,6 +2922,58 @@ mod tests {
             .query("MATCH (u:User) RETURN count(u) AS c", HashMap::new())
             .unwrap();
         assert_eq!(users[0].fields.get("c"), Some(&Value::Int(1)), "user survives");
+    }
+
+    #[test]
+    fn test_arithmetic_isnull_labels() {
+        // zega#23 follow-ups: arithmetic operators, IS NULL / IS NOT NULL, labels().
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (n:User:Agent {n: $n, s: $s})",
+            HashMap::from([
+                ("n".to_string(), Value::Int(10)),
+                ("s".to_string(), Value::String("hi".to_string())),
+            ]),
+        )
+        .unwrap();
+        let arith: [(&str, Value); 4] = [
+            ("MATCH (x:User) RETURN x.n + 5 AS v", Value::Int(15)),
+            ("MATCH (x:User) RETURN x.n - 3 AS v", Value::Int(7)),
+            ("MATCH (x:User) RETURN x.n * 2 AS v", Value::Int(20)),
+            ("MATCH (x:User) RETURN x.s + \"!\" AS v", Value::String("hi!".to_string())),
+        ];
+        for (q, want) in arith {
+            let rows = zega.query(q, HashMap::new()).unwrap();
+            assert_eq!(rows[0].fields.values().next(), Some(&want), "`{q}`");
+        }
+        // IS NULL / IS NOT NULL
+        let r = zega
+            .query("MATCH (x:User) WHERE x.missing IS NULL RETURN x.n AS v", HashMap::new())
+            .unwrap();
+        assert_eq!(r.len(), 1, "missing prop IS NULL matches");
+        let r = zega
+            .query("MATCH (x:User) WHERE x.n IS NOT NULL RETURN x.n AS v", HashMap::new())
+            .unwrap();
+        assert_eq!(r.len(), 1, "present prop IS NOT NULL matches");
+        let r = zega
+            .query("MATCH (x:User) WHERE x.n IS NULL RETURN x.n AS v", HashMap::new())
+            .unwrap();
+        assert_eq!(r.len(), 0, "present prop IS NULL excludes");
+        // labels()
+        let r = zega
+            .query("MATCH (x:User) RETURN labels(x) AS v", HashMap::new())
+            .unwrap();
+        match r[0].fields.values().next().unwrap() {
+            Value::List(l) => assert_eq!(l.len(), 2, "User:Agent → 2 labels"),
+            o => panic!("expected list, got {o:?}"),
+        }
+        // SET x = null reads back as null (IS NULL true)
+        zega.query("MATCH (x:User) SET x.s = null", HashMap::new()).unwrap();
+        let r = zega
+            .query("MATCH (x:User) WHERE x.s IS NULL RETURN x.n AS v", HashMap::new())
+            .unwrap();
+        assert_eq!(r.len(), 1, "after SET=null, IS NULL matches");
     }
 
     #[test]

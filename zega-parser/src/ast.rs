@@ -17,6 +17,11 @@ pub enum Expr {
         name: String, // lowercased scalar function name (toString, coalesce, datetime, ...)
         args: Vec<Expr>,
     },
+    /// `expr IS NULL` / `expr IS NOT NULL`.
+    IsNull {
+        operand: Box<Expr>,
+        negated: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -39,6 +44,9 @@ pub enum BinaryOperator {
     Lte,
     And,
     Or,
+    Add,
+    Sub,
+    Mul,
 }
 
 #[derive(Clone, Debug, PartialEq)]

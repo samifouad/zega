@@ -2724,11 +2724,11 @@ fn parse_return_as_with_no_following_identifier_is_none() {
 // =====================================================================
 
 #[test]
-fn parse_plus_after_return_item_is_error_not_arithmetic() {
-    // `RETURN 1 + 2`: `1` is the sole return item; `+` is not AS/Comma so the
-    // return clause ends, MATCH ends, and `+` starts no statement -> Err.
-    // (Documents that arithmetic `+` is NOT supported, per parse_add MVP note.)
-    assert!(try_parse("MATCH (n) RETURN 1 + 2").is_err());
+fn parse_arithmetic_in_return_item() {
+    // Arithmetic `+`/`-`/`*` is now supported in expressions (zega#23 follow-up).
+    // `RETURN 1 + 2` parses as a single arithmetic return item.
+    assert!(try_parse("MATCH (n) RETURN 1 + 2").is_ok());
+    assert!(try_parse("MATCH (n) RETURN n.x * 2 - 1 AS v").is_ok());
 }
 
 // =====================================================================
