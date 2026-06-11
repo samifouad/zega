@@ -76,6 +76,10 @@ impl Bindings {
         self.get(variable).is_some()
     }
 
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     fn insert(&mut self, variable: String, value: BoundValue) {
         self.insert_shared(Rc::from(variable), value);
     }
@@ -359,12 +363,14 @@ impl Zega {
         match stmt {
             Statement::Match {
                 pattern,
+                optional_patterns,
                 where_clause,
                 return_clause,
                 order_by,
                 limit,
             } => self.exec_match(
                 pattern,
+                optional_patterns,
                 where_clause.as_ref(),
                 return_clause,
                 order_by.as_ref(),
@@ -434,9 +440,11 @@ impl Zega {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn exec_match(
         &self,
         pattern: &[PatternElement],
+        optional_patterns: &[Vec<PatternElement>],
         where_clause: Option<&Expr>,
         return_clause: &ReturnClause,
         order_by: Option<&Vec<(Expr, OrderDirection)>>,
@@ -448,8 +456,42 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let bindings =
-            resolve_match_bindings(&graph, pattern, where_clause, params, traversal_budget)?;
+        let bindings = if optional_patterns.is_empty() {
+            resolve_match_bindings(&graph, pattern, where_clause, params, traversal_budget)?
+        } else {
+            // Resolve the required pattern first WITHOUT the WHERE (it may
+            // reference optional vars), left-outer-extend each OPTIONAL MATCH
+            // segment, then apply the WHERE to the assembled rows.
+            let mut bindings = resolve_match_bindings(&graph, pattern, None, params, traversal_budget)?;
+            for optional in optional_patterns {
+                let mut extended_all = Vec::with_capacity(bindings.len());
+                for binding in bindings {
+                    let extended = resolve_match_bindings_seeded(
+                        &graph,
+                        optional,
+                        None,
+                        params,
+                        traversal_budget,
+                        &binding,
+                    )?;
+                    if extended.is_empty() {
+                        extended_all.push(binding); // left-outer: keep row, optional vars → null
+                    } else {
+                        extended_all.extend(extended);
+                    }
+                }
+                bindings = extended_all;
+            }
+            if let Some(predicate) = where_clause {
+                bindings.retain(|binding| {
+                    matches!(
+                        eval_expr(predicate, params, binding, &graph),
+                        Ok(Value::Bool(true))
+                    )
+                });
+            }
+            bindings
+        };
 
         project_bound_rows(
             &graph,
@@ -909,7 +951,30 @@ fn resolve_match_bindings(
     params: &HashMap<String, Value>,
     traversal_budget: &mut TraversalWorkBudget,
 ) -> Result<Vec<Bindings>> {
-    if let [start_element, end_element] = pattern {
+    resolve_match_bindings_seeded(
+        graph,
+        pattern,
+        where_clause,
+        params,
+        traversal_budget,
+        &Bindings::new(),
+    )
+}
+
+/// Like `resolve_match_bindings` but starts from an existing binding. OPTIONAL
+/// MATCH uses this to extend each prior row's binding (left-outer join); the
+/// seed's bound variables constrain the traversal. The anonymous-single-hop
+/// fast path is skipped when seeded (it would ignore the seed's constraints).
+fn resolve_match_bindings_seeded(
+    graph: &Graph,
+    pattern: &[PatternElement],
+    where_clause: Option<&Expr>,
+    params: &HashMap<String, Value>,
+    traversal_budget: &mut TraversalWorkBudget,
+    initial: &Bindings,
+) -> Result<Vec<Bindings>> {
+    if initial.is_empty() {
+        if let [start_element, end_element] = pattern {
         if where_clause.is_none()
             && start_element.relationship.is_none()
             && end_element
@@ -931,10 +996,11 @@ fn resolve_match_bindings(
                 traversal_budget,
             );
         }
+        }
     }
 
     let mut bindings = vec![(
-        Bindings::new(),
+        initial.clone(),
         SmallVec::<[RelId; 4]>::new(),
         None::<NodeId>,
     )];
@@ -2974,6 +3040,72 @@ mod tests {
             .query("MATCH (x:User) WHERE x.s IS NULL RETURN x.n AS v", HashMap::new())
             .unwrap();
         assert_eq!(r.len(), 1, "after SET=null, IS NULL matches");
+    }
+
+    #[test]
+    fn test_optional_match() {
+        // zega#23 follow-up: OPTIONAL MATCH (left-outer join). Two shops, one
+        // with a product, one without — both rows must survive.
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        for id in ["s1", "s2"] {
+            zega.query(
+                "CREATE (s:Shop {id: $i})",
+                HashMap::from([("i".to_string(), Value::String(id.to_string()))]),
+            )
+            .unwrap();
+        }
+        zega.query(
+            "CREATE (p:Product {name: $n})",
+            HashMap::from([("n".to_string(), Value::String("widget".to_string()))]),
+        )
+        .unwrap();
+        zega.query(
+            "MATCH (s:Shop {id: $s}), (p:Product {name: $p}) CREATE (s)-[:HAS]->(p)",
+            HashMap::from([
+                ("s".to_string(), Value::String("s1".to_string())),
+                ("p".to_string(), Value::String("widget".to_string())),
+            ]),
+        )
+        .unwrap();
+        // both shops returned; s1 with product, s2 with null
+        let rows = zega
+            .query(
+                "MATCH (s:Shop) OPTIONAL MATCH (s)-[:HAS]->(p:Product) RETURN s.id AS sid, p.name AS pname",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2, "left-outer: both shops preserved");
+        let mut by_shop = std::collections::HashMap::new();
+        for r in &rows {
+            by_shop.insert(
+                r.fields.get("sid").cloned(),
+                r.fields.get("pname").cloned(),
+            );
+        }
+        assert_eq!(
+            by_shop.get(&Some(Value::String("s1".to_string()))),
+            Some(&Some(Value::String("widget".to_string()))),
+            "s1 has the product"
+        );
+        assert_eq!(
+            by_shop.get(&Some(Value::String("s2".to_string()))),
+            Some(&Some(Value::Null)),
+            "s2 (no product) → null"
+        );
+        // aggregation over the optional: count(p) is 1 for s1, 0 for s2
+        let rows = zega
+            .query(
+                "MATCH (s:Shop) OPTIONAL MATCH (s)-[:HAS]->(p) RETURN s.id AS sid, count(p) AS pc",
+                HashMap::new(),
+            )
+            .unwrap();
+        let mut counts = std::collections::HashMap::new();
+        for r in &rows {
+            counts.insert(r.fields.get("sid").cloned(), r.fields.get("pc").cloned());
+        }
+        assert_eq!(counts.get(&Some(Value::String("s1".to_string()))), Some(&Some(Value::Int(1))));
+        assert_eq!(counts.get(&Some(Value::String("s2".to_string()))), Some(&Some(Value::Int(0))));
     }
 
     #[test]

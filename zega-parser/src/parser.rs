@@ -88,6 +88,13 @@ impl<'a> Parser<'a> {
             self.advance()?;
             pattern.extend(self.parse_comma_patterns()?);
         }
+        // OPTIONAL MATCH segments (left-outer). OPTIONAL lexes as an identifier.
+        let mut optional_patterns = Vec::new();
+        while matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("OPTIONAL")) {
+            self.advance()?; // OPTIONAL
+            self.expect(Token::Match)?;
+            optional_patterns.push(self.parse_comma_patterns()?);
+        }
         let where_clause = if self.current == Token::Where {
             self.advance()?;
             Some(self.parse_expression()?)
@@ -162,6 +169,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Statement::Match {
             pattern,
+            optional_patterns,
             where_clause,
             return_clause,
             order_by,

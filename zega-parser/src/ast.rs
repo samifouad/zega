@@ -53,6 +53,10 @@ pub enum BinaryOperator {
 pub enum Statement {
     Match {
         pattern: Vec<PatternElement>,
+        /// Each `OPTIONAL MATCH` segment, in order. Left-outer-joined onto the
+        /// required `pattern`: a segment that does not match leaves its
+        /// variables unbound (→ null) rather than dropping the row.
+        optional_patterns: Vec<Vec<PatternElement>>,
         where_clause: Option<Expr>,
         return_clause: ReturnClause,
         order_by: Option<Vec<(Expr, OrderDirection)>>,

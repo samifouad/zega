@@ -10,6 +10,9 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq)]
+// Statement is an AST node carried by value through the planner; the size
+// difference vs the unit variant is expected and not worth a Box indirection.
+#[allow(clippy::large_enum_variant)]
 pub enum Plan {
     Execute(Statement),
     FilteredKvGet,
@@ -37,11 +40,37 @@ impl<'a> Planner<'a> {
         match stmt {
             Statement::Match {
                 pattern,
+                optional_patterns,
                 where_clause,
                 return_clause,
                 order_by,
                 limit,
-            } => self.plan_match(pattern, where_clause, return_clause, order_by, limit, ctx),
+            } => {
+                let planned = self.plan_match(pattern, where_clause, return_clause, order_by, limit, ctx)?;
+                // Re-attach OPTIONAL MATCH segments (plan_match only plans the
+                // required pattern's policy filtering).
+                if optional_patterns.is_empty() {
+                    return Ok(planned);
+                }
+                match planned {
+                    Plan::Execute(Statement::Match {
+                        pattern,
+                        where_clause,
+                        return_clause,
+                        order_by,
+                        limit,
+                        ..
+                    }) => Ok(Plan::Execute(Statement::Match {
+                        pattern,
+                        optional_patterns: optional_patterns.clone(),
+                        where_clause,
+                        return_clause,
+                        order_by,
+                        limit,
+                    })),
+                    other => Ok(other),
+                }
+            }
             Statement::MatchCreate {
                 match_pattern,
                 where_clause,
@@ -130,6 +159,7 @@ impl<'a> Planner<'a> {
 
         Ok(Plan::Execute(Statement::Match {
             pattern: pattern.to_vec(),
+            optional_patterns: Vec::new(),
             where_clause: merged_where,
             return_clause: return_clause.clone(),
             order_by: order_by.clone(),
