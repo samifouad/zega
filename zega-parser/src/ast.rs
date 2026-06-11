@@ -22,6 +22,14 @@ pub enum Expr {
         operand: Box<Expr>,
         negated: bool,
     },
+    /// `CASE [subject] WHEN cond THEN result ... [ELSE result] END`.
+    /// With `subject`, each `cond` is compared for equality to it; without,
+    /// each `cond` is evaluated as a boolean predicate.
+    Case {
+        subject: Option<Box<Expr>>,
+        branches: Vec<(Expr, Expr)>,
+        default: Option<Box<Expr>>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

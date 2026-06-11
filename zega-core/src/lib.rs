@@ -1761,6 +1761,21 @@ fn references_variable(expr: &Expr, variable: &str) -> bool {
             args.iter().any(|arg| references_variable(arg, variable))
         }
         Expr::IsNull { operand, .. } => references_variable(operand, variable),
+        Expr::Case {
+            subject,
+            branches,
+            default,
+        } => {
+            subject
+                .as_deref()
+                .is_some_and(|e| references_variable(e, variable))
+                || branches.iter().any(|(condition, result)| {
+                    references_variable(condition, variable) || references_variable(result, variable)
+                })
+                || default
+                    .as_deref()
+                    .is_some_and(|e| references_variable(e, variable))
+        }
         Expr::Parameter(_) | Expr::Literal(_) => false,
     }
 }
@@ -1777,6 +1792,22 @@ fn can_eval_from_binding(expr: &Expr, binding: &Bindings) -> bool {
             args.iter().all(|arg| can_eval_from_binding(arg, binding))
         }
         Expr::IsNull { operand, .. } => can_eval_from_binding(operand, binding),
+        Expr::Case {
+            subject,
+            branches,
+            default,
+        } => {
+            subject
+                .as_deref()
+                .is_none_or(|e| can_eval_from_binding(e, binding))
+                && branches.iter().all(|(condition, result)| {
+                    can_eval_from_binding(condition, binding)
+                        && can_eval_from_binding(result, binding)
+                })
+                && default
+                    .as_deref()
+                    .is_none_or(|e| can_eval_from_binding(e, binding))
+        }
         Expr::Parameter(_) | Expr::Literal(_) => true,
     }
 }
@@ -1855,6 +1886,31 @@ fn eval_expr(
         Expr::IsNull { operand, negated } => {
             let is_null = matches!(eval_expr(operand, params, bindings, graph)?, Value::Null);
             Ok(Value::Bool(if *negated { !is_null } else { is_null }))
+        }
+        Expr::Case {
+            subject,
+            branches,
+            default,
+        } => {
+            let subject_value = match subject {
+                Some(expr) => Some(eval_expr(expr, params, bindings, graph)?),
+                None => None,
+            };
+            for (condition, result) in branches {
+                let matched = match &subject_value {
+                    Some(value) => eval_expr(condition, params, bindings, graph)? == *value,
+                    None => {
+                        matches!(eval_expr(condition, params, bindings, graph)?, Value::Bool(true))
+                    }
+                };
+                if matched {
+                    return eval_expr(result, params, bindings, graph);
+                }
+            }
+            match default {
+                Some(expr) => eval_expr(expr, params, bindings, graph),
+                None => Ok(Value::Null),
+            }
         }
         Expr::Aggregate { .. } => Err(ZegaError::Execution(
             "aggregate expression evaluated outside RETURN aggregation".to_string(),
@@ -2196,6 +2252,33 @@ fn eval_order_expr(
                 Value::Null
             );
             Ok(Value::Bool(if *negated { !is_null } else { is_null }))
+        }
+        Expr::Case {
+            subject,
+            branches,
+            default,
+        } => {
+            let subject_value = match subject {
+                Some(expr) => {
+                    Some(eval_order_expr(expr, params, bindings, row, graph, return_clause)?)
+                }
+                None => None,
+            };
+            for (condition, result) in branches {
+                let cond_value =
+                    eval_order_expr(condition, params, bindings, row, graph, return_clause)?;
+                let matched = match &subject_value {
+                    Some(value) => cond_value == *value,
+                    None => matches!(cond_value, Value::Bool(true)),
+                };
+                if matched {
+                    return eval_order_expr(result, params, bindings, row, graph, return_clause);
+                }
+            }
+            match default {
+                Some(expr) => eval_order_expr(expr, params, bindings, row, graph, return_clause),
+                None => Ok(Value::Null),
+            }
         }
         Expr::Aggregate { .. } => Ok(Value::Null),
     }
@@ -3203,6 +3286,41 @@ mod tests {
         ).unwrap();
         assert_eq!(rows.len(), 1, "only the release with artifacts survives c>0");
         assert_eq!(rows[0].fields.get("v"), Some(&s("1.0")));
+    }
+
+    #[test]
+    fn test_case_expression() {
+        // zega#23 follow-up: CASE (generic + simple forms).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (n:Item {qty: $q})",
+            HashMap::from([("q".to_string(), Value::Int(5))]),
+        )
+        .unwrap();
+        let one = |zega: &Zega, q: &str| {
+            zega.query(q, HashMap::new()).unwrap()[0]
+                .fields
+                .values()
+                .next()
+                .cloned()
+                .unwrap()
+        };
+        // generic CASE
+        assert_eq!(
+            one(&zega, "MATCH (n:Item) RETURN CASE WHEN n.qty > 10 THEN \"high\" WHEN n.qty > 0 THEN \"low\" ELSE \"none\" END AS v"),
+            Value::String("low".to_string())
+        );
+        // simple CASE (subject)
+        assert_eq!(
+            one(&zega, "MATCH (n:Item) RETURN CASE n.qty WHEN 5 THEN \"five\" ELSE \"other\" END AS v"),
+            Value::String("five".to_string())
+        );
+        // no ELSE, no branch matches → null
+        assert_eq!(
+            one(&zega, "MATCH (n:Item) RETURN CASE WHEN n.qty > 100 THEN \"big\" END AS v"),
+            Value::Null
+        );
     }
 
     #[test]

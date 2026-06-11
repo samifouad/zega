@@ -886,6 +886,7 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 Ok(Expr::Literal(Value::Null))
             }
+            Token::Identifier(id) if id.eq_ignore_ascii_case("CASE") => self.parse_case(),
             Token::Identifier(id) => {
                 let name = id.clone();
                 self.advance()?;
@@ -969,6 +970,53 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::RParen)?;
         Ok(Expr::FunctionCall { name: lname, args })
+    }
+
+    fn parse_case(&mut self) -> Result<Expr, ParseError> {
+        self.advance()?; // CASE
+        // Optional subject: present unless the next token is WHEN.
+        let subject =
+            if matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("WHEN")) {
+                None
+            } else {
+                Some(Box::new(self.parse_expression()?))
+            };
+        let mut branches = Vec::new();
+        while matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("WHEN")) {
+            self.advance()?; // WHEN
+            let cond = self.parse_expression()?;
+            match &self.current {
+                Token::Identifier(s) if s.eq_ignore_ascii_case("THEN") => self.advance()?,
+                other => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "THEN".to_string(),
+                        got: other.clone(),
+                    })
+                }
+            }
+            branches.push((cond, self.parse_expression()?));
+        }
+        let default =
+            if matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("ELSE")) {
+                self.advance()?;
+                Some(Box::new(self.parse_expression()?))
+            } else {
+                None
+            };
+        match &self.current {
+            Token::Identifier(s) if s.eq_ignore_ascii_case("END") => self.advance()?,
+            other => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "END".to_string(),
+                    got: other.clone(),
+                })
+            }
+        }
+        Ok(Expr::Case {
+            subject,
+            branches,
+            default,
+        })
     }
 }
 
