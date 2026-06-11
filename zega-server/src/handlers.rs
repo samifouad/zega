@@ -99,6 +99,8 @@ pub struct KvRequest {
     #[serde(default)]
     value: JsonValueField,
     ttl: Option<u64>,
+    #[serde(default)]
+    nx: bool,
     start: Option<usize>,
     stop: Option<usize>,
 }
@@ -147,13 +149,16 @@ fn execute_kv(zega: &zega_core::Zega, request: KvRequest) -> Result<JsonValue, S
             .kv_get(&request.key)
             .map_or(JsonValue::Null, value_to_raw),
         "set" => {
-            zega.kv_set(
-                request.key,
-                raw_to_value(required(request.value.0, "value")?)?,
-                request.ttl,
-            )
-            .map_err(|error| error.to_string())?;
-            json!(true)
+            let value = raw_to_value(required(request.value.0, "value")?)?;
+            // NX: set only if absent (atomic — held under the write lock).
+            // Returns false when the key already exists (node-redis NX semantics).
+            if request.nx && zega.kv_exists(&request.key) {
+                json!(false)
+            } else {
+                zega.kv_set(request.key, value, request.ttl)
+                    .map_err(|error| error.to_string())?;
+                json!(true)
+            }
         }
         "del" => json!(zega
             .kv_del(&request.key)

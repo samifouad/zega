@@ -30,6 +30,9 @@ pub enum Expr {
         branches: Vec<(Expr, Expr)>,
         default: Option<Box<Expr>>,
     },
+    /// A map literal `{ key: expr, ... }` in expression position (e.g. the
+    /// argument to `duration({hours: 1})`).
+    MapLiteral(HashMap<String, Expr>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

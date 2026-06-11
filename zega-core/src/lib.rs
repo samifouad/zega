@@ -1776,6 +1776,9 @@ fn references_variable(expr: &Expr, variable: &str) -> bool {
                     .as_deref()
                     .is_some_and(|e| references_variable(e, variable))
         }
+        Expr::MapLiteral(entries) => {
+            entries.values().any(|e| references_variable(e, variable))
+        }
         Expr::Parameter(_) | Expr::Literal(_) => false,
     }
 }
@@ -1807,6 +1810,9 @@ fn can_eval_from_binding(expr: &Expr, binding: &Bindings) -> bool {
                 && default
                     .as_deref()
                     .is_none_or(|e| can_eval_from_binding(e, binding))
+        }
+        Expr::MapLiteral(entries) => {
+            entries.values().all(|e| can_eval_from_binding(e, binding))
         }
         Expr::Parameter(_) | Expr::Literal(_) => true,
     }
@@ -1912,6 +1918,13 @@ fn eval_expr(
                 None => Ok(Value::Null),
             }
         }
+        Expr::MapLiteral(entries) => {
+            let mut map = HashMap::new();
+            for (key, expr) in entries {
+                map.insert(key.clone(), eval_expr(expr, params, bindings, graph)?);
+            }
+            Ok(Value::Map(map))
+        }
         Expr::Aggregate { .. } => Err(ZegaError::Execution(
             "aggregate expression evaluated outside RETURN aggregation".to_string(),
         )),
@@ -2015,6 +2028,30 @@ fn eval_scalar_function(name: &str, args: Vec<Value>) -> Result<Value> {
         // non-deterministic datetime()/timestamp().
         "datetime" => Value::String(now_iso8601()),
         "timestamp" => Value::Int(now_millis()),
+        // duration({weeks, days, hours, minutes, seconds, milliseconds}) -> ms.
+        // Added to a datetime via `+` (see eval_add).
+        "duration" => match arg(0) {
+            Value::Map(m) => {
+                let field = |k: &str| {
+                    m.get(k)
+                        .map(|v| match v {
+                            Value::Int(i) => *i,
+                            Value::Float(_) => v.to_f64().map(|f| f as i64).unwrap_or(0),
+                            _ => 0,
+                        })
+                        .unwrap_or(0)
+                };
+                Value::Int(
+                    field("weeks") * 604_800_000
+                        + field("days") * 86_400_000
+                        + field("hours") * 3_600_000
+                        + field("minutes") * 60_000
+                        + field("seconds") * 1_000
+                        + field("milliseconds"),
+                )
+            }
+            _ => Value::Null,
+        },
         other => {
             return Err(ZegaError::Execution(format!("unsupported function: {other}")));
         }
@@ -2048,15 +2085,15 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Format the current UTC instant as ISO-8601 (`YYYY-MM-DDTHH:MM:SS.mmmZ`)
-/// without a date dependency, via the civil-from-days algorithm.
 fn now_iso8601() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let total_secs = dur.as_secs() as i64;
-    let millis = dur.subsec_millis();
+    iso8601_from_millis(now_millis())
+}
+
+/// Format a UTC instant (epoch milliseconds) as ISO-8601
+/// (`YYYY-MM-DDTHH:MM:SS.mmmZ`), dependency-free via civil-from-days.
+fn iso8601_from_millis(total_millis: i64) -> String {
+    let total_secs = total_millis.div_euclid(1000);
+    let millis = total_millis.rem_euclid(1000);
     let days = total_secs.div_euclid(86_400);
     let sod = total_secs.rem_euclid(86_400);
     let (hour, minute, second) = (sod / 3600, (sod % 3600) / 60, sod % 60);
@@ -2072,6 +2109,41 @@ fn now_iso8601() -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if month <= 2 { y + 1 } else { y };
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+/// Days since 1970-01-01 for a civil date (Howard Hinnant) — inverse of the
+/// civil-from-days used in formatting.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Parse an ISO-8601 datetime (`YYYY-MM-DDTHH:MM:SS[.fff...][Z|±hh:mm]`) to
+/// epoch milliseconds (UTC). Lenient: accepts the migration's nanosecond
+/// `+00:00` form and the `Z` form; the offset is treated as UTC. None if it
+/// does not look like a datetime.
+fn parse_iso8601(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if s.len() < 19 || b[4] != b'-' || b[7] != b'-' || (b[10] != b'T' && b[10] != b' ') {
+        return None;
+    }
+    let num = |a: usize, z: usize| s.get(a..z).and_then(|p| p.parse::<i64>().ok());
+    let (year, month, day) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (hour, minute, second) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    let mut frac_ms = 0i64;
+    if b.len() > 19 && b[19] == b'.' {
+        let frac: String = s[20..].chars().take_while(|c| c.is_ascii_digit()).take(3).collect();
+        if !frac.is_empty() {
+            frac_ms = format!("{frac:0<3}").parse::<i64>().unwrap_or(0);
+        }
+    }
+    let days = days_from_civil(year, month, day);
+    Some((days * 86_400 + hour * 3600 + minute * 60 + second) * 1000 + frac_ms)
 }
 
 fn eval_binary_op(left: Value, op: BinaryOperator, right: Value) -> Result<Value> {
@@ -2121,6 +2193,12 @@ fn eval_add(left: Value, right: Value) -> Value {
     match (&left, &right) {
         (Value::Null, _) | (_, Value::Null) => Value::Null,
         (Value::Int(a), Value::Int(b)) => Value::Int(a.wrapping_add(*b)),
+        // datetime (ISO string) + duration (ms), either order -> shifted ISO datetime
+        (Value::String(s), Value::Int(ms)) | (Value::Int(ms), Value::String(s))
+            if parse_iso8601(s).is_some() =>
+        {
+            Value::String(iso8601_from_millis(parse_iso8601(s).unwrap() + ms))
+        }
         (Value::String(a), _) => Value::String(format!("{a}{}", concat_str(&right))),
         (_, Value::String(b)) => Value::String(format!("{}{b}", concat_str(&left))),
         (Value::List(a), Value::List(b)) => {
@@ -2279,6 +2357,16 @@ fn eval_order_expr(
                 Some(expr) => eval_order_expr(expr, params, bindings, row, graph, return_clause),
                 None => Ok(Value::Null),
             }
+        }
+        Expr::MapLiteral(entries) => {
+            let mut map = HashMap::new();
+            for (key, expr) in entries {
+                map.insert(
+                    key.clone(),
+                    eval_order_expr(expr, params, bindings, row, graph, return_clause)?,
+                );
+            }
+            Ok(Value::Map(map))
         }
         Expr::Aggregate { .. } => Ok(Value::Null),
     }
@@ -3321,6 +3409,44 @@ mod tests {
             one(&zega, "MATCH (n:Item) RETURN CASE WHEN n.qty > 100 THEN \"big\" END AS v"),
             Value::Null
         );
+    }
+
+    #[test]
+    fn test_duration_datetime_arithmetic() {
+        // zega#23 follow-up: duration() + datetime arithmetic (password-reset flow).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (u:User {email: $e})",
+            HashMap::from([("e".to_string(), Value::String("a@b.c".to_string()))]),
+        )
+        .unwrap();
+        // the app's exact pattern: SET resetExpiry = now + 1 hour
+        zega.query(
+            "MATCH (u:User {email: $e}) SET u.resetExpiry = datetime() + duration({hours: 1})",
+            HashMap::from([("e".to_string(), Value::String("a@b.c".to_string()))]),
+        )
+        .unwrap();
+        // expiry is in the future (string ISO comparison is chronological)
+        let r = zega
+            .query(
+                "MATCH (u:User {email: $e}) WHERE u.resetExpiry > datetime() RETURN u.resetExpiry AS v",
+                HashMap::from([("e".to_string(), Value::String("a@b.c".to_string()))]),
+            )
+            .unwrap();
+        assert_eq!(r.len(), 1, "resetExpiry is in the future");
+        match r[0].fields.values().next().unwrap() {
+            Value::String(s) => assert!(s.contains('T') && s.ends_with('Z'), "ISO datetime: {s}"),
+            o => panic!("expected ISO string, got {o:?}"),
+        }
+        // map literal + duration math directly: 2h30m = 9_000_000 ms
+        let r = zega
+            .query(
+                "MATCH (u:User) RETURN duration({hours: 2, minutes: 30}) AS ms",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(r[0].fields.values().next(), Some(&Value::Int(9_000_000)));
     }
 
     #[test]

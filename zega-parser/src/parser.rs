@@ -913,6 +913,10 @@ impl<'a> Parser<'a> {
                 self.expect(Token::RParen)?;
                 Ok(expr)
             }
+            Token::LBrace => {
+                let props = self.parse_properties()?;
+                Ok(Expr::MapLiteral(props))
+            }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "expression".to_string(),
                 got: self.current.clone(),
