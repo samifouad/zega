@@ -129,6 +129,30 @@ impl<'a> Parser<'a> {
             };
             return self.parse_trailing_return(write);
         }
+        // REMOVE n.prop[, ...] — property removal, modeled as SET ... = null
+        // (reads back null / IS NULL, the behavior the apps rely on).
+        if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("REMOVE")) {
+            self.advance()?; // REMOVE
+            let mut assignments = Vec::new();
+            loop {
+                let target = self.parse_primary()?;
+                assignments.push(SetClause {
+                    target,
+                    value: Expr::Literal(Value::Null),
+                });
+                if self.current == Token::Comma {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
+            let write = Statement::MatchSet {
+                match_pattern: pattern,
+                where_clause,
+                assignments,
+            };
+            return self.parse_trailing_return(write);
+        }
         // [DETACH] DELETE var[, var ...]. DETACH lexes as an identifier.
         let detach =
             matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DETACH"));

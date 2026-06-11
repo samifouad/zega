@@ -110,6 +110,7 @@ impl<'a> Planner<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn plan_match(
         &self,
         pattern: &[PatternElement],

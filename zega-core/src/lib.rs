@@ -3593,6 +3593,41 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_property() {
+        // zega#23 follow-up: REMOVE n.prop (store-admin: REMOVE p.stock, etc.).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (p:Product {stock: $s, name: $n})",
+            HashMap::from([
+                ("s".to_string(), Value::Int(5)),
+                ("n".to_string(), Value::String("widget".to_string())),
+            ]),
+        )
+        .unwrap();
+        zega.query("MATCH (p:Product) REMOVE p.stock", HashMap::new())
+            .unwrap();
+        // stock reads back as null; name untouched
+        assert_eq!(
+            zega.query(
+                "MATCH (p:Product) WHERE p.stock IS NULL RETURN p.name AS n",
+                HashMap::new()
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        let r = zega
+            .query(
+                "MATCH (p:Product) WHERE p.name IS NOT NULL RETURN p.name AS n",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].fields.get("n"), Some(&Value::String("widget".to_string())));
+    }
+
+    #[test]
     fn test_match_property_index_lookup_performance() {
         let dir = tempdir().unwrap();
         let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
