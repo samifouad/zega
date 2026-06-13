@@ -345,6 +345,97 @@ async fn kv_list_counter_and_expiry_operations_work() {
 }
 
 #[tokio::test]
+async fn kv_scan_paginates_and_prefix_filters() {
+    let server = start_server().await;
+    let client = Client::new();
+
+    for (key, val) in [("aaa", 1), ("aab", 2), ("abc", 3), ("bbb", 4)] {
+        post_kv(&client, &server.base_url, json!({"op": "set", "key": key, "value": val})).await;
+    }
+
+    let scan: Value = authed(&client, reqwest::Method::POST, format!("{}/kv", server.base_url))
+        .json(&json!({"op": "scan", "cursor": 0, "pattern": "aa", "count": 10}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(scan["ok"], true);
+    assert_eq!(scan["result"]["cursor"], 0);
+    assert_eq!(scan["result"]["keys"], json!(["aaa", "aab"]));
+
+    let scan: Value = authed(&client, reqwest::Method::POST, format!("{}/kv", server.base_url))
+        .json(&json!({"op": "scan", "cursor": 0, "count": 2}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(scan["result"]["cursor"], 2);
+    assert_eq!(scan["result"]["keys"], json!(["aaa", "aab"]));
+
+    let scan: Value = authed(&client, reqwest::Method::POST, format!("{}/kv", server.base_url))
+        .json(&json!({"op": "scan", "cursor": 2, "count": 10}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(scan["result"]["cursor"], 0);
+    assert_eq!(scan["result"]["keys"], json!(["abc", "bbb"]));
+}
+
+#[tokio::test]
+async fn kv_rpush_and_lrange_work() {
+    let server = start_server().await;
+    let client = Client::new();
+
+    let first = post_kv(&client, &server.base_url, json!({"op": "rpush", "key": "items", "value": 1})).await;
+    assert_eq!(first["result"], 1);
+    post_kv(&client, &server.base_url, json!({"op": "rpush", "key": "items", "value": 2})).await;
+    let range = post_kv(&client, &server.base_url, json!({"op": "lrange", "key": "items", "start": 0, "stop": 10})).await;
+    assert_eq!(range["result"], json!([1, 2]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_incr_with_ttl_has_exactly_one_first_value() {
+    const CLAIMANTS: usize = 32;
+    let server = start_server().await;
+    let client = Arc::new(Client::new());
+    let base_url = Arc::new(server.base_url.clone());
+    let barrier = Arc::new(tokio::sync::Barrier::new(CLAIMANTS));
+    let claimants: Vec<_> = (0..CLAIMANTS)
+        .map(|_| {
+            let client = Arc::clone(&client);
+            let base_url = Arc::clone(&base_url);
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                barrier.wait().await;
+                post_kv(
+                    &client,
+                    &base_url,
+                    json!({"op": "incr_with_ttl", "key": "claim", "ttl": 60}),
+                )
+                .await
+            })
+        })
+        .collect();
+
+    let mut first_count = 0;
+    for claimant in claimants {
+        let response = claimant.await.unwrap();
+        assert_eq!(response["ok"], true, "{response}");
+        if response["result"] == 1 {
+            first_count += 1;
+        }
+    }
+    assert_eq!(first_count, 1);
+}
+
+#[tokio::test]
 async fn health_is_ok_and_requires_token() {
     let server = start_server().await;
     let client = Client::new();

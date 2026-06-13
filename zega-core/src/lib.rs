@@ -1014,6 +1014,35 @@ impl Zega {
         Ok(updated)
     }
 
+    pub fn kv_rpush(&self, key: &str, value: Value) -> Result<usize> {
+        self.kv.rpush(key, value);
+        let value = self.kv.get(key).unwrap_or(Value::List(Vec::new()));
+        let len = match &value {
+            Value::List(items) => items.len(),
+            _ => 0,
+        };
+        self.wal.append(&Operation::KvSet {
+            key: key.to_string(),
+            value,
+            ttl: self.kv.ttl(key),
+        })?;
+        Ok(len)
+    }
+
+    pub fn kv_incr_with_ttl(&self, key: &str, ttl_secs: u64) -> Result<Value> {
+        let value = self.kv.incr_with_ttl(key, ttl_secs).unwrap_or(Value::Null);
+        self.wal.append(&Operation::KvSet {
+            key: key.to_string(),
+            value: value.clone(),
+            ttl: self.kv.ttl(key),
+        })?;
+        Ok(value)
+    }
+
+    pub fn kv_scan(&self, cursor: usize, pattern: &str, count: usize) -> (usize, Vec<String>) {
+        self.kv.scan(cursor, pattern, count)
+    }
+
     pub fn snapshot(&self) -> Result<()> {
         #[cfg(target_arch = "wasm32")]
         {
