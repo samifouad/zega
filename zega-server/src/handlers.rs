@@ -95,6 +95,7 @@ pub async fn cql(
 #[derive(Deserialize)]
 pub struct KvRequest {
     op: String,
+    #[serde(default)]
     key: String,
     #[serde(default)]
     value: JsonValueField,
@@ -103,6 +104,9 @@ pub struct KvRequest {
     nx: bool,
     start: Option<usize>,
     stop: Option<usize>,
+    cursor: Option<usize>,
+    pattern: Option<String>,
+    count: Option<usize>,
 }
 
 // Unlike Option<JsonValue>, this distinguishes a missing field from `"value": null`.
@@ -195,6 +199,23 @@ fn execute_kv(zega: &zega_core::Zega, request: KvRequest) -> Result<JsonValue, S
                 required(request.stop, "stop")?
             )
             .map_err(|error| error.to_string())?),
+        "rpush" => json!(zega
+            .kv_rpush(
+                &request.key,
+                raw_to_value(required(request.value.0, "value")?)?
+            )
+            .map_err(|error| error.to_string())?),
+        "incr_with_ttl" => value_to_raw(
+            zega.kv_incr_with_ttl(&request.key, required(request.ttl, "ttl")?)
+                .map_err(|error| error.to_string())?,
+        ),
+        "scan" => {
+            let cursor = request.cursor.unwrap_or(0);
+            let pattern = request.pattern.unwrap_or_default();
+            let count = request.count.unwrap_or(10);
+            let (next_cursor, keys) = zega.kv_scan(cursor, &pattern, count);
+            json!({"cursor": next_cursor, "keys": keys})
+        }
         _ => return Err(format!("unsupported KV operation: {}", request.op)),
     };
     Ok(value)
