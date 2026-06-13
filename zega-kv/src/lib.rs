@@ -84,6 +84,23 @@ impl KvStore {
         self.data.insert(key, KvEntry { value, expires_at });
     }
 
+    pub fn set_nx(&self, key: String, value: Value, ttl_secs: Option<u64>) -> bool {
+        let now = Self::now_secs();
+        let expires_at = ttl_secs.map(|secs| now + secs);
+        let new_entry = KvEntry { value, expires_at };
+        match self.data.entry(key) {
+            Entry::Occupied(mut entry) if Self::is_expired(entry.get(), now) => {
+                entry.insert(new_entry);
+                true
+            }
+            Entry::Occupied(_) => false,
+            Entry::Vacant(entry) => {
+                entry.insert(new_entry);
+                true
+            }
+        }
+    }
+
     pub fn del(&self, key: &str) -> bool {
         match self.data.entry(key.to_string()) {
             Entry::Occupied(entry) if Self::is_expired(entry.get(), Self::now_secs()) => {
@@ -240,6 +257,8 @@ fn checked_range(len: usize, start: usize, stop: usize) -> Result<(usize, usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     #[test]
     fn test_kv_set_get_del() {
@@ -248,6 +267,32 @@ mod tests {
         assert_eq!(kv.get("name"), Some(Value::String("Alice".to_string())));
         assert!(kv.del("name"));
         assert_eq!(kv.get("name"), None);
+    }
+
+    #[test]
+    fn concurrent_set_nx_has_exactly_one_winner() {
+        const CLAIMANTS: usize = 32;
+        let kv = Arc::new(KvStore::new());
+        let barrier = Arc::new(Barrier::new(CLAIMANTS));
+        let claimants: Vec<_> = (0..CLAIMANTS)
+            .map(|claimant| {
+                let kv = Arc::clone(&kv);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    kv.set_nx("claim".to_string(), Value::Int(claimant as i64), None)
+                })
+            })
+            .collect();
+
+        let winners = claimants
+            .into_iter()
+            .map(|claimant| claimant.join().unwrap())
+            .filter(|won| *won)
+            .count();
+
+        assert_eq!(winners, 1);
+        assert!(kv.get("claim").is_some());
     }
 
     #[test]

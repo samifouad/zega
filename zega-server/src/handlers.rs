@@ -150,10 +150,10 @@ fn execute_kv(zega: &zega_core::Zega, request: KvRequest) -> Result<JsonValue, S
             .map_or(JsonValue::Null, value_to_raw),
         "set" => {
             let value = raw_to_value(required(request.value.0, "value")?)?;
-            // NX: set only if absent (atomic — held under the write lock).
-            // Returns false when the key already exists (node-redis NX semantics).
-            if request.nx && zega.kv_exists(&request.key) {
-                json!(false)
+            if request.nx {
+                json!(zega
+                    .kv_set_nx(request.key, value, request.ttl)
+                    .map_err(|error| error.to_string())?)
             } else {
                 zega.kv_set(request.key, value, request.ttl)
                     .map_err(|error| error.to_string())?;

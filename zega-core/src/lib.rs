@@ -926,6 +926,18 @@ impl Zega {
         Ok(())
     }
 
+    pub fn kv_set_nx(&self, key: String, value: Value, ttl_secs: Option<u64>) -> Result<bool> {
+        if !self.kv.set_nx(key.clone(), value.clone(), ttl_secs) {
+            return Ok(false);
+        }
+        self.wal.append(&Operation::KvSet {
+            key,
+            value,
+            ttl: ttl_secs,
+        })?;
+        Ok(true)
+    }
+
     pub fn kv_del(&self, key: &str) -> Result<bool> {
         let deleted = self.kv.del(key);
         self.wal.append(&Operation::KvDel {
