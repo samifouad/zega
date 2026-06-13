@@ -10,6 +10,9 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq)]
+// Statement is an AST node carried by value through the planner; the size
+// difference vs the unit variant is expected and not worth a Box indirection.
+#[allow(clippy::large_enum_variant)]
 pub enum Plan {
     Execute(Statement),
     FilteredKvGet,
@@ -37,11 +40,43 @@ impl<'a> Planner<'a> {
         match stmt {
             Statement::Match {
                 pattern,
+                optional_patterns,
                 where_clause,
+                with_clause,
                 return_clause,
                 order_by,
+                skip,
                 limit,
-            } => self.plan_match(pattern, where_clause, return_clause, order_by, limit, ctx),
+            } => {
+                let planned =
+                    self.plan_match(pattern, where_clause, return_clause, order_by, skip, limit, ctx)?;
+                // Re-attach OPTIONAL MATCH segments + WITH (plan_match only plans
+                // the required pattern's policy filtering).
+                if optional_patterns.is_empty() && with_clause.is_none() {
+                    return Ok(planned);
+                }
+                match planned {
+                    Plan::Execute(Statement::Match {
+                        pattern,
+                        where_clause,
+                        return_clause,
+                        order_by,
+                        skip,
+                        limit,
+                        ..
+                    }) => Ok(Plan::Execute(Statement::Match {
+                        pattern,
+                        optional_patterns: optional_patterns.clone(),
+                        where_clause,
+                        with_clause: with_clause.clone(),
+                        return_clause,
+                        order_by,
+                        skip,
+                        limit,
+                    })),
+                    other => Ok(other),
+                }
+            }
             Statement::MatchCreate {
                 match_pattern,
                 where_clause,
@@ -50,7 +85,11 @@ impl<'a> Planner<'a> {
                 let planned = self.plan_match(
                     match_pattern,
                     where_clause,
-                    &ReturnClause { items: vec![] },
+                    &ReturnClause {
+                        items: vec![],
+                        distinct: false,
+                    },
+                    &None,
                     &None,
                     &None,
                     ctx,
@@ -71,12 +110,14 @@ impl<'a> Planner<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn plan_match(
         &self,
         pattern: &[PatternElement],
         where_clause: &Option<ZqlExpr>,
         return_clause: &ReturnClause,
         order_by: &Option<Vec<(ZqlExpr, OrderDirection)>>,
+        skip: &Option<ZqlExpr>,
         limit: &Option<ZqlExpr>,
         ctx: &ResolvedContext,
     ) -> Result<Plan> {
@@ -127,9 +168,12 @@ impl<'a> Planner<'a> {
 
         Ok(Plan::Execute(Statement::Match {
             pattern: pattern.to_vec(),
+            optional_patterns: Vec::new(),
             where_clause: merged_where,
+            with_clause: None,
             return_clause: return_clause.clone(),
             order_by: order_by.clone(),
+            skip: skip.clone(),
             limit: limit.clone(),
         }))
     }

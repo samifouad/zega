@@ -83,10 +83,17 @@ impl<'a> Parser<'a> {
 
     fn parse_match(&mut self) -> Result<Statement, ParseError> {
         self.advance()?; // MATCH
-        let mut pattern = self.parse_pattern()?;
+        let mut pattern = self.parse_comma_patterns()?;
         while self.current == Token::Match {
             self.advance()?;
-            pattern.extend(self.parse_pattern()?);
+            pattern.extend(self.parse_comma_patterns()?);
+        }
+        // OPTIONAL MATCH segments (left-outer). OPTIONAL lexes as an identifier.
+        let mut optional_patterns = Vec::new();
+        while matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("OPTIONAL")) {
+            self.advance()?; // OPTIONAL
+            self.expect(Token::Match)?;
+            optional_patterns.push(self.parse_comma_patterns()?);
         }
         let where_clause = if self.current == Token::Where {
             self.advance()?;
@@ -94,9 +101,32 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        // FOREACH / UNWIND directly after the match → a write pipeline.
+        if matches!(&self.current, Token::Identifier(id)
+            if id.eq_ignore_ascii_case("FOREACH") || id.eq_ignore_ascii_case("UNWIND"))
+        {
+            let writes = self.parse_write_clauses()?;
+            let return_clause = self.parse_optional_return()?;
+            return Ok(Statement::MatchWrite {
+                match_pattern: pattern,
+                optional_patterns,
+                where_clause,
+                with_clause: None,
+                writes,
+                return_clause,
+            });
+        }
         if self.current == Token::Create {
             self.advance()?;
-            let create_pattern = self.parse_pattern()?;
+            // Multiple consecutive CREATE clauses share the match bindings and
+            // thread created-variable bindings through (e.g. signup's
+            // CREATE (s:Shop) CREATE (u)-[:OWNS]->(s)). Flattening is correct:
+            // create_pattern processes elements sequentially, reusing bound vars.
+            let mut create_pattern = self.parse_comma_patterns()?;
+            while self.current == Token::Create {
+                self.advance()?;
+                create_pattern.extend(self.parse_comma_patterns()?);
+            }
             let write = Statement::MatchCreate {
                 match_pattern: pattern,
                 where_clause,
@@ -104,17 +134,132 @@ impl<'a> Parser<'a> {
             };
             return self.parse_trailing_return(write);
         }
+        if self.current == Token::Set {
+            self.advance()?;
+            let assignments = self.parse_set_clauses()?;
+            // A continuation (FOREACH / CREATE / REMOVE / ...) makes this a
+            // multi-clause write pipeline.
+            if self.at_write_clause() {
+                let mut writes = vec![WriteClause::Set(assignments)];
+                writes.extend(self.parse_write_clauses()?);
+                let return_clause = self.parse_optional_return()?;
+                return Ok(Statement::MatchWrite {
+                    match_pattern: pattern,
+                    optional_patterns,
+                    where_clause,
+                    with_clause: None,
+                    writes,
+                    return_clause,
+                });
+            }
+            let write = Statement::MatchSet {
+                match_pattern: pattern,
+                where_clause,
+                assignments,
+            };
+            return self.parse_trailing_return(write);
+        }
+        // REMOVE n.prop[, ...] — property removal, modeled as SET ... = null
+        // (reads back null / IS NULL, the behavior the apps rely on).
+        if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("REMOVE")) {
+            self.advance()?; // REMOVE
+            let mut assignments = Vec::new();
+            loop {
+                let target = self.parse_primary()?;
+                assignments.push(SetClause {
+                    target,
+                    value: Expr::Literal(Value::Null),
+                });
+                if self.current == Token::Comma {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
+            let write = Statement::MatchSet {
+                match_pattern: pattern,
+                where_clause,
+                assignments,
+            };
+            return self.parse_trailing_return(write);
+        }
+        // [DETACH] DELETE var[, var ...]. DETACH lexes as an identifier.
+        let detach =
+            matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DETACH"));
+        if detach {
+            self.advance()?;
+        }
+        if detach || self.current == Token::Delete {
+            self.expect(Token::Delete)?;
+            let mut identifiers = Vec::new();
+            while let Token::Identifier(id) = &self.current {
+                identifiers.push(id.clone());
+                self.advance()?;
+                if self.current == Token::Comma {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
+            let write = Statement::MatchDelete {
+                match_pattern: pattern,
+                where_clause,
+                detach,
+                identifiers,
+            };
+            return self.parse_trailing_return(write);
+        }
+        // WITH ... [WHERE ...] — projection/aggregation boundary before RETURN.
+        let with_clause = if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("WITH"))
+        {
+            self.advance()?; // WITH
+            let projection = self.parse_return_clause()?;
+            let with_where = if self.current == Token::Where {
+                self.advance()?;
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            Some(WithClause {
+                items: projection.items,
+                where_clause: with_where,
+            })
+        } else {
+            None
+        };
+        // WITH followed by write clauses (e.g. WITH r UNWIND $a AS a CREATE ...)
+        // → multi-clause write pipeline.
+        if with_clause.is_some() && self.at_write_clause() {
+            let writes = self.parse_write_clauses()?;
+            let return_clause = self.parse_optional_return()?;
+            return Ok(Statement::MatchWrite {
+                match_pattern: pattern,
+                optional_patterns,
+                where_clause,
+                with_clause,
+                writes,
+                return_clause,
+            });
+        }
         let return_clause = if self.current == Token::Return {
             self.advance()?;
             self.parse_return_clause()?
         } else {
-            ReturnClause { items: vec![] }
+            ReturnClause {
+                items: vec![],
+                distinct: false,
+            }
         };
         let mut order_by = None;
         if self.current == Token::Order {
             self.advance()?;
             self.expect(Token::By)?;
             order_by = Some(self.parse_order_by()?);
+        }
+        let mut skip = None;
+        if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("SKIP")) {
+            self.advance()?;
+            skip = Some(self.parse_expression()?);
         }
         let mut limit = None;
         if self.current == Token::Limit {
@@ -123,16 +268,23 @@ impl<'a> Parser<'a> {
         }
         Ok(Statement::Match {
             pattern,
+            optional_patterns,
             where_clause,
+            with_clause,
             return_clause,
             order_by,
+            skip,
             limit,
         })
     }
 
     fn parse_create(&mut self) -> Result<Statement, ParseError> {
         self.advance()?; // CREATE
-        let pattern = self.parse_pattern()?;
+        let mut pattern = self.parse_comma_patterns()?;
+        while self.current == Token::Create {
+            self.advance()?;
+            pattern.extend(self.parse_comma_patterns()?);
+        }
         self.parse_trailing_return(Statement::Create { pattern })
     }
 
@@ -140,19 +292,33 @@ impl<'a> Parser<'a> {
         self.advance()?; // MERGE
         let pattern = self.parse_pattern()?;
         let mut on_create = Vec::new();
-        if self.current == Token::On {
-            self.advance()?;
-            if self.current == Token::Create
-                || matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("CREATE"))
-            {
+        let mut on_match = Vec::new();
+        // Zero or more ON CREATE SET / ON MATCH SET clauses, in any order.
+        while self.current == Token::On {
+            self.advance()?; // ON
+            let is_create = self.current == Token::Create
+                || matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("CREATE"));
+            let is_match = self.current == Token::Match
+                || matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("MATCH"));
+            if is_create {
                 self.advance()?;
                 self.expect(Token::Set)?;
                 on_create = self.parse_set_clauses()?;
+            } else if is_match {
+                self.advance()?;
+                self.expect(Token::Set)?;
+                on_match = self.parse_set_clauses()?;
             } else {
-                return Err(ParseError::Message("expected CREATE after ON".to_string()));
+                return Err(ParseError::Message(
+                    "expected CREATE or MATCH after ON".to_string(),
+                ));
             }
         }
-        self.parse_trailing_return(Statement::Merge { pattern, on_create })
+        self.parse_trailing_return(Statement::Merge {
+            pattern,
+            on_create,
+            on_match,
+        })
     }
 
     fn parse_set_or_kv(&mut self) -> Result<Statement, ParseError> {
@@ -191,6 +357,18 @@ impl<'a> Parser<'a> {
             }
         }
         self.parse_trailing_return(Statement::Delete { identifiers: ids })
+    }
+
+    fn parse_optional_return(&mut self) -> Result<ReturnClause, ParseError> {
+        if self.current == Token::Return {
+            self.advance()?;
+            self.parse_return_clause()
+        } else {
+            Ok(ReturnClause {
+                items: vec![],
+                distinct: false,
+            })
+        }
     }
 
     fn parse_trailing_return(&mut self, write: Statement) -> Result<Statement, ParseError> {
@@ -241,6 +419,108 @@ impl<'a> Parser<'a> {
         Ok(Statement::KvIncr { key })
     }
 
+    /// True if the current token begins a write clause (SET / CREATE / REMOVE /
+    /// FOREACH / UNWIND) — used to detect a multi-clause write pipeline.
+    fn at_write_clause(&self) -> bool {
+        match &self.current {
+            Token::Set | Token::Create => true,
+            Token::Identifier(id) => {
+                let id = id.to_ascii_uppercase();
+                id == "REMOVE" || id == "FOREACH" || id == "UNWIND"
+            }
+            _ => false,
+        }
+    }
+
+    fn parse_variable_name(&mut self) -> Result<String, ParseError> {
+        match &self.current {
+            Token::Identifier(v) => {
+                let v = v.clone();
+                self.advance()?;
+                Ok(v)
+            }
+            other => Err(ParseError::UnexpectedToken {
+                expected: "variable name".to_string(),
+                got: other.clone(),
+            }),
+        }
+    }
+
+    /// Parse a sequence of write clauses (the body of a MatchWrite pipeline or a
+    /// FOREACH body). Stops at the first non-write token.
+    fn parse_write_clauses(&mut self) -> Result<Vec<WriteClause>, ParseError> {
+        let mut clauses = Vec::new();
+        loop {
+            if self.current == Token::Set {
+                self.advance()?;
+                clauses.push(WriteClause::Set(self.parse_set_clauses()?));
+            } else if self.current == Token::Create {
+                self.advance()?;
+                let mut pattern = self.parse_comma_patterns()?;
+                while self.current == Token::Create {
+                    self.advance()?;
+                    pattern.extend(self.parse_comma_patterns()?);
+                }
+                clauses.push(WriteClause::Create(pattern));
+            } else if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("REMOVE"))
+            {
+                self.advance()?;
+                let mut assignments = Vec::new();
+                loop {
+                    let target = self.parse_primary()?;
+                    assignments.push(SetClause {
+                        target,
+                        value: Expr::Literal(Value::Null),
+                    });
+                    if self.current == Token::Comma {
+                        self.advance()?;
+                    } else {
+                        break;
+                    }
+                }
+                clauses.push(WriteClause::Set(assignments));
+            } else if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("FOREACH"))
+            {
+                self.advance()?; // FOREACH
+                self.expect(Token::LParen)?;
+                let variable = self.parse_variable_name()?;
+                self.expect_keyword("IN")?;
+                let list = self.parse_expression()?;
+                self.expect(Token::Pipe)?;
+                let body = self.parse_write_clauses()?;
+                self.expect(Token::RParen)?;
+                clauses.push(WriteClause::Foreach {
+                    variable,
+                    list,
+                    body,
+                });
+            } else if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("UNWIND"))
+            {
+                self.advance()?; // UNWIND
+                let list = self.parse_expression()?;
+                self.expect_keyword("AS")?;
+                let variable = self.parse_variable_name()?;
+                clauses.push(WriteClause::Unwind { variable, list });
+            } else {
+                break;
+            }
+        }
+        Ok(clauses)
+    }
+
+    /// Parse one or more comma-separated path patterns into a single flat
+    /// element list. `MATCH (a), (b)` / `CREATE (a), (b)` produce disconnected
+    /// components; the executor cross-products them (matching Neo4j semantics,
+    /// the same shape produced by repeated `MATCH ... MATCH ...`).
+    fn parse_comma_patterns(&mut self) -> Result<Vec<PatternElement>, ParseError> {
+        let mut pattern = self.parse_pattern()?;
+        while self.current == Token::Comma {
+            self.advance()?;
+            pattern.extend(self.parse_pattern()?);
+        }
+        Ok(pattern)
+    }
+
     fn parse_pattern(&mut self) -> Result<Vec<PatternElement>, ParseError> {
         let mut result = vec![self.parse_pattern_element()?];
         while self.current == Token::Dash || self.current == Token::LeftArrow {
@@ -284,7 +564,7 @@ impl<'a> Parser<'a> {
             String::new()
         };
         let mut labels = Vec::new();
-        if self.current == Token::Colon {
+        while self.current == Token::Colon {
             self.advance()?;
             if let Some(label) = self.take_symbolic_name()? {
                 labels.push(label);
@@ -481,6 +761,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_return_clause(&mut self) -> Result<ReturnClause, ParseError> {
+        let distinct =
+            matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DISTINCT"));
+        if distinct {
+            self.advance()?;
+        }
         let mut items = Vec::new();
         loop {
             let expr = self.parse_expression()?;
@@ -507,7 +792,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(ReturnClause { items })
+        Ok(ReturnClause { items, distinct })
     }
 
     fn parse_order_by(&mut self) -> Result<Vec<(Expr, OrderDirection)>, ParseError> {
@@ -610,6 +895,29 @@ impl<'a> Parser<'a> {
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_add()?;
+        // `expr IS NULL` / `expr IS NOT NULL` (IS / NOT / NULL lex as identifiers)
+        if matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("IS")) {
+            self.advance()?;
+            let negated =
+                matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("NOT"));
+            if negated {
+                self.advance()?;
+            }
+            match &self.current {
+                Token::Null => self.advance()?,
+                Token::Identifier(id) if id.eq_ignore_ascii_case("NULL") => self.advance()?,
+                other => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "NULL after IS".to_string(),
+                        got: other.clone(),
+                    })
+                }
+            }
+            return Ok(Expr::IsNull {
+                operand: Box::new(left),
+                negated,
+            });
+        }
         loop {
             match &self.current {
                 Token::Gt => {
@@ -632,15 +940,69 @@ impl<'a> Parser<'a> {
                     let right = self.parse_add()?;
                     left = Expr::BinaryOp(Box::new(left), BinaryOperator::Lte, Box::new(right));
                 }
+                // String predicates: STARTS WITH / ENDS WITH / CONTAINS (keywords)
+                Token::Identifier(id) if id.eq_ignore_ascii_case("STARTS") => {
+                    self.advance()?;
+                    self.expect_keyword("WITH")?;
+                    let right = self.parse_add()?;
+                    left =
+                        Expr::BinaryOp(Box::new(left), BinaryOperator::StartsWith, Box::new(right));
+                }
+                Token::Identifier(id) if id.eq_ignore_ascii_case("ENDS") => {
+                    self.advance()?;
+                    self.expect_keyword("WITH")?;
+                    let right = self.parse_add()?;
+                    left = Expr::BinaryOp(Box::new(left), BinaryOperator::EndsWith, Box::new(right));
+                }
+                Token::Identifier(id) if id.eq_ignore_ascii_case("CONTAINS") => {
+                    self.advance()?;
+                    let right = self.parse_add()?;
+                    left = Expr::BinaryOp(Box::new(left), BinaryOperator::Contains, Box::new(right));
+                }
                 _ => break,
             }
         }
         Ok(left)
     }
 
+    /// Consume an identifier keyword (case-insensitive) or error.
+    fn expect_keyword(&mut self, keyword: &str) -> Result<(), ParseError> {
+        match &self.current {
+            Token::Identifier(id) if id.eq_ignore_ascii_case(keyword) => {
+                self.advance()?;
+                Ok(())
+            }
+            other => Err(ParseError::UnexpectedToken {
+                expected: keyword.to_string(),
+                got: other.clone(),
+            }),
+        }
+    }
+
     fn parse_add(&mut self) -> Result<Expr, ParseError> {
-        let left = self.parse_primary()?;
-        // MVP: no arithmetic needed beyond what's in primary
+        let mut left = self.parse_mul()?;
+        loop {
+            let op = match &self.current {
+                Token::Plus => BinaryOperator::Add,
+                Token::Dash => BinaryOperator::Sub,
+                _ => break,
+            };
+            self.advance()?;
+            let right = self.parse_mul()?;
+            left = Expr::BinaryOp(Box::new(left), op, Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_mul(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_primary()?;
+        // `*` only means multiply here; count(*) and rel-length [*..] are
+        // consumed in their own parsers before reaching expression position.
+        while self.current == Token::Star {
+            self.advance()?;
+            let right = self.parse_primary()?;
+            left = Expr::BinaryOp(Box::new(left), BinaryOperator::Mul, Box::new(right));
+        }
         Ok(left)
     }
 
@@ -758,6 +1120,7 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 Ok(Expr::Literal(Value::Null))
             }
+            Token::Identifier(id) if id.eq_ignore_ascii_case("CASE") => self.parse_case(),
             Token::Identifier(id) => {
                 let name = id.clone();
                 self.advance()?;
@@ -784,6 +1147,23 @@ impl<'a> Parser<'a> {
                 self.expect(Token::RParen)?;
                 Ok(expr)
             }
+            Token::LBrace => {
+                let props = self.parse_properties()?;
+                Ok(Expr::MapLiteral(props))
+            }
+            Token::LBracket => {
+                self.advance()?;
+                let mut items = Vec::new();
+                if self.current != Token::RBracket {
+                    items.push(self.parse_expression()?);
+                    while self.current == Token::Comma {
+                        self.advance()?;
+                        items.push(self.parse_expression()?);
+                    }
+                }
+                self.expect(Token::RBracket)?;
+                Ok(Expr::ListLiteral(items))
+            }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "expression".to_string(),
                 got: self.current.clone(),
@@ -792,38 +1172,101 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_function_call(&mut self, name: String) -> Result<Expr, ParseError> {
-        let function = match name.to_ascii_lowercase().as_str() {
-            "count" => AggregateFunction::Count,
-            "sum" => AggregateFunction::Sum,
-            "avg" => AggregateFunction::Avg,
-            "min" => AggregateFunction::Min,
-            "max" => AggregateFunction::Max,
-            "collect" => AggregateFunction::Collect,
-            _ => return Err(ParseError::Message(format!("unsupported function: {name}"))),
+        let lname = name.to_ascii_lowercase();
+        let aggregate = match lname.as_str() {
+            "count" => Some(AggregateFunction::Count),
+            "sum" => Some(AggregateFunction::Sum),
+            "avg" => Some(AggregateFunction::Avg),
+            "min" => Some(AggregateFunction::Min),
+            "max" => Some(AggregateFunction::Max),
+            "collect" => Some(AggregateFunction::Collect),
+            _ => None,
         };
 
-        self.expect(Token::LParen)?;
-        let distinct =
-            matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DISTINCT"));
-        if distinct {
-            self.advance()?;
-        }
-        let argument = if self.current == Token::Star {
-            self.advance()?;
-            if function != AggregateFunction::Count || distinct {
-                return Err(ParseError::Message(
-                    "only count(*) supports a star argument".to_string(),
-                ));
+        if let Some(function) = aggregate {
+            self.expect(Token::LParen)?;
+            let distinct = matches!(&self.current, Token::Identifier(id) if id.eq_ignore_ascii_case("DISTINCT"));
+            if distinct {
+                self.advance()?;
             }
-            None
-        } else {
-            Some(Box::new(self.parse_expression()?))
-        };
+            let argument = if self.current == Token::Star {
+                self.advance()?;
+                if function != AggregateFunction::Count || distinct {
+                    return Err(ParseError::Message(
+                        "only count(*) supports a star argument".to_string(),
+                    ));
+                }
+                None
+            } else {
+                Some(Box::new(self.parse_expression()?))
+            };
+            self.expect(Token::RParen)?;
+            return Ok(Expr::Aggregate {
+                function,
+                argument,
+                distinct,
+            });
+        }
+
+        // General scalar function call: name(arg, arg, ...) — zero or more args.
+        // Evaluation + Neo4j-semantics dispatch happens in the executor (eval_expr).
+        self.expect(Token::LParen)?;
+        let mut args = Vec::new();
+        if self.current != Token::RParen {
+            args.push(self.parse_expression()?);
+            while self.current == Token::Comma {
+                self.advance()?;
+                args.push(self.parse_expression()?);
+            }
+        }
         self.expect(Token::RParen)?;
-        Ok(Expr::Aggregate {
-            function,
-            argument,
-            distinct,
+        Ok(Expr::FunctionCall { name: lname, args })
+    }
+
+    fn parse_case(&mut self) -> Result<Expr, ParseError> {
+        self.advance()?; // CASE
+        // Optional subject: present unless the next token is WHEN.
+        let subject =
+            if matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("WHEN")) {
+                None
+            } else {
+                Some(Box::new(self.parse_expression()?))
+            };
+        let mut branches = Vec::new();
+        while matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("WHEN")) {
+            self.advance()?; // WHEN
+            let cond = self.parse_expression()?;
+            match &self.current {
+                Token::Identifier(s) if s.eq_ignore_ascii_case("THEN") => self.advance()?,
+                other => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "THEN".to_string(),
+                        got: other.clone(),
+                    })
+                }
+            }
+            branches.push((cond, self.parse_expression()?));
+        }
+        let default =
+            if matches!(&self.current, Token::Identifier(s) if s.eq_ignore_ascii_case("ELSE")) {
+                self.advance()?;
+                Some(Box::new(self.parse_expression()?))
+            } else {
+                None
+            };
+        match &self.current {
+            Token::Identifier(s) if s.eq_ignore_ascii_case("END") => self.advance()?,
+            other => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "END".to_string(),
+                    got: other.clone(),
+                })
+            }
+        }
+        Ok(Expr::Case {
+            subject,
+            branches,
+            default,
         })
     }
 }
@@ -1055,6 +1498,88 @@ mod tests {
         match &stmts[0] {
             Statement::KvGet { .. } => {}
             _ => panic!("expected KvGet"),
+        }
+    }
+
+    #[test]
+    fn test_parse_multi_label_node() {
+        // zega#23: multi-label nodes (Tana identity model: :User:Agent, :User:Human)
+        let mut p = Parser::new("CREATE (n:User:Agent {a: $x})").unwrap();
+        let stmts = p.parse().unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::Create { pattern } => {
+                assert_eq!(pattern[0].labels, vec!["User", "Agent"]);
+            }
+            _ => panic!("expected CREATE"),
+        }
+    }
+
+    #[test]
+    fn test_parse_multi_label_match_three() {
+        let mut p = Parser::new("MATCH (n:A:B:C) RETURN n").unwrap();
+        let stmts = p.parse().unwrap();
+        match &stmts[0] {
+            Statement::Match { pattern, .. } => {
+                assert_eq!(pattern[0].labels, vec!["A", "B", "C"]);
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_parse_comma_match() {
+        // zega#23: comma-separated MATCH patterns — how you connect two existing
+        // nodes; blocked all 165 relationships in the real export.
+        let mut p =
+            Parser::new("MATCH (a {_nid: $x}), (b {_nid: $y}) CREATE (a)-[:R]->(b)").unwrap();
+        let stmts = p.parse().unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::MatchCreate {
+                match_pattern,
+                create_pattern,
+                ..
+            } => {
+                // two disconnected match components
+                assert_eq!(match_pattern.len(), 2);
+                assert!(match_pattern[0].relationship.is_none());
+                assert!(match_pattern[1].relationship.is_none());
+                assert_eq!(create_pattern.len(), 2);
+                assert_eq!(
+                    create_pattern[1].relationship.as_ref().unwrap().kinds,
+                    vec!["R"]
+                );
+            }
+            _ => panic!("expected MATCH...CREATE"),
+        }
+    }
+
+    #[test]
+    fn test_parse_comma_match_three_return() {
+        let mut p = Parser::new("MATCH (a), (b), (c) RETURN a, b, c").unwrap();
+        let stmts = p.parse().unwrap();
+        match &stmts[0] {
+            Statement::Match { pattern, .. } => {
+                assert_eq!(pattern.len(), 3);
+                assert!(pattern.iter().all(|e| e.relationship.is_none()));
+            }
+            _ => panic!("expected MATCH"),
+        }
+    }
+
+    #[test]
+    fn test_parse_comma_create() {
+        let mut p = Parser::new("CREATE (a:X), (b:Y)").unwrap();
+        let stmts = p.parse().unwrap();
+        match &stmts[0] {
+            Statement::Create { pattern } => {
+                assert_eq!(pattern.len(), 2);
+                assert_eq!(pattern[0].labels, vec!["X"]);
+                assert_eq!(pattern[1].labels, vec!["Y"]);
+                assert!(pattern[1].relationship.is_none());
+            }
+            _ => panic!("expected CREATE"),
         }
     }
 }

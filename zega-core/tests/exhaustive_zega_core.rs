@@ -1472,12 +1472,18 @@ fn garbage_input_is_parse_error_not_panic() {
 }
 
 #[test]
-fn unknown_function_is_parse_error() {
+fn unknown_function_is_execution_error() {
+    // Scalar function calls now parse into Expr::FunctionCall; an unrecognized
+    // name surfaces as an execution error (not a parse error) when evaluated.
     let zega = db();
+    zega.query("CREATE (n:N {v: 1})", no_params()).unwrap();
     let err = zega
         .query("MATCH (n:N) RETURN frobnicate(n.v)", no_params())
         .unwrap_err();
-    assert!(matches!(err, ZegaError::Parse(_)));
+    assert!(
+        matches!(err, ZegaError::Execution(_)),
+        "expected execution error, got {err:?}"
+    );
 }
 
 #[test]

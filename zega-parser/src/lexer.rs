@@ -39,6 +39,7 @@ pub enum Token {
     // Symbols
     Colon,
     Comma,
+    Pipe,
     Semicolon,
     LParen,
     RParen,
@@ -240,6 +241,10 @@ impl<'a> Lexer<'a> {
                         self.advance();
                         Token::Comma
                     }
+                    '|' => {
+                        self.advance();
+                        Token::Pipe
+                    }
                     ';' => {
                         self.advance();
                         Token::Semicolon
@@ -303,6 +308,10 @@ impl<'a> Lexer<'a> {
                         if let Some(&'=') = self.peek() {
                             self.advance();
                             Token::Lte
+                        } else if let Some(&'>') = self.peek() {
+                            // Cypher-standard inequality `<>` (zega#8)
+                            self.advance();
+                            Token::Ne
                         } else if let Some(&'-') = self.peek() {
                             self.advance();
                             Token::LeftArrow

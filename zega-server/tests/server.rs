@@ -117,6 +117,42 @@ async fn kv_set_then_get_round_trips() {
     assert_eq!(get["result"], "Ada");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_kv_set_nx_has_exactly_one_winner() {
+    const CLAIMANTS: usize = 32;
+    let server = start_server().await;
+    let client = Arc::new(Client::new());
+    let base_url = Arc::new(server.base_url.clone());
+    let barrier = Arc::new(tokio::sync::Barrier::new(CLAIMANTS));
+    let claimants: Vec<_> = (0..CLAIMANTS)
+        .map(|claimant| {
+            let client = Arc::clone(&client);
+            let base_url = Arc::clone(&base_url);
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                barrier.wait().await;
+                post_kv(
+                    &client,
+                    &base_url,
+                    json!({"op": "set", "key": "claim", "value": claimant, "nx": true}),
+                )
+                .await
+            })
+        })
+        .collect();
+
+    let mut winners = 0;
+    for claimant in claimants {
+        let response = claimant.await.unwrap();
+        assert_eq!(response["ok"], true, "{response}");
+        if response["result"] == true {
+            winners += 1;
+        }
+    }
+
+    assert_eq!(winners, 1);
+}
+
 #[tokio::test]
 async fn cql_raw_json_params_round_trip() {
     let server = start_server().await;

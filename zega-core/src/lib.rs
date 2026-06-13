@@ -53,6 +53,9 @@ enum BoundValue {
     Node(NodeId),
     Relationship(RelId),
     Relationships(Vec<RelId>),
+    /// A computed value carried across a WITH boundary (e.g. an aggregation
+    /// result, or a node projected to a property map).
+    Value(Value),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -74,6 +77,10 @@ impl Bindings {
 
     fn contains_key(&self, variable: &str) -> bool {
         self.get(variable).is_some()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     fn insert(&mut self, variable: String, value: BoundValue) {
@@ -359,15 +366,21 @@ impl Zega {
         match stmt {
             Statement::Match {
                 pattern,
+                optional_patterns,
                 where_clause,
+                with_clause,
                 return_clause,
                 order_by,
+                skip,
                 limit,
             } => self.exec_match(
                 pattern,
+                optional_patterns,
                 where_clause.as_ref(),
+                with_clause.as_ref(),
                 return_clause,
                 order_by.as_ref(),
+                skip.as_ref(),
                 limit.as_ref(),
                 params,
                 traversal_budget,
@@ -384,9 +397,54 @@ impl Zega {
                 params,
                 traversal_budget,
             ),
-            Statement::Merge { pattern, on_create } => self.exec_merge(pattern, on_create, params),
+            Statement::Merge {
+                pattern,
+                on_create,
+                on_match,
+            } => self.exec_merge(pattern, on_create, on_match, params),
             Statement::Set { assignments } => self.exec_set(assignments, params),
+            Statement::MatchSet {
+                match_pattern,
+                where_clause,
+                assignments,
+            } => self.exec_match_set(
+                match_pattern,
+                where_clause.as_ref(),
+                assignments,
+                params,
+                traversal_budget,
+            ),
+            Statement::MatchWrite {
+                match_pattern,
+                optional_patterns,
+                where_clause,
+                with_clause,
+                writes,
+                return_clause,
+            } => self.exec_match_write(
+                match_pattern,
+                optional_patterns,
+                where_clause.as_ref(),
+                with_clause.as_ref(),
+                writes,
+                return_clause,
+                params,
+                traversal_budget,
+            ),
             Statement::Delete { identifiers } => self.exec_delete(identifiers),
+            Statement::MatchDelete {
+                match_pattern,
+                where_clause,
+                detach,
+                identifiers,
+            } => self.exec_match_delete(
+                match_pattern,
+                where_clause.as_ref(),
+                *detach,
+                identifiers,
+                params,
+                traversal_budget,
+            ),
             Statement::WriteThenReturn {
                 write,
                 return_clause,
@@ -410,12 +468,16 @@ impl Zega {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn exec_match(
         &self,
         pattern: &[PatternElement],
+        optional_patterns: &[Vec<PatternElement>],
         where_clause: Option<&Expr>,
+        with_clause: Option<&WithClause>,
         return_clause: &ReturnClause,
         order_by: Option<&Vec<(Expr, OrderDirection)>>,
+        skip: Option<&Expr>,
         limit: Option<&Expr>,
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
@@ -424,14 +486,56 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let bindings =
-            resolve_match_bindings(&graph, pattern, where_clause, params, traversal_budget)?;
+        let bindings = if optional_patterns.is_empty() {
+            resolve_match_bindings(&graph, pattern, where_clause, params, traversal_budget)?
+        } else {
+            // Resolve the required pattern first WITHOUT the WHERE (it may
+            // reference optional vars), left-outer-extend each OPTIONAL MATCH
+            // segment, then apply the WHERE to the assembled rows.
+            let mut bindings = resolve_match_bindings(&graph, pattern, None, params, traversal_budget)?;
+            for optional in optional_patterns {
+                let mut extended_all = Vec::with_capacity(bindings.len());
+                for binding in bindings {
+                    let extended = resolve_match_bindings_seeded(
+                        &graph,
+                        optional,
+                        None,
+                        params,
+                        traversal_budget,
+                        &binding,
+                    )?;
+                    if extended.is_empty() {
+                        extended_all.push(binding); // left-outer: keep row, optional vars → null
+                    } else {
+                        extended_all.extend(extended);
+                    }
+                }
+                bindings = extended_all;
+            }
+            if let Some(predicate) = where_clause {
+                bindings.retain(|binding| {
+                    matches!(
+                        eval_expr(predicate, params, binding, &graph),
+                        Ok(Value::Bool(true))
+                    )
+                });
+            }
+            bindings
+        };
+
+        // WITH boundary (carry node/rel identity for bare vars; value-bind the rest).
+        let bindings = if let Some(with) = with_clause {
+            stage_with(bindings, with, params, &graph)?
+        } else {
+            bindings
+        };
 
         project_bound_rows(
             &graph,
             &bindings,
             return_clause,
             order_by.map(Vec::as_slice),
+            skip,
             limit,
             params,
         )
@@ -485,10 +589,57 @@ impl Zega {
                 }
                 created
             }
-            Statement::Merge { pattern, on_create } => {
+            Statement::Merge {
+                pattern,
+                on_create,
+                on_match,
+            } => {
                 vec![merge_pattern(
-                    &mut graph, &self.wal, pattern, on_create, params,
+                    &mut graph, &self.wal, pattern, on_create, on_match, params,
                 )?]
+            }
+            Statement::MatchSet {
+                match_pattern,
+                where_clause,
+                assignments,
+            } => {
+                let matched = resolve_match_bindings(
+                    &graph,
+                    match_pattern,
+                    where_clause.as_ref(),
+                    params,
+                    traversal_budget,
+                )?;
+                for binding in &matched {
+                    set_pattern(&mut graph, &self.wal, assignments, params, binding)?;
+                }
+                matched
+            }
+            Statement::MatchDelete {
+                match_pattern,
+                where_clause,
+                detach,
+                identifiers,
+            } => {
+                let matched = resolve_match_bindings(
+                    &graph,
+                    match_pattern,
+                    where_clause.as_ref(),
+                    params,
+                    traversal_budget,
+                )?;
+                let mut deleted = std::collections::HashSet::new();
+                for binding in &matched {
+                    delete_pattern(
+                        &mut graph,
+                        &self.wal,
+                        *detach,
+                        identifiers,
+                        binding,
+                        &mut deleted,
+                    )?;
+                }
+                matched
             }
             Statement::Set { .. } | Statement::Delete { .. } => vec![Bindings::new()],
             _ => {
@@ -497,7 +648,7 @@ impl Zega {
                 ));
             }
         };
-        project_bound_rows(&graph, &bindings, return_clause, order_by, limit, params)
+        project_bound_rows(&graph, &bindings, return_clause, order_by, None, limit, params)
     }
 
     fn exec_create(
@@ -544,13 +695,14 @@ impl Zega {
         &self,
         pattern: &[PatternElement],
         on_create: &[SetClause],
+        on_match: &[SetClause],
         params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
         let mut graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        merge_pattern(&mut graph, &self.wal, pattern, on_create, params)?;
+        merge_pattern(&mut graph, &self.wal, pattern, on_create, on_match, params)?;
         Ok(vec![])
     }
 
@@ -586,15 +738,96 @@ impl Zega {
     }
 
     fn exec_delete(&self, _identifiers: &[String]) -> Result<Vec<Row>> {
-        let _graph = self
+        // Standalone DELETE (no preceding MATCH) has no bound variables to act
+        // on — a no-op. Real deletes come through MATCH ... [DETACH] DELETE
+        // (Statement::MatchDelete / exec_match_delete).
+        Ok(vec![])
+    }
+
+    fn exec_match_set(
+        &self,
+        match_pattern: &[PatternElement],
+        where_clause: Option<&Expr>,
+        assignments: &[SetClause],
+        params: &HashMap<String, Value>,
+        traversal_budget: &mut TraversalWorkBudget,
+    ) -> Result<Vec<Row>> {
+        let mut graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let _wal = &self.wal;
-        for _id_str in _identifiers {
-            // For MVP, delete by variable name requires session context.
+        let bindings =
+            resolve_match_bindings(&graph, match_pattern, where_clause, params, traversal_budget)?;
+        for binding in &bindings {
+            set_pattern(&mut graph, &self.wal, assignments, params, binding)?;
         }
         Ok(vec![])
+    }
+
+    fn exec_match_delete(
+        &self,
+        match_pattern: &[PatternElement],
+        where_clause: Option<&Expr>,
+        detach: bool,
+        identifiers: &[String],
+        params: &HashMap<String, Value>,
+        traversal_budget: &mut TraversalWorkBudget,
+    ) -> Result<Vec<Row>> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let bindings =
+            resolve_match_bindings(&graph, match_pattern, where_clause, params, traversal_budget)?;
+        let mut deleted = std::collections::HashSet::new();
+        for binding in &bindings {
+            delete_pattern(
+                &mut graph,
+                &self.wal,
+                detach,
+                identifiers,
+                binding,
+                &mut deleted,
+            )?;
+        }
+        Ok(vec![])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exec_match_write(
+        &self,
+        match_pattern: &[PatternElement],
+        optional_patterns: &[Vec<PatternElement>],
+        where_clause: Option<&Expr>,
+        with_clause: Option<&WithClause>,
+        writes: &[WriteClause],
+        return_clause: &ReturnClause,
+        params: &HashMap<String, Value>,
+        traversal_budget: &mut TraversalWorkBudget,
+    ) -> Result<Vec<Row>> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        // 1. resolve MATCH (+ OPTIONAL MATCH + WHERE)
+        let mut bindings = resolve_match_and_optional(
+            &graph,
+            match_pattern,
+            optional_patterns,
+            where_clause,
+            params,
+            traversal_budget,
+        )?;
+        // 2. WITH boundary
+        if let Some(with) = with_clause {
+            bindings = stage_with(bindings, with, params, &graph)?;
+        }
+        // 3. apply each write clause in order, threading bindings
+        for clause in writes {
+            bindings = apply_write_clause(&mut graph, &self.wal, clause, bindings, params)?;
+        }
+        // 4. RETURN
+        project_bound_rows(&graph, &bindings, return_clause, None, None, None, params)
     }
 
     fn exec_kv_get(&self, key_expr: &Expr, params: &HashMap<String, Value>) -> Result<Vec<Row>> {
@@ -691,6 +924,18 @@ impl Zega {
             ttl: ttl_secs,
         })?;
         Ok(())
+    }
+
+    pub fn kv_set_nx(&self, key: String, value: Value, ttl_secs: Option<u64>) -> Result<bool> {
+        if !self.kv.set_nx(key.clone(), value.clone(), ttl_secs) {
+            return Ok(false);
+        }
+        self.wal.append(&Operation::KvSet {
+            key,
+            value,
+            ttl: ttl_secs,
+        })?;
+        Ok(true)
     }
 
     pub fn kv_del(&self, key: &str) -> Result<bool> {
@@ -798,7 +1043,30 @@ fn resolve_match_bindings(
     params: &HashMap<String, Value>,
     traversal_budget: &mut TraversalWorkBudget,
 ) -> Result<Vec<Bindings>> {
-    if let [start_element, end_element] = pattern {
+    resolve_match_bindings_seeded(
+        graph,
+        pattern,
+        where_clause,
+        params,
+        traversal_budget,
+        &Bindings::new(),
+    )
+}
+
+/// Like `resolve_match_bindings` but starts from an existing binding. OPTIONAL
+/// MATCH uses this to extend each prior row's binding (left-outer join); the
+/// seed's bound variables constrain the traversal. The anonymous-single-hop
+/// fast path is skipped when seeded (it would ignore the seed's constraints).
+fn resolve_match_bindings_seeded(
+    graph: &Graph,
+    pattern: &[PatternElement],
+    where_clause: Option<&Expr>,
+    params: &HashMap<String, Value>,
+    traversal_budget: &mut TraversalWorkBudget,
+    initial: &Bindings,
+) -> Result<Vec<Bindings>> {
+    if initial.is_empty() {
+        if let [start_element, end_element] = pattern {
         if where_clause.is_none()
             && start_element.relationship.is_none()
             && end_element
@@ -820,10 +1088,11 @@ fn resolve_match_bindings(
                 traversal_budget,
             );
         }
+        }
     }
 
     let mut bindings = vec![(
-        Bindings::new(),
+        initial.clone(),
         SmallVec::<[RelId; 4]>::new(),
         None::<NodeId>,
     )];
@@ -1298,6 +1567,7 @@ fn merge_pattern(
     wal: &Wal,
     pattern: &[PatternElement],
     on_create: &[SetClause],
+    on_match: &[SetClause],
     params: &HashMap<String, Value>,
 ) -> Result<Bindings> {
     let mut created = false;
@@ -1313,9 +1583,14 @@ fn merge_pattern(
                 .nodes_by_label(&element.labels[0])
                 .cloned()
                 .unwrap_or_default();
-            candidates
-                .into_iter()
-                .find(|&id| graph.get_node(id).is_some_and(|node| node.props == props))
+            candidates.into_iter().find(|&id| {
+                // MERGE matches a node whose properties include the pattern's
+                // (subset), not exact equality — the stored node may carry
+                // extra props (e.g. password, created) beyond the merge key.
+                graph
+                    .get_node(id)
+                    .is_some_and(|node| props.iter().all(|(k, v)| node.props.get(k) == Some(v)))
+            })
         } else {
             None
         };
@@ -1337,22 +1612,250 @@ fn merge_pattern(
         }
     }
 
-    if created {
-        for clause in on_create {
-            let value = eval_expr(&clause.value, params, &bindings, graph)?;
-            if let Expr::PropertyAccess(target, prop) = &clause.target {
-                if let Expr::Identifier(var) = &**target {
-                    if let Some(node_id) = bound_node(&bindings, var) {
-                        let props = HashMap::from([(prop.clone(), value)]);
-                        graph.update_node(node_id, props.clone());
-                        wal.append(&Operation::UpdateNode { id: node_id, props })?;
+    // ON CREATE SET when the node was just created; ON MATCH SET when it
+    // already existed (Neo4j MERGE semantics).
+    let clauses = if created { on_create } else { on_match };
+    set_pattern(graph, wal, clauses, params, &bindings)?;
+
+    Ok(bindings)
+}
+
+/// Resolve a MATCH plus its OPTIONAL MATCH segments and WHERE, returning the
+/// assembled bindings (shared by exec_match and exec_match_write).
+fn resolve_match_and_optional(
+    graph: &Graph,
+    pattern: &[PatternElement],
+    optional_patterns: &[Vec<PatternElement>],
+    where_clause: Option<&Expr>,
+    params: &HashMap<String, Value>,
+    traversal_budget: &mut TraversalWorkBudget,
+) -> Result<Vec<Bindings>> {
+    if optional_patterns.is_empty() {
+        return resolve_match_bindings(graph, pattern, where_clause, params, traversal_budget);
+    }
+    let mut bindings = resolve_match_bindings(graph, pattern, None, params, traversal_budget)?;
+    for optional in optional_patterns {
+        let mut extended = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let ext = resolve_match_bindings_seeded(
+                graph,
+                optional,
+                None,
+                params,
+                traversal_budget,
+                &binding,
+            )?;
+            if ext.is_empty() {
+                extended.push(binding);
+            } else {
+                extended.extend(ext);
+            }
+        }
+        bindings = extended;
+    }
+    if let Some(predicate) = where_clause {
+        bindings.retain(|binding| {
+            matches!(
+                eval_expr(predicate, params, binding, graph),
+                Ok(Value::Bool(true))
+            )
+        });
+    }
+    Ok(bindings)
+}
+
+/// Apply a WITH boundary: project to a new binding scope, then the WITH-WHERE.
+/// A bare variable bound to a node/relationship is carried with its identity
+/// intact (so later CREATE/MATCH can use it as a node); aggregations and other
+/// expressions become value bindings. With aggregates, rows are grouped via the
+/// projection engine and all columns become values.
+fn stage_with(
+    bindings: Vec<Bindings>,
+    with: &WithClause,
+    params: &HashMap<String, Value>,
+    graph: &Graph,
+) -> Result<Vec<Bindings>> {
+    let has_aggregates = with
+        .items
+        .iter()
+        .any(|item| matches!(item.expr, Expr::Aggregate { .. }));
+    let mut staged: Vec<Bindings> = if has_aggregates {
+        let projection = ReturnClause {
+            items: with.items.clone(),
+            distinct: false,
+        };
+        project_rows(&bindings, &projection, params, graph)?
+            .into_iter()
+            .map(|row| {
+                let mut binding = Bindings::new();
+                for (field, value) in row.fields {
+                    binding.insert(field, BoundValue::Value(value));
+                }
+                binding
+            })
+            .collect()
+    } else {
+        let mut out = Vec::with_capacity(bindings.len());
+        for binding in &bindings {
+            let mut next = Bindings::new();
+            for item in &with.items {
+                let name = item
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| expr_to_string(&item.expr));
+                if let Expr::Identifier(var) = &item.expr {
+                    if let Some(bound) = binding.get(var) {
+                        next.insert(name, bound.clone());
+                        continue;
                     }
+                }
+                let value = eval_expr(&item.expr, params, binding, graph)?;
+                next.insert(name, BoundValue::Value(value));
+            }
+            out.push(next);
+        }
+        out
+    };
+    if let Some(predicate) = with.where_clause.as_ref() {
+        staged.retain(|binding| {
+            matches!(
+                eval_expr(predicate, params, binding, graph),
+                Ok(Value::Bool(true))
+            )
+        });
+    }
+    Ok(staged)
+}
+
+/// Apply one write clause to a set of bindings, threading the (possibly
+/// expanded) bindings through. SET/CREATE mutate per binding; FOREACH loops the
+/// body per list element (row set unchanged); UNWIND expands the row set.
+fn apply_write_clause(
+    graph: &mut Graph,
+    wal: &Wal,
+    clause: &WriteClause,
+    bindings: Vec<Bindings>,
+    params: &HashMap<String, Value>,
+) -> Result<Vec<Bindings>> {
+    match clause {
+        WriteClause::Set(assignments) => {
+            for binding in &bindings {
+                set_pattern(graph, wal, assignments, params, binding)?;
+            }
+            Ok(bindings)
+        }
+        WriteClause::Create(pattern) => {
+            let mut out = Vec::with_capacity(bindings.len());
+            for binding in bindings {
+                out.push(create_pattern(graph, wal, pattern, params, binding)?);
+            }
+            Ok(out)
+        }
+        WriteClause::Foreach {
+            variable,
+            list,
+            body,
+        } => {
+            for binding in &bindings {
+                let Value::List(items) = eval_expr(list, params, binding, graph)? else {
+                    continue;
+                };
+                for item in items {
+                    let mut scoped = binding.clone();
+                    scoped.insert(variable.clone(), BoundValue::Value(item));
+                    let mut sub = vec![scoped];
+                    for inner in body {
+                        sub = apply_write_clause(graph, wal, inner, sub, params)?;
+                    }
+                }
+            }
+            Ok(bindings) // FOREACH is a write-loop; the outer row set is unchanged
+        }
+        WriteClause::Unwind { variable, list } => {
+            let mut out = Vec::new();
+            for binding in &bindings {
+                let Value::List(items) = eval_expr(list, params, binding, graph)? else {
+                    continue;
+                };
+                for item in items {
+                    let mut expanded = binding.clone();
+                    expanded.insert(variable.clone(), BoundValue::Value(item));
+                    out.push(expanded);
+                }
+            }
+            Ok(out) // UNWIND expands the row set
+        }
+    }
+}
+
+/// Apply `SET` assignments to the nodes bound in one match binding. Values are
+/// evaluated first (immutable graph borrow), then written (mutable borrow).
+fn set_pattern(
+    graph: &mut Graph,
+    wal: &Wal,
+    assignments: &[SetClause],
+    params: &HashMap<String, Value>,
+    binding: &Bindings,
+) -> Result<()> {
+    let mut updates: Vec<(NodeId, String, Value)> = Vec::new();
+    for clause in assignments {
+        if let Expr::PropertyAccess(target, prop) = &clause.target {
+            if let Expr::Identifier(var) = target.as_ref() {
+                if let Some(node_id) = bound_node(binding, var) {
+                    let value = eval_expr(&clause.value, params, binding, graph)?;
+                    updates.push((node_id, prop.clone(), value));
                 }
             }
         }
     }
+    for (node_id, prop, value) in updates {
+        let props = HashMap::from([(prop, value)]);
+        graph.update_node(node_id, props.clone());
+        wal.append(&Operation::UpdateNode { id: node_id, props })?;
+    }
+    Ok(())
+}
 
-    Ok(bindings)
+/// Delete the nodes/relationships bound to `identifiers` in one binding. With
+/// `detach`, a node's relationships are removed first; without it, deleting a
+/// node that still has relationships is an error (Neo4j semantics). `deleted`
+/// guards against double-deleting a node matched via multiple bindings.
+fn delete_pattern(
+    graph: &mut Graph,
+    wal: &Wal,
+    detach: bool,
+    identifiers: &[String],
+    binding: &Bindings,
+    deleted: &mut std::collections::HashSet<NodeId>,
+) -> Result<()> {
+    for ident in identifiers {
+        match binding.get(ident) {
+            Some(BoundValue::Node(node_id)) => {
+                let node_id = *node_id;
+                if !deleted.insert(node_id) {
+                    continue;
+                }
+                let rel_ids = graph.node_relationship_ids(node_id);
+                if !rel_ids.is_empty() && !detach {
+                    return Err(ZegaError::Execution(format!(
+                        "Cannot delete node {node_id} because it still has relationships. Use DETACH DELETE."
+                    )));
+                }
+                for rid in &rel_ids {
+                    wal.append(&Operation::DeleteRel { id: *rid })?;
+                }
+                graph.delete_node(node_id);
+                wal.append(&Operation::DeleteNode { id: node_id })?;
+            }
+            Some(BoundValue::Relationship(rel_id)) => {
+                let rel_id = *rel_id;
+                graph.delete_relationship(rel_id);
+                wal.append(&Operation::DeleteRel { id: rel_id })?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn match_candidates(
@@ -1474,6 +1977,29 @@ fn references_variable(expr: &Expr, variable: &str) -> bool {
         Expr::Aggregate { argument, .. } => argument
             .as_deref()
             .is_some_and(|expr| references_variable(expr, variable)),
+        Expr::FunctionCall { args, .. } => {
+            args.iter().any(|arg| references_variable(arg, variable))
+        }
+        Expr::IsNull { operand, .. } => references_variable(operand, variable),
+        Expr::Case {
+            subject,
+            branches,
+            default,
+        } => {
+            subject
+                .as_deref()
+                .is_some_and(|e| references_variable(e, variable))
+                || branches.iter().any(|(condition, result)| {
+                    references_variable(condition, variable) || references_variable(result, variable)
+                })
+                || default
+                    .as_deref()
+                    .is_some_and(|e| references_variable(e, variable))
+        }
+        Expr::MapLiteral(entries) => {
+            entries.values().any(|e| references_variable(e, variable))
+        }
+        Expr::ListLiteral(items) => items.iter().any(|e| references_variable(e, variable)),
         Expr::Parameter(_) | Expr::Literal(_) => false,
     }
 }
@@ -1486,6 +2012,30 @@ fn can_eval_from_binding(expr: &Expr, binding: &Bindings) -> bool {
             can_eval_from_binding(left, binding) && can_eval_from_binding(right, binding)
         }
         Expr::Aggregate { .. } => false,
+        Expr::FunctionCall { args, .. } => {
+            args.iter().all(|arg| can_eval_from_binding(arg, binding))
+        }
+        Expr::IsNull { operand, .. } => can_eval_from_binding(operand, binding),
+        Expr::Case {
+            subject,
+            branches,
+            default,
+        } => {
+            subject
+                .as_deref()
+                .is_none_or(|e| can_eval_from_binding(e, binding))
+                && branches.iter().all(|(condition, result)| {
+                    can_eval_from_binding(condition, binding)
+                        && can_eval_from_binding(result, binding)
+                })
+                && default
+                    .as_deref()
+                    .is_none_or(|e| can_eval_from_binding(e, binding))
+        }
+        Expr::MapLiteral(entries) => {
+            entries.values().all(|e| can_eval_from_binding(e, binding))
+        }
+        Expr::ListLiteral(items) => items.iter().all(|e| can_eval_from_binding(e, binding)),
         Expr::Parameter(_) | Expr::Literal(_) => true,
     }
 }
@@ -1533,6 +2083,7 @@ fn eval_expr(
                     .map(relationship_value)
                     .collect(),
             )),
+            Some(BoundValue::Value(value)) => Ok(value.clone()),
             None => Ok(Value::Null),
         },
         Expr::PropertyAccess(target, prop) => {
@@ -1553,10 +2104,275 @@ fn eval_expr(
             let rv = eval_expr(right, params, bindings, graph)?;
             eval_binary_op(lv, op.clone(), rv)
         }
+        Expr::FunctionCall { name, args } => {
+            let mut argv = Vec::with_capacity(args.len());
+            for a in args {
+                argv.push(eval_expr(a, params, bindings, graph)?);
+            }
+            eval_scalar_function(name, argv)
+        }
+        Expr::IsNull { operand, negated } => {
+            let is_null = matches!(eval_expr(operand, params, bindings, graph)?, Value::Null);
+            Ok(Value::Bool(if *negated { !is_null } else { is_null }))
+        }
+        Expr::Case {
+            subject,
+            branches,
+            default,
+        } => {
+            let subject_value = match subject {
+                Some(expr) => Some(eval_expr(expr, params, bindings, graph)?),
+                None => None,
+            };
+            for (condition, result) in branches {
+                let matched = match &subject_value {
+                    Some(value) => eval_expr(condition, params, bindings, graph)? == *value,
+                    None => {
+                        matches!(eval_expr(condition, params, bindings, graph)?, Value::Bool(true))
+                    }
+                };
+                if matched {
+                    return eval_expr(result, params, bindings, graph);
+                }
+            }
+            match default {
+                Some(expr) => eval_expr(expr, params, bindings, graph),
+                None => Ok(Value::Null),
+            }
+        }
+        Expr::MapLiteral(entries) => {
+            let mut map = HashMap::new();
+            for (key, expr) in entries {
+                map.insert(key.clone(), eval_expr(expr, params, bindings, graph)?);
+            }
+            Ok(Value::Map(map))
+        }
+        Expr::ListLiteral(items) => {
+            let mut list = Vec::with_capacity(items.len());
+            for item in items {
+                list.push(eval_expr(item, params, bindings, graph)?);
+            }
+            Ok(Value::List(list))
+        }
         Expr::Aggregate { .. } => Err(ZegaError::Execution(
             "aggregate expression evaluated outside RETURN aggregation".to_string(),
         )),
     }
+}
+
+/// Neo4j-compatible scalar (non-aggregate) functions. Null-in → Null-out for
+/// the string/numeric coercions, matching Neo4j semantics. Unknown names return
+/// an error rather than silently producing null.
+fn eval_scalar_function(name: &str, args: Vec<Value>) -> Result<Value> {
+    let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Null);
+    let result = match name {
+        // coalesce(a, b, ...) -> first non-null argument
+        "coalesce" => args
+            .iter()
+            .find(|v| !matches!(v, Value::Null))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "tostring" => scalar_to_string(&arg(0))
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+        "tolower" => match arg(0) {
+            Value::String(s) => Value::String(s.to_lowercase()),
+            _ => Value::Null,
+        },
+        "toupper" => match arg(0) {
+            Value::String(s) => Value::String(s.to_uppercase()),
+            _ => Value::Null,
+        },
+        "trim" => match arg(0) {
+            Value::String(s) => Value::String(s.trim().to_string()),
+            _ => Value::Null,
+        },
+        "ltrim" => match arg(0) {
+            Value::String(s) => Value::String(s.trim_start().to_string()),
+            _ => Value::Null,
+        },
+        "rtrim" => match arg(0) {
+            Value::String(s) => Value::String(s.trim_end().to_string()),
+            _ => Value::Null,
+        },
+        "replace" => match (arg(0), arg(1), arg(2)) {
+            (Value::String(s), Value::String(search), Value::String(rep)) => {
+                Value::String(s.replace(&search, &rep))
+            }
+            _ => Value::Null,
+        },
+        "split" => match (arg(0), arg(1)) {
+            (Value::String(s), Value::String(delim)) => {
+                let parts: Vec<Value> = if delim.is_empty() {
+                    s.chars().map(|c| Value::String(c.to_string())).collect()
+                } else {
+                    s.split(delim.as_str())
+                        .map(|p| Value::String(p.to_string()))
+                        .collect()
+                };
+                Value::List(parts)
+            }
+            _ => Value::Null,
+        },
+        "substring" => match arg(0) {
+            Value::String(s) => {
+                let chars: Vec<char> = s.chars().collect();
+                let start = arg(1).as_int().unwrap_or(0).max(0) as usize;
+                let end = match args.get(2).and_then(|v| v.as_int()) {
+                    Some(len) => (start + len.max(0) as usize).min(chars.len()),
+                    None => chars.len(),
+                };
+                let start = start.min(chars.len());
+                Value::String(chars[start..end].iter().collect())
+            }
+            _ => Value::Null,
+        },
+        "size" => match arg(0) {
+            Value::List(l) => Value::Int(l.len() as i64),
+            Value::String(s) => Value::Int(s.chars().count() as i64),
+            _ => Value::Null,
+        },
+        "tointeger" => match arg(0) {
+            Value::Int(i) => Value::Int(i),
+            Value::Float(_) => arg(0).to_f64().map(|f| Value::Int(f as i64)).unwrap_or(Value::Null),
+            Value::String(s) => s.trim().parse::<i64>().map(Value::Int).unwrap_or(Value::Null),
+            _ => Value::Null,
+        },
+        "tofloat" => match arg(0) {
+            Value::Float(_) => arg(0),
+            Value::Int(i) => Value::from_f64(i as f64),
+            Value::String(s) => s.trim().parse::<f64>().map(Value::from_f64).unwrap_or(Value::Null),
+            _ => Value::Null,
+        },
+        // exists(expr) -> the expr resolved to a non-null value
+        "exists" => Value::Bool(!matches!(arg(0), Value::Null)),
+        // labels(node) -> the node's label list (node evaluates to a Map with a
+        // "labels" key, injected by the identifier→node projection)
+        "labels" => match arg(0) {
+            Value::Map(m) => m.get("labels").cloned().unwrap_or(Value::List(Vec::new())),
+            _ => Value::Null,
+        },
+        // Temporal: wall-clock now. This is the injectable-clock seam for the
+        // deferred DST/determinism work — today it matches Neo4j's own
+        // non-deterministic datetime()/timestamp().
+        "datetime" => Value::String(now_iso8601()),
+        "timestamp" => Value::Int(now_millis()),
+        // duration({weeks, days, hours, minutes, seconds, milliseconds}) -> ms.
+        // Added to a datetime via `+` (see eval_add).
+        "duration" => match arg(0) {
+            Value::Map(m) => {
+                let field = |k: &str| {
+                    m.get(k)
+                        .map(|v| match v {
+                            Value::Int(i) => *i,
+                            Value::Float(_) => v.to_f64().map(|f| f as i64).unwrap_or(0),
+                            _ => 0,
+                        })
+                        .unwrap_or(0)
+                };
+                Value::Int(
+                    field("weeks") * 604_800_000
+                        + field("days") * 86_400_000
+                        + field("hours") * 3_600_000
+                        + field("minutes") * 60_000
+                        + field("seconds") * 1_000
+                        + field("milliseconds"),
+                )
+            }
+            _ => Value::Null,
+        },
+        other => {
+            return Err(ZegaError::Execution(format!("unsupported function: {other}")));
+        }
+    };
+    Ok(result)
+}
+
+/// Neo4j `toString` coercion: strings/numbers/bools stringify; everything else
+/// (null, list, map) -> null.
+fn scalar_to_string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Int(i) => Some(i.to_string()),
+        Value::Float(_) => v.to_f64().map(|f| {
+            if f.is_finite() && f == f.trunc() {
+                format!("{f:.1}")
+            } else {
+                format!("{f}")
+            }
+        }),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn now_millis() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn now_iso8601() -> String {
+    iso8601_from_millis(now_millis())
+}
+
+/// Format a UTC instant (epoch milliseconds) as ISO-8601
+/// (`YYYY-MM-DDTHH:MM:SS.mmmZ`), dependency-free via civil-from-days.
+fn iso8601_from_millis(total_millis: i64) -> String {
+    let total_secs = total_millis.div_euclid(1000);
+    let millis = total_millis.rem_euclid(1000);
+    let days = total_secs.div_euclid(86_400);
+    let sod = total_secs.rem_euclid(86_400);
+    let (hour, minute, second) = (sod / 3600, (sod % 3600) / 60, sod % 60);
+    // civil_from_days (Howard Hinnant), epoch 1970-01-01
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+/// Days since 1970-01-01 for a civil date (Howard Hinnant) — inverse of the
+/// civil-from-days used in formatting.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Parse an ISO-8601 datetime (`YYYY-MM-DDTHH:MM:SS[.fff...][Z|±hh:mm]`) to
+/// epoch milliseconds (UTC). Lenient: accepts the migration's nanosecond
+/// `+00:00` form and the `Z` form; the offset is treated as UTC. None if it
+/// does not look like a datetime.
+fn parse_iso8601(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if s.len() < 19 || b[4] != b'-' || b[7] != b'-' || (b[10] != b'T' && b[10] != b' ') {
+        return None;
+    }
+    let num = |a: usize, z: usize| s.get(a..z).and_then(|p| p.parse::<i64>().ok());
+    let (year, month, day) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (hour, minute, second) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    let mut frac_ms = 0i64;
+    if b.len() > 19 && b[19] == b'.' {
+        let frac: String = s[20..].chars().take_while(|c| c.is_ascii_digit()).take(3).collect();
+        if !frac.is_empty() {
+            frac_ms = format!("{frac:0<3}").parse::<i64>().unwrap_or(0);
+        }
+    }
+    let days = days_from_civil(year, month, day);
+    Some((days * 86_400 + hour * 3600 + minute * 60 + second) * 1000 + frac_ms)
 }
 
 fn eval_binary_op(left: Value, op: BinaryOperator, right: Value) -> Result<Value> {
@@ -1585,6 +2401,80 @@ fn eval_binary_op(left: Value, op: BinaryOperator, right: Value) -> Result<Value
         BinaryOperator::Or => Ok(Value::Bool(
             left.as_bool().unwrap_or(false) || right.as_bool().unwrap_or(false),
         )),
+        BinaryOperator::Add => Ok(eval_add(left, right)),
+        BinaryOperator::Sub => Ok(eval_numeric(left, right, |a, b| a - b)),
+        BinaryOperator::Mul => Ok(eval_numeric(left, right, |a, b| a * b)),
+        BinaryOperator::StartsWith => Ok(string_predicate(&left, &right, |a, b| a.starts_with(b))),
+        BinaryOperator::EndsWith => Ok(string_predicate(&left, &right, |a, b| a.ends_with(b))),
+        BinaryOperator::Contains => Ok(string_predicate(&left, &right, |a, b| a.contains(b))),
+    }
+}
+
+/// Neo4j string predicates (STARTS WITH / ENDS WITH / CONTAINS): both operands
+/// must be strings; null or non-string → null (falsy in WHERE).
+fn string_predicate(left: &Value, right: &Value, f: fn(&str, &str) -> bool) -> Value {
+    match (left, right) {
+        (Value::String(a), Value::String(b)) => Value::Bool(f(a, b)),
+        _ => Value::Null,
+    }
+}
+
+/// Coerce a value to f64 for arithmetic (Int or Float); None otherwise.
+fn as_number(v: &Value) -> Option<f64> {
+    match v {
+        Value::Int(i) => Some(*i as f64),
+        Value::Float(_) => v.to_f64(),
+        _ => None,
+    }
+}
+
+/// Neo4j `+`: null-propagating; Int+Int stays Int; numeric mix → Float; string
+/// concatenation (with the other side stringified); List+List concatenation.
+fn eval_add(left: Value, right: Value) -> Value {
+    match (&left, &right) {
+        (Value::Null, _) | (_, Value::Null) => Value::Null,
+        (Value::Int(a), Value::Int(b)) => Value::Int(a.wrapping_add(*b)),
+        // datetime (ISO string) + duration (ms), either order -> shifted ISO datetime
+        (Value::String(s), Value::Int(ms)) | (Value::Int(ms), Value::String(s))
+            if parse_iso8601(s).is_some() =>
+        {
+            Value::String(iso8601_from_millis(parse_iso8601(s).unwrap() + ms))
+        }
+        (Value::String(a), _) => Value::String(format!("{a}{}", concat_str(&right))),
+        (_, Value::String(b)) => Value::String(format!("{}{b}", concat_str(&left))),
+        (Value::List(a), Value::List(b)) => {
+            let mut v = a.clone();
+            v.extend(b.clone());
+            Value::List(v)
+        }
+        _ => match (as_number(&left), as_number(&right)) {
+            (Some(a), Some(b)) => Value::from_f64(a + b),
+            _ => Value::Null,
+        },
+    }
+}
+
+/// Numeric `-`/`*`: null-propagating; Int op Int stays Int; otherwise Float.
+fn eval_numeric(left: Value, right: Value, f: fn(f64, f64) -> f64) -> Value {
+    match (&left, &right) {
+        (Value::Null, _) | (_, Value::Null) => Value::Null,
+        (Value::Int(a), Value::Int(b)) => Value::Int(f(*a as f64, *b as f64) as i64),
+        _ => match (as_number(&left), as_number(&right)) {
+            (Some(a), Some(b)) => Value::from_f64(f(a, b)),
+            _ => Value::Null,
+        },
+    }
+}
+
+/// How a non-string operand renders when concatenated to a string with `+`.
+fn concat_str(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(_) => v.to_f64().map(|f| format!("{f}")).unwrap_or_default(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -1615,6 +2505,8 @@ fn bound_property(value: &BoundValue, prop: &str, graph: &Graph) -> Option<Value
             }
         }
         BoundValue::Relationships(_) => None,
+        BoundValue::Value(Value::Map(map)) => map.get(prop).cloned(),
+        BoundValue::Value(_) => None,
     }
 }
 
@@ -1665,6 +2557,64 @@ fn eval_order_expr(
             let left = eval_order_expr(left, params, bindings, row, graph, return_clause)?;
             let right = eval_order_expr(right, params, bindings, row, graph, return_clause)?;
             eval_binary_op(left, op.clone(), right)
+        }
+        Expr::FunctionCall { name, args } => {
+            let mut argv = Vec::with_capacity(args.len());
+            for a in args {
+                argv.push(eval_order_expr(a, params, bindings, row, graph, return_clause)?);
+            }
+            eval_scalar_function(name, argv)
+        }
+        Expr::IsNull { operand, negated } => {
+            let is_null = matches!(
+                eval_order_expr(operand, params, bindings, row, graph, return_clause)?,
+                Value::Null
+            );
+            Ok(Value::Bool(if *negated { !is_null } else { is_null }))
+        }
+        Expr::Case {
+            subject,
+            branches,
+            default,
+        } => {
+            let subject_value = match subject {
+                Some(expr) => {
+                    Some(eval_order_expr(expr, params, bindings, row, graph, return_clause)?)
+                }
+                None => None,
+            };
+            for (condition, result) in branches {
+                let cond_value =
+                    eval_order_expr(condition, params, bindings, row, graph, return_clause)?;
+                let matched = match &subject_value {
+                    Some(value) => cond_value == *value,
+                    None => matches!(cond_value, Value::Bool(true)),
+                };
+                if matched {
+                    return eval_order_expr(result, params, bindings, row, graph, return_clause);
+                }
+            }
+            match default {
+                Some(expr) => eval_order_expr(expr, params, bindings, row, graph, return_clause),
+                None => Ok(Value::Null),
+            }
+        }
+        Expr::MapLiteral(entries) => {
+            let mut map = HashMap::new();
+            for (key, expr) in entries {
+                map.insert(
+                    key.clone(),
+                    eval_order_expr(expr, params, bindings, row, graph, return_clause)?,
+                );
+            }
+            Ok(Value::Map(map))
+        }
+        Expr::ListLiteral(items) => {
+            let mut list = Vec::with_capacity(items.len());
+            for item in items {
+                list.push(eval_order_expr(item, params, bindings, row, graph, return_clause)?);
+            }
+            Ok(Value::List(list))
         }
         Expr::Aggregate { .. } => Ok(Value::Null),
     }
@@ -1919,11 +2869,13 @@ fn project_rows(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn project_bound_rows(
     graph: &Graph,
     bindings: &[Bindings],
     return_clause: &ReturnClause,
     order_by: Option<&[(Expr, OrderDirection)]>,
+    skip: Option<&Expr>,
     limit: Option<&Expr>,
     params: &HashMap<String, Value>,
 ) -> Result<Vec<Row>> {
@@ -1962,6 +2914,27 @@ fn project_bound_rows(
         }
     }
     let mut rows: Vec<_> = scoped_rows.into_iter().map(|(_, row)| row).collect();
+
+    if return_clause.distinct {
+        let mut seen = std::collections::HashSet::new();
+        rows.retain(|row| {
+            let mut signature: Vec<(String, Value)> = row
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            signature.sort_by(|a, b| a.0.cmp(&b.0));
+            seen.insert(signature)
+        });
+    }
+
+    // SKIP applies after ordering/dedup, before LIMIT (Neo4j order).
+    if let Some(skip) = skip {
+        if let Value::Int(skip) = eval_expr(skip, params, &Bindings::new(), graph)? {
+            let skip = (skip.max(0) as usize).min(rows.len());
+            rows.drain(0..skip);
+        }
+    }
 
     if let Some(limit) = limit {
         if let Value::Int(limit) = eval_expr(limit, params, &Bindings::new(), graph)? {
@@ -2212,6 +3185,754 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].fields.contains_key("n"));
+    }
+
+    #[test]
+    fn test_multi_label_node_create_and_match() {
+        // zega#23 gap 1: Tana's identity model uses :User:Agent / :User:Human.
+        // CREATE must store all labels; MATCH must require ALL listed labels
+        // (Neo4j AND semantics), and match on any subset.
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let p = HashMap::from([("e".to_string(), Value::String("idris@tana.gg".to_string()))]);
+        zega.query("CREATE (n:User:Agent {email: $e})", p.clone())
+            .unwrap();
+        // matchable by either label alone and by both together
+        for q in [
+            "MATCH (n:User {email: $e}) RETURN n",
+            "MATCH (n:Agent {email: $e}) RETURN n",
+            "MATCH (n:User:Agent {email: $e}) RETURN n",
+            "MATCH (n:Agent:User {email: $e}) RETURN n", // order-independent
+        ] {
+            let rows = zega.query(q, p.clone()).unwrap();
+            assert_eq!(rows.len(), 1, "expected 1 row for `{q}`");
+        }
+        // a label it does NOT carry must exclude it (AND semantics)
+        let rows = zega
+            .query("MATCH (n:User:Human {email: $e}) RETURN n", p.clone())
+            .unwrap();
+        assert_eq!(rows.len(), 0, "User:Human must not match a User:Agent node");
+        // n.labels pseudo-property returns the stored label list (used for
+        // parity verification against Neo4j's labels(n) during the export)
+        let rows = zega
+            .query("MATCH (n:User:Agent {email: $e}) RETURN n.labels", p)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let labels = rows[0].fields.values().next().unwrap();
+        match labels {
+            Value::List(items) => {
+                assert_eq!(items.len(), 2, "expected 2 labels, got {items:?}");
+                assert!(items.contains(&Value::String("User".to_string())));
+                assert!(items.contains(&Value::String("Agent".to_string())));
+            }
+            other => panic!("expected n.labels to be a list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_comma_match_connects_existing_nodes() {
+        // zega#23 gap 2: MATCH (a),(b) CREATE (a)-[:R]->(b) — the exact shape the
+        // relationship export uses to connect two already-loaded nodes by _nid.
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (n:User {_nid: $x})",
+            HashMap::from([("x".to_string(), Value::String("u1".to_string()))]),
+        )
+        .unwrap();
+        zega.query(
+            "CREATE (n:Shop {_nid: $y})",
+            HashMap::from([("y".to_string(), Value::String("s1".to_string()))]),
+        )
+        .unwrap();
+        let both = HashMap::from([
+            ("x".to_string(), Value::String("u1".to_string())),
+            ("y".to_string(), Value::String("s1".to_string())),
+        ]);
+        zega.query(
+            "MATCH (a {_nid: $x}), (b {_nid: $y}) CREATE (a)-[:HAS_SHOP]->(b)",
+            both,
+        )
+        .unwrap();
+        let rows = zega
+            .query(
+                "MATCH (a:User)-[:HAS_SHOP]->(b:Shop) RETURN a, b",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1, "the HAS_SHOP relationship must connect u1->s1");
+    }
+
+    #[test]
+    fn test_comma_match_is_cartesian_product() {
+        // MATCH (a:A), (b:B) with no relationship = cross product (Neo4j semantics).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        for i in 0..3 {
+            zega.query(
+                "CREATE (n:A {i: $i})",
+                HashMap::from([("i".to_string(), Value::Int(i))]),
+            )
+            .unwrap();
+        }
+        for i in 0..4 {
+            zega.query(
+                "CREATE (n:B {i: $i})",
+                HashMap::from([("i".to_string(), Value::Int(i))]),
+            )
+            .unwrap();
+        }
+        let rows = zega
+            .query("MATCH (a:A), (b:B) RETURN a, b", HashMap::new())
+            .unwrap();
+        assert_eq!(rows.len(), 12, "3 A x 4 B = 12 rows");
+    }
+
+    #[test]
+    fn test_scalar_functions() {
+        // zega#23 follow-up: scalar functions the Next.js apps use against canonical.
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (n:T {name: $n, num: $m})",
+            HashMap::from([
+                ("n".to_string(), Value::String("  Hello World  ".to_string())),
+                ("m".to_string(), Value::Int(42)),
+            ]),
+        )
+        .unwrap();
+        let cases: [(&str, Value); 10] = [
+            ("MATCH (n:T) RETURN toLower(n.name) AS v", Value::String("  hello world  ".to_string())),
+            ("MATCH (n:T) RETURN toUpper(trim(n.name)) AS v", Value::String("HELLO WORLD".to_string())),
+            ("MATCH (n:T) RETURN trim(n.name) AS v", Value::String("Hello World".to_string())),
+            ("MATCH (n:T) RETURN toString(n.num) AS v", Value::String("42".to_string())),
+            ("MATCH (n:T) RETURN coalesce(n.missing, n.num) AS v", Value::Int(42)),
+            ("MATCH (n:T) RETURN replace(trim(n.name), \"l\", \"L\") AS v", Value::String("HeLLo WorLd".to_string())),
+            ("MATCH (n:T) RETURN substring(trim(n.name), 0, 5) AS v", Value::String("Hello".to_string())),
+            ("MATCH (n:T) RETURN size(trim(n.name)) AS v", Value::Int(11)),
+            ("MATCH (n:T) RETURN exists(n.name) AS v", Value::Bool(true)),
+            ("MATCH (n:T) RETURN exists(n.nope) AS v", Value::Bool(false)),
+        ];
+        for (q, expected) in cases {
+            let rows = zega.query(q, HashMap::new()).unwrap();
+            assert_eq!(rows.len(), 1, "row count for `{q}`");
+            let got = rows[0].fields.values().next().unwrap();
+            assert_eq!(got, &expected, "value for `{q}`");
+        }
+        // split -> list of 3
+        let rows = zega
+            .query("MATCH (n:T) RETURN split(\"a,b,c\", \",\") AS v", HashMap::new())
+            .unwrap();
+        match rows[0].fields.values().next().unwrap() {
+            Value::List(l) => assert_eq!(l.len(), 3),
+            o => panic!("expected list, got {o:?}"),
+        }
+        // datetime() -> ISO-8601 UTC string
+        let rows = zega
+            .query("MATCH (n:T) RETURN datetime() AS v", HashMap::new())
+            .unwrap();
+        match rows[0].fields.values().next().unwrap() {
+            Value::String(s) => assert!(
+                s.contains('T') && s.ends_with('Z') && s.len() >= 20,
+                "datetime() shape: {s}"
+            ),
+            o => panic!("expected datetime string, got {o:?}"),
+        }
+    }
+
+    #[test]
+    fn test_return_distinct() {
+        // zega#23 follow-up: RETURN DISTINCT (apps use it for shard lookups).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        for g in [1, 1, 2, 2, 2, 3] {
+            zega.query(
+                "CREATE (n:D {g: $g})",
+                HashMap::from([("g".to_string(), Value::Int(g))]),
+            )
+            .unwrap();
+        }
+        let all = zega
+            .query("MATCH (n:D) RETURN n.g AS g", HashMap::new())
+            .unwrap();
+        assert_eq!(all.len(), 6, "without DISTINCT: all rows");
+        let distinct = zega
+            .query("MATCH (n:D) RETURN DISTINCT n.g AS g", HashMap::new())
+            .unwrap();
+        assert_eq!(distinct.len(), 3, "DISTINCT collapses to 1,2,3");
+    }
+
+    #[test]
+    fn test_match_set_updates_node() {
+        // zega#23 follow-up: MATCH ... SET was a silent no-op stub; the apps
+        // SET constantly (apple_email, last_used_at, password, ...).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let email = || Value::String("a@b.c".to_string());
+        zega.query(
+            "CREATE (n:User {email: $e, name: $n})",
+            HashMap::from([
+                ("e".to_string(), email()),
+                ("n".to_string(), Value::String("Old".to_string())),
+            ]),
+        )
+        .unwrap();
+        zega.query(
+            "MATCH (n:User {email: $e}) SET n.name = $new, n.verified = true",
+            HashMap::from([
+                ("e".to_string(), email()),
+                ("new".to_string(), Value::String("New".to_string())),
+            ]),
+        )
+        .unwrap();
+        let rows = zega
+            .query(
+                "MATCH (n:User {email: $e}) RETURN n.name AS name, n.verified AS v, n.email AS email",
+                HashMap::from([("e".to_string(), email())]),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fields.get("name"), Some(&Value::String("New".to_string())));
+        assert_eq!(rows[0].fields.get("v"), Some(&Value::Bool(true)));
+        // merge, not replace — untouched property survives
+        assert_eq!(rows[0].fields.get("email"), Some(&email()));
+        // SET ... RETURN projects the updated value
+        let rows = zega
+            .query(
+                "MATCH (n:User {email: $e}) SET n.name = $z RETURN n.name AS name",
+                HashMap::from([
+                    ("e".to_string(), email()),
+                    ("z".to_string(), Value::String("Final".to_string())),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(rows[0].fields.get("name"), Some(&Value::String("Final".to_string())));
+    }
+
+    #[test]
+    fn test_match_detach_delete() {
+        // zega#23 gap 3: DELETE was a stub; DETACH DELETE used for shop deletion.
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (u:User {id: $u})",
+            HashMap::from([("u".to_string(), Value::String("u1".to_string()))]),
+        )
+        .unwrap();
+        zega.query(
+            "CREATE (s:Shop {id: $s})",
+            HashMap::from([("s".to_string(), Value::String("s1".to_string()))]),
+        )
+        .unwrap();
+        zega.query(
+            "MATCH (u {id: $u}), (s {id: $s}) CREATE (u)-[:OWNS]->(s)",
+            HashMap::from([
+                ("u".to_string(), Value::String("u1".to_string())),
+                ("s".to_string(), Value::String("s1".to_string())),
+            ]),
+        )
+        .unwrap();
+        // plain DELETE on a node with relationships must error (Neo4j semantics)
+        let res = zega.query(
+            "MATCH (s:Shop {id: $s}) DELETE s",
+            HashMap::from([("s".to_string(), Value::String("s1".to_string()))]),
+        );
+        assert!(res.is_err(), "plain DELETE on a node with rels must error");
+        // DETACH DELETE removes the node AND its relationship
+        zega.query(
+            "MATCH (s:Shop {id: $s}) DETACH DELETE s",
+            HashMap::from([("s".to_string(), Value::String("s1".to_string()))]),
+        )
+        .unwrap();
+        let shops = zega
+            .query("MATCH (s:Shop) RETURN count(s) AS c", HashMap::new())
+            .unwrap();
+        assert_eq!(shops[0].fields.get("c"), Some(&Value::Int(0)), "shop gone");
+        let owns = zega
+            .query("MATCH (:User)-[:OWNS]->() RETURN count(*) AS c", HashMap::new())
+            .unwrap();
+        assert_eq!(owns[0].fields.values().next(), Some(&Value::Int(0)), "rel gone");
+        let users = zega
+            .query("MATCH (u:User) RETURN count(u) AS c", HashMap::new())
+            .unwrap();
+        assert_eq!(users[0].fields.get("c"), Some(&Value::Int(1)), "user survives");
+    }
+
+    #[test]
+    fn test_arithmetic_isnull_labels() {
+        // zega#23 follow-ups: arithmetic operators, IS NULL / IS NOT NULL, labels().
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (n:User:Agent {n: $n, s: $s})",
+            HashMap::from([
+                ("n".to_string(), Value::Int(10)),
+                ("s".to_string(), Value::String("hi".to_string())),
+            ]),
+        )
+        .unwrap();
+        let arith: [(&str, Value); 4] = [
+            ("MATCH (x:User) RETURN x.n + 5 AS v", Value::Int(15)),
+            ("MATCH (x:User) RETURN x.n - 3 AS v", Value::Int(7)),
+            ("MATCH (x:User) RETURN x.n * 2 AS v", Value::Int(20)),
+            ("MATCH (x:User) RETURN x.s + \"!\" AS v", Value::String("hi!".to_string())),
+        ];
+        for (q, want) in arith {
+            let rows = zega.query(q, HashMap::new()).unwrap();
+            assert_eq!(rows[0].fields.values().next(), Some(&want), "`{q}`");
+        }
+        // IS NULL / IS NOT NULL
+        let r = zega
+            .query("MATCH (x:User) WHERE x.missing IS NULL RETURN x.n AS v", HashMap::new())
+            .unwrap();
+        assert_eq!(r.len(), 1, "missing prop IS NULL matches");
+        let r = zega
+            .query("MATCH (x:User) WHERE x.n IS NOT NULL RETURN x.n AS v", HashMap::new())
+            .unwrap();
+        assert_eq!(r.len(), 1, "present prop IS NOT NULL matches");
+        let r = zega
+            .query("MATCH (x:User) WHERE x.n IS NULL RETURN x.n AS v", HashMap::new())
+            .unwrap();
+        assert_eq!(r.len(), 0, "present prop IS NULL excludes");
+        // labels()
+        let r = zega
+            .query("MATCH (x:User) RETURN labels(x) AS v", HashMap::new())
+            .unwrap();
+        match r[0].fields.values().next().unwrap() {
+            Value::List(l) => assert_eq!(l.len(), 2, "User:Agent → 2 labels"),
+            o => panic!("expected list, got {o:?}"),
+        }
+        // SET x = null reads back as null (IS NULL true)
+        zega.query("MATCH (x:User) SET x.s = null", HashMap::new()).unwrap();
+        let r = zega
+            .query("MATCH (x:User) WHERE x.s IS NULL RETURN x.n AS v", HashMap::new())
+            .unwrap();
+        assert_eq!(r.len(), 1, "after SET=null, IS NULL matches");
+    }
+
+    #[test]
+    fn test_optional_match() {
+        // zega#23 follow-up: OPTIONAL MATCH (left-outer join). Two shops, one
+        // with a product, one without — both rows must survive.
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        for id in ["s1", "s2"] {
+            zega.query(
+                "CREATE (s:Shop {id: $i})",
+                HashMap::from([("i".to_string(), Value::String(id.to_string()))]),
+            )
+            .unwrap();
+        }
+        zega.query(
+            "CREATE (p:Product {name: $n})",
+            HashMap::from([("n".to_string(), Value::String("widget".to_string()))]),
+        )
+        .unwrap();
+        zega.query(
+            "MATCH (s:Shop {id: $s}), (p:Product {name: $p}) CREATE (s)-[:HAS]->(p)",
+            HashMap::from([
+                ("s".to_string(), Value::String("s1".to_string())),
+                ("p".to_string(), Value::String("widget".to_string())),
+            ]),
+        )
+        .unwrap();
+        // both shops returned; s1 with product, s2 with null
+        let rows = zega
+            .query(
+                "MATCH (s:Shop) OPTIONAL MATCH (s)-[:HAS]->(p:Product) RETURN s.id AS sid, p.name AS pname",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2, "left-outer: both shops preserved");
+        let mut by_shop = std::collections::HashMap::new();
+        for r in &rows {
+            by_shop.insert(
+                r.fields.get("sid").cloned(),
+                r.fields.get("pname").cloned(),
+            );
+        }
+        assert_eq!(
+            by_shop.get(&Some(Value::String("s1".to_string()))),
+            Some(&Some(Value::String("widget".to_string()))),
+            "s1 has the product"
+        );
+        assert_eq!(
+            by_shop.get(&Some(Value::String("s2".to_string()))),
+            Some(&Some(Value::Null)),
+            "s2 (no product) → null"
+        );
+        // aggregation over the optional: count(p) is 1 for s1, 0 for s2
+        let rows = zega
+            .query(
+                "MATCH (s:Shop) OPTIONAL MATCH (s)-[:HAS]->(p) RETURN s.id AS sid, count(p) AS pc",
+                HashMap::new(),
+            )
+            .unwrap();
+        let mut counts = std::collections::HashMap::new();
+        for r in &rows {
+            counts.insert(r.fields.get("sid").cloned(), r.fields.get("pc").cloned());
+        }
+        assert_eq!(counts.get(&Some(Value::String("s1".to_string()))), Some(&Some(Value::Int(1))));
+        assert_eq!(counts.get(&Some(Value::String("s2".to_string()))), Some(&Some(Value::Int(0))));
+    }
+
+    #[test]
+    fn test_with_aggregate_and_carry() {
+        // zega#23 keystone: WITH. The apps' real pattern —
+        //   MATCH (r) OPTIONAL MATCH (r)-[:HAS]->(a) WITH r, collect(a) AS xs RETURN r.v, xs
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let s = |v: &str| Value::String(v.to_string());
+        zega.query(
+            "CREATE (r:Release {layer: $l, version: $v})",
+            HashMap::from([("l".to_string(), s("runtime")), ("v".to_string(), s("1.0"))]),
+        )
+        .unwrap();
+        for name in ["x", "y"] {
+            zega.query(
+                "CREATE (a:Artifact {name: $n})",
+                HashMap::from([("n".to_string(), s(name))]),
+            )
+            .unwrap();
+            zega.query(
+                "MATCH (r:Release {layer: $l}), (a:Artifact {name: $n}) CREATE (r)-[:HAS_ARTIFACT]->(a)",
+                HashMap::from([("l".to_string(), s("runtime")), ("n".to_string(), s(name))]),
+            )
+            .unwrap();
+        }
+        // carry r + collect artifacts
+        let rows = zega.query(
+            "MATCH (r:Release {layer: $l}) OPTIONAL MATCH (r)-[:HAS_ARTIFACT]->(a:Artifact) WITH r, collect(a) AS artifacts RETURN r.version AS version, artifacts",
+            HashMap::from([("l".to_string(), s("runtime"))]),
+        ).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fields.get("version"), Some(&s("1.0")), "carried r.version");
+        match rows[0].fields.get("artifacts") {
+            Some(Value::List(l)) => assert_eq!(l.len(), 2, "collected 2 artifacts"),
+            o => panic!("expected list, got {o:?}"),
+        }
+        // a release with NO artifacts → collect over unmatched optional = empty list
+        zega.query(
+            "CREATE (r:Release {layer: $l, version: $v})",
+            HashMap::from([("l".to_string(), s("empty")), ("v".to_string(), s("0.1"))]),
+        )
+        .unwrap();
+        let rows = zega.query(
+            "MATCH (r:Release {layer: $l}) OPTIONAL MATCH (r)-[:HAS_ARTIFACT]->(a:Artifact) WITH r, collect(a) AS artifacts RETURN artifacts",
+            HashMap::from([("l".to_string(), s("empty"))]),
+        ).unwrap();
+        match rows[0].fields.get("artifacts") {
+            Some(Value::List(l)) => assert_eq!(l.len(), 0, "no artifacts → empty list"),
+            o => panic!("expected empty list, got {o:?}"),
+        }
+        // WITH ... WHERE filters the aggregated rows
+        let rows = zega.query(
+            "MATCH (r:Release) OPTIONAL MATCH (r)-[:HAS_ARTIFACT]->(a) WITH r, count(a) AS c WHERE c > 0 RETURN r.version AS v",
+            HashMap::new(),
+        ).unwrap();
+        assert_eq!(rows.len(), 1, "only the release with artifacts survives c>0");
+        assert_eq!(rows[0].fields.get("v"), Some(&s("1.0")));
+    }
+
+    #[test]
+    fn test_case_expression() {
+        // zega#23 follow-up: CASE (generic + simple forms).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (n:Item {qty: $q})",
+            HashMap::from([("q".to_string(), Value::Int(5))]),
+        )
+        .unwrap();
+        let one = |zega: &Zega, q: &str| {
+            zega.query(q, HashMap::new()).unwrap()[0]
+                .fields
+                .values()
+                .next()
+                .cloned()
+                .unwrap()
+        };
+        // generic CASE
+        assert_eq!(
+            one(&zega, "MATCH (n:Item) RETURN CASE WHEN n.qty > 10 THEN \"high\" WHEN n.qty > 0 THEN \"low\" ELSE \"none\" END AS v"),
+            Value::String("low".to_string())
+        );
+        // simple CASE (subject)
+        assert_eq!(
+            one(&zega, "MATCH (n:Item) RETURN CASE n.qty WHEN 5 THEN \"five\" ELSE \"other\" END AS v"),
+            Value::String("five".to_string())
+        );
+        // no ELSE, no branch matches → null
+        assert_eq!(
+            one(&zega, "MATCH (n:Item) RETURN CASE WHEN n.qty > 100 THEN \"big\" END AS v"),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn test_duration_datetime_arithmetic() {
+        // zega#23 follow-up: duration() + datetime arithmetic (password-reset flow).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (u:User {email: $e})",
+            HashMap::from([("e".to_string(), Value::String("a@b.c".to_string()))]),
+        )
+        .unwrap();
+        // the app's exact pattern: SET resetExpiry = now + 1 hour
+        zega.query(
+            "MATCH (u:User {email: $e}) SET u.resetExpiry = datetime() + duration({hours: 1})",
+            HashMap::from([("e".to_string(), Value::String("a@b.c".to_string()))]),
+        )
+        .unwrap();
+        // expiry is in the future (string ISO comparison is chronological)
+        let r = zega
+            .query(
+                "MATCH (u:User {email: $e}) WHERE u.resetExpiry > datetime() RETURN u.resetExpiry AS v",
+                HashMap::from([("e".to_string(), Value::String("a@b.c".to_string()))]),
+            )
+            .unwrap();
+        assert_eq!(r.len(), 1, "resetExpiry is in the future");
+        match r[0].fields.values().next().unwrap() {
+            Value::String(s) => assert!(s.contains('T') && s.ends_with('Z'), "ISO datetime: {s}"),
+            o => panic!("expected ISO string, got {o:?}"),
+        }
+        // map literal + duration math directly: 2h30m = 9_000_000 ms
+        let r = zega
+            .query(
+                "MATCH (u:User) RETURN duration({hours: 2, minutes: 30}) AS ms",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(r[0].fields.values().next(), Some(&Value::Int(9_000_000)));
+    }
+
+    #[test]
+    fn test_signup_pattern() {
+        // The real signup flow: MERGE ON CREATE/ON MATCH SET, then
+        // MATCH (u) CREATE (s:Shop) CREATE (u)-[:OWNS]->(s) (multi-CREATE).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let s = |v: &str| Value::String(v.to_string());
+        let p = |e: &str, pw: &str| {
+            HashMap::from([("e".to_string(), s(e)), ("p".to_string(), s(pw))])
+        };
+        let merge = "MERGE (u:User {email: $e}) ON CREATE SET u.password = $p, u.created = datetime() ON MATCH SET u.password = coalesce(u.password, $p)";
+        // first MERGE → creates the user, ON CREATE sets password
+        zega.query(merge, p("a@b.c", "hash1")).unwrap();
+        let pw = |zega: &Zega| {
+            zega.query(
+                "MATCH (u:User {email: $e}) RETURN u.password AS pw",
+                HashMap::from([("e".to_string(), s("a@b.c"))]),
+            )
+            .unwrap()[0]
+                .fields
+                .get("pw")
+                .cloned()
+        };
+        assert_eq!(pw(&zega), Some(s("hash1")), "ON CREATE set password");
+        // second MERGE on the same email → ON MATCH coalesce keeps the original
+        zega.query(merge, p("a@b.c", "hash2")).unwrap();
+        assert_eq!(pw(&zega), Some(s("hash1")), "ON MATCH coalesce keeps original");
+        let count = |zega: &Zega, q: &str| {
+            zega.query(q, HashMap::new()).unwrap()[0]
+                .fields
+                .values()
+                .next()
+                .cloned()
+        };
+        assert_eq!(
+            count(&zega, "MATCH (u:User) RETURN count(u) AS c"),
+            Some(Value::Int(1)),
+            "MERGE did not duplicate the user"
+        );
+        // multi-CREATE: link a shop to the existing user without duplicating it
+        zega.query(
+            "MATCH (u:User {email: $e}) CREATE (s:Shop {id: $sid}) CREATE (u)-[:OWNS]->(s)",
+            HashMap::from([("e".to_string(), s("a@b.c")), ("sid".to_string(), s("shop1"))]),
+        )
+        .unwrap();
+        assert_eq!(
+            count(&zega, "MATCH (u:User) RETURN count(u) AS c"),
+            Some(Value::Int(1)),
+            "multi-CREATE did NOT duplicate the user"
+        );
+        let owns = zega
+            .query(
+                "MATCH (u:User)-[:OWNS]->(s:Shop) RETURN s.id AS sid",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(owns.len(), 1, "exactly one OWNS edge");
+        assert_eq!(owns[0].fields.get("sid"), Some(&s("shop1")));
+    }
+
+    #[test]
+    fn test_string_operators() {
+        // zega#23/#8 follow-ups: STARTS WITH / ENDS WITH / CONTAINS and <> .
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        for nm in ["alpha", "alphabet", "beta"] {
+            zega.query(
+                "CREATE (n:W {name: $n})",
+                HashMap::from([("n".to_string(), Value::String(nm.to_string()))]),
+            )
+            .unwrap();
+        }
+        let cnt = |q: &str| zega.query(q, HashMap::new()).unwrap().len();
+        assert_eq!(cnt("MATCH (n:W) WHERE n.name STARTS WITH \"alpha\" RETURN n"), 2);
+        assert_eq!(cnt("MATCH (n:W) WHERE n.name ENDS WITH \"bet\" RETURN n"), 1);
+        assert_eq!(cnt("MATCH (n:W) WHERE n.name CONTAINS \"ph\" RETURN n"), 2);
+        assert_eq!(cnt("MATCH (n:W) WHERE n.name <> \"beta\" RETURN n"), 2);
+        assert_eq!(cnt("MATCH (n:W) WHERE n.name = \"beta\" RETURN n"), 1);
+    }
+
+    #[test]
+    fn test_skip_limit() {
+        // zega#23 follow-up: SKIP (pagination, with ORDER BY + LIMIT).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        for i in 0..10 {
+            zega.query(
+                "CREATE (n:P {i: $i})",
+                HashMap::from([("i".to_string(), Value::Int(i))]),
+            )
+            .unwrap();
+        }
+        // ORDER BY i SKIP 2 LIMIT 3 → 2,3,4
+        let rows = zega
+            .query(
+                "MATCH (n:P) RETURN n.i AS i ORDER BY n.i SKIP 2 LIMIT 3",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].fields.get("i"), Some(&Value::Int(2)));
+        assert_eq!(rows[2].fields.get("i"), Some(&Value::Int(4)));
+        // SKIP alone past most rows
+        let rows = zega
+            .query(
+                "MATCH (n:P) RETURN n.i AS i ORDER BY n.i SKIP 8",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2, "SKIP 8 of 10 → 2 rows");
+    }
+
+    #[test]
+    fn test_remove_property() {
+        // zega#23 follow-up: REMOVE n.prop (store-admin: REMOVE p.stock, etc.).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (p:Product {stock: $s, name: $n})",
+            HashMap::from([
+                ("s".to_string(), Value::Int(5)),
+                ("n".to_string(), Value::String("widget".to_string())),
+            ]),
+        )
+        .unwrap();
+        zega.query("MATCH (p:Product) REMOVE p.stock", HashMap::new())
+            .unwrap();
+        // stock reads back as null; name untouched
+        assert_eq!(
+            zega.query(
+                "MATCH (p:Product) WHERE p.stock IS NULL RETURN p.name AS n",
+                HashMap::new()
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        let r = zega
+            .query(
+                "MATCH (p:Product) WHERE p.name IS NOT NULL RETURN p.name AS n",
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].fields.get("n"), Some(&Value::String("widget".to_string())));
+    }
+
+    #[test]
+    fn test_foreach_pipeline() {
+        // zega#24: FOREACH conditional-write (store-admin product-update idiom).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        let k = || HashMap::from([("k".to_string(), Value::String("a".to_string()))]);
+        zega.query(
+            "CREATE (p:Product {sku: $k, stock: $s})",
+            HashMap::from([
+                ("k".to_string(), Value::String("a".to_string())),
+                ("s".to_string(), Value::Int(5)),
+            ]),
+        )
+        .unwrap();
+        // SET + conditional FOREACH (go=true → the stock FOREACH runs)
+        zega.query(
+            "MATCH (p:Product {sku: $k}) SET p.name = $n FOREACH (_ IN CASE WHEN $go = true THEN [1] ELSE [] END | SET p.stock = $new)",
+            HashMap::from([
+                ("k".to_string(), Value::String("a".to_string())),
+                ("n".to_string(), Value::String("Widget".to_string())),
+                ("go".to_string(), Value::Bool(true)),
+                ("new".to_string(), Value::Int(99)),
+            ]),
+        ).unwrap();
+        let r = zega
+            .query("MATCH (p:Product {sku: $k}) RETURN p.name AS n, p.stock AS s", k())
+            .unwrap();
+        assert_eq!(r[0].fields.get("n"), Some(&Value::String("Widget".to_string())));
+        assert_eq!(r[0].fields.get("s"), Some(&Value::Int(99)), "FOREACH ran (go=true)");
+        // go=false → FOREACH skips, stock unchanged
+        zega.query(
+            "MATCH (p:Product {sku: $k}) FOREACH (_ IN CASE WHEN $go = true THEN [1] ELSE [] END | SET p.stock = $new)",
+            HashMap::from([
+                ("k".to_string(), Value::String("a".to_string())),
+                ("go".to_string(), Value::Bool(false)),
+                ("new".to_string(), Value::Int(0)),
+            ]),
+        ).unwrap();
+        let r = zega.query("MATCH (p:Product {sku: $k}) RETURN p.stock AS s", k()).unwrap();
+        assert_eq!(r[0].fields.get("s"), Some(&Value::Int(99)), "FOREACH skipped (go=false)");
+        // REMOVE inside FOREACH (over a literal [1])
+        zega.query("MATCH (p:Product {sku: $k}) FOREACH (_ IN [1] | REMOVE p.stock)", k())
+            .unwrap();
+        let r = zega
+            .query("MATCH (p:Product {sku: $k}) WHERE p.stock IS NULL RETURN p.name AS n", k())
+            .unwrap();
+        assert_eq!(r.len(), 1, "REMOVE inside FOREACH cleared stock");
+    }
+
+    #[test]
+    fn test_unwind_pipeline() {
+        // zega#24: WITH r UNWIND $list AS a CREATE ... (website release-publish).
+        let dir = tempdir().unwrap();
+        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+        zega.query(
+            "CREATE (r:Release {layer: $l})",
+            HashMap::from([("l".to_string(), Value::String("runtime".to_string()))]),
+        )
+        .unwrap();
+        let artifacts = Value::List(vec![
+            Value::Map(HashMap::from([("name".to_string(), Value::String("x".to_string()))])),
+            Value::Map(HashMap::from([("name".to_string(), Value::String("y".to_string()))])),
+        ]);
+        zega.query(
+            "MATCH (r:Release {layer: $l}) WITH r UNWIND $artifacts AS a CREATE (art:Artifact {name: a.name}) CREATE (r)-[:HAS_ART]->(art)",
+            HashMap::from([
+                ("l".to_string(), Value::String("runtime".to_string())),
+                ("artifacts".to_string(), artifacts),
+            ]),
+        ).unwrap();
+        let r = zega
+            .query("MATCH (:Release)-[:HAS_ART]->(a:Artifact) RETURN count(a) AS c", HashMap::new())
+            .unwrap();
+        assert_eq!(r[0].fields.get("c"), Some(&Value::Int(2)), "UNWIND created + linked 2 artifacts");
+        let r = zega
+            .query("MATCH (a:Artifact) RETURN a.name AS n ORDER BY a.name", HashMap::new())
+            .unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].fields.get("n"), Some(&Value::String("x".to_string())));
     }
 
     #[test]

@@ -1362,14 +1362,16 @@ fn parse_aggregate_function_name_case_insensitive() {
 }
 
 #[test]
-fn parse_unsupported_function_is_error() {
-    // Only the six aggregates are recognized as function calls.
+fn parse_scalar_function_call_parses() {
+    // Non-aggregate function names now parse into Expr::FunctionCall (scalar
+    // functions like toString/coalesce/datetime). Unknown names still parse —
+    // the "unsupported function" error is raised at execution time, not parse.
     let res = try_parse("MATCH (n) RETURN foobar(n.x)");
-    assert!(res.is_err());
-    match res.unwrap_err() {
-        ParseError::Message(m) => assert!(m.contains("unsupported function"), "msg: {m}"),
-        other => panic!("got {other:?}"),
-    }
+    assert!(res.is_ok(), "scalar function should parse: {res:?}");
+    let res = try_parse("MATCH (n) RETURN coalesce(n.a, n.b, \"x\") AS v");
+    assert!(res.is_ok(), "coalesce should parse: {res:?}");
+    let res = try_parse("MATCH (n) RETURN datetime() AS v");
+    assert!(res.is_ok(), "zero-arg function should parse: {res:?}");
 }
 
 #[test]
@@ -1509,9 +1511,14 @@ fn parse_multi_match_then_create() {
 fn parse_merge_without_on_create() {
     let stmt = parse_one("MERGE (n:User {email: $e})");
     match &stmt {
-        Statement::Merge { pattern, on_create } => {
+        Statement::Merge {
+            pattern,
+            on_create,
+            on_match,
+        } => {
             assert_eq!(pattern.len(), 1);
             assert!(on_create.is_empty());
+            assert!(on_match.is_empty());
         }
         other => panic!("expected Merge, got {other:?}"),
     }
@@ -1581,7 +1588,9 @@ fn parse_merge_on_without_create_is_error() {
     let res = try_parse("MERGE (n:User) ON DELETE SET n.x = 1");
     assert!(res.is_err());
     match res.unwrap_err() {
-        ParseError::Message(m) => assert!(m.contains("expected CREATE after ON"), "msg: {m}"),
+        ParseError::Message(m) => {
+            assert!(m.contains("expected CREATE or MATCH after ON"), "msg: {m}")
+        }
         other => panic!("got {other:?}"),
     }
 }
@@ -2722,11 +2731,11 @@ fn parse_return_as_with_no_following_identifier_is_none() {
 // =====================================================================
 
 #[test]
-fn parse_plus_after_return_item_is_error_not_arithmetic() {
-    // `RETURN 1 + 2`: `1` is the sole return item; `+` is not AS/Comma so the
-    // return clause ends, MATCH ends, and `+` starts no statement -> Err.
-    // (Documents that arithmetic `+` is NOT supported, per parse_add MVP note.)
-    assert!(try_parse("MATCH (n) RETURN 1 + 2").is_err());
+fn parse_arithmetic_in_return_item() {
+    // Arithmetic `+`/`-`/`*` is now supported in expressions (zega#23 follow-up).
+    // `RETURN 1 + 2` parses as a single arithmetic return item.
+    assert!(try_parse("MATCH (n) RETURN 1 + 2").is_ok());
+    assert!(try_parse("MATCH (n) RETURN n.x * 2 - 1 AS v").is_ok());
 }
 
 // =====================================================================
