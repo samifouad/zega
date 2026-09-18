@@ -24,6 +24,9 @@ function persist() {
   try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error('persist failed:', e); }
 }
 
+// exposed for debugging / console use: window.__zega.query("MATCH (n) RETURN n", "")
+window.__zega = () => db;
+
 const MUTATION_RE = /^\s*(create|merge|set|delete|detach|del|incr)\b/i;
 const isMutation = (q) => MUTATION_RE.test(q);
 
@@ -343,11 +346,16 @@ function nodeProps(n) {
 const NODE_R = 22;
 
 function startSimulation(nodes, links, onTick) {
+  // physics scale with graph size: small graphs get the gentle default,
+  // dense graphs get stronger repulsion and a longer cool-down so they
+  // spread into one readable cluster instead of several tight hairballs
+  const charge = -Math.max(140, 45 * Math.sqrt(nodes.length));
   const sim = forceSimulation(nodes)
-    .force('charge', forceManyBody().strength(-340))
-    .force('link', forceLink(links).id((d) => d.id).distance(125))
+    .force('charge', forceManyBody().strength(charge))
+    .force('link', forceLink(links).id((d) => d.id).distance(105))
     .force('center', forceCenter(0, 0))
     .force('collide', forceCollide(NODE_R + 10))
+    .alphaDecay(nodes.length > 60 ? 0.012 : 0.0228)
     .on('tick', onTick);
   return sim;
 }
@@ -395,8 +403,21 @@ function renderGraph(container, graph) {
   }
 
   // edges: curved paths trimmed to the node rims so arrowheads land on the
-  // circle edge; reciprocal edges curve to opposite sides
+  // circle edge; parallel edges between the same pair fan out into lanes so
+  // dense graphs don't stack them invisibly; reciprocal pairs curve opposite
   const edges = new Map();
+  const lanes = new Map();
+  {
+    const groups = new Map();
+    for (const r of graph.rels) {
+      const key = r.from < r.to ? `${r.from}>${r.to}` : `${r.to}>${r.from}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r.id);
+    }
+    for (const ids of groups.values()) {
+      ids.forEach((id, i) => lanes.set(id, i - (ids.length - 1) / 2));
+    }
+  }
   for (const r of graph.rels) {
     const path = document.createElementNS(NS, 'path');
     path.setAttribute('fill', 'none');
@@ -410,6 +431,10 @@ function renderGraph(container, graph) {
     label.setAttribute('fill', '#77777f');
     label.setAttribute('text-anchor', 'middle');
     label.textContent = r.type;
+    // on dense graphs the type labels are visual noise — hover the edge instead
+    if (graph.rels.length > 100) label.style.display = 'none';
+    label.addEventListener('pointerenter', () => { label.setAttribute('font-weight', 'bold'); });
+    label.addEventListener('pointerleave', () => { label.setAttribute('font-weight', 'normal'); });
     vp.appendChild(label);
     edges.set(r.id, { path, label });
   }
@@ -421,9 +446,11 @@ function renderGraph(container, graph) {
     const dx = b.x - a.x, dy = b.y - a.y;
     const d = Math.hypot(dx, dy) || 1;
     const ux = dx / d, uy = dy / d;
-    // curve side is fixed per direction so reciprocal edges separate
+    // fan parallel edges into separate lanes, and curve reciprocal edges to
+    // opposite sides
+    const lane = Math.max(-5, Math.min(5, lanes.get(r.id) || 0));
     const side = r.from < r.to ? 1 : -1;
-    const curve = Math.min(28, d * 0.18) * side;
+    const curve = (Math.min(20, d * 0.14) + Math.abs(lane) * 15) * (lane === 0 ? side : Math.sign(lane) || side);
     const cx = (a.x + b.x) / 2 - uy * curve;
     const cy = (a.y + b.y) / 2 + ux * curve;
     const sx = a.x + ux * (R + 2), sy = a.y + uy * (R + 2);
@@ -433,8 +460,8 @@ function renderGraph(container, graph) {
     // midpoint of the quadratic bezier
     const mx = 0.25 * a.x + 0.5 * cx + 0.25 * b.x;
     const my = 0.25 * a.y + 0.5 * cy + 0.25 * b.y;
-    label.setAttribute('x', mx - uy * 8);
-    label.setAttribute('y', my + ux * 8 - 3);
+    label.setAttribute('x', mx - uy * 10);
+    label.setAttribute('y', my + ux * 10 - 3);
   }
 
   const circles = new Map();
@@ -490,12 +517,18 @@ function renderGraph(container, graph) {
   const sim = startSimulation(graph.nodes, links, onTick);
   container._sim = sim;
 
+  // the first fit happens on tick #1 while nodes are still in phyllotaxis —
+  // re-fit once the graph has settled, unless the user already took the view
+  let userInteracted = false;
+  sim.on('end', () => { if (!userInteracted) fit(); });
+
   // drag nodes: pin with fx/fy while dragging, release + re-heat on drop
   let drag = null;
   svg.addEventListener('pointerdown', (e) => {
     const nodeEl = e.target.closest && e.target.closest('g');
     svg.setPointerCapture(e.pointerId);
     if (nodeEl && [...circles.values()].some((c) => c.g === nodeEl)) {
+      userInteracted = true;
       const entry = [...circles.values()].find((c) => c.g === nodeEl);
       drag = { node: entry.n };
       sim.alphaTarget(0.25).restart();
@@ -508,6 +541,7 @@ function renderGraph(container, graph) {
   svg.addEventListener('pointermove', (e) => {
     if (!drag) return;
     if (drag.pan) {
+      userInteracted = true;
       state.tx = drag.otx + (e.clientX - drag.sx);
       state.ty = drag.oty + (e.clientY - drag.sy);
       apply();
@@ -528,6 +562,7 @@ function renderGraph(container, graph) {
 
   svg.addEventListener('wheel', (e) => {
     e.preventDefault();
+    userInteracted = true;
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
     state.scale = Math.min(4, Math.max(0.1, state.scale * factor));
     apply();
