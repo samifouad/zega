@@ -37,6 +37,10 @@ python3 -m http.server 8080
 - **KV commands** work too — `SET KEY foo = "bar"`, `GET KEY foo`, lists,
   TTLs; it's the same engine.
 
+The graph view's physics is [d3-force](https://github.com/d3/d3-force)
+v3.0.0 (ISC license, © Observable), vendored as ESM in `vendor/` so the page
+stays fully self-hosted — no CDN, no bundler.
+
 ## Rebuild the wasm package
 
 Only needed after changing `zega-wasm` (or the engine crates):

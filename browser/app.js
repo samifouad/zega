@@ -1,4 +1,5 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
+import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide } from './vendor/d3-force.js';
 import { SAMPLE_STATEMENTS } from './sample.js';
 
 const LS_DB = 'zega.browser.db';
@@ -279,9 +280,9 @@ function renderFrame(frame, query, result) {
 
   const graph = extractGraph(result.rows);
   const views = {
-    graph: () => renderGraph(body, graph),
-    table: () => renderTable(body, result.rows),
-    text: () => renderText(body, result.rows),
+    graph: () => { stopSim(body); renderGraph(body, graph); },
+    table: () => { stopSim(body); renderTable(body, result.rows); },
+    text: () => { stopSim(body); renderText(body, result.rows); },
   };
   const tabs = frame.querySelectorAll('.tabs button');
   const pick = (name) => {
@@ -335,63 +336,20 @@ function nodeProps(n) {
 }
 
 /* -------------------------------------------------------------- layout */
+/* The layout is a live d3-force simulation (vendored in ./vendor, ISC
+   license) — nodes settle continuously and re-heat when dragged, the same
+   feel as the neo4j browser. */
 
-function layoutGraph(nodes, rels) {
-  const idx = new Map(nodes.map((n) => [n.id, n]));
-  nodes.forEach((n, i) => {
-    const a = (i / Math.max(nodes.length, 1)) * 2 * Math.PI;
-    n.x = Math.cos(a) * 200;
-    n.y = Math.sin(a) * 200;
-    n.vx = 0; n.vy = 0;
-  });
-  // node radius + padding: two circles closer than this get pushed apart,
-  // the d3 "collide" force that keeps nodes from overlapping
-  const COLLIDE = 62;
-  for (let iter = 0; iter < 300; iter++) {
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const dx = nodes[i].x - nodes[j].x;
-        const dy = nodes[i].y - nodes[j].y;
-        const d2 = dx * dx + dy * dy || 1;
-        const d = Math.sqrt(d2);
-        const f = 2600 / d2;
-        const fx = (f * dx) / d, fy = (f * dy) / d;
-        nodes[i].vx += fx; nodes[i].vy += fy;
-        nodes[j].vx -= fx; nodes[j].vy -= fy;
-      }
-    }
-    for (const r of rels) {
-      const a = idx.get(r.from), b = idx.get(r.to);
-      if (!a || !b) continue;
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const f = (d - 110) * 0.02;
-      const fx = (f * dx) / d, fy = (f * dy) / d;
-      a.vx += fx; a.vy += fy;
-      b.vx -= fx; b.vy -= fy;
-    }
-    for (const n of nodes) {
-      n.vx = (n.vx - n.x * 0.008) * 0.85;
-      n.vy = (n.vy - n.y * 0.008) * 0.85;
-      n.x += n.vx; n.y += n.vy;
-    }
-    // collision: positional correction, two passes for stability
-    for (let pass = 0; pass < 2; pass++) {
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const dx = nodes[j].x - nodes[i].x;
-          const dy = nodes[j].y - nodes[i].y;
-          const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-          if (d < COLLIDE) {
-            const push = (COLLIDE - d) / 2;
-            const ux = dx / d, uy = dy / d;
-            nodes[i].x -= ux * push; nodes[i].y -= uy * push;
-            nodes[j].x += ux * push; nodes[j].y += uy * push;
-          }
-        }
-      }
-    }
-  }
+const NODE_R = 22;
+
+function startSimulation(nodes, links, onTick) {
+  const sim = forceSimulation(nodes)
+    .force('charge', forceManyBody().strength(-340))
+    .force('link', forceLink(links).id((d) => d.id).distance(125))
+    .force('center', forceCenter(0, 0))
+    .force('collide', forceCollide(NODE_R + 10))
+    .on('tick', onTick);
+  return sim;
 }
 
 /* ------------------------------------------------------------ graph UI */
@@ -401,7 +359,7 @@ function renderGraph(container, graph) {
     container.innerHTML = '<div class="empty">this result contains no nodes — try a query that returns nodes and relationships</div>';
     return;
   }
-  layoutGraph(graph.nodes, graph.rels);
+  const R = NODE_R;
 
   const wrap = document.createElement('div');
   wrap.className = 'graph-wrap';
@@ -419,22 +377,22 @@ function renderGraph(container, graph) {
   const vp = wrap.querySelector('.viewport');
   const tip = wrap.querySelector('.graph-tip');
   const NS = 'http://www.w3.org/2000/svg';
-  const R = 22;
 
-  const state = { scale: 1, tx: 0, ty: 0 };
+  const state = { scale: 1, tx: 0, ty: 0, fitted: false };
   const apply = () => vp.setAttribute('transform', `translate(${state.tx},${state.ty}) scale(${state.scale})`);
 
-  // fit content into the viewBox
-  {
+  function fit() {
     const xs = graph.nodes.map((n) => n.x), ys = graph.nodes.map((n) => n.y);
-    const minX = Math.min(...xs) - 60, maxX = Math.max(...xs) + 60;
-    const minY = Math.min(...ys) - 60, maxY = Math.max(...ys) + 60;
+    if (!xs.length) return;
+    const minX = Math.min(...xs) - 70, maxX = Math.max(...xs) + 70;
+    const minY = Math.min(...ys) - 70, maxY = Math.max(...ys) + 70;
     const w = maxX - minX || 1, h = maxY - minY || 1;
     state.scale = Math.min(800 / w, 480 / h, 1.4);
     state.tx = (800 - w * state.scale) / 2 - minX * state.scale;
     state.ty = (480 - h * state.scale) / 2 - minY * state.scale;
+    state.fitted = true;
+    apply();
   }
-  apply();
 
   // edges: curved paths trimmed to the node rims so arrowheads land on the
   // circle edge; reciprocal edges curve to opposite sides
@@ -456,10 +414,10 @@ function renderGraph(container, graph) {
     edges.set(r.id, { path, label });
   }
 
-  function edgeGeometry(r) {
+  function drawEdge(r) {
     const a = graph.nodes.find((x) => x.id === r.from);
     const b = graph.nodes.find((x) => x.id === r.to);
-    if (!a || !b) return null;
+    if (!a || !b) return;
     const dx = b.x - a.x, dy = b.y - a.y;
     const d = Math.hypot(dx, dy) || 1;
     const ux = dx / d, uy = dy / d;
@@ -468,13 +426,6 @@ function renderGraph(container, graph) {
     const curve = Math.min(28, d * 0.18) * side;
     const cx = (a.x + b.x) / 2 - uy * curve;
     const cy = (a.y + b.y) / 2 + ux * curve;
-    return { a, b, ux, uy, cx, cy };
-  }
-
-  function drawEdge(r) {
-    const e = edgeGeometry(r);
-    if (!e) return;
-    const { a, b, ux, uy, cx, cy } = e;
     const sx = a.x + ux * (R + 2), sy = a.y + uy * (R + 2);
     const ex = b.x - ux * (R + 4), ey = b.y - uy * (R + 4);
     const { path, label } = edges.get(r.id);
@@ -522,27 +473,34 @@ function renderGraph(container, graph) {
 
     vp.appendChild(g);
     circles.set(n.id, { g, circle, text, n });
-    position(n);
   }
 
-  function position(n) {
-    const c = circles.get(n.id);
-    c.g.setAttribute('transform', `translate(${n.x},${n.y})`);
-    for (const r of graph.rels) {
-      if (r.from === n.id || r.to === n.id) drawEdge(r);
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const links = graph.rels.map((r) => ({ source: r.from, target: r.to }));
+
+  function onTick() {
+    if (!state.fitted) fit();
+    for (const n of graph.nodes) {
+      circles.get(n.id).g.setAttribute('transform', `translate(${n.x},${n.y})`);
     }
+    for (const r of graph.rels) drawEdge(r);
   }
 
-  // drag nodes
+  // the live simulation: nodes settle continuously, re-heat on drag
+  const sim = startSimulation(graph.nodes, links, onTick);
+  container._sim = sim;
+
+  // drag nodes: pin with fx/fy while dragging, release + re-heat on drop
   let drag = null;
   svg.addEventListener('pointerdown', (e) => {
-    const target = e.target;
-    const nodeEl = target.closest && target.closest('g');
+    const nodeEl = e.target.closest && e.target.closest('g');
     svg.setPointerCapture(e.pointerId);
-    const pt = toSvg(e);
     if (nodeEl && [...circles.values()].some((c) => c.g === nodeEl)) {
       const entry = [...circles.values()].find((c) => c.g === nodeEl);
       drag = { node: entry.n };
+      sim.alphaTarget(0.25).restart();
+      drag.node.fx = drag.node.x;
+      drag.node.fy = drag.node.y;
     } else {
       drag = { pan: true, sx: e.clientX, sy: e.clientY, otx: state.tx, oty: state.ty };
     }
@@ -555,18 +513,23 @@ function renderGraph(container, graph) {
       apply();
     } else {
       const pt = toSvg(e);
-      drag.node.x = pt.x; drag.node.y = pt.y;
-      position(drag.node);
+      drag.node.fx = pt.x;
+      drag.node.fy = pt.y;
     }
   });
-  svg.addEventListener('pointerup', () => { drag = null; });
+  svg.addEventListener('pointerup', () => {
+    if (drag && drag.node) {
+      drag.node.fx = null;
+      drag.node.fy = null;
+      sim.alphaTarget(0);
+    }
+    drag = null;
+  });
 
   svg.addEventListener('wheel', (e) => {
     e.preventDefault();
-    const pt = toSvg(e);
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
     state.scale = Math.min(4, Math.max(0.1, state.scale * factor));
-    state.tx = pt.x * (800 / svg.clientWidth) * 0 + state.tx; // keep translate; zoom around view centre
     apply();
   }, { passive: false });
 
@@ -575,6 +538,13 @@ function renderGraph(container, graph) {
     const x = ((e.clientX - rect.left) / rect.width) * 800;
     const y = ((e.clientY - rect.top) / rect.height) * 480;
     return { x: (x - state.tx) / state.scale, y: (y - state.ty) / state.scale };
+  }
+}
+
+function stopSim(container) {
+  if (container._sim) {
+    container._sim.stop();
+    container._sim = null;
   }
 }
 
