@@ -136,7 +136,10 @@ function runFromEditor() {
   const text = $('#editor').value.trim();
   if (!text) return;
   pushHistory(text);
-  addFrame(text, runQuery(text));
+  // a cell may hold several statements separated by semicolons
+  for (const stmt of text.split(';').map((s) => s.trim()).filter(Boolean)) {
+    addFrame(stmt, runQuery(stmt));
+  }
 }
 
 $('#btn-run').onclick = runFromEditor;
@@ -144,6 +147,47 @@ $('#btn-refresh-meta').onclick = refreshMeta;
 $('#editor').addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runFromEditor(); }
 });
+
+/* ------------------------------------------------------------- favorites */
+
+const LS_FAVORITES = 'zega.browser.favorites';
+let favorites = [];
+try { favorites = JSON.parse(localStorage.getItem(LS_FAVORITES) || '[]'); } catch {}
+
+function toggleFavorite(q) {
+  const i = favorites.indexOf(q);
+  if (i >= 0) favorites.splice(i, 1); else favorites.unshift(q);
+  localStorage.setItem(LS_FAVORITES, JSON.stringify(favorites));
+  renderFavorites();
+  return i < 0;
+}
+
+function renderFavorites() {
+  const box = $('#favorites');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!favorites.length) { box.innerHTML = '<span class="dim">star a query to save it</span>'; return; }
+  for (const q of favorites) {
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.gap = '4px';
+    row.style.alignItems = 'center';
+    const b = document.createElement('button');
+    b.className = 'side-item';
+    b.style.flex = '1';
+    b.textContent = q.length > 34 ? q.slice(0, 33) + '…' : q;
+    b.title = q;
+    b.onclick = () => { $('#editor').value = q; $('#editor').focus(); };
+    const x = document.createElement('button');
+    x.className = 'mini';
+    x.textContent = '✕';
+    x.title = 'remove from favorites';
+    x.onclick = () => { toggleFavorite(q); };
+    row.appendChild(b);
+    row.appendChild(x);
+    box.appendChild(row);
+  }
+}
 
 /* --------------------------------------------------------------- frames */
 
@@ -161,13 +205,41 @@ function addFrame(query, result) {
   frame.querySelector('[data-act=dismiss]').onclick = () => frame.remove();
   frame.querySelector('[data-act=download]').onclick = () => {
     if (!result.ok) return;
-    const blob = new Blob([JSON.stringify(result.rows, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'zega-result.json';
-    a.click();
-    URL.revokeObjectURL(a.href);
+    download('zega-result.json', JSON.stringify(result.rows, null, 2), 'application/json');
   };
+  frame.querySelector('[data-act=downloadcsv]').onclick = () => {
+    if (!result.ok) return;
+    download('zega-result.csv', toCsv(result.rows), 'text/csv');
+  };
+  frame.querySelector('[data-act=favorite]').onclick = (e) => {
+    const on = toggleFavorite(query);
+    e.target.textContent = on ? '★' : '☆';
+  };
+  frame.querySelector('[data-act=favorite]').textContent = favorites.includes(query) ? '★' : '☆';
+}
+
+function download(name, content, type) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// rows -> CSV with a union-of-keys header; nested values are JSON-encoded
+function toCsv(rows) {
+  if (!rows.length) return '';
+  const cols = [];
+  const seen = new Set();
+  for (const row of rows) {
+    for (const k of Object.keys(row)) if (!seen.has(k)) { seen.add(k); cols.push(k); }
+  }
+  const cell = (v) => {
+    const s = formatCell(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  return [cols.join(','), ...rows.map((row) => cols.map((c) => cell(row[c])).join(','))].join('\n');
 }
 
 function renderFrame(frame, query, result) {
@@ -187,8 +259,10 @@ function renderFrame(frame, query, result) {
         <button data-view="text">Text</button>
       </span>
       <span class="frame-actions">
+        <button data-act="favorite" title="save to favorites">☆</button>
         <button data-act="rerun" title="re-run">↻</button>
-        <button data-act="download" title="download JSON">⤓</button>
+        <button data-act="download" title="download JSON">⤓ json</button>
+        <button data-act="downloadcsv" title="download CSV">⤓ csv</button>
         <button data-act="dismiss" title="dismiss">✕</button>
       </span>
     </div>
@@ -270,6 +344,9 @@ function layoutGraph(nodes, rels) {
     n.y = Math.sin(a) * 200;
     n.vx = 0; n.vy = 0;
   });
+  // node radius + padding: two circles closer than this get pushed apart,
+  // the d3 "collide" force that keeps nodes from overlapping
+  const COLLIDE = 62;
   for (let iter = 0; iter < 300; iter++) {
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
@@ -288,7 +365,7 @@ function layoutGraph(nodes, rels) {
       if (!a || !b) continue;
       const dx = b.x - a.x, dy = b.y - a.y;
       const d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const f = (d - 95) * 0.02;
+      const f = (d - 110) * 0.02;
       const fx = (f * dx) / d, fy = (f * dy) / d;
       a.vx += fx; a.vy += fy;
       b.vx -= fx; b.vy -= fy;
@@ -297,6 +374,22 @@ function layoutGraph(nodes, rels) {
       n.vx = (n.vx - n.x * 0.008) * 0.85;
       n.vy = (n.vy - n.y * 0.008) * 0.85;
       n.x += n.vx; n.y += n.vy;
+    }
+    // collision: positional correction, two passes for stability
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const dx = nodes[j].x - nodes[i].x;
+          const dy = nodes[j].y - nodes[i].y;
+          const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+          if (d < COLLIDE) {
+            const push = (COLLIDE - d) / 2;
+            const ux = dx / d, uy = dy / d;
+            nodes[i].x -= ux * push; nodes[i].y -= uy * push;
+            nodes[j].x += ux * push; nodes[j].y += uy * push;
+          }
+        }
+      }
     }
   }
 }
@@ -343,14 +436,16 @@ function renderGraph(container, graph) {
   }
   apply();
 
-  const lines = new Map();
+  // edges: curved paths trimmed to the node rims so arrowheads land on the
+  // circle edge; reciprocal edges curve to opposite sides
+  const edges = new Map();
   for (const r of graph.rels) {
-    const line = document.createElementNS(NS, 'line');
-    line.setAttribute('stroke', '#9a9aa4');
-    line.setAttribute('stroke-width', '1.4');
-    line.setAttribute('marker-end', 'url(#arrow)');
-    vp.appendChild(line);
-    lines.set(r.id, line);
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', '#9a9aa4');
+    path.setAttribute('stroke-width', '1.4');
+    path.setAttribute('marker-end', 'url(#arrow)');
+    vp.appendChild(path);
 
     const label = document.createElementNS(NS, 'text');
     label.setAttribute('font-size', '10');
@@ -358,11 +453,40 @@ function renderGraph(container, graph) {
     label.setAttribute('text-anchor', 'middle');
     label.textContent = r.type;
     vp.appendChild(label);
-    lines.set('label-' + r.id, label);
+    edges.set(r.id, { path, label });
+  }
+
+  function edgeGeometry(r) {
+    const a = graph.nodes.find((x) => x.id === r.from);
+    const b = graph.nodes.find((x) => x.id === r.to);
+    if (!a || !b) return null;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const ux = dx / d, uy = dy / d;
+    // curve side is fixed per direction so reciprocal edges separate
+    const side = r.from < r.to ? 1 : -1;
+    const curve = Math.min(28, d * 0.18) * side;
+    const cx = (a.x + b.x) / 2 - uy * curve;
+    const cy = (a.y + b.y) / 2 + ux * curve;
+    return { a, b, ux, uy, cx, cy };
+  }
+
+  function drawEdge(r) {
+    const e = edgeGeometry(r);
+    if (!e) return;
+    const { a, b, ux, uy, cx, cy } = e;
+    const sx = a.x + ux * (R + 2), sy = a.y + uy * (R + 2);
+    const ex = b.x - ux * (R + 4), ey = b.y - uy * (R + 4);
+    const { path, label } = edges.get(r.id);
+    path.setAttribute('d', `M ${sx} ${sy} Q ${cx} ${cy} ${ex} ${ey}`);
+    // midpoint of the quadratic bezier
+    const mx = 0.25 * a.x + 0.5 * cx + 0.25 * b.x;
+    const my = 0.25 * a.y + 0.5 * cy + 0.25 * b.y;
+    label.setAttribute('x', mx - uy * 8);
+    label.setAttribute('y', my + ux * 8 - 3);
   }
 
   const circles = new Map();
-  const labels = new Map();
   for (const n of graph.nodes) {
     const g = document.createElementNS(NS, 'g');
     g.style.cursor = 'pointer';
@@ -373,12 +497,14 @@ function renderGraph(container, graph) {
     circle.setAttribute('stroke', 'rgba(0,0,0,0.25)');
     g.appendChild(circle);
 
+    // caption below the node, neo4j style
     const text = document.createElementNS(NS, 'text');
-    text.setAttribute('font-size', '10.5');
+    text.setAttribute('font-size', '11');
     text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('dy', '3.5');
+    text.setAttribute('dy', R + 14);
+    text.setAttribute('fill', '#44444c');
     const cap = nodeCaption(n);
-    text.textContent = cap.length > 14 ? cap.slice(0, 13) + '…' : cap;
+    text.textContent = cap.length > 22 ? cap.slice(0, 21) + '…' : cap;
     g.appendChild(text);
 
     g.addEventListener('pointerenter', (e) => {
@@ -396,7 +522,6 @@ function renderGraph(container, graph) {
 
     vp.appendChild(g);
     circles.set(n.id, { g, circle, text, n });
-    labels.set(n.id, g);
     position(n);
   }
 
@@ -404,17 +529,7 @@ function renderGraph(container, graph) {
     const c = circles.get(n.id);
     c.g.setAttribute('transform', `translate(${n.x},${n.y})`);
     for (const r of graph.rels) {
-      if (r.from === n.id || r.to === n.id) {
-        const a = graph.nodes.find((x) => x.id === r.from);
-        const b = graph.nodes.find((x) => x.id === r.to);
-        if (!a || !b) continue;
-        const line = lines.get(r.id);
-        line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
-        line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
-        const label = lines.get('label-' + r.id);
-        label.setAttribute('x', (a.x + b.x) / 2);
-        label.setAttribute('y', (a.y + b.y) / 2 - 4);
-      }
+      if (r.from === n.id || r.to === n.id) drawEdge(r);
     }
   }
 
@@ -580,5 +695,6 @@ $('#btn-clear').onclick = () => {
 /* ---------------------------------------------------------------- boot */
 
 renderHistory();
+renderFavorites();
 refreshMeta();
 $('#editor').focus();
