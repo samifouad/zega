@@ -1,5 +1,5 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
-import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide } from './vendor/d3-force.js';
+import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide, forceX, forceY } from './vendor/d3-force.js';
 import { SAMPLE_STATEMENTS } from './sample.js';
 
 const LS_DB = 'zega.browser.db';
@@ -343,20 +343,38 @@ function nodeProps(n) {
    license) — nodes settle continuously and re-heat when dragged, the same
    feel as the neo4j browser. */
 
+/* Layout settings, neo4j-style: the ⚙ button on a graph opens a panel of
+   sliders that live-tune the running simulation. Values persist in
+   localStorage and apply to every graph. `repulsion` is a multiplier on the
+   size-scaled base charge; the rest are absolute force parameters. */
+const PHYS_KEY = 'zega.browser.physics';
+const PHYS_DEFAULTS = { repulsion: 100, linkDist: 105, pad: 10, gravity: 0 };
+function loadPhys() {
+  try { return { ...PHYS_DEFAULTS, ...JSON.parse(localStorage.getItem(PHYS_KEY) || '{}') }; }
+  catch { return { ...PHYS_DEFAULTS }; }
+}
+function savePhys(phys) {
+  try { localStorage.setItem(PHYS_KEY, JSON.stringify(phys)); } catch {}
+}
+
 const NODE_R = 22;
 
-function startSimulation(nodes, links, onTick) {
+function startSimulation(nodes, links, onTick, phys) {
   // physics scale with graph size: small graphs get the gentle default,
   // dense graphs get stronger repulsion and a longer cool-down so they
   // spread into one readable cluster instead of several tight hairballs
-  const charge = -Math.max(140, 45 * Math.sqrt(nodes.length));
+  const baseCharge = -Math.max(140, 45 * Math.sqrt(nodes.length));
   const sim = forceSimulation(nodes)
-    .force('charge', forceManyBody().strength(charge))
-    .force('link', forceLink(links).id((d) => d.id).distance(105))
+    .force('charge', forceManyBody().strength(baseCharge * phys.repulsion / 100))
+    .force('link', forceLink(links).id((d) => d.id).distance(phys.linkDist))
     .force('center', forceCenter(0, 0))
-    .force('collide', forceCollide(NODE_R + 10))
+    .force('collide', forceCollide(NODE_R + phys.pad))
+    // center-pull forces, strength 0 = inert until the gravity slider moves
+    .force('x', forceX(0).strength(phys.gravity / 100))
+    .force('y', forceY(0).strength(phys.gravity / 100))
     .alphaDecay(nodes.length > 60 ? 0.012 : 0.0228)
     .on('tick', onTick);
+  sim.baseCharge = baseCharge;
   return sim;
 }
 
@@ -427,6 +445,7 @@ function renderGraph(container, graph) {
     vp.appendChild(path);
 
     const label = document.createElementNS(NS, 'text');
+    label.setAttribute('class', 'rlab');
     label.setAttribute('font-size', '10');
     label.setAttribute('fill', '#77777f');
     label.setAttribute('text-anchor', 'middle');
@@ -475,12 +494,14 @@ function renderGraph(container, graph) {
     circle.setAttribute('stroke', 'rgba(0,0,0,0.25)');
     g.appendChild(circle);
 
-    // caption below the node, neo4j style
+    // caption below the node, neo4j style: clear of the rim and backed by a
+    // halo so relationship lines don't strike through the text
     const text = document.createElementNS(NS, 'text');
-    text.setAttribute('font-size', '11');
+    text.setAttribute('class', 'cap');
+    text.setAttribute('font-size', '11.5');
     text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('dy', R + 14);
-    text.setAttribute('fill', '#44444c');
+    text.setAttribute('dy', R + 17);
+    text.setAttribute('fill', '#3a3a42');
     const cap = nodeCaption(n);
     text.textContent = cap.length > 22 ? cap.slice(0, 21) + '…' : cap;
     g.appendChild(text);
@@ -514,8 +535,57 @@ function renderGraph(container, graph) {
   }
 
   // the live simulation: nodes settle continuously, re-heat on drag
-  const sim = startSimulation(graph.nodes, links, onTick);
+  const phys = loadPhys();
+  const sim = startSimulation(graph.nodes, links, onTick, phys);
   container._sim = sim;
+
+  // layout settings: neo4j-style physics sliders, live-tuning this simulation
+  const gear = document.createElement('button');
+  gear.className = 'graph-gear';
+  gear.title = 'layout settings';
+  gear.textContent = '⚙';
+  const panel = document.createElement('div');
+  panel.className = 'graph-physics';
+  panel.innerHTML = `
+    <div class="ph-row"><span>Repulsion</span><input type="range" data-p="repulsion" min="25" max="300" step="5"><b></b></div>
+    <div class="ph-row"><span>Link distance</span><input type="range" data-p="linkDist" min="40" max="300" step="5"><b></b></div>
+    <div class="ph-row"><span>Node padding</span><input type="range" data-p="pad" min="0" max="40" step="1"><b></b></div>
+    <div class="ph-row"><span>Center pull</span><input type="range" data-p="gravity" min="0" max="12" step="1"><b></b></div>
+    <div class="ph-foot"><button class="mini">reset</button></div>`;
+  wrap.appendChild(gear);
+  wrap.appendChild(panel);
+  gear.onclick = () => panel.classList.toggle('open');
+
+  const FMT = { repulsion: (v) => v + '%', linkDist: (v) => v, pad: (v) => v, gravity: (v) => v + '%' };
+  function applyPhys() {
+    sim.force('charge').strength(sim.baseCharge * phys.repulsion / 100);
+    sim.force('link').distance(phys.linkDist);
+    sim.force('collide').radius(NODE_R + phys.pad);
+    sim.force('x').strength(phys.gravity / 100);
+    sim.force('y').strength(phys.gravity / 100);
+    if (sim.alpha() < 0.2) sim.alpha(0.25);
+    sim.restart();
+    savePhys(phys);
+  }
+  for (const input of panel.querySelectorAll('input')) {
+    const key = input.dataset.p;
+    input.value = phys[key];
+    input.parentElement.querySelector('b').textContent = FMT[key](phys[key]);
+    input.addEventListener('input', () => {
+      phys[key] = Number(input.value);
+      input.parentElement.querySelector('b').textContent = FMT[key](phys[key]);
+      applyPhys();
+    });
+  }
+  panel.querySelector('.ph-foot button').onclick = () => {
+    Object.assign(phys, PHYS_DEFAULTS);
+    for (const input of panel.querySelectorAll('input')) {
+      const k = input.dataset.p;
+      input.value = phys[k];
+      input.parentElement.querySelector('b').textContent = FMT[k](phys[k]);
+    }
+    applyPhys();
+  };
 
   // the first fit happens on tick #1 while nodes are still in phyllotaxis —
   // re-fit once the graph has settled, unless the user already took the view

@@ -195,6 +195,54 @@ button.mini { padding: 0 6px; font-size: 11px; }
   display: none;
   white-space: pre-wrap;
 }
+/* caption + relationship labels: background halo keeps text readable where
+   edges pass beneath it (paint-order draws the stroke behind the glyphs) */
+.graph-wrap text.cap {
+  paint-order: stroke;
+  stroke: #fdfdfe;
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
+}
+.graph-wrap text.rlab {
+  paint-order: stroke;
+  stroke: #fdfdfe;
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
+.graph-gear {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  font-size: 13px;
+  padding: 2px 8px;
+}
+.graph-physics {
+  position: absolute;
+  top: 38px;
+  right: 8px;
+  z-index: 2;
+  display: none;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  width: 220px;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+  font-size: 11.5px;
+}
+.graph-physics.open { display: block; }
+.graph-physics .ph-row {
+  display: grid;
+  grid-template-columns: 86px 1fr 34px;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+.graph-physics .ph-row span { color: var(--dim); }
+.graph-physics .ph-row b { font-weight: 600; text-align: right; }
+.graph-physics .ph-row input[type=range] { width: 100%; margin: 0; }
+.graph-physics .ph-foot { text-align: right; margin-top: 2px; }
 
 /* table view */
 table.result { border-collapse: collapse; width: 100%; font-size: 12.5px; }
