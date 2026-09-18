@@ -3223,7 +3223,7 @@ mod tests {
         // (Neo4j AND semantics), and match on any subset.
         let dir = tempdir().unwrap();
         let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
-        let p = HashMap::from([("e".to_string(), Value::String("idris@tana.gg".to_string()))]);
+        let p = HashMap::from([("e".to_string(), Value::String("user@example.com".to_string()))]);
         zega.query("CREATE (n:User:Agent {email: $e})", p.clone())
             .unwrap();
         // matchable by either label alone and by both together

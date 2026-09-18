@@ -6,6 +6,8 @@ exclude = ["zega-bridge","zega-wasm"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/samifouad/zega"
 
 [workspace.dependencies]
 dashmap = "6.1"
