@@ -33,11 +33,20 @@ impl KvStore {
         }
     }
 
+    // SystemTime::now panics on wasm32-unknown-unknown; the browser clock
+    // comes from js-sys Date there.
     fn now_secs() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
+        #[cfg(target_arch = "wasm32")]
+        {
+            (js_sys::Date::now() / 1000.0) as u64
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        }
     }
 
     fn is_expired(entry: &KvEntry, now: u64) -> bool {

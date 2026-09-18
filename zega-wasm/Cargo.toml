@@ -1,12 +1,19 @@
 [package]
 name = "zega-wasm"
-version.workspace = true
-edition.workspace = true
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/samifouad/zega"
+
+# Standalone workspace: excluded from the root workspace so the wasm build
+# never tries to compile the server crates for wasm32.
+[workspace]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-serde_json = { workspace = true }
-wasm-bindgen = { workspace = true }
-zega-core = { workspace = true }
+base64 = "0.22"
+serde_json = "1.0"
+wasm-bindgen = "0.2"
+zega-core = { path = "../zega-core" }

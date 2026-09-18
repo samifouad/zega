@@ -8,3 +8,6 @@ dashmap = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 serde = { workspace = true }
 zega-parser = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"

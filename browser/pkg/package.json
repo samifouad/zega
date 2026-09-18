@@ -1,0 +1,20 @@
+{
+  "name": "zega-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samifouad/zega"
+  },
+  "files": [
+    "zega_wasm_bg.wasm",
+    "zega_wasm.js",
+    "zega_wasm.d.ts"
+  ],
+  "main": "zega_wasm.js",
+  "types": "zega_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

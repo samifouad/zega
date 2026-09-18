@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zega browser</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <span class="brand">zega<span class="brand-dim">:browser</span></span>
+  <span class="conn" title="The database runs inside this page via WebAssembly — no server needed.">
+    <span class="conn-dot"></span> local · wasm
+  </span>
+  <span class="spacer"></span>
+  <button id="btn-sample" title="Load a small movie graph to explore">load sample graph</button>
+  <button id="btn-export" title="Download the whole database as a base64 snapshot">export</button>
+  <button id="btn-import" title="Restore a snapshot downloaded earlier">import</button>
+  <input type="file" id="import-file" accept=".zega,.b64,.txt" hidden>
+  <button id="btn-clear" title="Delete all nodes, relationships and keys">clear</button>
+  <a class="btn-link" href="https://github.com/samifouad/zega" target="_new">about</a>
+</header>
+
+<div id="main">
+  <aside id="sidebar">
+    <section>
+      <h3>database</h3>
+      <div id="db-stats" class="side-list"><span class="dim">loading…</span></div>
+    </section>
+    <section>
+      <h3>node labels <button id="btn-refresh-meta" class="mini" title="refresh">↻</button></h3>
+      <div id="db-labels" class="side-list"></div>
+    </section>
+    <section>
+      <h3>relationship types</h3>
+      <div id="db-reltypes" class="side-list"></div>
+    </section>
+    <section>
+      <h3>history</h3>
+      <div id="history" class="side-list"><span class="dim">nothing yet</span></div>
+    </section>
+  </aside>
+
+  <div id="content">
+    <div id="editor-bar">
+      <span class="prompt">zega$</span>
+      <textarea id="editor" rows="3" spellcheck="false" placeholder="MATCH (n) RETURN n LIMIT 25"></textarea>
+      <button id="btn-run" class="primary">Run ▸</button>
+    </div>
+    <div class="editor-hint">Ctrl/Cmd + Enter to run · ZQL, the Cypher-inspired query language (<code>MATCH</code>, <code>CREATE</code>, <code>MERGE</code>, <code>SET KEY</code>…)</div>
+    <div id="frames"></div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
