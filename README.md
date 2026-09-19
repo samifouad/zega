@@ -3,7 +3,7 @@
 An embeddable graph database — with a KV store inside. Written in Rust.
 
 <p align="left">
-  <img src="image.png" alt="DekaScript logo" width="70%">
+  <img src="image.png" alt="zega browser" width="70%">
 </p>
 
 zega gives you what Neo4j gives you (a property graph with a Cypher-inspired
@@ -13,7 +13,12 @@ any Rust application, persists through a write-ahead log with snapshots, and
 compiles to WebAssembly for the browser.
 
 No separate database server to install unless you want one. The server is a
-single binary that speaks HTTP/JSON.
+single binary that speaks HTTP/JSON. But you can absolutely run it in the browser, 
+just like [cqx](https://cqx.bio) does for running queries without a server:
+
+<p align="left">
+  <img src="cqx-zega-deka.png" alt="zega in the browser!" width="70%">
+</p>
 
 ## Features
 
