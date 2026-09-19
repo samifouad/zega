@@ -13,7 +13,7 @@ use serde_json::Value as JsonValue;
 use sha2::Sha256;
 use zega_parser::value::Value;
 
-use crate::{now_millis, JwtConfig, JwtKey, Result, ZegaError};
+use crate::{JwtConfig, JwtKey, Result, ZegaError};
 
 type HmacSha256 = Hmac<Sha256>;
 
