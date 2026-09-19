@@ -2,6 +2,10 @@
 
 An embeddable graph database — with a KV store inside. Written in Rust.
 
+<p align="left">
+  <img src="image.png" alt="DekaScript logo" width="70%">
+</p>
+
 zega gives you what Neo4j gives you (a property graph with a Cypher-inspired
 query language) and what Redis gives you (strings, lists, TTLs, atomic
 counters) in one engine, one binary, one dependency. It runs in-process in
