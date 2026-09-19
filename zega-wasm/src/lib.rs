@@ -51,6 +51,24 @@ impl ZegaWasm {
     pub fn kv_del(&self, key: String) -> Result<bool, JsValue> {
         self.inner.kv_del(&key).map_err(to_js_error)
     }
+
+    /// Serialize the whole database (graph + KV) to a base64 string, so the
+    /// browser build can persist it across reloads.
+    pub fn export_base64(&self) -> Result<String, JsValue> {
+        use base64::Engine;
+        let bytes = self.inner.snapshot_bytes().map_err(to_js_error)?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    /// Restore a database previously produced by `export_base64`, replacing
+    /// current state.
+    pub fn import_base64(&self, data: String) -> Result<(), JsValue> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(to_js_error)?;
+        self.inner.restore_bytes(&bytes).map_err(to_js_error)
+    }
 }
 
 fn parse_params(params_json: &str) -> Result<HashMap<String, Value>, JsValue> {

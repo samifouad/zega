@@ -251,6 +251,7 @@ impl Zega {
         }
 
         // Replay WAL
+        #[cfg(not(target_arch = "wasm32"))]
         let wal = if builder.in_memory {
             Wal::in_memory()
         } else {
@@ -261,6 +262,8 @@ impl Zega {
                 64,
             )?
         };
+        #[cfg(target_arch = "wasm32")]
+        let wal = Wal::in_memory();
         #[cfg(not(target_arch = "wasm32"))]
         if !builder.in_memory && wal_path.exists() {
             let ops = wal.iter()?;
@@ -1062,6 +1065,27 @@ impl Zega {
             snapshot(&graph, &self.kv, &snapshot_path)?;
             Ok(())
         }
+    }
+
+    /// Serialize the full graph + KV state to bytes. Platform-independent —
+    /// this is how the wasm build persists an in-memory database.
+    pub fn snapshot_bytes(&self) -> Result<Vec<u8>> {
+        let graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        Ok(zega_wal::encode_snapshot(&graph, &self.kv)?)
+    }
+
+    /// Restore the full graph + KV state from [`snapshot_bytes`] output,
+    /// replacing current state.
+    pub fn restore_bytes(&self, bytes: &[u8]) -> Result<()> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        zega_wal::restore_bytes(&mut graph, &self.kv, bytes)?;
+        Ok(())
     }
 }
 
@@ -2335,12 +2359,21 @@ fn scalar_to_string(v: &Value) -> Option<String> {
     }
 }
 
+// SystemTime::now panics on wasm32-unknown-unknown; the browser clock comes
+// from js-sys Date there. Shared by datetime()/timestamp() and JWT.
 fn now_millis() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
 }
 
 fn now_iso8601() -> String {

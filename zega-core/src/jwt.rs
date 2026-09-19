@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -15,6 +16,21 @@ use zega_parser::value::Value;
 use crate::{JwtConfig, JwtKey, Result, ZegaError};
 
 type HmacSha256 = Hmac<Sha256>;
+
+// SystemTime::now panics on wasm32-unknown-unknown; the browser clock comes
+// from js-sys Date there (via now_millis in the crate root).
+#[cfg(target_arch = "wasm32")]
+fn now_unix_secs() -> u64 {
+    (now_millis() / 1000) as u64
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 pub fn verify(token: &str, config: &JwtConfig) -> Result<HashMap<String, Value>> {
     let parts: Vec<&str> = token.split('.').collect();
@@ -56,10 +72,7 @@ fn decode_part(part: &str, name: &str) -> Result<Vec<u8>> {
 }
 
 fn verify_registered_claims(payload: &JsonValue, config: &JwtConfig) -> Result<()> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|err| jwt_error(format!("system time before unix epoch: {err}")))?
-        .as_secs();
+    let now = now_unix_secs();
 
     if let Some(exp) = payload.get("exp") {
         let exp = exp

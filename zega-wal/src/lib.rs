@@ -1,4 +1,3 @@
-#[cfg(not(target_arch = "wasm32"))]
 use bincode::{serialize_into, Options};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,9 +16,7 @@ use std::thread::{self, JoinHandle};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 use thiserror::Error;
-use zega_graph::{Graph, NodeId, RelId};
-#[cfg(not(target_arch = "wasm32"))]
-use zega_graph::{Node, Relationship};
+use zega_graph::{Graph, Node, NodeId, RelId, Relationship};
 use zega_kv::KvStore;
 use zega_parser::Value;
 
@@ -561,14 +558,10 @@ pub fn snapshot(graph: &Graph, kv: &KvStore, path: &Path) -> Result<(), WalError
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let snapshot = Snapshot {
-            nodes: graph.all_nodes().clone(),
-            relationships: graph.all_relationships().clone(),
-            kv_data: kv.snapshot(),
-        };
+        let bytes = encode_snapshot(graph, kv)?;
         let tmp_path = path.with_extension("bin.tmp");
         let mut file = File::create(&tmp_path)?;
-        serialize_into(&mut file, &snapshot)?;
+        file.write_all(&bytes)?;
         file.flush()?;
         file.sync_all()?;
         drop(file);
@@ -593,22 +586,43 @@ pub fn restore(graph: &mut Graph, kv: &KvStore, path: &Path) -> Result<bool, Wal
         }
         let file = File::open(path)?;
         let file_len = file.metadata()?.len();
-        let snapshot: Snapshot = bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .allow_trailing_bytes()
-            .with_limit(file_len)
-            .deserialize_from(file)
-            .map_err(|error| WalError::Corruption {
-                offset: 0,
-                reason: format!("invalid snapshot: {error}"),
-            })?;
-        graph.set_state(snapshot.nodes, snapshot.relationships);
-        kv.restore(snapshot.kv_data);
+        let mut bytes = Vec::with_capacity(file_len as usize);
+        let mut reader = io::BufReader::new(file);
+        io::Read::read_to_end(&mut reader, &mut bytes)?;
+        restore_bytes(graph, kv, &bytes)?;
         Ok(true)
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Serialize the full graph + KV state to bytes (platform-independent; the
+/// basis for the file-based snapshot and for wasm export/import).
+pub fn encode_snapshot(graph: &Graph, kv: &KvStore) -> Result<Vec<u8>, WalError> {
+    let snapshot = Snapshot {
+        nodes: graph.all_nodes().clone(),
+        relationships: graph.all_relationships().clone(),
+        kv_data: kv.snapshot(),
+    };
+    let mut bytes = Vec::new();
+    serialize_into(&mut bytes, &snapshot)?;
+    Ok(bytes)
+}
+
+/// Restore the full graph + KV state from [`encode_snapshot`] bytes.
+pub fn restore_bytes(graph: &mut Graph, kv: &KvStore, bytes: &[u8]) -> Result<(), WalError> {
+    let snapshot: Snapshot = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .with_limit(bytes.len() as u64)
+        .deserialize(bytes)
+        .map_err(|error| WalError::Corruption {
+            offset: 0,
+            reason: format!("invalid snapshot: {error}"),
+        })?;
+    graph.set_state(snapshot.nodes, snapshot.relationships);
+    kv.restore(snapshot.kv_data);
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
     nodes: HashMap<NodeId, Node>,
