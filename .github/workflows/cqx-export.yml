@@ -1,0 +1,143 @@
+name: cqx export
+
+# What the explorer shows for this repository.
+#
+# The score itself is `cqx.yml`, which runs on every pull request and needs no
+# credentials. This is the other half: a push to main gets exported so that
+# cqx.bio/samifouad/zega opens on a dataset that already exists.
+#
+# Without it the page still works — it reads the repository from GitHub and
+# runs the analysis in the reader's browser — but it does that on every visit,
+# which is three seconds here and eleven on a large repository. A dataset
+# names its commit and describes nothing else, so it is written once and
+# cached forever.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COMMITS: 5
+
+jobs:
+  publish:
+    name: publish to the explorer
+    runs-on: ubuntu-latest
+    # Where the bucket credentials live. They are scoped to the cqx bucket and
+    # to nothing else.
+    environment: release
+    # One publisher at a time: two runs writing one index would race over which
+    # timeline is current, and the loser would not know.
+    concurrency:
+      group: cqx-publish
+      cancel-in-progress: false
+    env:
+      BUCKET: cqx
+      AWS_ACCESS_KEY_ID: ${{ secrets.CQX_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.CQX_R2_SECRET_ACCESS_KEY }}
+      AWS_ENDPOINT: ${{ secrets.CQX_R2_ENDPOINT }}
+      AWS_DEFAULT_REGION: auto
+    steps:
+      # Said once, plainly, rather than failing four steps later with an AWS
+      # error that names no cause. A repository without the bucket credentials
+      # is not broken — it is unpublished, which is a state the reader's
+      # browser already handles.
+      - name: Check there is somewhere to publish to
+        id: creds
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_ENDPOINT:-}" ]; then
+            {
+              echo "### Not published"
+              echo
+              echo "This repository has no R2 credentials, so nothing was exported."
+              echo "Readers still get a report — their browser reads the repository"
+              echo "and runs the analysis itself, which takes a few seconds every visit."
+              echo
+              echo "To publish: add \`CQX_R2_ACCESS_KEY_ID\`, \`CQX_R2_SECRET_ACCESS_KEY\`"
+              echo "and \`CQX_R2_ENDPOINT\` to the \`release\` environment."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "have=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Deep enough that a first-parent walk of five commits cannot run out of
+      # history on a branch that merges often.
+      - if: steps.creds.outputs.have == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 60
+
+      # The installer picks the binary for this runner and checks it against
+      # the sums published beside it. Naming the asset here is what broke: the
+      # release renamed cqx-linux-x86_64 to cqx-linux-x64 and this went on
+      # asking for a file that no longer exists.
+      - if: steps.creds.outputs.have == 'true'
+        name: Install cqx
+        run: |
+          set -euo pipefail
+          export CQX_INSTALL_DIR="${RUNNER_TEMP}/cqx" CQX_NO_MODIFY_PATH=1
+          curl -fsSL https://cqx.bio/install | sh
+          echo "${CQX_INSTALL_DIR}/bin" >> "$GITHUB_PATH"
+
+      # A dataset names its commit and describes nothing else, which makes it
+      # immutable — written once, cached forever, never analysed twice. Taking
+      # down the ones the bucket already has is what turns "the last five
+      # commits" into "the one that is new".
+      - if: steps.creds.outputs.have == 'true'
+        name: Take down what the bucket already has
+        run: |
+          mkdir -p "out/${{ github.repository }}"
+          : > have.txt
+          for sha in $(git rev-list --first-parent -n "$COMMITS" HEAD | cut -c1-8); do
+            if aws s3 cp "s3://$BUCKET/${{ github.repository }}/$sha.json" \
+                 "out/${{ github.repository }}/$sha.json" \
+                 --endpoint-url="$AWS_ENDPOINT" --only-show-errors 2>/dev/null; then
+              echo "$sha.json" >> have.txt
+              echo "have $sha"
+            else
+              echo "need $sha"
+            fi
+          done
+
+      - if: steps.creds.outputs.have == 'true'
+        name: Export
+        run: cqx export . --commits "$COMMITS" --name "${{ github.repository }}" --out out
+
+      - if: steps.creds.outputs.have == 'true'
+        name: Put back what is new
+        run: |
+          for path in out/${{ github.repository }}/*.json; do
+            name=$(basename "$path")
+            # The index is the one file that changes, so it always goes up.
+            if [ "$name" != "index.json" ] && grep -qxF "$name" have.txt; then
+              echo "unchanged $name"
+              continue
+            fi
+            aws s3 cp "$path" "s3://$BUCKET/${{ github.repository }}/$name" \
+              --endpoint-url="$AWS_ENDPOINT" \
+              --content-type application/json --only-show-errors
+            echo "published $name"
+          done
+
+      - if: steps.creds.outputs.have == 'true'
+        name: Say what is live
+        run: |
+          {
+            echo "[cqx.bio/${{ github.repository }}](https://cqx.bio/${{ github.repository }})"
+            echo
+            python3 - <<'PY'
+          import json
+          index = json.load(open('out/${{ github.repository }}/index.json'))
+          categories = list(index['commits'][0]['scores'])
+          print('| commit | subject | ' + ' | '.join(categories) + ' |')
+          print('|---|---|' + '---|' * len(categories))
+          for commit in reversed(index['commits']):
+              scores = ' | '.join(str(commit['scores'][c]) for c in categories)
+              print(f"| `{commit['short']}` | {commit['subject'][:48]} | {scores} |")
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"
