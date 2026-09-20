@@ -118,9 +118,24 @@ jobs:
               echo "unchanged $name"
               continue
             fi
+            # A dataset names its commit and describes nothing else, so it
+            # is true forever and may be cached forever. The index is the one
+            # file that changes, so it gets a minute and a revalidation.
+            #
+            # Written here because it was not written anywhere: objects went
+            # up with a content type and no cache policy, so browsers fell
+            # back to heuristic freshness on a file that never changes — every
+            # visitor re-downloading a dataset they already had — and
+            # Cloudflare declined to hold it at the edge at all.
+            if [ "$name" = "index.json" ]; then
+              policy="public, max-age=60, must-revalidate"
+            else
+              policy="public, max-age=31536000, immutable"
+            fi
             aws s3 cp "$path" "s3://$BUCKET/${{ github.repository }}/$name" \
               --endpoint-url="$AWS_ENDPOINT" \
-              --content-type application/json --only-show-errors
+              --content-type application/json --cache-control "$policy" \
+              --only-show-errors
             echo "published $name"
           done
 
