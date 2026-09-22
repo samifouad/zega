@@ -1,7 +1,7 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
 import { renderGraph } from './graph.js';
 
-const LS_DB = 'zega.v2.roster';
+const LS_DB = 'zega.v2.since';
 const LS_SCHEMA = 'zega.v2.schema';
 const LS_QUERY = 'zega.v2.query';
 
@@ -61,13 +61,14 @@ const TOUR = [
   Player(salary > 10000000) {
     name
     salary
-    playsFor -> Team { name }
+    &hops
+    playsFor -> Team { name &hops }
   }
 }`],
-  ['Oilers roster', `{
+  ['Oilers arrivals', `{
   Team(name: "Oilers") {
     name
-    playsFor <- Player { name position salary }
+    playsFor <- Player { name &since }
   }
 }`],
   ['Golden Knights', `{
@@ -104,9 +105,10 @@ const TOUR = [
 ];
 
 function teamSeed(name, city, abbr, players) {
-  const roster = players.map(([player, position, id, salary]) =>
-    `playsFor <- Player(name: "${player}", position: "${position}", face: "${mug(id)}", salary: ${salary}) { name salary }`
-  ).join('\n    ');
+  const roster = players.map(([player, position, id, salary, since]) => {
+    const joined = since == null ? '' : ` &since: ${since}`;
+    return `playsFor <- Player(name: "${player}", position: "${position}", face: "${mug(id)}", salary: ${salary}) { name salary${joined} }`;
+  }).join('\n    ');
   return `mutation {
   Team(name: "${name}", city: "${city}", logo: "${logo(abbr)}") {
     name
@@ -132,55 +134,55 @@ function countrySeed(name, code, players) {
 
 const SEEDS = [
   teamSeed('Oilers', 'Edmonton', 'EDM', [
-    ['Connor McDavid', 'C', 8478402, 12500000],
-    ['Leon Draisaitl', 'C', 8477934, 14000000],
-    ['Evan Bouchard', 'D', 8479999, 10500000],
-    ['Zach Hyman', 'LW', 8475786, 5500000],
-    ['Ryan Nugent-Hopkins', 'C', 8476454, 5125000],
-    ['Mattias Ekholm', 'D', 8475218, 4000000],
+    ['Connor McDavid', 'C', 8478402, 12500000, 2015],
+    ['Leon Draisaitl', 'C', 8477934, 14000000, 2014],
+    ['Evan Bouchard', 'D', 8479999, 10500000, 2018],
+    ['Zach Hyman', 'LW', 8475786, 5500000, 2021],
+    ['Ryan Nugent-Hopkins', 'C', 8476454, 5125000, 2011],
+    ['Mattias Ekholm', 'D', 8475218, 4000000, 2023],
   ]),
   teamSeed('Maple Leafs', 'Toronto', 'TOR', [
-    ['Auston Matthews', 'C', 8479318, 13250000],
-    ['William Nylander', 'RW', 8477939, 11500000],
-    ['Morgan Rielly', 'D', 8476853, 7500000],
-    ['John Tavares', 'C', 8475166, 4389280],
+    ['Auston Matthews', 'C', 8479318, 13250000, 2016],
+    ['William Nylander', 'RW', 8477939, 11500000, 2016],
+    ['Morgan Rielly', 'D', 8476853, 7500000, 2013],
+    ['John Tavares', 'C', 8475166, 4389280, 2018],
   ]),
   teamSeed('Golden Knights', 'Vegas', 'VGK', [
-    ['Jack Eichel', 'C', 8478403, 13500000],
-    ['Mitch Marner', 'RW', 8478483, 12000000],
-    ['Mark Stone', 'RW', 8475913, 9500000],
+    ['Jack Eichel', 'C', 8478403, 13500000, 2021],
+    ['Mitch Marner', 'RW', 8478483, 12000000, 2025],
+    ['Mark Stone', 'RW', 8475913, 9500000, 2017],
   ]),
   teamSeed('Avalanche', 'Colorado', 'COL', [
-    ['Nathan MacKinnon', 'C', 8477492, 12604000],
-    ['Martin Necas', 'C', 8480039, 11500000],
-    ['Cale Makar', 'D', 8480069, 9000000],
-    ['Brock Nelson', 'C', 8475754, 7500000],
-    ['Devon Toews', 'D', 8478038, 7250000],
-    ['Gabriel Landeskog', 'LW', 8476455, 7000000],
-    ['Nazem Kadri', 'C', 8475172, 5600000],
+    ['Nathan MacKinnon', 'C', 8477492, 12604000, 2013],
+    ['Martin Necas', 'C', 8480039, 11500000, 2025],
+    ['Cale Makar', 'D', 8480069, 9000000, 2019],
+    ['Brock Nelson', 'C', 8475754, 7500000, 2025],
+    ['Devon Toews', 'D', 8478038, 7250000, 2020],
+    ['Gabriel Landeskog', 'LW', 8476455, 7000000, 2011],
+    ['Nazem Kadri', 'C', 8475172, 5600000, 2022],
   ]),
   teamSeed('Penguins', 'Pittsburgh', 'PIT', [
-    ['Erik Karlsson', 'D', 8474578, 11500000],
-    ['Sidney Crosby', 'C', 8471675, 8700000],
-    ['Kris Letang', 'D', 8471724, 6100000],
-    ['Evgeni Malkin', 'C', 8471215, 5500000],
-    ['Bryan Rust', 'RW', 8475810, 5125000],
+    ['Erik Karlsson', 'D', 8474578, 11500000, 2023],
+    ['Sidney Crosby', 'C', 8471675, 8700000, 2005],
+    ['Kris Letang', 'D', 8471724, 6100000, 2006],
+    ['Evgeni Malkin', 'C', 8471215, 5500000, 2006],
+    ['Bryan Rust', 'RW', 8475810, 5125000, 2014],
   ]),
   teamSeed('Capitals', 'Washington', 'WSH', [
-    ['Alex Tuch', 'RW', 8477949, 10500000],
-    ['Pierre-Luc Dubois', 'C', 8479400, 8500000],
+    ['Alex Tuch', 'RW', 8477949, 10500000, 2026],
+    ['Pierre-Luc Dubois', 'C', 8479400, 8500000, 2024],
     ['Jordan Kyrou', 'RW', 8479385, 8125000],
-    ['Tom Wilson', 'RW', 8476880, 6500000],
-    ['Alex Ovechkin', 'LW', 8471214, 4250000],
+    ['Tom Wilson', 'RW', 8476880, 6500000, 2013],
+    ['Alex Ovechkin', 'LW', 8471214, 4250000, 2005],
   ]),
   teamSeed('Lightning', 'Tampa Bay', 'TBL', [
-    ['Andrei Vasilevskiy', 'G', 8476883, 9500000],
-    ['Nikita Kucherov', 'RW', 8476453, 9500000],
-    ['Brayden Point', 'C', 8478010, 9500000],
-    ['Jake Guentzel', 'LW', 8477404, 9000000],
-    ['Victor Hedman', 'D', 8475167, 8000000],
-    ['Brandon Hagel', 'LW', 8479542, 6500000],
-    ['Anthony Cirelli', 'C', 8478519, 6250000],
+    ['Andrei Vasilevskiy', 'G', 8476883, 9500000, 2014],
+    ['Nikita Kucherov', 'RW', 8476453, 9500000, 2013],
+    ['Brayden Point', 'C', 8478010, 9500000, 2016],
+    ['Jake Guentzel', 'LW', 8477404, 9000000, 2024],
+    ['Victor Hedman', 'D', 8475167, 8000000, 2009],
+    ['Brandon Hagel', 'LW', 8479542, 6500000, 2022],
+    ['Anthony Cirelli', 'C', 8478519, 6250000, 2017],
   ]),
   ...countrySeed('Canada', 'ca', [
     'Connor McDavid', 'Evan Bouchard', 'Zach Hyman', 'Ryan Nugent-Hopkins',
