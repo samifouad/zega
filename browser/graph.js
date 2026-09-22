@@ -52,6 +52,10 @@ export function stopSim(container) {
     container._sim.stop();
     container._sim = null;
   }
+  if (container._float) {
+    cancelAnimationFrame(container._float);
+    container._float = null;
+  }
 }
 
 function overviewChips(graph) {
@@ -170,10 +174,21 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     edges.set(rel.id, { path, label, rel });
   }
 
+  function drift(node) {
+    if (!Number.isFinite(node.x)) return null;
+    if (node.fx != null) return { x: node.x, y: node.y };
+    const t = performance.now() / 1000;
+    const phase = node.id * 0.85;
+    return {
+      x: node.x + Math.sin(t * 0.7 + phase) * 3.2,
+      y: node.y + Math.cos(t * 0.5 + phase * 1.4) * 4.4,
+    };
+  }
+
   function drawEdge(rel) {
-    const a = graph.nodes.find((node) => node.id === rel.from);
-    const b = graph.nodes.find((node) => node.id === rel.to);
-    if (!a || !b || !Number.isFinite(a.x) || !Number.isFinite(b.x)) return;
+    const a = drift(graph.nodes.find((node) => node.id === rel.from) || {});
+    const b = drift(graph.nodes.find((node) => node.id === rel.to) || {});
+    if (!a || !b) return;
     const dx = b.x - a.x, dy = b.y - a.y;
     const d = Math.hypot(dx, dy) || 1;
     const ux = dx / d, uy = dy / d;
@@ -273,13 +288,18 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     }
   }
 
-  function onTick() {
-    if (!state.fitted) fit();
+  function place() {
     for (const node of graph.nodes) {
       const entry = circles.get(node.id);
-      if (entry && Number.isFinite(node.x)) entry.g.setAttribute('transform', `translate(${node.x},${node.y})`);
+      const at = entry && drift(node);
+      if (at) entry.g.setAttribute('transform', `translate(${at.x},${at.y})`);
     }
     for (const rel of graph.rels) drawEdge(rel);
+  }
+
+  function onTick() {
+    if (!state.fitted) fit();
+    place();
   }
 
   if (previous) {
@@ -418,6 +438,12 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     const y = ((event.clientY - rect.top) / rect.height) * 480;
     return { x: (x - state.tx) / state.scale, y: (y - state.ty) / state.scale };
   }
+
+  function float() {
+    container._float = requestAnimationFrame(float);
+    place();
+  }
+  container._float = requestAnimationFrame(float);
 
   container._graph = {
     signature,
