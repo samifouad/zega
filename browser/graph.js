@@ -9,12 +9,16 @@ function labelColor(label) {
   return colorByLabel.get(label);
 }
 
+function imageUrl(value) {
+  return typeof value === 'string' && /^https?:\/\//i.test(value.trim()) ? value.trim() : '';
+}
+
 function nodeCaption(node) {
   return String(node.name ?? node.title ?? node.id);
 }
 
 function nodeProps(node) {
-  const skip = new Set(['id', 'labels', 'type', 'from', 'to', 'x', 'y', 'vx', 'vy', 'index', 'fx', 'fy', 'face', 'logo', 'flag']);
+  const skip = new Set(['id', 'labels', 'type', 'from', 'to', 'x', 'y', 'vx', 'vy', 'index', 'fx', 'fy', 'face', 'logo', 'flag', 'image']);
   return Object.fromEntries(Object.entries(node).filter(([key]) => !skip.has(key)));
 }
 
@@ -221,7 +225,7 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     const g = document.createElementNS(NS, 'g');
     g.style.cursor = 'pointer';
     const on = lit(node);
-    const picture = node.face || node.logo || node.flag;
+    const picture = imageUrl(node.image) || node.face || node.logo || node.flag;
     const plate = document.createElementNS(NS, 'circle');
     plate.setAttribute('r', R);
     plate.setAttribute('fill', picture ? '#fff' : labelColor((node.labels || [])[0]));

@@ -3,39 +3,39 @@
 // its name shows up in that schema.
 
 const PRESETS = {
-  Hockey: `Name,Team,Position,Country,Salary
-Connor McDavid,Oilers,C,Canada,12500000
-Leon Draisaitl,Oilers,C,Germany,14000000
-Auston Matthews,Maple Leafs,C,United States,13250000
-Nathan MacKinnon,Avalanche,C,Canada,12604000
-Cale Makar,Avalanche,D,Canada,9000000
-Nikita Kucherov,Lightning,RW,Russia,9500000
-Alex Ovechkin,Capitals,LW,Russia,4250000
-Mitch Marner,Golden Knights,RW,Canada,12000000`,
-  Pokemon: `Name,Type 1,Type 2,Total,HP,Attack,Defense,Sp. Atk,Sp. Def,Speed,Generation,Legendary
-Bulbasaur,Grass,Poison,318,45,49,49,65,65,45,1,False
-Ivysaur,Grass,Poison,405,60,62,63,80,80,60,1,False
-Charmander,Fire,,309,39,52,43,60,50,65,1,False
-Charizard,Fire,Flying,534,78,84,78,109,85,100,1,False
-Squirtle,Water,,314,44,48,65,50,64,43,1,False
-Pikachu,Electric,,320,35,55,40,50,50,90,1,False
-Eevee,Normal,,325,55,55,50,45,65,55,1,False
-Mewtwo,Psychic,,680,106,110,90,154,90,130,1,True
-Chikorita,Grass,,318,45,49,65,49,65,45,2,False
-Cyndaquil,Fire,,309,39,52,43,60,50,65,2,False
-Totodile,Water,,314,50,65,64,44,48,43,2,False`,
-  Movies: `Actor,Film,Year,Role
-Tom Hanks,Forrest Gump,1994,Forrest Gump
-Tom Hanks,Cast Away,2000,Chuck Noland
-Meg Ryan,Sleepless in Seattle,1993,Annie Reed
-Meg Ryan,You've Got Mail,1998,Kathleen Kelly
-Robert Zemeckis,Forrest Gump,1994,Director
-Robert Zemeckis,Cast Away,2000,Director`,
+  Hockey: `Name,Team,Position,Country,Salary,Image
+Connor McDavid,Oilers,C,Canada,12500000,https://assets.nhle.com/mugs/nhl/latest/8478402.png
+Leon Draisaitl,Oilers,C,Germany,14000000,https://assets.nhle.com/mugs/nhl/latest/8477934.png
+Auston Matthews,Maple Leafs,C,United States,13250000,https://assets.nhle.com/mugs/nhl/latest/8479318.png
+Nathan MacKinnon,Avalanche,C,Canada,12604000,https://assets.nhle.com/mugs/nhl/latest/8477492.png
+Cale Makar,Avalanche,D,Canada,9000000,https://assets.nhle.com/mugs/nhl/latest/8480069.png
+Nikita Kucherov,Lightning,RW,Russia,9500000,https://assets.nhle.com/mugs/nhl/latest/8476453.png
+Alex Ovechkin,Capitals,LW,Russia,4250000,https://assets.nhle.com/mugs/nhl/latest/8471214.png
+Mitch Marner,Golden Knights,RW,Canada,12000000,https://assets.nhle.com/mugs/nhl/latest/8478483.png`,
+  Pokemon: `Name,Type 1,Type 2,Total,HP,Attack,Defense,Sp. Atk,Sp. Def,Speed,Generation,Legendary,Image
+Bulbasaur,Grass,Poison,318,45,49,49,65,65,45,1,False,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/1.png
+Ivysaur,Grass,Poison,405,60,62,63,80,80,60,1,False,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/2.png
+Charmander,Fire,,309,39,52,43,60,50,65,1,False,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/4.png
+Charizard,Fire,Flying,534,78,84,78,109,85,100,1,False,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/6.png
+Squirtle,Water,,314,44,48,65,50,64,43,1,False,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/7.png
+Pikachu,Electric,,320,35,55,40,50,50,90,1,False,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/25.png
+Eevee,Normal,,325,55,55,50,45,65,55,1,False,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/133.png
+Mewtwo,Psychic,,680,106,110,90,154,90,130,1,True,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/150.png
+Chikorita,Grass,,318,45,49,65,49,65,45,2,False,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/152.png
+Cyndaquil,Fire,,309,39,52,43,60,50,65,2,False,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/155.png
+Totodile,Water,,314,50,65,64,44,48,43,2,False,https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/158.png`,
+  Movies: `Actor,Film,Year,Role,Image
+Tom Hanks,Forrest Gump,1994,Forrest Gump,https://api.dicebear.com/9.x/personas/svg?seed=Tom%20Hanks
+Tom Hanks,Cast Away,2000,Chuck Noland,https://api.dicebear.com/9.x/personas/svg?seed=Tom%20Hanks
+Meg Ryan,Sleepless in Seattle,1993,Annie Reed,https://api.dicebear.com/9.x/personas/svg?seed=Meg%20Ryan
+Meg Ryan,You've Got Mail,1998,Kathleen Kelly,https://api.dicebear.com/9.x/personas/svg?seed=Meg%20Ryan
+Robert Zemeckis,Forrest Gump,1994,Director,https://api.dicebear.com/9.x/personas/svg?seed=Robert%20Zemeckis
+Robert Zemeckis,Cast Away,2000,Director,https://api.dicebear.com/9.x/personas/svg?seed=Robert%20Zemeckis`,
 };
 
 const ROW_CAP = 150;
 
-export function openCsv({ run, setSchema, setQuery }) {
+export function openCsv({ run, clearDatabase, setSchema, setQuery }) {
   closeCsv();
   const root = document.createElement('div');
   root.id = 'csv-modal';
@@ -187,6 +187,7 @@ export function openCsv({ run, setSchema, setQuery }) {
       status.textContent = built.error;
       return;
     }
+    clearDatabase();
     setSchema(built.schema);
     for (const mutation of built.mutations) {
       const value = run(mutation);

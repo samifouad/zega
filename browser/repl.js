@@ -211,6 +211,7 @@ const editorsReady = createEditors({
 
 await init();
 const db = new ZegaWasm();
+const EMPTY_DB = db.export_base64();
 const saved = localStorage.getItem(LS_DB);
 if (saved) {
   try { db.import_base64(saved); } catch (e) { console.error(e); }
@@ -227,6 +228,12 @@ function setQuiet(editor, value) {
 }
 function schemaText() { return schemaEditor.getValue(); }
 function queryText() { return queryEditor.getValue(); }
+
+function clearDatabase() {
+  db.import_base64(EMPTY_DB);
+  try { localStorage.setItem(LS_DB, EMPTY_DB); } catch (e) { console.error(e); }
+  lastValue = null;
+}
 
 function persist() {
   localStorage.setItem(LS_SCHEMA, schemaText());
@@ -255,9 +262,9 @@ function plainError(error) {
   return String(error?.message || error).replace(/^Error:\s*/, '').replace(/^execution error:\s*/, '');
 }
 
-function review() {
+function review(source = queryText()) {
   try {
-    const parsed = JSON.parse(db.check(schemaText(), queryText()));
+    const parsed = JSON.parse(db.check(schemaText(), source));
     if (parsed && Array.isArray(parsed.diagnostics)) {
       return { diagnostics: parsed.diagnostics, text: parsed.text || '', failed: false };
     }
@@ -304,8 +311,8 @@ function showThrown(error) {
 function run(source) {
   localStorage.setItem(LS_SCHEMA, schemaText());
   localStorage.setItem(LS_QUERY, queryText());
-  const report = review();
-  mark(report.diagnostics);
+  const report = review(source);
+  if (source === queryText()) mark(report.diagnostics);
   if (report.diagnostics.length || report.failed) {
     queryTime.textContent = '';
     showReport(report);
@@ -337,16 +344,19 @@ $('#btn-csv').onclick = () => {
   pauseAutoplay();
   openCsv({
     run,
+    clearDatabase,
     setSchema: (text) => setQuiet(schemaEditor, text),
     setQuery: (text) => setQuiet(queryEditor, text),
   });
 };
 $('#btn-seed').onclick = () => reseed();
 $('#btn-clear').onclick = () => {
-  localStorage.removeItem(LS_DB);
-  localStorage.removeItem(LS_SCHEMA);
-  localStorage.removeItem(LS_QUERY);
-  location.reload();
+  pauseAutoplay();
+  clearDatabase();
+  outputEditor.setValue('');
+  outputSize.textContent = '';
+  queryTime.textContent = '';
+  drawGraph();
 };
 
 let pending = null;
@@ -434,6 +444,7 @@ playBtn.onclick = () => {
 
 function reseed() {
   pauseAutoplay();
+  clearDatabase();
   setQuiet(schemaEditor, SCHEMA);
   for (const seed of SEEDS) run(seed);
   showTour(0);
@@ -525,9 +536,11 @@ dragSplit(document.getElementById('split-rows'), (ev) => {
 let opening = { nodes: [] };
 try { opening = storedGraph(); } catch (e) { showThrown(e); }
 
-if (!opening.nodes.length) {
+if (!saved) {
   reseed();
-} else {
+} else if (opening.nodes.length) {
   showTour(0);
   startAutoplay();
+} else {
+  drawGraph();
 }
