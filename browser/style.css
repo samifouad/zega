@@ -73,8 +73,14 @@ body {
   min-height: 0;
   overflow: auto;
 }
-.pane-graph #graph { flex: 1; min-height: 0; position: relative; }
-.pane-graph .graph-wrap { height: 100%; }
+.pane-graph #graph {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+}
+.pane-graph .graph-wrap { flex: 1; min-height: 0; height: auto; }
 .pane-graph .graph-wrap svg { height: 100%; }
 #json.error { color: #a12626; }
 
