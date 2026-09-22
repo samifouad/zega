@@ -315,6 +315,17 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     <div class="ph-foot"><button class="mini">reset</button></div>`;
   wrap.appendChild(gear);
   wrap.appendChild(panel);
+  const zoom = document.createElement('div');
+  zoom.className = 'graph-zoom';
+  zoom.innerHTML = `<button type="button" data-zoom="in" title="zoom in">+</button><button type="button" data-zoom="out" title="zoom out">−</button>`;
+  wrap.appendChild(zoom);
+  function zoomBy(factor) {
+    userInteracted = true;
+    state.scale = Math.min(4, Math.max(0.1, state.scale * factor));
+    apply();
+  }
+  zoom.querySelector('[data-zoom="in"]').onclick = () => zoomBy(1.12);
+  zoom.querySelector('[data-zoom="out"]').onclick = () => zoomBy(1 / 1.12);
   gear.onclick = () => panel.classList.toggle('open');
   const format = { repulsion: (value) => value + '%', linkDist: (value) => value, pad: (value) => value, gravity: (value) => value + '%' };
   function applyPhys() {
