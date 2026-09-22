@@ -1,42 +1,72 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
 import { renderGraph } from './graph.js';
 
-const LS_DB = 'zega.v2.db';
+const LS_DB = 'zega.v2.nhl';
 const LS_SCHEMA = 'zega.v2.schema';
 const LS_QUERY = 'zega.v2.query';
 
-const SCHEMA = `type Author {
-  name: String
-  died?: Int
+const mug = (id) => `https://assets.nhle.com/mugs/nhl/latest/${id}.png`;
+const logo = (abbr) => `https://assets.nhle.com/logos/nhl/svg/${abbr}_light.svg`;
 
-  wrote -> Book[]
+const SCHEMA = `type Team {
+  name: String
+  city: String
+  logo: String
+
+  roster -> Player[]
 }
 
-type Book {
-  title: String
-  pages: Int
+type Player {
+  name: String
+  position: String
+  face: String
 
-  wrote <- Author
+  roster <- Team
 }`;
 
 const QUERY = `{
-  Author(name: "Le Guin") {
+  Team(name: "Oilers") {
     name
-    died
-    wrote -> Book(pages > 300) {
-      title
-      pages
-    }
+    roster -> Player { name position }
   }
 }`;
 
-const SEED = `mutation {
-  Author(name: "Le Guin", died: 2018) {
+function teamSeed(name, city, abbr, players) {
+  const roster = players.map(([player, position, id]) =>
+    `roster -> Player(name: "${player}", position: "${position}", face: "${mug(id)}") { name }`
+  ).join('\n    ');
+  return `mutation {
+  Team(name: "${name}", city: "${city}", logo: "${logo(abbr)}") {
     name
-    wrote -> Book(title: "The Dispossessed", pages: 387) { title }
-    wrote -> Book(title: "A Wizard of Earthsea", pages: 205) { title }
+    ${roster}
   }
 }`;
+}
+
+const SEEDS = [
+  teamSeed('Oilers', 'Edmonton', 'EDM', [
+    ['Connor McDavid', 'C', 8478402],
+    ['Leon Draisaitl', 'C', 8477934],
+  ]),
+  teamSeed('Maple Leafs', 'Toronto', 'TOR', [
+    ['Auston Matthews', 'C', 8479318],
+    ['Mitch Marner', 'RW', 8478483],
+  ]),
+  teamSeed('Avalanche', 'Colorado', 'COL', [
+    ['Nathan MacKinnon', 'C', 8477492],
+    ['Cale Makar', 'D', 8480069],
+  ]),
+  teamSeed('Penguins', 'Pittsburgh', 'PIT', [
+    ['Sidney Crosby', 'C', 8471675],
+  ]),
+  teamSeed('Capitals', 'Washington', 'WSH', [
+    ['Alex Ovechkin', 'LW', 8471214],
+  ]),
+  teamSeed('Lightning', 'Tampa Bay', 'TBL', [
+    ['Nikita Kucherov', 'RW', 8476453],
+    ['Brayden Point', 'C', 8478010],
+  ]),
+];
 
 const $ = (sel) => document.querySelector(sel);
 const schemaEl = $('#schema');
@@ -97,23 +127,41 @@ function run(source) {
 }
 
 $('#btn-run').onclick = () => run(queryEl.value);
-$('#btn-seed').onclick = () => {
-  run(SEED);
-  queryEl.value = QUERY;
-  persist();
-};
+$('#btn-seed').onclick = () => reseed();
 $('#btn-clear').onclick = () => {
   localStorage.removeItem(LS_DB);
+  localStorage.removeItem(LS_SCHEMA);
+  localStorage.removeItem(LS_QUERY);
   location.reload();
 };
 queryEl.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
     e.preventDefault();
+    clearTimeout(pending);
     run(queryEl.value);
   }
 });
-schemaEl.addEventListener('input', persist);
-queryEl.addEventListener('input', persist);
+
+let pending = null;
+function scheduleRun() {
+  localStorage.setItem(LS_SCHEMA, schemaEl.value);
+  localStorage.setItem(LS_QUERY, queryEl.value);
+  clearTimeout(pending);
+  pending = setTimeout(() => {
+    const source = queryEl.value.trim();
+    if (!source || source.startsWith('mutation')) return;
+    run(source);
+  }, 350);
+}
+schemaEl.addEventListener('input', scheduleRun);
+queryEl.addEventListener('input', scheduleRun);
+
+function reseed() {
+  schemaEl.value = SCHEMA;
+  for (const seed of SEEDS) run(seed);
+  queryEl.value = QUERY;
+  run(QUERY);
+}
 
 function storedGraph() {
   return JSON.parse(db.graph());
@@ -134,10 +182,7 @@ let opening = { nodes: [] };
 try { opening = storedGraph(); } catch (e) { jsonEl.textContent = String(e); }
 
 if (!opening.nodes.length) {
-  schemaEl.value = SCHEMA;
-  run(SEED);
-  queryEl.value = QUERY;
-  run(QUERY);
+  reseed();
 } else {
   jsonEl.textContent = '';
   drawGraph();

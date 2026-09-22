@@ -14,7 +14,7 @@ function nodeCaption(node) {
 }
 
 function nodeProps(node) {
-  const skip = new Set(['id', 'labels', 'type', 'from', 'to', 'x', 'y', 'vx', 'vy', 'index', 'fx', 'fy']);
+  const skip = new Set(['id', 'labels', 'type', 'from', 'to', 'x', 'y', 'vx', 'vy', 'index', 'fx', 'fy', 'face', 'logo']);
   return Object.fromEntries(Object.entries(node).filter(([key]) => !skip.has(key)));
 }
 
@@ -184,12 +184,30 @@ export function renderGraph(container, graph, active = new Set()) {
     const g = document.createElementNS(NS, 'g');
     g.style.cursor = 'pointer';
     const on = lit(node);
-    const circle = document.createElementNS(NS, 'circle');
-    circle.setAttribute('r', R);
-    circle.setAttribute('fill', labelColor((node.labels || [])[0]));
-    circle.setAttribute('stroke', on && active.size ? '#1a1a1a' : 'rgba(0,0,0,0.25)');
-    circle.setAttribute('stroke-width', on && active.size ? '2.5' : '1');
-    g.appendChild(circle);
+    const picture = node.face || node.logo;
+    const plate = document.createElementNS(NS, 'circle');
+    plate.setAttribute('r', R);
+    plate.setAttribute('fill', picture ? '#fff' : labelColor((node.labels || [])[0]));
+    plate.setAttribute('stroke', on && active.size ? '#1a1a1a' : 'rgba(0,0,0,0.25)');
+    plate.setAttribute('stroke-width', on && active.size ? '2.5' : '1');
+    g.appendChild(plate);
+    if (picture) {
+      const clip = document.createElementNS(NS, 'clipPath');
+      clip.setAttribute('id', `mug-${node.id}`);
+      const clipCircle = document.createElementNS(NS, 'circle');
+      clipCircle.setAttribute('r', R - 1);
+      clip.appendChild(clipCircle);
+      svg.querySelector('defs').appendChild(clip);
+      const image = document.createElementNS(NS, 'image');
+      image.setAttribute('href', picture);
+      image.setAttribute('x', -R);
+      image.setAttribute('y', -R);
+      image.setAttribute('width', R * 2);
+      image.setAttribute('height', R * 2);
+      image.setAttribute('clip-path', `url(#mug-${node.id})`);
+      image.setAttribute('preserveAspectRatio', node.logo ? 'xMidYMid meet' : 'xMidYMid slice');
+      g.appendChild(image);
+    }
     const text = document.createElementNS(NS, 'text');
     text.setAttribute('class', 'cap');
     text.setAttribute('font-size', '11.5');
