@@ -1,7 +1,7 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
 import { renderGraph } from './graph.js';
 
-const LS_DB = 'zega.v2.playsfor';
+const LS_DB = 'zega.v2.roster';
 const LS_SCHEMA = 'zega.v2.schema';
 const LS_QUERY = 'zega.v2.query';
 
@@ -82,6 +82,16 @@ const TOUR = [
     born <- Player { name salary playsFor -> Team { name } }
   }
 }`],
+  ['Swedish players', `{
+  Country(name: "Sweden") {
+    name
+    born <- Player {
+      name
+      salary
+      playsFor -> Team { name }
+    }
+  }
+}`],
 ];
 
 function teamSeed(name, city, abbr, players) {
@@ -115,33 +125,72 @@ const SEEDS = [
   teamSeed('Oilers', 'Edmonton', 'EDM', [
     ['Connor McDavid', 'C', 8478402, 12500000],
     ['Leon Draisaitl', 'C', 8477934, 14000000],
+    ['Evan Bouchard', 'D', 8479999, 10500000],
+    ['Zach Hyman', 'LW', 8475786, 5500000],
+    ['Ryan Nugent-Hopkins', 'C', 8476454, 5125000],
+    ['Mattias Ekholm', 'D', 8475218, 4000000],
   ]),
   teamSeed('Maple Leafs', 'Toronto', 'TOR', [
     ['Auston Matthews', 'C', 8479318, 13250000],
+    ['William Nylander', 'RW', 8477939, 11500000],
+    ['Morgan Rielly', 'D', 8476853, 7500000],
+    ['John Tavares', 'C', 8475166, 4389280],
   ]),
   teamSeed('Golden Knights', 'Vegas', 'VGK', [
+    ['Jack Eichel', 'C', 8478403, 13500000],
     ['Mitch Marner', 'RW', 8478483, 12000000],
+    ['Mark Stone', 'RW', 8475913, 9500000],
   ]),
   teamSeed('Avalanche', 'Colorado', 'COL', [
     ['Nathan MacKinnon', 'C', 8477492, 12604000],
+    ['Martin Necas', 'C', 8480039, 11500000],
     ['Cale Makar', 'D', 8480069, 9000000],
+    ['Brock Nelson', 'C', 8475754, 7500000],
+    ['Devon Toews', 'D', 8478038, 7250000],
+    ['Gabriel Landeskog', 'LW', 8476455, 7000000],
+    ['Nazem Kadri', 'C', 8475172, 5600000],
   ]),
   teamSeed('Penguins', 'Pittsburgh', 'PIT', [
+    ['Erik Karlsson', 'D', 8474578, 11500000],
     ['Sidney Crosby', 'C', 8471675, 8700000],
+    ['Kris Letang', 'D', 8471724, 6100000],
+    ['Evgeni Malkin', 'C', 8471215, 5500000],
+    ['Bryan Rust', 'RW', 8475810, 5125000],
   ]),
   teamSeed('Capitals', 'Washington', 'WSH', [
+    ['Alex Tuch', 'RW', 8477949, 10500000],
+    ['Pierre-Luc Dubois', 'C', 8479400, 8500000],
+    ['Jordan Kyrou', 'RW', 8479385, 8125000],
+    ['Tom Wilson', 'RW', 8476880, 6500000],
     ['Alex Ovechkin', 'LW', 8471214, 4250000],
   ]),
   teamSeed('Lightning', 'Tampa Bay', 'TBL', [
+    ['Andrei Vasilevskiy', 'G', 8476883, 9500000],
     ['Nikita Kucherov', 'RW', 8476453, 9500000],
     ['Brayden Point', 'C', 8478010, 9500000],
+    ['Jake Guentzel', 'LW', 8477404, 9000000],
+    ['Victor Hedman', 'D', 8475167, 8000000],
+    ['Brandon Hagel', 'LW', 8479542, 6500000],
+    ['Anthony Cirelli', 'C', 8478519, 6250000],
   ]),
   ...countrySeed('Canada', 'ca', [
-    'Connor McDavid', 'Mitch Marner', 'Nathan MacKinnon', 'Cale Makar', 'Sidney Crosby', 'Brayden Point',
+    'Connor McDavid', 'Evan Bouchard', 'Zach Hyman', 'Ryan Nugent-Hopkins',
+    'Morgan Rielly', 'John Tavares', 'Mitch Marner', 'Mark Stone',
+    'Nathan MacKinnon', 'Cale Makar', 'Devon Toews', 'Nazem Kadri',
+    'Sidney Crosby', 'Kris Letang', 'Bryan Rust', 'Pierre-Luc Dubois',
+    'Jordan Kyrou', 'Tom Wilson', 'Brayden Point', 'Brandon Hagel', 'Anthony Cirelli',
   ]),
-  ...countrySeed('United States', 'us', ['Auston Matthews']),
+  ...countrySeed('United States', 'us', [
+    'Auston Matthews', 'Jack Eichel', 'Brock Nelson', 'Alex Tuch', 'Jake Guentzel',
+  ]),
+  ...countrySeed('Sweden', 'se', [
+    'Mattias Ekholm', 'William Nylander', 'Gabriel Landeskog', 'Erik Karlsson', 'Victor Hedman',
+  ]),
   ...countrySeed('Germany', 'de', ['Leon Draisaitl']),
-  ...countrySeed('Russia', 'ru', ['Alex Ovechkin', 'Nikita Kucherov']),
+  ...countrySeed('Czechia', 'cz', ['Martin Necas']),
+  ...countrySeed('Russia', 'ru', [
+    'Alex Ovechkin', 'Evgeni Malkin', 'Nikita Kucherov', 'Andrei Vasilevskiy',
+  ]),
 ];
 
 const $ = (sel) => document.querySelector(sel);
