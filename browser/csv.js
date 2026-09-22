@@ -423,56 +423,99 @@ function parseSchema(src) {
   return types;
 }
 
+function columnsForType(type, headers) {
+  return headers.filter((header) => typeNameFrom(header) === type.name
+    || ident(header).toLowerCase() === type.name.toLowerCase());
+}
+
 function buildImport(schema, headers, rows) {
   const types = parseSchema(schema);
   if (!types.length) return { error: 'The schema has no types yet.' };
-  const score = (type) => type.fields.filter((field) => headers.some((header) => ident(header) === field.name)).length;
-  const fact = types.slice().sort((a, b) => score(b) - score(a))[0];
-  if (!score(fact)) return { error: 'None of the columns are fields on a type yet. Drag a column onto a type.' };
-
-  const column = (field) => headers.find((header) => ident(header) === field.name);
-  const targets = new Map();
-  for (const field of fact.fields) {
-    if (!field.edge) continue;
-    const header = column(field);
-    if (!header) continue;
-    const index = headers.indexOf(header);
-    const values = targets.get(field.target) || new Set();
-    for (const row of rows) {
-      const value = (row[index] ?? '').trim();
-      if (value) values.add(value);
+  const scalarScore = (type) => type.fields.filter((field) => !field.edge && field.name !== 'name'
+    && headers.some((header) => ident(header) === field.name)).length;
+  const rowType = types.slice().sort((a, b) => scalarScore(b) - scalarScore(a))[0];
+  const claimed = new Set(types.flatMap((type) => columnsForType(type, headers)));
+  const sources = (type) => {
+    const direct = columnsForType(type, headers);
+    if (direct.length) return direct;
+    if (type === rowType && type.fields.some((field) => !field.edge && field.name === 'name')) {
+      const nameHeader = headers.find((header) => ident(header) === 'name' && !claimed.has(header));
+      if (nameHeader) return [nameHeader];
     }
-    targets.set(field.target, values);
+    return [];
+  };
+  if (!types.some((type) => sources(type).length)) {
+    return { error: 'None of the columns are fields on a type yet. Drag a column onto a type.' };
   }
 
+  const cell = (row, header) => (row[headers.indexOf(header)] ?? '').trim();
   const mutations = [];
-  for (const [typeName, values] of targets) {
-    for (const value of values) {
-      mutations.push(`mutation {\n  ${typeName}(name: ${quote(value)}) { name }\n}`);
+  for (const type of types) {
+    const cols = sources(type);
+    if (!cols.length) continue;
+    const seen = new Set();
+    for (const row of rows) {
+      for (const header of cols) {
+        const value = cell(row, header);
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        const props = [`name: ${quote(value)}`];
+        if (type === rowType) {
+          for (const field of type.fields) {
+            if (field.edge || field.name === 'name') continue;
+            const headerForField = headers.find((item) => ident(item) === field.name);
+            if (!headerForField) continue;
+            const raw = cell(row, headerForField);
+            if (!raw) continue;
+            props.push(`${field.name}: ${literal(raw, field.zql)}`);
+          }
+        }
+        mutations.push(`mutation {\n  ${type.name}(${props.join(' && ')}) { name }\n}`);
+      }
     }
   }
-  const indexOf = Object.fromEntries(headers.map((header, index) => [header, index]));
-  for (const row of rows) {
-    const props = [];
-    const links = [];
-    for (const field of fact.fields) {
-      const header = column(field);
-      if (!header) continue;
-      const value = (row[indexOf[header]] ?? '').trim();
-      if (!value) continue;
-      if (field.edge) links.push(`    ${field.name} ${field.dir} link ${field.target}(name: ${quote(value)}) { name }`);
-      else props.push(`${field.name}: ${literal(value, field.zql)}`);
+
+  for (const type of types) {
+    const sourceCols = sources(type);
+    if (!sourceCols.length) continue;
+    const byTarget = new Map();
+    for (const field of type.fields) {
+      if (!field.edge) continue;
+      const list = byTarget.get(field.target) || [];
+      list.push(field);
+      byTarget.set(field.target, list);
     }
-    if (!props.length && !links.length) continue;
-    const head = props.length ? `(${props.join(' && ')})` : '';
-    const body = links.length ? ` {\n${links.join('\n')}\n  }` : ' { name }';
-    mutations.push(`mutation {\n  ${fact.name}${head}${body}\n}`);
+    for (const [targetName, fields] of byTarget) {
+      const targetType = types.find((item) => item.name === targetName);
+      const targetCols = targetType ? sources(targetType) : [];
+      if (!targetCols.length) continue;
+      for (const row of rows) {
+        const sourceVal = cell(row, sourceCols[0]);
+        if (!sourceVal) continue;
+        const links = [];
+        fields.forEach((field, index) => {
+          const cols = targetCols.length > fields.length && index === fields.length - 1
+            ? targetCols.slice(index)
+            : [targetCols[Math.min(index, targetCols.length - 1)]];
+          for (const header of cols) {
+            const targetVal = cell(row, header);
+            if (!targetVal) continue;
+            links.push(`    ${field.name} ${field.dir} link ${targetName}(name: ${quote(targetVal)}) { name }`);
+          }
+        });
+        if (links.length) {
+          mutations.push(`mutation {\n  ${type.name}(name: ${quote(sourceVal)}) {\n${links.join('\n')}\n  }\n}`);
+        }
+      }
+    }
   }
-  const shown = fact.fields.filter((field) => field.edge).slice(0, 3)
+
+  const focus = types.find((type) => type.fields.some((field) => field.edge)) || rowType;
+  const shown = focus.fields.filter((field) => field.edge).slice(0, 3)
     .map((field) => `    ${field.name} ${field.dir} ${field.target} { name }`)
     .join('\n');
-  const scalars = fact.fields.filter((field) => !field.edge).slice(0, 4).map((field) => field.name);
-  const query = `{\n  ${fact.name} {\n    ${scalars.join('\n    ')}\n${shown}\n  }\n}`;
+  const scalars = focus.fields.filter((field) => !field.edge).slice(0, 4).map((field) => field.name);
+  const query = `{\n  ${focus.name} {\n    ${scalars.join('\n    ')}\n${shown}\n  }\n}`;
   return { schema, mutations, query };
 }
 
