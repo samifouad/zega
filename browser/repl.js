@@ -255,22 +255,20 @@ function namesIn(value, into = new Set()) {
 const outputSize = $('#output-size');
 const queryTime = $('#query-time');
 
-function diagnostics() {
+function plainError(error) {
+  return String(error?.message || error).replace(/^Error:\s*/, '').replace(/^execution error:\s*/, '');
+}
+
+function review() {
   try {
     const parsed = JSON.parse(db.check(schemaText(), queryText()));
-    return Array.isArray(parsed) ? parsed : [];
+    if (parsed && Array.isArray(parsed.diagnostics)) {
+      return { diagnostics: parsed.diagnostics, text: parsed.text || '', failed: false };
+    }
   } catch (e) {
-    return [{
-      pane: 'query',
-      line: 1,
-      column: 1,
-      endLine: 1,
-      endColumn: 2,
-      underlineLength: 1,
-      message: String(e.message || e).replace(/^Error:\s*/, ''),
-      help: null,
-    }];
+    return { diagnostics: [], text: plainError(e), failed: true };
   }
+  return { diagnostics: [], text: '', failed: true };
 }
 
 function mark(diags) {
@@ -287,23 +285,6 @@ function mark(diags) {
   }
 }
 
-function formatDiagnostics(diags) {
-  return diags.map((d) => {
-    if (!d.line) {
-      return d.help ? `error: ${d.message}\n  help: ${d.help}` : `error: ${d.message}`;
-    }
-    const editor = d.pane === 'schema' ? schemaEditor : queryEditor;
-    const model = editor.getModel();
-    const lineText = d.line >= 1 && d.line <= model.getLineCount() ? model.getLineContent(d.line) : '';
-    const col = Math.max(1, d.column || 1);
-    const len = Math.max(1, d.underlineLength || ((d.endColumn || col + 1) - col));
-    const caret = `${' '.repeat(col - 1)}${'^'.repeat(len)}`;
-    let text = `error: ${d.message}\n  ${d.pane}:${d.line}:${col}\n  ${lineText}\n  ${caret}`;
-    if (d.help) text += `\n  help: ${d.help}`;
-    return text;
-  }).join('\n\n');
-}
-
 function showJson(value) {
   const text = JSON.stringify(value, null, 2);
   monaco.editor.setModelLanguage(outputEditor.getModel(), 'json');
@@ -314,49 +295,24 @@ function showJson(value) {
   drawGraph();
 }
 
-function showErrors(diags) {
+function showReport(report) {
   monaco.editor.setModelLanguage(outputEditor.getModel(), 'zega-output');
-  outputEditor.setValue(formatDiagnostics(diags));
+  outputEditor.setValue(report.text || '');
   outputSize.textContent = '';
 }
 
-function parseThrown(error) {
-  let text = String(error?.message || error);
-  text = text.replace(/^Error:\s*/, '').replace(/^execution error:\s*/, '');
-  const lines = text.split('\n');
-  const message = lines[0] || 'error';
-  let at = null;
-  let help = null;
-  for (const line of lines.slice(1)) {
-    if (line.startsWith('help: ')) help = line.slice('help: '.length);
-    else if (line.startsWith('at ')) at = line.slice(3);
-  }
-  const diag = {
-    pane: 'query', line: 0, column: 1, endLine: 1, endColumn: 2, underlineLength: 1, message, help,
-  };
-  const match = /^(schema|query):(\d+):(\d+):(\d+):(\d+)$/.exec(at || '');
-  if (!match) return diag;
-  diag.pane = match[1];
-  diag.line = Number(match[2]);
-  diag.column = Number(match[3]);
-  diag.endLine = Number(match[4]);
-  diag.endColumn = Number(match[5]);
-  diag.underlineLength = Math.max(1, diag.endColumn - diag.column);
-  return diag;
-}
-
 function showThrown(error) {
-  showErrors([parseThrown(error)]);
+  showReport({ text: plainError(error) });
 }
 
 function run(source) {
   localStorage.setItem(LS_SCHEMA, schemaText());
   localStorage.setItem(LS_QUERY, queryText());
-  const diags = diagnostics();
-  mark(diags);
-  if (diags.length) {
+  const report = review();
+  mark(report.diagnostics);
+  if (report.diagnostics.length || report.failed) {
     queryTime.textContent = '';
-    showErrors(diags);
+    showReport(report);
     return null;
   }
   const started = performance.now();
@@ -401,11 +357,11 @@ function scheduleRun() {
   clearTimeout(pending);
   pending = setTimeout(() => {
     const source = queryText().trim();
-    const diags = diagnostics();
-    mark(diags);
-    if (diags.length) {
+    const report = review();
+    mark(report.diagnostics);
+    if (report.diagnostics.length || report.failed) {
       queryTime.textContent = '';
-      showErrors(diags);
+      showReport(report);
       return;
     }
     if (!source || isMutation(source)) return;

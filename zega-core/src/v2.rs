@@ -17,18 +17,23 @@ use crate::{Zega, ZegaError};
 
 impl Zega {
     pub fn run_lang(&self, schema_src: &str, source: &str) -> Result<Json, ZegaError> {
-        let schema = zega_lang::parse_schema(schema_src).map_err(lang)?;
-        let query = zega_lang::parse_query(source).map_err(lang)?;
-        zega_lang::check(&schema, &query.root, query.mutation).map_err(lang)?;
+        let schema = zega_lang::parse_schema(schema_src)
+            .map_err(|error| explain(error, "schema", schema_src))?;
+        let query =
+            zega_lang::parse_query(source).map_err(|error| explain(error, "query", source))?;
+        zega_lang::check(&schema, &query.root, query.mutation)
+            .map_err(|error| explain(error, "query", source))?;
         let mut graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let mut budget = self.traversal_work_budget;
         if query.mutation {
-            mutate(&mut graph, &self.wal, &schema, &query.root).map_err(lang)
+            mutate(&mut graph, &self.wal, &schema, &query.root)
+                .map_err(|error| explain(error, "query", source))
         } else {
-            Ok(read(&graph, &schema, &query.root, &mut budget).map_err(lang)?)
+            read(&graph, &schema, &query.root, &mut budget)
+                .map_err(|error| explain(error, "query", source))
         }
     }
 
@@ -56,19 +61,8 @@ impl Zega {
     }
 }
 
-fn lang(error: LangError) -> ZegaError {
-    let mut text = error.message;
-    if error.line > 0 {
-        text.push_str(&format!(
-            "\nat query:{}:{}:{}:{}",
-            error.line, error.column, error.end_line, error.end_column
-        ));
-    }
-    if let Some(help) = error.help {
-        text.push_str("\nhelp: ");
-        text.push_str(&help);
-    }
-    ZegaError::Execution(text)
+fn explain(error: LangError, source_name: &str, source: &str) -> ZegaError {
+    ZegaError::Execution(zega_lang::render_error(source_name, source, &error))
 }
 
 fn read(

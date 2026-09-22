@@ -5,6 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-serde = { workspace = true }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
+zega-validation = { workspace = true }

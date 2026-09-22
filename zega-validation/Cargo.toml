@@ -1,0 +1,9 @@
+[package]
+name = "zega-validation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared diagnostics and error formatting for zega"
+
+[dependencies]
+serde = { workspace = true }

@@ -1,9 +1,11 @@
 //! The v2 schema and query language. Users write this. The engine walks the
 //! graph it already stores; this crate does not parse ZQL.
 
-use serde::Serialize;
 use serde_json::Value as Json;
 use thiserror::Error;
+use zega_validation::{closest, render};
+
+pub use zega_validation::{Diagnostic, Pane, Report, Severity};
 
 /// A source range. Columns are 1-based and count UTF-16 code units, which is
 /// what the editor uses. `end_column` is exclusive.
@@ -820,95 +822,67 @@ impl<'a> Parser<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Error,
+fn from_error(pane: Pane, error: Error) -> Diagnostic {
+    Diagnostic::at(
+        pane,
+        error.line,
+        error.column,
+        error.end_line,
+        error.end_column,
+        error.message,
+        error.help,
+    )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Pane {
-    Schema,
-    Query,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Diagnostic {
-    pub severity: Severity,
-    pub pane: Pane,
-    pub line: u32,
-    pub column: u32,
-    pub end_line: u32,
-    pub end_column: u32,
-    pub underline_length: u32,
-    pub message: String,
-    pub help: Option<String>,
-}
-
-impl Diagnostic {
-    fn at(pane: Pane, span: Span, message: impl Into<String>, help: Option<String>) -> Self {
-        let underline_length = if span.end_line == span.line {
-            span.end_column.saturating_sub(span.column).max(1)
-        } else {
-            1
-        };
-        Self {
-            severity: Severity::Error,
+/// The rendered text a CLI prints and the browser shows.
+pub fn render_error(source_name: &str, source: &str, error: &Error) -> String {
+    let pane = if source_name == "schema" {
+        Pane::Schema
+    } else {
+        Pane::Query
+    };
+    render(
+        source_name,
+        source,
+        &Diagnostic::at(
             pane,
-            line: span.line,
-            column: span.column,
-            end_line: span.end_line,
-            end_column: span.end_column,
-            underline_length,
-            message: message.into(),
-            help,
-        }
-    }
-
-    fn from_error(pane: Pane, error: Error) -> Self {
-        Self::at(
-            pane,
-            Span {
-                line: error.line,
-                column: error.column,
-                end_line: error.end_line,
-                end_column: error.end_column,
-            },
-            error.message,
-            error.help,
-        )
-    }
+            error.line,
+            error.column,
+            error.end_line,
+            error.end_column,
+            error.message.clone(),
+            error.help.clone(),
+        ),
+    )
 }
 
 /// Parse and type-check. An empty query reports nothing: the page is idle.
-pub fn diagnose(schema_src: &str, query_src: &str) -> Vec<Diagnostic> {
+/// `text` is the report a terminal prints unchanged.
+pub fn diagnose(schema_src: &str, query_src: &str) -> Report {
     let mut out = Vec::new();
     let schema = match parse_schema(schema_src) {
         Ok(schema) => Some(schema),
         Err(error) => {
-            out.push(Diagnostic::from_error(Pane::Schema, error));
+            out.push(from_error(Pane::Schema, error));
             None
         }
     };
-    if query_src.trim().is_empty() {
-        return out;
-    }
-    match parse_query(query_src) {
-        Err(error) => out.push(Diagnostic::from_error(Pane::Query, error)),
-        Ok(query) => {
-            if let Some(schema) = &schema {
-                Check {
-                    schema,
-                    mutation: query.mutation,
-                    out: &mut out,
+    if !query_src.trim().is_empty() {
+        match parse_query(query_src) {
+            Err(error) => out.push(from_error(Pane::Query, error)),
+            Ok(query) => {
+                if let Some(schema) = &schema {
+                    Check {
+                        schema,
+                        mutation: query.mutation,
+                        out: &mut out,
+                    }
+                    .selection(&query.root, true);
                 }
-                .selection(&query.root, true);
             }
         }
     }
-    out
+    Report::new(schema_src, query_src, out)
 }
 
 /// The same check the editor uses. Execution stops on the first problem.
@@ -941,8 +915,15 @@ struct Check<'a> {
 
 impl Check<'_> {
     fn push(&mut self, span: Span, message: impl Into<String>, help: Option<String>) {
-        self.out
-            .push(Diagnostic::at(Pane::Query, span, message, help));
+        self.out.push(Diagnostic::at(
+            Pane::Query,
+            span.line,
+            span.column,
+            span.end_line,
+            span.end_column,
+            message,
+            help,
+        ));
     }
 
     fn selection(&mut self, sel: &Selection, root: bool) {
@@ -1202,7 +1183,12 @@ fn field_help(schema: &Schema, type_names: &[&str], wanted: &str) -> String {
             }
         }
     }
-    if let Some((_, how)) = closest_labeled(wanted, &options) {
+    if let Some(hit) = closest(wanted, options.iter().map(|(name, _)| *name)) {
+        let how = options
+            .iter()
+            .find(|(name, _)| *name == hit)
+            .map(|(_, how)| how.as_str())
+            .unwrap_or(hit);
         return format!("did you mean {how}?");
     }
     if options.is_empty() {
@@ -1217,56 +1203,6 @@ fn field_help(schema: &Schema, type_names: &[&str], wanted: &str) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("{} has {list}", type_names[0])
-}
-
-fn closest<'a>(wanted: &str, options: impl Iterator<Item = &'a str>) -> Option<&'a str> {
-    let mut best: Option<(usize, &'a str)> = None;
-    for opt in options {
-        if opt == wanted {
-            continue;
-        }
-        let distance = edit_distance(&wanted.to_ascii_lowercase(), &opt.to_ascii_lowercase());
-        if distance > 2 {
-            continue;
-        }
-        if best.is_none_or(|(best_distance, _)| distance < best_distance) {
-            best = Some((distance, opt));
-        }
-    }
-    best.map(|(_, name)| name)
-}
-
-fn closest_labeled<'a>(wanted: &str, options: &'a [(&str, String)]) -> Option<(usize, &'a str)> {
-    let mut best: Option<(usize, &'a str)> = None;
-    for (name, how) in options {
-        if *name == wanted {
-            continue;
-        }
-        let distance = edit_distance(&wanted.to_ascii_lowercase(), &name.to_ascii_lowercase());
-        if distance > 2 {
-            continue;
-        }
-        if best.is_none_or(|(best_distance, _)| distance < best_distance) {
-            best = Some((distance, how.as_str()));
-        }
-    }
-    best
-}
-
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut curr = vec![0; b.len() + 1];
-    for (i, ca) in a.iter().enumerate() {
-        curr[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let cost = usize::from(ca != cb);
-            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[b.len()]
 }
 
 #[cfg(test)]
@@ -1317,7 +1253,10 @@ mod tests {
     fn unknown_field_underlines_the_name_and_suggests() {
         let schema = "type Player {\n  name: String\n  salary: Int\n}\n";
         let query = "{\n  Player {\n    slary\n  }\n}\n";
-        let diags = diagnose(schema, query);
+        let report = diagnose(schema, query);
+        let diags = &report.diagnostics;
+        assert!(report.text.contains("did you mean `salary`?"));
+        assert!(report.text.contains("^^^^^"));
         assert_eq!(diags.len(), 1, "{diags:?}");
         let diag = &diags[0];
         assert_eq!(diag.pane, Pane::Query);
@@ -1330,8 +1269,9 @@ mod tests {
     fn wrong_arrow_names_the_schema_direction() {
         let schema = "type Player {\n  playsFor -> Team\n}\ntype Team {\n  name: String\n}\n";
         let query = "{\n  Player {\n    playsFor <- Team { name }\n  }\n}\n";
-        let diags = diagnose(schema, query);
-        let diag = diags
+        let report = diagnose(schema, query);
+        let diag = report
+            .diagnostics
             .iter()
             .find(|diag| diag.message.contains("does not point"))
             .unwrap();
@@ -1342,7 +1282,9 @@ mod tests {
     #[test]
     fn schema_unknown_type_is_a_schema_diagnostic() {
         let schema = "type Player {\n  playsFor -> Tea\n}\ntype Team {\n  name: String\n}\n";
-        let diags = diagnose(schema, "");
+        let report = diagnose(schema, "");
+        let diags = &report.diagnostics;
+        assert!(report.text.contains("schema:"));
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].pane, Pane::Schema);
         assert_eq!(
@@ -1357,7 +1299,8 @@ mod tests {
     fn reports_every_type_error() {
         let schema = "type Player {\n  name: String\n  playsFor -> Team\n}\ntype Team {\n  name: String\n}\n";
         let query = "{\n  Player {\n    slary\n    playsFor <- Team { name }\n  }\n}\n";
-        let diags = diagnose(schema, query);
-        assert!(diags.len() >= 2, "{diags:?}");
+        let report = diagnose(schema, query);
+        assert!(report.diagnostics.len() >= 2, "{:?}", report.diagnostics);
+        assert!(report.text.contains("\n\n"));
     }
 }
