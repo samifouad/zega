@@ -313,6 +313,10 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     <div class="ph-row"><span>Node padding</span><input type="range" data-p="pad" min="0" max="40" step="1"><b></b></div>
     <div class="ph-row"><span>Center pull</span><input type="range" data-p="gravity" min="0" max="12" step="1"><b></b></div>
     <div class="ph-foot"><button class="mini">reset</button></div>`;
+  const hint = document.createElement('div');
+  hint.className = 'graph-hint';
+  hint.textContent = 'scroll to zoom. drag to navigate.';
+  wrap.appendChild(hint);
   wrap.appendChild(gear);
   wrap.appendChild(panel);
   const zoom = document.createElement('div');

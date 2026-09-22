@@ -310,6 +310,17 @@ button.mini { padding: 0 6px; font-size: 11px; }
   stroke-width: 2.5px;
   stroke-linejoin: round;
 }
+.graph-hint {
+  position: absolute;
+  top: 12px;
+  right: 46px;
+  z-index: 2;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  color: var(--dim);
+  opacity: 0.55;
+  pointer-events: none;
+}
 .graph-gear {
   position: absolute;
   top: 8px;
