@@ -135,11 +135,11 @@ export function openCsv({ run, setSchema, setQuery }) {
       highlight.hidden = false;
       const edge = existingTypeFor(header, schemaEl.value);
       hint.textContent = edge && edge !== block.name
-        ? `Add ${header} → ${edge} to node ${block.name}`
-        : `Add ${header} to node ${block.name}`;
+        ? `Drop to add ${header} → ${edge} to node ${block.name}`
+        : `Drop to add ${header} to node ${block.name}`;
     } else {
       highlight.hidden = true;
-      hint.textContent = `Create node ${typeNameFrom(header)}`;
+      hint.textContent = `Drop to create node ${typeNameFrom(header)}`;
     }
     hint.hidden = false;
   };
