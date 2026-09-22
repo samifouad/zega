@@ -188,9 +188,36 @@ console.log(JSON.parse(rows));
 db.kv_set("greeting", JSON.stringify("hello"), null);
 ```
 
-## The query language
+## ZQL
 
-ZQL looks like Cypher and behaves like it. A few real queries:
+ZQL is one language for both halves of the engine: the property graph and
+the KV store.
+
+The graph half is written to look and behave like Cypher. `MATCH`,
+`CREATE`, `MERGE`, property `SET`, `DELETE`, `WHERE`, and `RETURN` follow
+Cypher.
+
+The KV half is zega's, in the same grammar:
+
+```text
+SET KEY session = $token TTL 3600
+GET KEY session
+INCR KEY hits
+DEL KEY session
+```
+
+`KEY`, `GET`, `DEL`, `INCR`, and `TTL` are reserved words. `SET KEY … = …
+TTL …` is its own statement. Cypher's `SET` assigns properties on a node or
+a relationship, so `SET KEY session = $token` is ZQL.
+
+The name covers both. Calling the language Cypher would describe the graph
+queries and leave the KV statements out.
+
+ZQL implements the Cypher clauses this engine runs. The server speaks
+HTTP/JSON on `POST /cql` — the path kept that older abbreviation. There is
+no Bolt endpoint.
+
+A few real queries:
 
 ```text
 // create
