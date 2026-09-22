@@ -16,7 +16,7 @@ const SCHEMA = `type Team {
   city: String
   logo: String
 
-  playsFor <- Player[]
+  playsFor -> Player[]
 }
 
 type Player {
@@ -25,24 +25,24 @@ type Player {
   face: String
   salary: Int
 
-  playsFor -> Team
-  born -> Country
+  playsFor <- Team
+  born <- Country
 }
 
 type Country {
   name: String
   flag: String
 
-  born <- Player[]
+  born -> Player[]
 }`;
 
 const QUERY = `{
   Country(name = "Canada") {
     name
-    born <- Player {
+    born -> Player {
       name
       salary
-      playsFor -> Team { name }
+      playsFor <- Team { name }
     }
   }
 }`;
@@ -52,10 +52,10 @@ const TOUR = [
   ['Russia or Canada', `{
   Country(name = "Russia" || name = "Canada") {
     name
-    born <- Player {
+    born -> Player {
       name
       salary
-      playsFor -> Team { name }
+      playsFor <- Team { name }
     }
   }
 }`],
@@ -63,40 +63,40 @@ const TOUR = [
   Player(salary > 10000000 && position = "C") {
     name
     salary
-    playsFor -> Team { name }
+    playsFor <- Team { name }
   }
 }`],
   ['Oilers or Avalanche', `{
   Team(name = "Oilers" || name = "Avalanche") {
     name
-    playsFor <- Player { name &since }
+    playsFor -> Player { name &since }
   }
 }`],
   ['Golden Knights', `{
   Team(name = "Golden Knights") {
     name
-    playsFor <- Player { name salary born -> Country { name } }
+    playsFor -> Player { name salary born <- Country { name } }
   }
 }`],
   ['Germany', `{
   Country(name = "Germany") {
     name
-    born <- Player { name salary playsFor -> Team { name } }
+    born -> Player { name salary playsFor <- Team { name } }
   }
 }`],
   ['Hops from Canada', `{
   Country(name = "Canada") {
-    born <- Player {
+    born -> Player {
       name
       &hops
-      playsFor -> Team { name &hops }
+      playsFor <- Team { name &hops }
     }
   }
 }`],
   ['Born outside Canada', `{
   Country(name != "Canada") {
     name
-    born <- Player { name playsFor -> Team { name } }
+    born -> Player { name playsFor <- Team { name } }
   }
 }`],
 ];
@@ -104,7 +104,7 @@ const TOUR = [
 function teamSeed(name, city, abbr, players) {
   const roster = players.map(([player, position, id, salary, since]) => {
     const joined = since == null ? '' : ` &since: ${since}`;
-    return `playsFor <- Player(name: "${player}" && position: "${position}" && face: "${mug(id)}" && salary: ${salary}) { name salary${joined} }`;
+    return `playsFor -> Player(name: "${player}" && position: "${position}" && face: "${mug(id)}" && salary: ${salary}) { name salary${joined} }`;
   }).join('\n    ');
   return `mutation {
   Team(name: "${name}" && city: "${city}" && logo: "${logo(abbr)}") {
@@ -116,7 +116,7 @@ function teamSeed(name, city, abbr, players) {
 
 function countrySeed(name, code, players) {
   const links = players.map((player) =>
-    `born <- link Player(name: "${player}") { name }`
+    `born -> link Player(name: "${player}") { name }`
   ).join('\n    ');
   return [
     `mutation { Country(name: "${name}" && flag: "${flag(code)}") { name } }`,
