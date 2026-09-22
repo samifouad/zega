@@ -213,11 +213,7 @@ fn apply_node(
                         Some((id, *direction, rel.to_string())),
                     )?
                 };
-                let key = if many {
-                    format!("{}s", target.type_name)
-                } else {
-                    target.type_name.clone()
-                };
+                let key = field.clone();
                 if many {
                     lists.entry(key).or_default().push(child);
                 } else {
@@ -316,7 +312,6 @@ fn project(
         .get_node(id)
         .ok_or_else(|| LangError::bare(format!("missing node {id}")))?;
     let mut object = serde_json::Map::new();
-    let mut landing_types = Vec::new();
     for item in &sel.items {
         match item {
             Item::Prop(name, _) => {
@@ -369,19 +364,6 @@ fn project(
                         target.type_name
                     )));
                 }
-                let key_type = if target.also.is_empty() {
-                    target.type_name.clone()
-                } else {
-                    field.clone()
-                };
-                if target.also.is_empty() {
-                    if landing_types.contains(&key_type) {
-                        return Err(LangError::bare(format!(
-                            "two relationships in one brace land on {key_type}"
-                        )));
-                    }
-                    landing_types.push(key_type.clone());
-                }
                 let reached = if let Some((min, max)) = range {
                     walk_range(graph, id, rel, *direction, targets, (*min, *max), budget)?
                 } else {
@@ -408,13 +390,7 @@ fn project(
                     )?);
                 }
                 let list = many || range.is_some() || !target.also.is_empty();
-                let key = if !target.also.is_empty() {
-                    field.clone()
-                } else if list {
-                    format!("{key_type}s")
-                } else {
-                    key_type
-                };
+                let key = field.clone();
                 if list {
                     object.insert(key, Json::Array(rows));
                 } else {
@@ -733,7 +709,7 @@ mod tests {
             .unwrap();
         assert_eq!(created["name"], "Le Guin");
         assert_eq!(created["died"], 2018);
-        assert_eq!(created["Books"].as_array().unwrap().len(), 2);
+        assert_eq!(created["wrote"].as_array().unwrap().len(), 2);
 
         let read = zega
             .run_lang(
@@ -748,7 +724,7 @@ mod tests {
             .unwrap();
         assert_eq!(read["name"], "Le Guin");
         assert_eq!(
-            read["Books"],
+            read["wrote"],
             json!([{ "title": "The Dispossessed", "pages": 387 }])
         );
 
@@ -769,7 +745,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            linked["Books"],
+            linked["wrote"],
             json!([{ "title": "The Lathe of Heaven", "pages": 175 }])
         );
 
@@ -858,7 +834,7 @@ mod tests {
                 }"#,
             )
             .unwrap();
-        let people = read["Persons"].as_array().unwrap();
+        let people = read["manages"].as_array().unwrap();
         assert_eq!(people.len(), 2);
         assert_eq!(people[0]["name"], "Bob");
         assert_eq!(people[0]["hops"], 1);
@@ -891,8 +867,8 @@ mod tests {
                 }"#,
             )
             .unwrap();
-        assert_eq!(read["Books"][0]["title"], "The Dispossessed");
-        assert_eq!(read["Books"][0]["year"], 1974);
+        assert_eq!(read["wrote"][0]["title"], "The Dispossessed");
+        assert_eq!(read["wrote"][0]["year"], 1974);
     }
 
     #[test]

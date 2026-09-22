@@ -1082,7 +1082,6 @@ impl Check<'_> {
                 );
             }
         }
-        let mut landing: Vec<(String, String)> = Vec::new();
         for item in &sel.items {
             match item {
                 Item::Prop(name, span) => self.ensure_prop(sel, name, *span),
@@ -1126,7 +1125,7 @@ impl Check<'_> {
                             Some("a range walks rows that are already stored".into()),
                         );
                     }
-                    self.walk(sel, field, *span, *direction, target, &mut landing);
+                    self.walk(sel, field, *span, *direction, target);
                     self.selection(target, false);
                 }
             }
@@ -1140,7 +1139,6 @@ impl Check<'_> {
         span: Span,
         direction: Direction,
         target: &Selection,
-        landing: &mut Vec<(String, String)>,
     ) {
         let Some(edge) = find_edge(self.schema, &sel.type_name, field) else {
             self.push(
@@ -1184,21 +1182,6 @@ impl Check<'_> {
                     Some(format!("`{field}` reaches {}", targets.join(", "))),
                 );
             }
-        }
-        if target.also.is_empty() {
-            if landing.iter().any(|(other_field, other_type)| {
-                other_field != field && other_type == &target.type_name
-            }) {
-                self.push(
-                    span,
-                    format!(
-                        "two relationships in one brace land on {}",
-                        target.type_name
-                    ),
-                    Some("one brace can walk one edge to a type".into()),
-                );
-            }
-            landing.push((field.to_string(), target.type_name.clone()));
         }
     }
 
