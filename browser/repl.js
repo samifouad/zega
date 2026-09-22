@@ -284,7 +284,6 @@ function showJson(value) {
   const text = JSON.stringify(value, null, 2);
   monaco.editor.setModelLanguage(outputEditor.getModel(), 'json');
   outputEditor.setValue(text);
-  setTimeout(() => outputEditor.getAction('editor.foldLevel2')?.run(), 300);
   const kb = new TextEncoder().encode(text).length / 1024;
   outputSize.textContent = kb < 10 ? `${kb.toFixed(2)} KB` : `${kb.toFixed(1)} KB`;
   lastValue = value;
