@@ -384,6 +384,49 @@ function drawGraph() {
   renderGraph(graphEl, graph, namesIn(lastValue));
 }
 
+const panesEl = document.getElementById('panes');
+let splitX = Number(localStorage.getItem('zega.v2.split-x'));
+let splitY = Number(localStorage.getItem('zega.v2.split-y'));
+if (!Number.isFinite(splitX) || splitX <= 0 || splitX >= 1) splitX = 0.5;
+if (!Number.isFinite(splitY) || splitY <= 0 || splitY >= 1) splitY = 1.15 / 2;
+
+function applySplits() {
+  panesEl.style.setProperty('--split-x', `${splitX}fr`);
+  panesEl.style.setProperty('--split-x-rest', `${1 - splitX}fr`);
+  panesEl.style.setProperty('--split-y', `${splitY}fr`);
+  panesEl.style.setProperty('--split-y-rest', `${1 - splitY}fr`);
+}
+applySplits();
+
+function bindSplit(id, axis) {
+  const handle = document.getElementById(id);
+  handle.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    handle.classList.add('dragging');
+    const move = (ev) => {
+      const rect = panesEl.getBoundingClientRect();
+      if (axis === 'x') {
+        splitX = Math.min(0.8, Math.max(0.2, (ev.clientX - rect.left) / rect.width));
+        localStorage.setItem('zega.v2.split-x', String(splitX));
+      } else {
+        splitY = Math.min(0.8, Math.max(0.2, (ev.clientY - rect.top) / rect.height));
+        localStorage.setItem('zega.v2.split-y', String(splitY));
+      }
+      applySplits();
+    };
+    const stop = () => {
+      handle.classList.remove('dragging');
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', stop);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', stop);
+  });
+}
+bindSplit('split-x', 'x');
+bindSplit('split-y', 'y');
+
 let opening = { nodes: [] };
 try { opening = storedGraph(); } catch (e) { jsonEl.textContent = String(e); }
 
