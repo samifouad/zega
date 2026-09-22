@@ -35,7 +35,7 @@ Robert Zemeckis,Cast Away,2000,Director,https://api.dicebear.com/9.x/personas/sv
 
 const ROW_CAP = 150;
 
-export function openCsv({ run, clearDatabase, setSchema, setQuery }) {
+export function openCsv({ run, clearDatabase, setSchema, setQuery, onImported }) {
   closeCsv();
   const root = document.createElement('div');
   root.id = 'csv-modal';
@@ -209,6 +209,7 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery }) {
     }
     setQuery(built.query);
     run(built.query);
+    onImported?.();
     closeCsv();
   };
 

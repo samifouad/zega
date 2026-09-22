@@ -347,6 +347,7 @@ $('#btn-csv').onclick = () => {
     clearDatabase,
     setSchema: (text) => setQuiet(schemaEditor, text),
     setQuery: (text) => setQuiet(queryEditor, text),
+    onImported: hideTour,
   });
 };
 $('#btn-seed').onclick = () => reseed();
@@ -442,11 +443,21 @@ playBtn.onclick = () => {
   else startAutoplay();
 };
 
+function hideTour() {
+  pauseAutoplay();
+  document.getElementById('tour').hidden = true;
+}
+
+function showTourBar() {
+  document.getElementById('tour').hidden = false;
+}
+
 function reseed() {
   pauseAutoplay();
   clearDatabase();
   setQuiet(schemaEditor, SCHEMA);
   for (const seed of SEEDS) run(seed);
+  showTourBar();
   showTour(0);
   startAutoplay();
 }

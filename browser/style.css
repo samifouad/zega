@@ -201,6 +201,7 @@ body {
 .graph-menu button.danger { color: #a33; }
 .graph-menu button:disabled { color: var(--dim); }
 
+#tour[hidden] { display: none; }
 #tour {
   height: 10vh;
   min-height: 52px;
