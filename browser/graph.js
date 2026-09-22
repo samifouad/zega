@@ -215,19 +215,23 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     const dx = b.x - a.x, dy = b.y - a.y;
     const d = Math.hypot(dx, dy) || 1;
     const ux = dx / d, uy = dy / d;
+    // Perpendicular is fixed for the node pair, so an edge in the opposite
+    // direction does not fold back onto the same curve.
+    const canonX = rel.from < rel.to ? dx : -dx;
+    const canonY = rel.from < rel.to ? dy : -dy;
+    const canon = Math.hypot(canonX, canonY) || 1;
+    const px = -canonY / canon;
+    const py = canonX / canon;
     const lane = Math.max(-5, Math.min(5, lanes.get(rel.id) || 0));
-    const side = rel.from < rel.to ? 1 : -1;
-    const curve = (Math.min(20, d * 0.14) + Math.abs(lane) * 15) * (lane === 0 ? side : Math.sign(lane) || side);
-    const cx = (a.x + b.x) / 2 - uy * curve;
-    const cy = (a.y + b.y) / 2 + ux * curve;
+    const bow = lane === 0 ? 18 : lane * 46;
+    const cx = (a.x + b.x) / 2 + px * bow;
+    const cy = (a.y + b.y) / 2 + py * bow;
     const drawn = edges.get(rel.id);
     const pathD = `M ${a.x + ux * (R + 2)} ${a.y + uy * (R + 2)} Q ${cx} ${cy} ${b.x - ux * (R + 4)} ${b.y - uy * (R + 4)}`;
     drawn.path.setAttribute('d', pathD);
     drawn.hit.setAttribute('d', pathD);
-    const mx = 0.25 * a.x + 0.5 * cx + 0.25 * b.x;
-    const my = 0.25 * a.y + 0.5 * cy + 0.25 * b.y;
-    drawn.label.setAttribute('x', mx - uy * 10);
-    drawn.label.setAttribute('y', my + ux * 10 - 3);
+    drawn.label.setAttribute('x', cx);
+    drawn.label.setAttribute('y', cy - 6);
     dim(drawn.path, lit(from) && lit(to), 0.2);
     dim(drawn.label, lit(from) && lit(to), 0.2);
   }
