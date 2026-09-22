@@ -181,9 +181,14 @@ function namesIn(value, into = new Set()) {
   return into;
 }
 
+const jsonSize = $('#json-size');
+
 function show(value, error) {
   jsonEl.classList.toggle('error', Boolean(error));
-  jsonEl.textContent = error ? String(error) : JSON.stringify(value, null, 2);
+  const text = error ? String(error) : JSON.stringify(value, null, 2);
+  jsonEl.textContent = text;
+  const kb = new TextEncoder().encode(text).length / 1024;
+  jsonSize.textContent = kb < 10 ? `${kb.toFixed(2)} KB` : `${kb.toFixed(1)} KB`;
   if (error) return;
   lastValue = value;
   drawGraph();

@@ -86,7 +86,7 @@ body {
   color: var(--dim);
   border-bottom: 1px solid var(--border);
 }
-#query-time {
+.pane-stat {
   float: right;
   font-weight: 500;
   letter-spacing: 0;
