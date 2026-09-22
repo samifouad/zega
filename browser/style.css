@@ -65,6 +65,86 @@ body {
 .split-x::after { top: 4px; bottom: 4px; left: 3px; width: 2px; }
 .split-y::after { left: 4px; right: 4px; top: 3px; height: 2px; }
 .split:hover::after, .split.dragging::after { background: var(--accent); }
+#csv-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(20, 20, 28, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.csv-dialog {
+  width: min(1100px, 100%);
+  height: min(760px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.csv-dialog > header, .csv-dialog > footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.csv-dialog > footer { border-bottom: 0; border-top: 1px solid var(--border); }
+.csv-hint { color: var(--dim); font-size: 12px; flex: 1; }
+#csv-status { color: var(--dim); font-size: 12px; flex: 1; }
+.csv-body { display: flex; flex: 1; min-height: 0; }
+.csv-body aside {
+  width: 180px;
+  flex: 0 0 180px;
+  border-right: 1px solid var(--border);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#csv-file { display: none; }
+.csv-preset.active { background: var(--ink); color: #fff; }
+.csv-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.csv-schema-pane, .csv-table-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.csv-table-pane { border-top: 1px solid var(--border); }
+#csv-new-type {
+  margin: 8px 8px 0;
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--dim);
+  font-size: 12px;
+  text-align: center;
+}
+#csv-new-type.hot { border-color: var(--accent); color: var(--accent); background: #f3f8fd; }
+#csv-schema {
+  flex: 1;
+  margin: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: none;
+  padding: 10px;
+  font: 13px/20px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  min-height: 0;
+}
+#csv-schema.hot { border-color: var(--accent); }
+#csv-table-wrap { flex: 1; overflow: auto; min-height: 0; }
+#csv-table-wrap table { border-collapse: collapse; font-size: 12px; }
+#csv-table-wrap th, #csv-table-wrap td {
+  border-bottom: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+#csv-table-wrap th { position: sticky; top: 0; background: #fafafb; cursor: grab; }
+#csv-table-wrap th.covered { color: var(--green); }
+#csv-table-wrap th.dragging { opacity: 0.45; }
+.csv-mark { display: inline-block; width: 14px; }
+.csv-empty { color: var(--dim); padding: 12px; }
+
 #tour {
   height: 10vh;
   min-height: 52px;

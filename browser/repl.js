@@ -1,6 +1,7 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
 import { renderGraph } from './graph.js';
 import { createEditors } from './editor.js';
+import { openCsv } from './csv.js';
 
 const LS_DB = 'zega.v2.since';
 const LS_SCHEMA = 'zega.v2.schema';
@@ -332,6 +333,14 @@ function run(source) {
 }
 
 $('#btn-run').onclick = () => run(queryText());
+$('#btn-csv').onclick = () => {
+  pauseAutoplay();
+  openCsv({
+    run,
+    setSchema: (text) => setQuiet(schemaEditor, text),
+    setQuery: (text) => setQuiet(queryEditor, text),
+  });
+};
 $('#btn-seed').onclick = () => reseed();
 $('#btn-clear').onclick = () => {
   localStorage.removeItem(LS_DB);
