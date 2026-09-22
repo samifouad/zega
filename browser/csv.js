@@ -85,6 +85,7 @@ export function openCsv({ run, setSchema, setQuery }) {
   };
 
   const load = (text, label) => {
+    typeOrigin.clear();
     const parsed = parseCsv(text);
     headers = parsed.headers;
     rows = parsed.rows.slice(0, ROW_CAP);
@@ -129,9 +130,13 @@ export function openCsv({ run, setSchema, setQuery }) {
       const style = getComputedStyle(schemaEl);
       const lineHeight = parseFloat(style.lineHeight) || 20;
       const padTop = parseFloat(style.paddingTop) || 0;
-      const border = parseFloat(style.borderTopWidth) || 0;
-      highlight.style.top = `${border + padTop + block.start * lineHeight - schemaEl.scrollTop}px`;
+      const padLeft = parseFloat(style.paddingLeft) || 0;
+      const borderTop = parseFloat(style.borderTopWidth) || 0;
+      const borderLeft = parseFloat(style.borderLeftWidth) || 0;
+      highlight.style.top = `${borderTop + padTop + block.start * lineHeight - schemaEl.scrollTop}px`;
       highlight.style.height = `${(block.end - block.start + 1) * lineHeight}px`;
+      highlight.style.left = `${borderLeft + padLeft - schemaEl.scrollLeft}px`;
+      highlight.style.width = `${Math.ceil(blockWidth(schemaEl, block)) + 8}px`;
       highlight.hidden = false;
       const edge = existingTypeFor(header, schemaEl.value);
       hint.textContent = edge && edge !== block.name
@@ -139,7 +144,11 @@ export function openCsv({ run, setSchema, setQuery }) {
         : `Drop to add ${header} to node ${block.name}`;
     } else {
       highlight.hidden = true;
-      hint.textContent = `Drop to create node ${typeNameFrom(header)}`;
+      const typeName = typeNameFrom(header);
+      const exists = new RegExp(`\\btype\\s+${typeName}\\b`).test(schemaEl.value);
+      hint.textContent = exists
+        ? `Drop to add ${header} → ${typeName} on a node`
+        : `Drop to create node ${typeName}`;
     }
     hint.hidden = false;
   };
@@ -165,7 +174,9 @@ export function openCsv({ run, setSchema, setQuery }) {
     if (!header) return;
     const block = typeAtPoint(schemaEl, event);
     if (block) addField(schemaEl, block, header, columnValues(header));
-    else addType(schemaEl, header);
+    else if (!addType(schemaEl, header)) {
+      status.textContent = `${typeNameFrom(header)} already exists. Drop ${header} on a node to add ${ident(header)}.`;
+    }
     refresh();
   });
   root.addEventListener('dragend', hideDrop);
@@ -230,10 +241,13 @@ function draggingHeader() {
   return dragHeader;
 }
 
+const typeOrigin = new Map();
+
 function covered(header, schema) {
   const id = ident(header);
+  if (new RegExp(`\\b${id}\\b`).test(schema)) return true;
   const typeName = typeNameFrom(header);
-  return new RegExp(`\\b${id}\\b`).test(schema) || new RegExp(`\\btype\\s+${typeName}\\b`).test(schema);
+  return typeOrigin.get(typeName) === header && new RegExp(`\\btype\\s+${typeName}\\b`).test(schema);
 }
 
 function ident(header) {
@@ -280,20 +294,40 @@ function typeBlocks(src) {
   return blocks;
 }
 
+function textWidth(text, font) {
+  if (!textWidth.ctx) textWidth.ctx = document.createElement('canvas').getContext('2d');
+  textWidth.ctx.font = font;
+  return textWidth.ctx.measureText(text).width;
+}
+
+function blockWidth(textarea, block) {
+  const font = getComputedStyle(textarea).font;
+  const lines = textarea.value.split('\n').slice(block.start, block.end + 1);
+  return Math.max(0, ...lines.map((line) => textWidth(line, font)));
+}
+
 function typeAtPoint(textarea, event) {
   const style = getComputedStyle(textarea);
   const lineHeight = parseFloat(style.lineHeight) || 20;
   const rect = textarea.getBoundingClientRect();
   const y = event.clientY - rect.top + textarea.scrollTop - (parseFloat(style.paddingTop) || 0);
   const line = Math.max(0, Math.floor(y / lineHeight));
-  return typeBlocks(textarea.value).find((block) => line >= block.start && line <= block.end) || null;
+  const block = typeBlocks(textarea.value).find((item) => line >= item.start && line <= item.end);
+  if (!block) return null;
+  const border = parseFloat(style.borderLeftWidth) || 0;
+  const padLeft = parseFloat(style.paddingLeft) || 0;
+  const x = event.clientX - rect.left - border - padLeft + textarea.scrollLeft;
+  if (x > blockWidth(textarea, block) + 8) return null;
+  return block;
 }
 
 function addType(textarea, header) {
   const typeName = typeNameFrom(header);
-  if (new RegExp(`\\btype\\s+${typeName}\\b`).test(textarea.value)) return;
+  if (new RegExp(`\\btype\\s+${typeName}\\b`).test(textarea.value)) return false;
+  typeOrigin.set(typeName, header);
   const block = `type ${typeName} {\n  name: String\n}\n`;
   textarea.value = textarea.value.trim() ? `${textarea.value.trim()}\n\n${block}` : block;
+  return true;
 }
 
 function addField(textarea, block, header, values) {

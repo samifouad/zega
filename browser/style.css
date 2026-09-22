@@ -128,8 +128,6 @@ body {
 }
 #csv-drop-hl {
   position: absolute;
-  left: 1px;
-  right: 1px;
   background: rgba(11, 92, 173, 0.12);
   outline: 2px solid var(--accent);
   border-radius: 4px;
