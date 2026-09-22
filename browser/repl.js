@@ -1,7 +1,7 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
 import { renderGraph } from './graph.js';
 
-const LS_DB = 'zega.v2.salary';
+const LS_DB = 'zega.v2.playsfor';
 const LS_SCHEMA = 'zega.v2.schema';
 const LS_QUERY = 'zega.v2.query';
 
@@ -14,7 +14,7 @@ const SCHEMA = `type Team {
   city: String
   logo: String
 
-  roster -> Player[]
+  playsFor <- Player[]
 }
 
 type Player {
@@ -23,24 +23,24 @@ type Player {
   face: String
   salary: Int
 
-  roster <- Team
-  born <- Country
+  playsFor -> Team
+  born -> Country
 }
 
 type Country {
   name: String
   flag: String
 
-  born -> Player[]
+  born <- Player[]
 }`;
 
 const QUERY = `{
   Country(name: "Canada") {
     name
-    born -> Player {
+    born <- Player {
       name
       salary
-      roster <- Team { name }
+      playsFor -> Team { name }
     }
   }
 }`;
@@ -50,10 +50,10 @@ const TOUR = [
   ['Russian born players', `{
   Country(name: "Russia") {
     name
-    born -> Player {
+    born <- Player {
       name
       salary
-      roster <- Team { name }
+      playsFor -> Team { name }
     }
   }
 }`],
@@ -61,32 +61,32 @@ const TOUR = [
   Player(salary > 10000000) {
     name
     salary
-    roster <- Team { name }
+    playsFor -> Team { name }
   }
 }`],
   ['Oilers roster', `{
   Team(name: "Oilers") {
     name
-    roster -> Player { name position salary }
+    playsFor <- Player { name position salary }
   }
 }`],
   ['Golden Knights', `{
   Team(name: "Golden Knights") {
     name
-    roster -> Player { name salary born <- Country { name } }
+    playsFor <- Player { name salary born -> Country { name } }
   }
 }`],
   ['Germany', `{
   Country(name: "Germany") {
     name
-    born -> Player { name salary roster <- Team { name } }
+    born <- Player { name salary playsFor -> Team { name } }
   }
 }`],
 ];
 
 function teamSeed(name, city, abbr, players) {
   const roster = players.map(([player, position, id, salary]) =>
-    `roster -> Player(name: "${player}", position: "${position}", face: "${mug(id)}", salary: ${salary}) { name salary }`
+    `playsFor <- Player(name: "${player}", position: "${position}", face: "${mug(id)}", salary: ${salary}) { name salary }`
   ).join('\n    ');
   return `mutation {
   Team(name: "${name}", city: "${city}", logo: "${logo(abbr)}") {
@@ -98,7 +98,7 @@ function teamSeed(name, city, abbr, players) {
 
 function countrySeed(name, code, players) {
   const links = players.map((player) =>
-    `born -> link Player(name: "${player}") { name }`
+    `born <- link Player(name: "${player}") { name }`
   ).join('\n    ');
   return [
     `mutation { Country(name: "${name}", flag: "${flag(code)}") { name } }`,
