@@ -93,7 +93,20 @@ pub enum Field {
         targets: Vec<String>,
         target_spans: Vec<Span>,
         many: bool,
+        /// Fields of the relationship record, such as `years: Int`.
+        props: Vec<EdgeField>,
+        /// Set when this side wrote the `{ ... }` block.
+        props_span: Option<Span>,
     },
+}
+
+/// A field stored on the relationship, not on either node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeField {
+    pub name: String,
+    pub ty: String,
+    pub optional: bool,
+    pub span: Span,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,10 +279,32 @@ impl Field {
 }
 
 pub fn parse_schema(source: &str) -> Result<Schema> {
+    Ok(parse_schema_at(source)?.0)
+}
+
+/// Types, and the byte offset just after them. A following `unique`, `mutation`,
+/// or `query` block is left for the caller.
+fn parse_schema_at(source: &str) -> Result<(Schema, usize)> {
     let mut p = Parser::new(source);
     let mut types = Vec::new();
     p.skip();
-    while !p.eof() {
+    let wrapped = p.eat_word("schema");
+    if wrapped {
+        p.expect("{")?;
+    }
+    loop {
+        p.skip();
+        if wrapped {
+            if p.eat("}") {
+                break;
+            }
+        } else if p.eof()
+            || p.starts_word("unique")
+            || p.starts_word("mutation")
+            || p.starts_word("query")
+        {
+            break;
+        }
         p.expect_word("type")?;
         let (name, span) = p.ident()?;
         p.expect("{")?;
@@ -284,14 +319,13 @@ pub fn parse_schema(source: &str) -> Result<Schema> {
                 .with_help("a schema names each type once"));
         }
         types.push(TypeDef { name, span, fields });
-        p.skip();
     }
     if types.is_empty() {
         return Err(p
             .err("schema has no types")
             .with_help("start with `type Name { }`"));
     }
-    let schema = Schema { types };
+    let mut schema = Schema { types };
     for ty in &schema.types {
         for field in &ty.fields {
             let Field::Edge {
@@ -314,54 +348,338 @@ pub fn parse_schema(source: &str) -> Result<Schema> {
             }
         }
     }
-    Ok(schema)
+    unify_edge_props(&mut schema.types)?;
+    Ok((schema, p.i))
+}
+
+/// One relationship record has one set of fields. Either side may declare
+/// them. Declaring them on both sides means the two lists have to match.
+fn unify_edge_props(types: &mut [TypeDef]) -> Result<()> {
+    let mut rels = Vec::new();
+    for ty in types.iter() {
+        for field in &ty.fields {
+            if let Field::Edge { rel, .. } = field {
+                if !rels.contains(rel) {
+                    rels.push(rel.clone());
+                }
+            }
+        }
+    }
+    for rel in rels {
+        let mut canon: Option<(String, Vec<EdgeField>)> = None;
+        for ty in types.iter() {
+            for field in &ty.fields {
+                let Field::Edge {
+                    rel: kind,
+                    props,
+                    props_span,
+                    field: field_name,
+                    ..
+                } = field
+                else {
+                    continue;
+                };
+                if kind != &rel || props_span.is_none() {
+                    continue;
+                }
+                if let Some((owner, existing)) = &canon {
+                    if !same_edge_props(existing, props) {
+                        let span = props_span.unwrap_or(ty.span);
+                        return Err(Error::at(span, format!("{rel} fields do not match"))
+                            .with_help(format!(
+                                "{owner} already declares `{field_name}`. Declare the fields once"
+                            )));
+                    }
+                } else {
+                    canon = Some((format!("{}.{}", ty.name, field_name), props.clone()));
+                }
+            }
+        }
+        let Some((_, canon)) = canon else {
+            continue;
+        };
+        for ty in types.iter_mut() {
+            for field in &mut ty.fields {
+                if let Field::Edge {
+                    rel: kind, props, ..
+                } = field
+                {
+                    if kind == &rel {
+                        *props = canon.clone();
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn json_matches(ty: &str, value: &Json) -> bool {
+    if value
+        .as_object()
+        .is_some_and(|object| object.contains_key("$column"))
+    {
+        return true;
+    }
+    match ty {
+        "String" => value.is_string(),
+        "Int" => value.as_i64().is_some(),
+        "Float" => value.is_number(),
+        "Bool" => value.is_boolean(),
+        _ => true,
+    }
+}
+
+fn same_edge_props(left: &[EdgeField], right: &[EdgeField]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut left: Vec<_> = left.iter().collect();
+    let mut right: Vec<_> = right.iter().collect();
+    left.sort_by(|a, b| a.name.cmp(&b.name));
+    right.sort_by(|a, b| a.name.cmp(&b.name));
+    left.iter()
+        .zip(right)
+        .all(|(a, b)| a.name == b.name && a.ty == b.ty && a.optional == b.optional)
 }
 
 pub fn parse_query(source: &str) -> Result<Query> {
+    match parse_statement(source)? {
+        Statement::Run(query) => Ok(query),
+        Statement::Load { .. } => {
+            let p = Parser::new(source);
+            Err(p
+                .err("a load runs as its own mutation")
+                .with_help("`mutation csv` and `mutation json` are one statement"))
+        }
+    }
+}
+
+/// The single statement in a query pane, including a `csv` or `json` load.
+pub fn parse_statement(source: &str) -> Result<Statement> {
     let mut p = Parser::new(source);
-    p.skip();
-    let mutation = p.eat_word("mutation");
-    if mutation {
-        if p.eat_word("query") {
-            return Err(p
-                .err("a statement is a query or a mutation")
-                .with_help("drop one of the words"));
-        }
-    } else {
-        let _ = p.eat_word("query");
-    }
-    p.expect("{")?;
-    p.skip();
-    if p.eat("}") {
-        p.skip();
-        if !p.eof() {
-            return Err(p.err("unexpected input"));
-        }
-        return Ok(Query {
-            mutation,
-            root: None,
-        });
-    }
-    let root = p.parse_selection()?;
-    p.expect("}")?;
+    let statement = p.parse_statement()?;
     p.skip();
     if !p.eof() {
         return Err(p.err("unexpected input"));
     }
-    Ok(Query {
-        mutation,
-        root: Some(root),
+    Ok(statement)
+}
+
+/// A `.zql` file: `schema`, then `unique`, then `mutation` and `query` blocks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZqlFile {
+    pub schema: Schema,
+    /// `(type, field)` pairs. Each field is unique on its own.
+    pub uniques: Vec<(String, String)>,
+    pub statements: Vec<Statement>,
+}
+
+/// One block after the schema. A load keeps its template until something runs
+/// it, so checking a file does not read a path or a url.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Statement {
+    Run(Query),
+    Load {
+        format: LoadFormat,
+        /// Paths or `http(s)` urls. Read when the mutation runs.
+        locations: Vec<String>,
+        template: Query,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadFormat {
+    Csv,
+    Json,
+}
+
+pub fn parse_zql(source: &str) -> Result<ZqlFile> {
+    let mut p = Parser::new(source);
+    p.skip();
+    if !p.eat_word("schema") {
+        return Err(p
+            .err("expected schema")
+            .with_help("a file starts with `schema { }`"));
+    }
+    let (schema, end) = parse_schema_at(source)?;
+    p.i = end;
+    let uniques = p.take_uniques(&schema)?;
+    let mut statements = Vec::new();
+    while !p.eof() {
+        p.skip();
+        if p.eof() {
+            break;
+        }
+        statements.push(p.parse_statement()?);
+    }
+    Ok(ZqlFile {
+        schema,
+        uniques,
+        statements,
     })
+}
+
+/// Unique fields declared in `source`, or an empty list when the text has no
+/// `unique` block. Each name inside a type's braces is unique on its own.
+pub fn parse_uniques(source: &str) -> Result<Vec<(String, String)>> {
+    let (schema, end) = parse_schema_at(source)?;
+    let mut p = Parser::new(source);
+    p.i = end;
+    p.take_uniques(&schema)
 }
 
 struct Parser<'a> {
     src: &'a str,
     i: usize,
+    /// `$Name` in a load template reads a column or a JSON key.
+    columns: bool,
 }
 
 impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
-        Self { src, i: 0 }
+        Self {
+            src,
+            i: 0,
+            columns: false,
+        }
+    }
+
+    fn starts_word(&self, word: &str) -> bool {
+        let rest = self.src[self.i..].trim_start();
+        rest.starts_with(word)
+            && rest[word.len()..]
+                .chars()
+                .next()
+                .is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+    }
+
+    fn parse_statement(&mut self) -> Result<Statement> {
+        self.skip();
+        let mutation = self.eat_word("mutation");
+        if mutation && self.eat_word("csv") {
+            return self.parse_load(LoadFormat::Csv);
+        }
+        if mutation && self.eat_word("json") {
+            return self.parse_load(LoadFormat::Json);
+        }
+        if mutation && self.eat_word("query") {
+            return Err(self
+                .err("a statement is a query or a mutation")
+                .with_help("drop one of the words"));
+        }
+        if !mutation {
+            let _ = self.eat_word("query");
+        }
+        self.columns = false;
+        Ok(Statement::Run(self.parse_braced(mutation)?))
+    }
+
+    fn parse_load(&mut self, format: LoadFormat) -> Result<Statement> {
+        self.skip();
+        if self.src[self.i..].starts_with("\"\"\"") {
+            return Err(self
+                .err("a load reads a file")
+                .with_help("write `[\"./data.csv\"]` or `[\"https://...\"]`"));
+        }
+        if !self.src[self.i..].starts_with(['"', '[']) {
+            return Err(self
+                .err("a load reads a file")
+                .with_help("write `[\"./data.csv\"]` or `[\"https://...\"]`"));
+        }
+        let value = self.embedded_json()?;
+        let locations = file_locations(value).map_err(|message| {
+            self.err(message)
+                .with_help("write `[\"./data.csv\"]` or `[\"https://...\"]`")
+        })?;
+        self.columns = true;
+        let template = self.parse_braced(true)?;
+        self.columns = false;
+        Ok(Statement::Load {
+            format,
+            locations,
+            template,
+        })
+    }
+
+    fn parse_braced(&mut self, mutation: bool) -> Result<Query> {
+        self.expect("{")?;
+        self.skip();
+        if self.eat("}") {
+            return Ok(Query {
+                mutation,
+                root: None,
+            });
+        }
+        let root = self.parse_selection()?;
+        self.expect("}")?;
+        Ok(Query {
+            mutation,
+            root: Some(root),
+        })
+    }
+
+    /// `(type, field)` pairs. Each field is unique by itself, not as a group.
+    fn take_uniques(&mut self, schema: &Schema) -> Result<Vec<(String, String)>> {
+        self.skip();
+        if !self.eat_word("unique") {
+            return Ok(Vec::new());
+        }
+        self.expect("{")?;
+        let mut rules = Vec::new();
+        loop {
+            self.skip();
+            if self.eat("}") {
+                break;
+            }
+            let (type_name, type_span) = self.ident()?;
+            if schema.types.iter().all(|ty| ty.name != type_name) {
+                return Err(self
+                    .err_at(type_span, format!("unknown type {type_name}"))
+                    .with_help(type_help(schema, &type_name)));
+            }
+            self.expect("{")?;
+            loop {
+                self.skip();
+                if self.eat("}") {
+                    break;
+                }
+                let (field, field_span) = self.ident()?;
+                let ty = schema.get(&type_name)?;
+                let is_edge = ty
+                    .fields
+                    .iter()
+                    .any(|item| matches!(item, Field::Edge { field: name, .. } if name == &field));
+                if is_edge {
+                    return Err(self
+                        .err_at(field_span, format!("{type_name}.{field} is a relationship"))
+                        .with_help("unique applies to a field, such as `name`"));
+                }
+                let is_prop = ty
+                    .fields
+                    .iter()
+                    .any(|item| matches!(item, Field::Prop { name, .. } if name == &field));
+                if !is_prop {
+                    return Err(self
+                        .err_at(field_span, format!("{type_name} has no field {field}"))
+                        .with_help(prop_help(schema, &type_name, &field)));
+                }
+                rules.push((type_name.clone(), field));
+            }
+        }
+        Ok(rules)
+    }
+
+    fn embedded_json(&mut self) -> Result<Json> {
+        self.skip();
+        let rest = &self.src[self.i..];
+        let mut stream = serde_json::Deserializer::from_str(rest).into_iter::<Json>();
+        let value = stream
+            .next()
+            .ok_or_else(|| self.err("expected json"))?
+            .map_err(|error| self.err(format!("bad json: {error}")))?;
+        self.i += stream.byte_offset();
+        Ok(value)
     }
 
     fn eof(&self) -> bool {
@@ -539,14 +857,7 @@ impl<'a> Parser<'a> {
                         )
                         .with_help("drop the `?`; a relationship is one record or a list"));
                 }
-                return Ok(Field::Edge {
-                    field: name,
-                    rel,
-                    direction,
-                    targets,
-                    target_spans,
-                    many,
-                });
+                return self.finish_edge(name, rel, direction, targets, target_spans, many);
             }
             let (ty, _) = self.ident()?;
             return Ok(Field::Prop { name, ty, optional });
@@ -557,14 +868,61 @@ impl<'a> Parser<'a> {
                 .with_help(format!("write `{name}?: String`")));
         }
         let (direction, targets, target_spans, many) = self.parse_arrow()?;
+        self.finish_edge(name.clone(), name, direction, targets, target_spans, many)
+    }
+
+    fn finish_edge(
+        &mut self,
+        field: String,
+        rel: String,
+        direction: Direction,
+        targets: Vec<String>,
+        target_spans: Vec<Span>,
+        many: bool,
+    ) -> Result<Field> {
+        let (props, props_span) = self.parse_edge_props()?;
         Ok(Field::Edge {
-            field: name.clone(),
-            rel: name,
+            field,
+            rel,
             direction,
             targets,
             target_spans,
             many,
+            props,
+            props_span,
         })
+    }
+
+    fn parse_edge_props(&mut self) -> Result<(Vec<EdgeField>, Option<Span>)> {
+        self.skip();
+        if !self.src[self.i..].starts_with('{') {
+            return Ok((Vec::new(), None));
+        }
+        let start = self.i;
+        self.eat("{");
+        let mut props: Vec<EdgeField> = Vec::new();
+        loop {
+            self.skip();
+            if self.eat("}") {
+                break;
+            }
+            let (name, span) = self.ident()?;
+            let optional = self.eat("?");
+            self.expect(":")?;
+            let (ty, _) = self.ident()?;
+            if props.iter().any(|field| field.name == name) {
+                return Err(self
+                    .err_at(span, format!("duplicate edge field {name}"))
+                    .with_help("each field of a relationship is named once"));
+            }
+            props.push(EdgeField {
+                name,
+                ty,
+                optional,
+                span,
+            });
+        }
+        Ok((props, Some(self.span_bytes(start, self.i))))
     }
 
     fn looks_like_rel_name(&self) -> bool {
@@ -839,10 +1197,36 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    fn looking_at_ident(&self) -> bool {
+        self.src[self.i..]
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+    }
+
     fn parse_value(&mut self) -> Result<Json> {
         self.skip();
+        if self.eat("$") {
+            if !self.columns {
+                return Err(self
+                    .err("`$` names a column or a key")
+                    .with_help("use `$Name` inside `mutation csv` or `mutation json`"));
+            }
+            let name = if self.src[self.i..].starts_with('"') {
+                self.string()?
+            } else {
+                self.ident().map(|(name, _)| name)?
+            };
+            return Ok(column_ref(&name));
+        }
         if self.src[self.i..].starts_with('"') {
             return Ok(Json::String(self.string()?));
+        }
+        if self.columns && self.looking_at_ident() {
+            return Err(self
+                .err("a column needs `$`")
+                .with_help("write `$Team`, or `$\"Type 1\"` when the name has a space"));
         }
         if self.eat_word("true") {
             return Ok(Json::Bool(true));
@@ -975,28 +1359,415 @@ pub fn render_error(source_name: &str, source: &str, error: &Error) -> String {
     )
 }
 
+fn column_ref(name: &str) -> Json {
+    serde_json::json!({ "$column": name })
+}
+
+fn column_name(value: &Json) -> Option<&str> {
+    let object = value.as_object()?;
+    if object.len() != 1 {
+        return None;
+    }
+    object.get("$column").and_then(Json::as_str)
+}
+
+fn bind_query(
+    query: &Query,
+    row: &std::collections::HashMap<String, Json>,
+) -> Result<Option<Query>> {
+    let Some(root) = &query.root else {
+        return Ok(Some(query.clone()));
+    };
+    Ok(bind_selection(root, row)?.map(|root| Query {
+        mutation: query.mutation,
+        root: Some(root),
+    }))
+}
+
+fn bind_selection(
+    sel: &Selection,
+    row: &std::collections::HashMap<String, Json>,
+) -> Result<Option<Selection>> {
+    let condition = match &sel.condition {
+        Some(expr) => bind_expr(expr, row)?,
+        None => None,
+    };
+    if sel.condition.is_some() && condition.is_none() {
+        return Ok(None);
+    }
+    let mut sets = Vec::new();
+    for (name, value, span) in &sel.sets {
+        if let Some(value) = bind_json(value, row)? {
+            sets.push((name.clone(), value, *span));
+        }
+    }
+    let mut items = Vec::new();
+    for item in &sel.items {
+        match item {
+            Item::Walk {
+                field,
+                span,
+                range,
+                link,
+                direction,
+                target,
+            } => {
+                let Some(target) = bind_selection(target, row)? else {
+                    continue;
+                };
+                items.push(Item::Walk {
+                    field: field.clone(),
+                    span: *span,
+                    range: *range,
+                    link: *link,
+                    direction: *direction,
+                    target: Box::new(target),
+                });
+            }
+            Item::EdgeSet(name, value, span) => {
+                if let Some(value) = bind_json(value, row)? {
+                    items.push(Item::EdgeSet(name.clone(), value, *span));
+                }
+            }
+            other => items.push(other.clone()),
+        }
+    }
+    Ok(Some(Selection {
+        type_name: sel.type_name.clone(),
+        type_span: sel.type_span,
+        also: sel.also.clone(),
+        also_spans: sel.also_spans.clone(),
+        condition,
+        sets,
+        items,
+    }))
+}
+
+fn bind_expr(
+    expr: &BoolExpr,
+    row: &std::collections::HashMap<String, Json>,
+) -> Result<Option<BoolExpr>> {
+    match expr {
+        BoolExpr::Test(pred) => Ok(bind_pred(pred, row)?.map(BoolExpr::Test)),
+        BoolExpr::And(left, right) | BoolExpr::Or(left, right) => {
+            let bound_left = bind_expr(left, row)?;
+            let bound_right = bind_expr(right, row)?;
+            match (bound_left, bound_right) {
+                (Some(left), Some(right)) => Ok(Some(if matches!(expr, BoolExpr::And(_, _)) {
+                    BoolExpr::And(Box::new(left), Box::new(right))
+                } else {
+                    BoolExpr::Or(Box::new(left), Box::new(right))
+                })),
+                (Some(only), None) | (None, Some(only)) => Ok(Some(only)),
+                (None, None) => Ok(None),
+            }
+        }
+    }
+}
+
+fn bind_pred(pred: &Pred, row: &std::collections::HashMap<String, Json>) -> Result<Option<Pred>> {
+    match pred {
+        Pred::Eq(field, value, span) => {
+            Ok(bind_json(value, row)?.map(|value| Pred::Eq(field.clone(), value, *span)))
+        }
+        Pred::Ne(field, value, span) => {
+            Ok(bind_json(value, row)?.map(|value| Pred::Ne(field.clone(), value, *span)))
+        }
+        Pred::Cmp(field, op, value, span) => {
+            Ok(bind_json(value, row)?.map(|value| Pred::Cmp(field.clone(), *op, value, *span)))
+        }
+        other => Ok(Some(other.clone())),
+    }
+}
+
+fn bind_json(value: &Json, row: &std::collections::HashMap<String, Json>) -> Result<Option<Json>> {
+    let Some(name) = column_name(value) else {
+        return Ok(Some(value.clone()));
+    };
+    match row.get(name) {
+        None | Some(Json::Null) => Ok(None),
+        Some(other) => Ok(Some(other.clone())),
+    }
+}
+
+fn file_locations(value: Json) -> std::result::Result<Vec<String>, String> {
+    match value {
+        Json::String(location) if !location.is_empty() => Ok(vec![location]),
+        Json::Array(items) if !items.is_empty() && items.iter().all(Json::is_string) => {
+            let locations = string_list(items);
+            if locations.iter().any(String::is_empty) {
+                return Err("a load reads a file".into());
+            }
+            Ok(locations)
+        }
+        _ => Err("a load reads a file".into()),
+    }
+}
+
+fn string_list(items: Vec<Json>) -> Vec<String> {
+    items
+        .into_iter()
+        .filter_map(|item| item.as_str().map(str::to_string))
+        .collect()
+}
+
+/// `$` names used by a load template, in source order.
+pub fn column_refs(query: &Query) -> Vec<(String, Span)> {
+    let Some(root) = &query.root else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    collect_refs(root, &mut out);
+    out
+}
+
+fn collect_refs(sel: &Selection, out: &mut Vec<(String, Span)>) {
+    if let Some(expr) = &sel.condition {
+        collect_expr_refs(expr, out);
+    }
+    for (_, value, span) in &sel.sets {
+        if let Some(name) = column_name(value) {
+            out.push((name.to_string(), *span));
+        }
+    }
+    for item in &sel.items {
+        match item {
+            Item::EdgeSet(_, value, span) => {
+                if let Some(name) = column_name(value) {
+                    out.push((name.to_string(), *span));
+                }
+            }
+            Item::Walk { target, .. } => collect_refs(target, out),
+            _ => {}
+        }
+    }
+}
+
+fn collect_expr_refs(expr: &BoolExpr, out: &mut Vec<(String, Span)>) {
+    match expr {
+        BoolExpr::Test(pred) => {
+            let (value, span) = match pred {
+                Pred::Eq(_, value, span)
+                | Pred::Ne(_, value, span)
+                | Pred::Cmp(_, _, value, span) => (value, *span),
+                _ => return,
+            };
+            if let Some(name) = column_name(value) {
+                out.push((name.to_string(), span));
+            }
+        }
+        BoolExpr::And(left, right) | BoolExpr::Or(left, right) => {
+            collect_expr_refs(left, out);
+            collect_expr_refs(right, out);
+        }
+    }
+}
+
+/// `$` names that are not a column of `rows`. An empty row list reports nothing.
+pub fn missing_columns(
+    template: &Query,
+    rows: &[std::collections::HashMap<String, Json>],
+) -> Vec<Error> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let known: std::collections::HashSet<&str> = rows
+        .iter()
+        .flat_map(|row| row.keys().map(String::as_str))
+        .collect();
+    let mut names: Vec<&str> = known.iter().copied().collect();
+    names.sort_unstable();
+    let help = format!("columns are {}", names.join(", "));
+    column_refs(template)
+        .into_iter()
+        .filter(|(name, _)| !known.contains(name.as_str()))
+        .map(|(name, span)| Error::at(span, format!("no column {name}")).with_help(help.clone()))
+        .collect()
+}
+
+pub fn bind_row(
+    template: &Query,
+    row: &std::collections::HashMap<String, Json>,
+) -> Result<Option<Query>> {
+    bind_query(template, row)
+}
+
+pub fn json_rows(
+    value: Json,
+) -> std::result::Result<Vec<std::collections::HashMap<String, Json>>, String> {
+    let items = match value {
+        Json::Array(items) => items,
+        Json::Object(_) => vec![value],
+        _ => return Err("json load expects an object or an array of objects".into()),
+    };
+    let mut rows = Vec::new();
+    for item in items {
+        let Some(object) = item.as_object() else {
+            return Err("json load expects an object or an array of objects".into());
+        };
+        rows.push(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
+    }
+    Ok(rows)
+}
+
+pub fn csv_rows(
+    text: &str,
+) -> std::result::Result<Vec<std::collections::HashMap<String, Json>>, String> {
+    let table = parse_csv_table(text)?;
+    let Some((headers, body)) = table.split_first() else {
+        return Err("csv has no header".into());
+    };
+    let headers: Vec<String> = headers
+        .iter()
+        .map(|header| header.trim().to_string())
+        .collect();
+    let mut rows = Vec::new();
+    for record in body {
+        let mut row = std::collections::HashMap::new();
+        for (index, header) in headers.iter().enumerate() {
+            let cell = record.get(index).map(|value| value.trim()).unwrap_or("");
+            if cell.is_empty() {
+                row.insert(header.clone(), Json::Null);
+            } else {
+                row.insert(header.clone(), csv_cell(cell));
+            }
+        }
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+fn csv_cell(cell: &str) -> Json {
+    if cell == "true" || cell == "false" {
+        return Json::Bool(cell == "true");
+    }
+    if let Ok(number) = cell.parse::<i64>() {
+        return Json::from(number);
+    }
+    if cell.contains('.') {
+        if let Ok(number) = cell.parse::<f64>() {
+            return Json::from(number);
+        }
+    }
+    Json::String(cell.to_string())
+}
+
+fn parse_csv_table(text: &str) -> std::result::Result<Vec<Vec<String>>, String> {
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut cell = String::new();
+    let mut quoted = false;
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if quoted {
+            if ch == '"' {
+                if chars.get(index + 1) == Some(&'"') {
+                    cell.push('"');
+                    index += 2;
+                    continue;
+                }
+                quoted = false;
+            } else {
+                cell.push(ch);
+            }
+        } else if ch == '"' {
+            quoted = true;
+        } else if ch == ',' {
+            row.push(std::mem::take(&mut cell));
+        } else if ch == '\n' {
+            row.push(std::mem::take(&mut cell));
+            if row.iter().any(|value| !value.trim().is_empty()) {
+                rows.push(std::mem::take(&mut row));
+            } else {
+                row.clear();
+            }
+        } else if ch != '\r' {
+            cell.push(ch);
+        }
+        index += 1;
+    }
+    if !cell.is_empty() || !row.is_empty() {
+        row.push(cell);
+        if row.iter().any(|value| !value.trim().is_empty()) {
+            rows.push(row);
+        }
+    }
+    if rows.is_empty() {
+        return Err("csv has no header".into());
+    }
+    Ok(rows)
+}
+
+fn note_statement(schema: &Schema, statement: &Statement, pane: Pane, out: &mut Vec<Diagnostic>) {
+    let (root, mutation) = match statement {
+        Statement::Run(query) => (query.root.as_ref(), query.mutation),
+        Statement::Load { template, .. } => (template.root.as_ref(), true),
+    };
+    if let Some(root) = root {
+        Check {
+            schema,
+            mutation,
+            pane,
+            out,
+        }
+        .selection(root, true);
+    }
+}
+
+/// Type-check a `unique` block and any `mutation` or `query` that follows the
+/// types in the same text. The schema editor holds the whole file.
+fn document_diagnostics(schema: &Schema, source: &str, out: &mut Vec<Diagnostic>) {
+    let Ok((_, end)) = parse_schema_at(source) else {
+        return;
+    };
+    let mut p = Parser::new(source);
+    p.i = end;
+    if let Err(error) = p.take_uniques(schema) {
+        out.push(from_error(Pane::Schema, error));
+        return;
+    }
+    loop {
+        p.skip();
+        if p.eof() {
+            break;
+        }
+        match p.parse_statement() {
+            Err(error) => {
+                out.push(from_error(Pane::Schema, error));
+                return;
+            }
+            Ok(statement) => note_statement(schema, &statement, Pane::Schema, out),
+        }
+    }
+}
+
 /// Parse and type-check. An empty query reports nothing: the page is idle.
 /// `text` is the report a terminal prints unchanged.
 pub fn diagnose(schema_src: &str, query_src: &str) -> Report {
     let mut out = Vec::new();
     let schema = match parse_schema(schema_src) {
-        Ok(schema) => Some(schema),
+        Ok(schema) => {
+            document_diagnostics(&schema, schema_src, &mut out);
+            Some(schema)
+        }
         Err(error) => {
             out.push(from_error(Pane::Schema, error));
             None
         }
     };
     if !query_src.trim().is_empty() {
-        match parse_query(query_src) {
+        match parse_statement(query_src) {
             Err(error) => out.push(from_error(Pane::Query, error)),
-            Ok(query) => {
-                if let (Some(schema), Some(root)) = (&schema, query.root.as_ref()) {
-                    Check {
-                        schema,
-                        mutation: query.mutation,
-                        out: &mut out,
-                    }
-                    .selection(root, true);
+            Ok(statement) => {
+                if let Some(schema) = &schema {
+                    note_statement(schema, &statement, Pane::Query, &mut out);
                 }
             }
         }
@@ -1010,6 +1781,7 @@ pub fn check(schema: &Schema, sel: &Selection, mutation: bool) -> Result<()> {
     Check {
         schema,
         mutation,
+        pane: Pane::Query,
         out: &mut out,
     }
     .selection(sel, true);
@@ -1029,13 +1801,14 @@ pub fn check(schema: &Schema, sel: &Selection, mutation: bool) -> Result<()> {
 struct Check<'a> {
     schema: &'a Schema,
     mutation: bool,
+    pane: Pane,
     out: &'a mut Vec<Diagnostic>,
 }
 
 impl Check<'_> {
     fn push(&mut self, span: Span, message: impl Into<String>, help: Option<String>) {
         self.out.push(Diagnostic::at(
-            Pane::Query,
+            self.pane,
             span.line,
             span.column,
             span.end_line,
@@ -1046,6 +1819,10 @@ impl Check<'_> {
     }
 
     fn selection(&mut self, sel: &Selection, root: bool) {
+        self.visit(sel, root, None);
+    }
+
+    fn visit(&mut self, sel: &Selection, _root: bool, arrived: Option<(&str, &str)>) {
         let known = self.schema.types.iter().any(|ty| ty.name == sel.type_name);
         if !known {
             self.push(
@@ -1087,19 +1864,9 @@ impl Check<'_> {
                 Item::Prop(name, span) => self.ensure_prop(sel, name, *span),
                 Item::Hops => {}
                 Item::EdgeProp(name, span) => {
-                    if root {
-                        self.push(
-                            *span,
-                            format!(
-                                "&{name} is an edge field, and this value was not reached by an edge"
-                            ),
-                            Some(format!(
-                                "read `&{name}` inside the type the edge lands on"
-                            )),
-                        );
-                    }
+                    self.edge_field(arrived, name, *span, None);
                 }
-                Item::EdgeSet(name, _, span) => {
+                Item::EdgeSet(name, value, span) => {
                     if !self.mutation {
                         self.push(
                             *span,
@@ -1108,6 +1875,8 @@ impl Check<'_> {
                                 "drop the value to read `&{name}`, or wrap the query in `mutation`"
                             )),
                         );
+                    } else {
+                        self.edge_field(arrived, name, *span, Some(value));
                     }
                 }
                 Item::Walk {
@@ -1126,8 +1895,96 @@ impl Check<'_> {
                         );
                     }
                     self.walk(sel, field, *span, *direction, target);
-                    self.selection(target, false);
+                    if self.mutation {
+                        self.require_edge_fields(sel, field, *span, target);
+                    }
+                    self.visit(target, false, Some((sel.type_name.as_str(), field)));
                 }
+            }
+        }
+    }
+
+    fn edge_field(
+        &mut self,
+        arrived: Option<(&str, &str)>,
+        name: &str,
+        span: Span,
+        value: Option<&Json>,
+    ) {
+        let Some((type_name, field)) = arrived else {
+            self.push(
+                span,
+                format!("&{name} is an edge field, and this value was not reached by an edge"),
+                Some(format!("read `&{name}` inside the type the edge lands on")),
+            );
+            return;
+        };
+        let Some(edge) = find_edge(self.schema, type_name, field) else {
+            return;
+        };
+        let Field::Edge { props, .. } = edge else {
+            return;
+        };
+        let Some(declared) = props.iter().find(|prop| prop.name == name) else {
+            let known: Vec<&str> = props.iter().map(|prop| prop.name.as_str()).collect();
+            let help = if let Some(hit) = closest(name, known.iter().copied()) {
+                format!("did you mean `&{hit}`?")
+            } else if known.is_empty() {
+                format!("declare it on the relationship: {field} -> Type {{ {name}: Int }}")
+            } else {
+                format!(
+                    "{field} has {}",
+                    known
+                        .iter()
+                        .map(|item| format!("`{item}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            self.push(span, format!("{field} has no field {name}"), Some(help));
+            return;
+        };
+        if let Some(value) = value {
+            if !json_matches(&declared.ty, value) {
+                self.push(
+                    span,
+                    format!("&{name} is not {}", declared.ty),
+                    Some(format!("`{name}` is {}", declared.ty)),
+                );
+            }
+        }
+    }
+
+    fn require_edge_fields(
+        &mut self,
+        sel: &Selection,
+        field: &str,
+        span: Span,
+        target: &Selection,
+    ) {
+        let Some(edge) = find_edge(self.schema, &sel.type_name, field) else {
+            return;
+        };
+        let Field::Edge { props, .. } = edge else {
+            return;
+        };
+        for prop in props {
+            if prop.optional {
+                continue;
+            }
+            let present = target
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::EdgeSet(name, _, _) if name == &prop.name));
+            if !present {
+                self.push(
+                    span,
+                    format!("{field} requires &{}", prop.name),
+                    Some(format!(
+                        "write `&{}: …` inside {}",
+                        prop.name, target.type_name
+                    )),
+                );
             }
         }
     }
@@ -1247,6 +2104,30 @@ fn show_targets(targets: &[String], many: bool) -> String {
         format!("{body}[]")
     } else {
         body
+    }
+}
+
+fn prop_help(schema: &Schema, type_name: &str, wanted: &str) -> String {
+    let names: Vec<&str> = schema
+        .types
+        .iter()
+        .find(|ty| ty.name == type_name)
+        .map(|ty| {
+            ty.fields
+                .iter()
+                .filter_map(|field| match field {
+                    Field::Prop { name, .. } => Some(name.as_str()),
+                    Field::Edge { .. } => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(hit) = closest(wanted, names.iter().copied()) {
+        format!("did you mean `{hit}`?")
+    } else if names.is_empty() {
+        format!("{type_name} has no fields")
+    } else {
+        format!("{type_name} has {}", names.join(", "))
     }
 }
 
@@ -1418,6 +2299,176 @@ mod tests {
         );
         assert_eq!(diags[0].help.as_deref(), Some("did you mean `Team`?"));
         assert_eq!(marked(schema, &diags[0]), "Tea");
+    }
+
+    #[test]
+    fn unique_block_makes_each_field_unique_on_its_own() {
+        let file = parse_zql(
+            r#"
+            schema {
+              type Player { name: String salary: Int playsFor -> Team }
+              type Team { name: String }
+            }
+            unique { Player { name salary } Team { name } }
+            mutation { Player(name: "Connor McDavid") { name } }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            file.uniques,
+            vec![
+                ("Player".into(), "name".into()),
+                ("Player".into(), "salary".into()),
+                ("Team".into(), "name".into()),
+            ]
+        );
+        assert_eq!(file.statements.len(), 1);
+        assert!(matches!(
+            &file.statements[0],
+            Statement::Run(query) if query.mutation
+        ));
+    }
+
+    #[test]
+    fn bare_types_still_parse_beside_a_schema_wrapper() {
+        let bare = parse_schema("type Player {\n  name: String\n}\n").unwrap();
+        assert_eq!(bare.types.len(), 1);
+        let source = "schema {\n  type Player { name: String }\n  type Team { name: String }\n}\nunique { Player { name } }\n";
+        let wrapped = parse_schema(source).unwrap();
+        assert_eq!(wrapped.types.len(), 2);
+        assert_eq!(
+            parse_uniques(source).unwrap(),
+            vec![("Player".into(), "name".into())]
+        );
+    }
+
+    #[test]
+    fn unique_unknown_field_suggests_a_field() {
+        let source =
+            "schema {\n  type Player {\n    name: String\n  }\n}\nunique {\n  Player { nme }\n}\n";
+        let report = diagnose(source, "");
+        let diag = &report.diagnostics[0];
+        assert_eq!(diag.pane, Pane::Schema);
+        assert_eq!(diag.message, "Player has no field nme");
+        assert_eq!(diag.help.as_deref(), Some("did you mean `name`?"));
+        assert_eq!(marked(source, diag), "nme");
+    }
+
+    #[test]
+    fn unique_rejects_a_relationship() {
+        let err = parse_zql(
+            "schema {\n  type Player { name: String playsFor -> Team }\n  type Team { name: String }\n}\nunique { Player { playsFor } }\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.message, "Player.playsFor is a relationship");
+    }
+
+    #[test]
+    fn dollar_names_a_column_and_a_load_is_a_file() {
+        let file = parse_zql(
+            r#"
+            schema { type Player { name: String salary: Int } }
+            mutation csv ["./players.csv"] {
+              Player(name: $Name && salary: $Salary) { name }
+            }
+            mutation json ["https://example.com/players.json"] {
+              Player(name: $Name) { name }
+            }
+            "#,
+        )
+        .unwrap();
+        let Statement::Load {
+            format: LoadFormat::Csv,
+            locations,
+            template,
+        } = &file.statements[0]
+        else {
+            panic!("csv file");
+        };
+        assert_eq!(locations, &["./players.csv".to_string()]);
+        let mut row = std::collections::HashMap::new();
+        row.insert("Name".into(), Json::from("Connor McDavid"));
+        row.insert("Salary".into(), Json::from(12_500_000));
+        let bound = bind_row(template, &row).unwrap().unwrap();
+        let BoolExpr::And(left, right) = bound.root.unwrap().condition.unwrap() else {
+            panic!("expected name && salary");
+        };
+        assert!(matches!(
+            left.as_ref(),
+            BoolExpr::Test(Pred::Eq(field, Json::String(text), _))
+                if field == "name" && text == "Connor McDavid"
+        ));
+        assert!(matches!(
+            right.as_ref(),
+            BoolExpr::Test(Pred::Eq(field, value, _))
+                if field == "salary" && value.as_i64() == Some(12_500_000)
+        ));
+        match &file.statements[1] {
+            Statement::Load {
+                format: LoadFormat::Json,
+                locations,
+                ..
+            } => assert_eq!(locations[0], "https://example.com/players.json"),
+            other => panic!("{other:?}"),
+        }
+
+        let pasted = parse_zql(
+            r#"
+            schema { type Player { name: String } }
+            mutation json [{"Name": "Mitch Marner"}] { Player(name: $Name) { name } }
+            "#,
+        )
+        .unwrap_err();
+        assert!(pasted.message.contains("file"), "{pasted:?}");
+
+        let inline = parse_zql(
+            "schema { type Player { name: String } }\nmutation csv \"\"\"\nName\nA\n\"\"\" { Player(name: $Name) { name } }\n",
+        )
+        .unwrap_err();
+        assert!(inline.message.contains("file"), "{inline:?}");
+
+        let bare = parse_zql(
+            r#"
+            schema { type Player { name: String } }
+            mutation csv ["./players.csv"] { Player(name: Name) { name } }
+            "#,
+        )
+        .unwrap_err();
+        assert!(bare.message.contains("`$`"), "{bare:?}");
+    }
+
+    #[test]
+    fn edge_fields_are_declared_once_on_the_relationship() {
+        let source = "type Team {\n  name: String\n  playsFor -> Player[] {\n    years: Int\n  }\n}\ntype Player {\n  name: String\n  playsFor <- Team\n}\n";
+        let schema = parse_schema(source).unwrap();
+        let team = schema.edge("Team", "playsFor").unwrap();
+        let player = schema.edge("Player", "playsFor").unwrap();
+        let names = |edge: &Field| match edge {
+            Field::Edge { props, .. } => props
+                .iter()
+                .map(|field| field.name.clone())
+                .collect::<Vec<_>>(),
+            Field::Prop { .. } => Vec::new(),
+        };
+        assert_eq!(names(team), vec!["years".to_string()]);
+        assert_eq!(names(player), vec!["years".to_string()]);
+        let mismatch = parse_schema(
+            "type Team {\n  playsFor -> Player[] { years: Int }\n}\ntype Player {\n  name: String\n  playsFor <- Team { years: String }\n}\n",
+        )
+        .unwrap_err();
+        assert!(mismatch.message.contains("do not match"), "{mismatch:?}");
+        let report = diagnose(
+            source,
+            "mutation {\n  Team(name: \"Oilers\") {\n    playsFor -> Player(name: \"Connor McDavid\") { name }\n  }\n}\n",
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("requires &years")),
+            "{:?}",
+            report.diagnostics
+        );
     }
 
     #[test]

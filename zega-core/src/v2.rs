@@ -9,7 +9,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::{json, Value as Json};
 use zega_graph::{Graph, Node, NodeId, RelId};
-use zega_lang::{BoolExpr, Cmp, Direction, Error as LangError, Item, Pred, Schema, Selection};
+use zega_lang::{
+    BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, Pred, Schema, Selection, Span,
+    Statement,
+};
 use zega_parser::Value;
 use zega_wal::Operation;
 
@@ -19,25 +22,11 @@ impl Zega {
     pub fn run_lang(&self, schema_src: &str, source: &str) -> Result<Json, ZegaError> {
         let schema = zega_lang::parse_schema(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
-        let query =
-            zega_lang::parse_query(source).map_err(|error| explain(error, "query", source))?;
-        let Some(root) = query.root else {
-            return Ok(Json::Null);
-        };
-        zega_lang::check(&schema, &root, query.mutation)
-            .map_err(|error| explain(error, "query", source))?;
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut budget = self.traversal_work_budget;
-        if query.mutation {
-            mutate(&mut graph, &self.wal, &schema, &root)
-                .map_err(|error| explain(error, "query", source))
-        } else {
-            read(&graph, &schema, &root, &mut budget)
-                .map_err(|error| explain(error, "query", source))
-        }
+        let uniques = zega_lang::parse_uniques(schema_src)
+            .map_err(|error| explain(error, "schema", schema_src))?;
+        let statement =
+            zega_lang::parse_statement(source).map_err(|error| explain(error, "query", source))?;
+        self.execute(&schema, &uniques, &statement, "query", source)
     }
 
     pub fn delete_node(&self, id: u64) -> Result<(), ZegaError> {
@@ -106,17 +95,63 @@ impl Zega {
                 "{label}.{field} does not reach {target_label}"
             )));
         }
-        connect(
-            &mut graph,
-            &self.wal,
-            from_id,
-            to_id,
-            direction,
+        let props = HashMap::new();
+        require_edge_props(
+            &schema,
             rel,
-            HashMap::new(),
+            &props,
+            Span {
+                line: 0,
+                column: 0,
+                end_line: 0,
+                end_column: 0,
+            },
         )
         .map_err(|error| explain(error, "schema", schema_src))?;
+        connect(&mut graph, &self.wal, from_id, to_id, direction, rel, props)
+            .map_err(|error| explain(error, "schema", schema_src))?;
         Ok(())
+    }
+
+    /// Run a `.zql` file: schema, unique, mutations, then an optional query.
+    pub fn apply_zql(&self, source: &str) -> Result<Json, ZegaError> {
+        let file =
+            zega_lang::parse_zql(source).map_err(|error| explain(error, "schema", source))?;
+        let mut last = Json::Null;
+        for statement in &file.statements {
+            last = self.execute(&file.schema, &file.uniques, statement, "schema", source)?;
+        }
+        Ok(last)
+    }
+
+    fn execute(
+        &self,
+        schema: &Schema,
+        uniques: &[(String, String)],
+        statement: &Statement,
+        source_name: &str,
+        source: &str,
+    ) -> Result<Json, ZegaError> {
+        if let Statement::Run(query) = statement {
+            if query.root.is_none() {
+                return Ok(Json::Null);
+            }
+        }
+        prepare(schema, statement).map_err(|error| explain(error, source_name, source))?;
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let mut budget = self.traversal_work_budget;
+        run_statement(
+            &mut graph,
+            &self.wal,
+            schema,
+            uniques,
+            statement,
+            &mut budget,
+        )
+        .map_err(|error| explain(error, source_name, source))
     }
 
     pub fn graph_json(&self) -> Result<Json, ZegaError> {
@@ -130,16 +165,239 @@ impl Zega {
             .all_relationships()
             .values()
             .map(|rel| {
+                let mut props = serde_json::Map::new();
+                for (key, value) in &rel.props {
+                    props.insert(key.clone(), value_to_json(value));
+                }
                 json!({
                     "id": rel.id,
                     "type": rel.kind,
                     "from": rel.from,
                     "to": rel.to,
+                    "props": props,
                 })
             })
             .collect();
         rels.sort_by_key(|rel| rel["id"].as_u64().unwrap_or(0));
         Ok(json!({ "nodes": nodes, "rels": rels }))
+    }
+}
+
+fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
+    let (root, mutation) = match statement {
+        Statement::Run(query) => (query.root.as_ref(), query.mutation),
+        Statement::Load { template, .. } => (template.root.as_ref(), true),
+    };
+    if let Some(root) = root {
+        zega_lang::check(schema, root, mutation)?;
+    }
+    Ok(())
+}
+
+fn run_statement(
+    graph: &mut Graph,
+    wal: &crate::Wal,
+    schema: &Schema,
+    uniques: &[(String, String)],
+    statement: &Statement,
+    budget: &mut usize,
+) -> Result<Json, LangError> {
+    match statement {
+        Statement::Run(query) => {
+            let Some(root) = &query.root else {
+                return Ok(Json::Null);
+            };
+            if query.mutation {
+                mutate(graph, wal, schema, root, uniques)
+            } else {
+                read(graph, schema, root, budget)
+            }
+        }
+        Statement::Load {
+            format,
+            locations,
+            template,
+        } => {
+            let rows = load_rows(*format, locations)?;
+            if let Some(error) = zega_lang::missing_columns(template, &rows)
+                .into_iter()
+                .next()
+            {
+                return Err(error);
+            }
+            let mut out = Vec::new();
+            for row in &rows {
+                let Some(query) = zega_lang::bind_row(template, row)? else {
+                    continue;
+                };
+                let Some(root) = &query.root else {
+                    continue;
+                };
+                out.push(mutate(graph, wal, schema, root, uniques)?);
+            }
+            Ok(Json::Array(out))
+        }
+    }
+}
+
+fn load_rows(
+    format: LoadFormat,
+    locations: &[String],
+) -> Result<Vec<HashMap<String, Json>>, LangError> {
+    let mut rows = Vec::new();
+    for location in locations {
+        let text = read_location(location)?;
+        match format {
+            LoadFormat::Csv => {
+                rows.extend(zega_lang::csv_rows(&text).map_err(LangError::bare)?);
+            }
+            LoadFormat::Json => {
+                let value = serde_json::from_str(&text)
+                    .map_err(|error| LangError::bare(format!("{location} is not json: {error}")))?;
+                rows.extend(zega_lang::json_rows(value).map_err(LangError::bare)?);
+            }
+        }
+    }
+    Ok(rows)
+}
+
+const MAX_IMPORT_BYTES: usize = 2_000_000;
+
+fn read_location(location: &str) -> Result<String, LangError> {
+    validate_location(location).map_err(LangError::bare)?;
+    let text = read_location_text(location)
+        .map_err(|error| LangError::bare(format!("cannot read {location}: {error}")))?;
+    if text.len() > MAX_IMPORT_BYTES {
+        return Err(LangError::bare(format!("{location} is larger than 2MB")));
+    }
+    Ok(text)
+}
+
+/// A document may name a relative file or a public http(s) address.
+/// It may not climb out of its folder, carry a password, or call a private host.
+fn validate_location(location: &str) -> Result<(), String> {
+    let location = location.trim();
+    if location.is_empty() || location.contains('\0') {
+        return Err("invalid location".into());
+    }
+    let lower = location.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return validate_remote(location);
+    }
+    if location.contains("://") {
+        return Err("only http and https addresses are allowed".into());
+    }
+    if location.split(['/', '\\']).any(|part| part == "..") {
+        return Err("the path cannot contain ..".into());
+    }
+    Ok(())
+}
+
+fn validate_remote(location: &str) -> Result<(), String> {
+    let rest = location
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
+    if rest.contains('@') {
+        return Err("the address cannot include a password".into());
+    }
+    let hostport = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = if let Some(host) = hostport.strip_prefix('[') {
+        host.split(']').next().unwrap_or("")
+    } else {
+        hostport.split(':').next().unwrap_or("")
+    };
+    if host.is_empty() {
+        return Err("the address has no host".into());
+    }
+    if blocked_host(host) {
+        return Err("that address points at a private network".into());
+    }
+    Ok(())
+}
+
+fn blocked_host(host: &str) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host == "metadata.google.internal"
+        || host == "::1"
+        || host == "https://example.net/id/garnet"
+    {
+        return true;
+    }
+    if host.starts_with("fe80:") || host.starts_with("fc") || host.starts_with("fd") {
+        return true;
+    }
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    let mut octets = [0u8; 4];
+    for (index, part) in parts.iter().enumerate() {
+        let Ok(value) = part.parse::<u8>() else {
+            return false;
+        };
+        octets[index] = value;
+    }
+    let [a, b, _, _] = octets;
+    a == 0
+        || a == 10
+        || a == 127
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 168)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_location_text(location: &str) -> Result<String, String> {
+    let xhr = web_sys::XmlHttpRequest::new().map_err(|error| format!("{error:?}"))?;
+    xhr.open_with_async("GET", location, false)
+        .map_err(|error| format!("{error:?}"))?;
+    xhr.set_timeout(20_000);
+    xhr.send().map_err(|error| format!("{error:?}"))?;
+    let status = xhr.status().map_err(|error| format!("{error:?}"))?;
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "status {status}. A browser can only fetch a url the server allows this page to read"
+        ));
+    }
+    xhr.response_text()
+        .map_err(|error| format!("{error:?}"))?
+        .ok_or_else(|| "empty response".to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_location_text(location: &str) -> Result<String, String> {
+    let lower = location.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        let response = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if validate_remote(attempt.url().as_str()).is_err() || attempt.previous().len() >= 5
+                {
+                    attempt.stop()
+                } else {
+                    attempt.follow()
+                }
+            }))
+            .build()
+            .map_err(|error| error.to_string())?
+            .get(location)
+            .send()
+            .map_err(|error| error.to_string())?;
+        if validate_remote(response.url().as_str()).is_err() {
+            return Err("that address points at a private network".into());
+        }
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("status {status}"));
+        }
+        let bytes = response.bytes().map_err(|error| error.to_string())?;
+        String::from_utf8(bytes.to_vec()).map_err(|_| "not utf-8".to_string())
+    } else {
+        std::fs::read_to_string(location).map_err(|error| error.to_string())
     }
 }
 
@@ -179,8 +437,9 @@ fn mutate(
     wal: &crate::Wal,
     schema: &Schema,
     root: &Selection,
+    uniques: &[(String, String)],
 ) -> Result<Json, LangError> {
-    apply_node(graph, wal, schema, root, None)
+    apply_node(graph, wal, schema, root, None, uniques)
 }
 
 /// Writes or finds this selection and returns only the rows this statement touched.
@@ -190,12 +449,13 @@ fn apply_node(
     schema: &Schema,
     sel: &Selection,
     parent: Option<(NodeId, Direction, String)>,
+    uniques: &[(String, String)],
 ) -> Result<Json, LangError> {
     let lookup = !sel.sets.is_empty() || has_link(sel);
     let id = if lookup {
         lookup_one(graph, sel)?
     } else {
-        insert_node(graph, wal, sel)?
+        insert_node(graph, wal, sel, uniques)?
     };
     if !sel.sets.is_empty() {
         let props = sel
@@ -203,12 +463,34 @@ fn apply_node(
             .iter()
             .map(|(key, value, _)| Ok((key.clone(), json_to_value(value)?)))
             .collect::<Result<HashMap<_, _>, LangError>>()?;
+        let labels = graph
+            .get_node(id)
+            .map(|node| node.labels.clone())
+            .unwrap_or_default();
+        if let Some((ty, field)) = find_duplicate(graph, &labels, &props, uniques, Some(id)) {
+            let span = sel
+                .sets
+                .iter()
+                .find(|(key, _, _)| key == &field)
+                .map(|(_, _, span)| *span)
+                .unwrap_or(sel.type_span);
+            return Err(unique_conflict(&ty, &field, span));
+        }
         graph.update_node(id, props.clone());
         wal.append(&Operation::UpdateNode { id, props })
             .map_err(|error| LangError::bare(error.to_string()))?;
     }
     if let Some((parent_id, direction, rel)) = &parent {
         let props = edge_sets(sel)?;
+        let span = sel
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::EdgeSet(_, _, span) => Some(*span),
+                _ => None,
+            })
+            .unwrap_or(sel.type_span);
+        require_edge_props(schema, rel, &props, span)?;
         connect(graph, wal, *parent_id, id, *direction, rel, props)?;
     }
     let node = graph
@@ -257,15 +539,17 @@ fn apply_node(
                 }
                 let child = if *link {
                     let child_id = lookup_one(graph, target)?;
-                    connect(
-                        graph,
-                        wal,
-                        id,
-                        child_id,
-                        *direction,
-                        rel,
-                        edge_sets(target)?,
-                    )?;
+                    let props = edge_sets(target)?;
+                    let span = target
+                        .items
+                        .iter()
+                        .find_map(|item| match item {
+                            Item::EdgeSet(_, _, span) => Some(*span),
+                            _ => None,
+                        })
+                        .unwrap_or(target.type_span);
+                    require_edge_props(schema, rel, &props, span)?;
+                    connect(graph, wal, id, child_id, *direction, rel, props)?;
                     let saved = graph.get_node(child_id).unwrap().clone();
                     let mut child_object = serde_json::Map::new();
                     for child_item in &target.items {
@@ -290,6 +574,7 @@ fn apply_node(
                         schema,
                         target,
                         Some((id, *direction, rel.to_string())),
+                        uniques,
                     )?
                 };
                 let key = field.clone();
@@ -329,7 +614,12 @@ fn has_link(sel: &Selection) -> bool {
         .any(|item| matches!(item, Item::Walk { link: true, .. }))
 }
 
-fn insert_node(graph: &mut Graph, wal: &crate::Wal, sel: &Selection) -> Result<NodeId, LangError> {
+fn insert_node(
+    graph: &mut Graph,
+    wal: &crate::Wal,
+    sel: &Selection,
+    uniques: &[(String, String)],
+) -> Result<NodeId, LangError> {
     let mut props = HashMap::new();
     if let Some(expr) = &sel.condition {
         assign_props(expr, sel, &mut props)?;
@@ -337,10 +627,115 @@ fn insert_node(graph: &mut Graph, wal: &crate::Wal, sel: &Selection) -> Result<N
     let labels: Vec<String> = std::iter::once(sel.type_name.clone())
         .chain(sel.also.iter().cloned())
         .collect();
+    if let Some((ty, field)) = find_duplicate(graph, &labels, &props, uniques, None) {
+        return Err(unique_conflict(&ty, &field, sel.type_span));
+    }
     let id = graph.create_node(labels.clone(), props.clone());
     wal.append(&Operation::InsertNode { id, labels, props })
         .map_err(|error| LangError::bare(error.to_string()))?;
     Ok(id)
+}
+
+fn unique_conflict(ty: &str, field: &str, span: Span) -> LangError {
+    LangError::at(span, format!("unique {ty} {{ {field} }} is already used"))
+        .with_help(format!("another {ty} already has this {field}"))
+}
+
+/// The first unique field whose value is already stored on a different node.
+/// A missing value, or null, does not collide.
+fn find_duplicate(
+    graph: &Graph,
+    labels: &[String],
+    props: &HashMap<String, Value>,
+    uniques: &[(String, String)],
+    except: Option<NodeId>,
+) -> Option<(String, String)> {
+    for label in labels {
+        for (ty, field) in uniques {
+            if ty != label {
+                continue;
+            }
+            let Some(value) = props.get(field.as_str()) else {
+                continue;
+            };
+            if matches!(value, Value::Null) {
+                continue;
+            }
+            let Some(ids) = graph.nodes_by_property(field, value) else {
+                continue;
+            };
+            let taken = ids.iter().any(|id| {
+                if except == Some(*id) {
+                    return false;
+                }
+                graph
+                    .get_node(*id)
+                    .is_some_and(|node| node.labels.iter().any(|has| has == label))
+            });
+            if taken {
+                return Some((ty.clone(), field.clone()));
+            }
+        }
+    }
+    None
+}
+
+fn require_edge_props(
+    schema: &Schema,
+    rel: &str,
+    props: &HashMap<String, Value>,
+    span: Span,
+) -> Result<(), LangError> {
+    let declared = schema.types.iter().find_map(|ty| {
+        ty.fields.iter().find_map(|field| match field {
+            zega_lang::Field::Edge {
+                rel: kind, props, ..
+            } if kind == rel && !props.is_empty() => Some(props),
+            _ => None,
+        })
+    });
+    let Some(declared) = declared else {
+        if let Some(name) = props.keys().next() {
+            return Err(
+                LangError::at(span, format!("{rel} has no field {name}")).with_help(format!(
+                    "declare it on the relationship: {rel} -> Type {{ {name}: Int }}"
+                )),
+            );
+        }
+        return Ok(());
+    };
+    for field in declared {
+        if !field.optional && !props.contains_key(&field.name) {
+            return Err(
+                LangError::at(span, format!("{rel} requires &{}", field.name))
+                    .with_help(format!("write `&{}: …` on the edge", field.name)),
+            );
+        }
+        if let Some(value) = props.get(&field.name) {
+            if !edge_value_matches(&field.ty, value) {
+                return Err(
+                    LangError::at(span, format!("&{} is not {}", field.name, field.ty))
+                        .with_help(format!("`{}` is {}", field.name, field.ty)),
+                );
+            }
+        }
+    }
+    for name in props.keys() {
+        if !declared.iter().any(|field| &field.name == name) {
+            return Err(LangError::at(span, format!("{rel} has no field {name}")));
+        }
+    }
+    Ok(())
+}
+
+fn edge_value_matches(ty: &str, value: &Value) -> bool {
+    match ty {
+        "String" => matches!(value, Value::String(_)),
+        "Int" => matches!(value, Value::Int(_)),
+        "Float" => matches!(value, Value::Float(_) | Value::Int(_)),
+        "Bool" => matches!(value, Value::Bool(_)),
+        _ => true,
+    }
 }
 
 fn edge_sets(sel: &Selection) -> Result<HashMap<String, Value>, LangError> {
@@ -761,7 +1156,9 @@ mod tests {
         type Author {
           name: String
           died?: Int
-          wrote -> Book[]
+          wrote -> Book[] {
+            year?: Int
+          }
         }
         type Book {
           title: String
@@ -915,7 +1312,10 @@ mod tests {
         assert_eq!(linked["rels"].as_array().unwrap().len(), 1);
         let rel_id = linked["rels"][0]["id"].as_u64().unwrap();
         zega.delete_relationship(rel_id).unwrap();
-        assert!(zega.graph_json().unwrap()["rels"].as_array().unwrap().is_empty());
+        assert!(zega.graph_json().unwrap()["rels"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         zega.delete_node(author).unwrap();
         let remaining = zega.graph_json().unwrap();
         let names: Vec<_> = remaining["nodes"]
@@ -992,6 +1392,37 @@ mod tests {
             .unwrap();
         assert_eq!(read["wrote"][0]["title"], "The Dispossessed");
         assert_eq!(read["wrote"][0]["year"], 1974);
+        let stored = zega.graph_json().unwrap();
+        assert_eq!(stored["rels"][0]["props"]["year"], 1974);
+    }
+
+    #[test]
+    fn required_edge_field_rejects_a_bare_connection() {
+        let zega = Zega::in_memory().build().unwrap();
+        let schema = r#"
+            type Team { name: String playsFor -> Player[] { years: Int } }
+            type Player { name: String playsFor <- Team }
+        "#;
+        let missing = zega
+            .run_lang(
+                schema,
+                r#"mutation { Team(name: "Oilers") { playsFor -> Player(name: "Connor McDavid") { name } } }"#,
+            )
+            .unwrap_err();
+        assert!(missing.to_string().contains("requires &years"), "{missing}");
+        zega.run_lang(
+            schema,
+            r#"mutation { Team(name: "Oilers") { playsFor -> Player(name: "Connor McDavid") { name &years: 10 } } }"#,
+        )
+        .unwrap();
+        let read = zega
+            .run_lang(
+                schema,
+                r#"{ Player(name = "Connor McDavid") { playsFor <- Team { name &years } } }"#,
+            )
+            .unwrap();
+        assert_eq!(read["playsFor"]["name"], "Oilers");
+        assert_eq!(read["playsFor"]["years"], 10);
     }
 
     #[test]
@@ -1031,5 +1462,203 @@ mod tests {
         let movie = likes.iter().find(|row| row["title"] == "Alien").unwrap();
         assert_eq!(book["runtime"], Json::Null);
         assert_eq!(movie["runtime"], 117);
+    }
+
+    #[test]
+    fn unique_block_rejects_a_second_insert_and_a_rename() {
+        let zega = Zega::in_memory().build().unwrap();
+        let schema = r#"
+            schema {
+              type Player { name: String salary: Int }
+              type Team { name: String }
+            }
+            unique { Player { name salary } Team { name } }
+        "#;
+        zega.run_lang(
+            schema,
+            r#"mutation { Player(name: "Connor McDavid" && salary: 12500000) { name } }"#,
+        )
+        .unwrap();
+        let dup_name = zega
+            .run_lang(
+                schema,
+                r#"mutation { Player(name: "Connor McDavid" && salary: 1) { name } }"#,
+            )
+            .unwrap_err();
+        assert!(
+            dup_name.to_string().contains("unique Player { name }"),
+            "{dup_name}"
+        );
+        let dup_salary = zega
+            .run_lang(
+                schema,
+                r#"mutation { Player(name: "Leon Draisaitl" && salary: 12500000) { name } }"#,
+            )
+            .unwrap_err();
+        assert!(
+            dup_salary.to_string().contains("unique Player { salary }"),
+            "{dup_salary}"
+        );
+        zega.run_lang(
+            schema,
+            r#"mutation { Player(name: "Leon Draisaitl" && salary: 14000000) { name } }"#,
+        )
+        .unwrap();
+        zega.run_lang(schema, r#"mutation { Team(name: "Oilers") { name } }"#)
+            .unwrap();
+        let renamed = zega
+            .run_lang(
+                schema,
+                r#"mutation { Player(name: "Leon Draisaitl") set name: "Connor McDavid" }"#,
+            )
+            .unwrap_err();
+        assert!(
+            renamed.to_string().contains("unique Player { name }"),
+            "{renamed}"
+        );
+        zega.run_lang(
+            schema,
+            r#"mutation { Player(name: "Leon Draisaitl") set salary: 9000000 }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn csv_and_json_loads_insert_rows_and_honor_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv_path = dir.path().join("players.csv");
+        let json_path = dir.path().join("more.json");
+        std::fs::write(
+            &csv_path,
+            "Name,Team,Salary\nConnor McDavid,Oilers,12500000\nAuston Matthews,Maple Leafs,13250000\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &json_path,
+            r#"[{"Name":"Nathan MacKinnon","Team":"Avalanche","Salary":12604000}]"#,
+        )
+        .unwrap();
+        let csv_file = serde_json::to_string(&vec![csv_path.to_str().unwrap()]).unwrap();
+        let json_file = serde_json::to_string(&vec![json_path.to_str().unwrap()]).unwrap();
+        let zega = Zega::in_memory().build().unwrap();
+        let source = format!(
+            r#"
+                schema {{
+                  type Player {{ name: String salary: Int }}
+                  type Team {{ name: String playsFor -> Player[] }}
+                }}
+                unique {{ Player {{ name }} Team {{ name }} }}
+                mutation csv {csv_file} {{
+                  Team(name: $Team) {{
+                    playsFor -> Player(name: $Name && salary: $Salary) {{ name salary }}
+                  }}
+                }}
+                mutation json {json_file} {{
+                  Team(name: $Team) {{
+                    playsFor -> Player(name: $Name && salary: $Salary) {{ name }}
+                  }}
+                }}
+                query {{ Player {{ name }} }}
+                "#
+        );
+        let loaded = zega.apply_zql(&source).unwrap();
+        let names: Vec<&str> = loaded
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Connor McDavid", "Auston Matthews", "Nathan MacKinnon"]
+        );
+        let again_path = dir.path().join("again.csv");
+        std::fs::write(&again_path, "Name,Salary\nConnor McDavid,1\n").unwrap();
+        let again_file = serde_json::to_string(&vec![again_path.to_str().unwrap()]).unwrap();
+        let again = zega.apply_zql(&format!(
+            r#"
+            schema {{
+              type Player {{ name: String salary: Int }}
+              type Team {{ name: String }}
+            }}
+            unique {{ Player {{ name }} }}
+            mutation csv {again_file} {{
+              Player(name: $Name && salary: $Salary) {{ name }}
+            }}
+            "#
+        ));
+        assert!(again
+            .unwrap_err()
+            .to_string()
+            .contains("unique Player { name }"));
+    }
+
+    #[test]
+    fn csv_path_reads_dollar_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("players.csv");
+        std::fs::write(&path, "Name,Salary\nLeon Draisaitl,14000000\n").unwrap();
+        let location = serde_json::to_string(&vec![path.to_str().unwrap()]).unwrap();
+        let source = format!(
+            r#"
+            schema {{ type Player {{ name: String salary: Int }} }}
+            mutation csv {location} {{
+              Player(name: $Name && salary: $Salary) {{ name salary }}
+            }}
+            "#
+        );
+        let loaded = Zega::in_memory()
+            .build()
+            .unwrap()
+            .apply_zql(&source)
+            .unwrap();
+        assert_eq!(loaded[0]["name"], "Leon Draisaitl");
+        assert_eq!(loaded[0]["salary"], 14_000_000);
+        let missing = Zega::in_memory().build().unwrap().apply_zql(
+            r#"
+            schema { type Player { name: String } }
+            mutation csv ["./no-such-players.csv"] { Player(name: $Name) { name } }
+            "#,
+        );
+        let missing = missing.unwrap_err();
+        assert!(missing.to_string().contains("cannot read"), "{missing}");
+    }
+
+    #[test]
+    fn remote_load_rejects_a_private_address_and_a_parent_path() {
+        let zega = Zega::in_memory().build().unwrap();
+        let private = zega
+            .apply_zql(
+                r#"
+                schema { type Player { name: String } }
+                mutation json ["http://127.0.0.1/players.json"] {
+                  Player(name: $Name) { name }
+                }
+                "#,
+            )
+            .unwrap_err();
+        assert!(private.to_string().contains("private network"), "{private}");
+        let parent = zega
+            .apply_zql(
+                r#"
+                schema { type Player { name: String } }
+                mutation csv ["../players.csv"] {
+                  Player(name: $Name) { name }
+                }
+                "#,
+            )
+            .unwrap_err();
+        assert!(parent.to_string().contains(".."), "{parent}");
+        let password = zega
+            .apply_zql(
+                r#"
+                schema { type Player { name: String } }
+                mutation json ["https://user:secret@example.com/players.json"] {
+                  Player(name: $Name) { name }
+                }
+                "#,
+            )
+            .unwrap_err();
+        assert!(password.to_string().contains("password"), "{password}");
     }
 }

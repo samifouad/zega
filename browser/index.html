@@ -13,7 +13,7 @@
   <span class="brand">zega</span>
   <span class="conn"><span class="conn-dot"></span> local · wasm</span>
   <span class="spacer"></span>
-  <button id="btn-csv">Import CSV</button>
+  <button id="btn-csv">Import</button>
   <button id="btn-run" class="primary">Run</button>
   <button id="btn-seed">reset</button>
   <button id="btn-clear">clear</button>
@@ -36,10 +36,13 @@
       <h2>query <span id="query-time" class="pane-stat"></span></h2>
       <div id="query" class="editor"></div>
     </section>
-    <div class="split split-x" data-band="bottom" title="drag the output pane wider or narrower"></div>
     <section class="pane">
       <h2>output <span id="output-size" class="pane-stat"></span></h2>
       <div id="output" class="editor"></div>
+    </section>
+    <section class="pane">
+      <h2>raw <span id="raw-count" class="pane-stat"></span></h2>
+      <div id="raw" class="editor"></div>
     </section>
   </div>
 </div>

@@ -17,6 +17,12 @@ impl ZegaWasm {
 
     /// Run a v2 schema-language query. `schema` is the text of `schema.zql`.
     /// `source` is one read or one `mutation`.
+    /// Run a `.zql` file of `schema`, `unique`, `mutation`, and `query` blocks.
+    pub fn apply(&self, source: String) -> Result<String, JsValue> {
+        let value = self.inner.apply_zql(&source).map_err(to_js_error)?;
+        serde_json::to_string(&value).map_err(to_js_error)
+    }
+
     pub fn run(&self, schema: String, source: String) -> Result<String, JsValue> {
         let value = self.inner.run_lang(&schema, &source).map_err(to_js_error)?;
         serde_json::to_string(&value).map_err(to_js_error)
@@ -40,7 +46,13 @@ impl ZegaWasm {
     }
 
     /// `field` is the relationship name on the source node's type.
-    pub fn connect(&self, schema: String, from_id: f64, field: String, to_id: f64) -> Result<(), JsValue> {
+    pub fn connect(
+        &self,
+        schema: String,
+        from_id: f64,
+        field: String,
+        to_id: f64,
+    ) -> Result<(), JsValue> {
         self.inner
             .connect_schema(&schema, from_id as u64, &field, to_id as u64)
             .map_err(to_js_error)

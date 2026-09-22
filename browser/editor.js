@@ -151,15 +151,23 @@ export async function createEditors({ schema, query }) {
     value: query,
     language: 'zega-query',
   });
-  const outputEditor = monaco.editor.create(document.getElementById('output'), {
+  const readOnly = {
     ...shared,
     value: '',
-    language: 'json',
     readOnly: true,
     domReadOnly: true,
     folding: true,
     foldingStrategy: 'indentation',
     showFoldingControls: 'always',
+  };
+  const outputEditor = monaco.editor.create(document.getElementById('output'), {
+    ...readOnly,
+    language: 'json',
   });
-  return { monaco, schema: schemaEditor, query: queryEditor, output: outputEditor };
+  const rawEditor = monaco.editor.create(document.getElementById('raw'), {
+    ...readOnly,
+    language: 'plaintext',
+    wordWrap: 'off',
+  });
+  return { monaco, schema: schemaEditor, query: queryEditor, output: outputEditor, raw: rawEditor };
 }

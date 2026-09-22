@@ -5,6 +5,12 @@ export class ZegaWasm {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * Run a v2 schema-language query. `schema` is the text of `schema.zql`.
+     * `source` is one read or one `mutation`.
+     * Run a `.zql` file of `schema`, `unique`, `mutation`, and `query` blocks.
+     */
+    apply(source: string): string;
+    /**
      * Parse and type-check. Returns a JSON array of diagnostics. An empty
      * array means the schema and query are clean.
      */
@@ -34,10 +40,6 @@ export class ZegaWasm {
     kv_set(key: string, value_json: string, ttl_secs?: bigint | null): void;
     constructor();
     query(zql: string, params_json: string): string;
-    /**
-     * Run a v2 schema-language query. `schema` is the text of `schema.zql`.
-     * `source` is one read or one `mutation`.
-     */
     run(schema: string, source: string): string;
 }
 
@@ -46,6 +48,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_zegawasm_free: (a: number, b: number) => void;
+    readonly zegawasm_apply: (a: number, b: number, c: number) => [number, number, number, number];
     readonly zegawasm_check: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly zegawasm_connect: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly zegawasm_delete_node: (a: number, b: number) => [number, number];
@@ -59,11 +62,13 @@ export interface InitOutput {
     readonly zegawasm_new: () => [number, number, number];
     readonly zegawasm_query: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_run: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
-    readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_exn_store: (a: number) => void;
+    readonly __externref_table_alloc: () => number;
+    readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __externref_table_dealloc: (a: number) => void;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

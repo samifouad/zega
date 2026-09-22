@@ -16,7 +16,9 @@ const SCHEMA = `type Team {
   city: String
   logo: String
 
-  playsFor -> Player[]
+  playsFor -> Player[] {
+    since?: Int
+  }
 }
 
 type Player {
@@ -218,7 +220,7 @@ if (saved) {
 }
 window.__zega = db;
 
-const { schema: schemaEditor, query: queryEditor, output: outputEditor, monaco } = await editorsReady;
+const { schema: schemaEditor, query: queryEditor, output: outputEditor, raw: rawEditor, monaco } = await editorsReady;
 
 let suppress = 0;
 function setQuiet(editor, value) {
@@ -256,6 +258,7 @@ function namesIn(value, into = new Set()) {
 }
 
 const outputSize = $('#output-size');
+const rawCount = $('#raw-count');
 const queryTime = $('#query-time');
 
 function plainError(error) {
@@ -308,9 +311,25 @@ function showThrown(error) {
   showReport({ text: plainError(error) });
 }
 
+function looksLikeZqlFile(text) {
+  return /^\s*schema\b/.test(text);
+}
+
 function run(source, options = {}) {
   localStorage.setItem(LS_SCHEMA, schemaText());
   localStorage.setItem(LS_QUERY, queryText());
+  if (options.apply && looksLikeZqlFile(schemaText())) {
+    try {
+      const applied = JSON.parse(db.apply(schemaText()));
+      if (!String(source || '').trim()) {
+        showJson(applied);
+        return applied;
+      }
+    } catch (e) {
+      showThrown(e);
+      return null;
+    }
+  }
   const report = review(source);
   if (source === queryText()) mark(report.diagnostics);
   if (report.diagnostics.length || report.failed) {
@@ -339,7 +358,7 @@ function run(source, options = {}) {
   }
 }
 
-$('#btn-run').onclick = () => run(queryText());
+$('#btn-run').onclick = () => run(queryText(), { apply: true });
 $('#btn-csv').onclick = () => {
   pauseAutoplay();
   openCsv({
@@ -347,6 +366,7 @@ $('#btn-csv').onclick = () => {
     clearDatabase,
     setSchema: (text) => setQuiet(schemaEditor, text),
     setQuery: (text) => setQuiet(queryEditor, text),
+    currentSchema: schemaText,
     onImported: hideTour,
   });
 };
@@ -354,6 +374,11 @@ $('#btn-seed').onclick = () => reseed();
 $('#btn-clear').onclick = () => {
   pauseAutoplay();
   clearDatabase();
+  setQuiet(schemaEditor, '');
+  setQuiet(queryEditor, '');
+  localStorage.setItem(LS_SCHEMA, '');
+  localStorage.setItem(LS_QUERY, '');
+  mark([]);
   outputEditor.setValue('');
   outputSize.textContent = '';
   queryTime.textContent = '';
@@ -387,7 +412,7 @@ schemaEditor.onDidChangeModelContent(scheduleRun);
 queryEditor.onDidChangeModelContent(scheduleRun);
 const runNow = () => {
   clearTimeout(pending);
-  run(queryText());
+  run(queryText(), { apply: true });
 };
 const chord = monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter;
 schemaEditor.addCommand(chord, runNow);
@@ -466,6 +491,46 @@ function storedGraph() {
   return JSON.parse(db.graph());
 }
 
+function formatRaw(graph) {
+  const nodes = [...graph.nodes].sort((a, b) => a.id - b.id);
+  const rels = [...graph.rels].sort((a, b) => a.id - b.id);
+  const nameOf = (id) => {
+    const node = nodes.find((item) => item.id === id);
+    if (!node) return '';
+    const name = node.name ?? node.title;
+    return name == null ? '' : String(name);
+  };
+  const propsOf = (node) => {
+    const skip = new Set(['id', 'labels']);
+    const props = Object.fromEntries(Object.entries(node).filter(([key]) => !skip.has(key)));
+    return JSON.stringify(props, Object.keys(props).sort());
+  };
+  const lines = [];
+  for (const node of nodes) {
+    lines.push(`Node ${node.id}`);
+    lines.push(`  labels: [${(node.labels || []).join(', ')}]`);
+    lines.push(`  props:  ${propsOf(node)}`);
+    lines.push('');
+  }
+  for (const rel of rels) {
+    const props = rel.props || {};
+    lines.push(`Relationship ${rel.id}`);
+    lines.push(`  kind:  ${rel.type}`);
+    lines.push(`  from:  ${rel.from}  ${nameOf(rel.from)}`.trimEnd());
+    lines.push(`  to:    ${rel.to}  ${nameOf(rel.to)}`.trimEnd());
+    lines.push(`  props: ${JSON.stringify(props, Object.keys(props).sort())}`);
+    lines.push('');
+  }
+  return lines.join('\n').replace(/\n$/, '');
+}
+
+function showRaw(graph) {
+  rawEditor.setValue(graph.nodes.length || graph.rels.length ? formatRaw(graph) : '');
+  const nodes = graph.nodes.length;
+  const edges = graph.rels.length;
+  rawCount.textContent = nodes || edges ? `${nodes} nodes · ${edges} edges` : '';
+}
+
 function highlights(value) {
   if (value == null) return null;
   if (Array.isArray(value)) return value.length ? namesIn(value) : null;
@@ -479,8 +544,11 @@ function drawGraph() {
     graph = storedGraph();
   } catch (e) {
     graphEl.innerHTML = `<div class="empty">${e}</div>`;
+    rawEditor.setValue(String(e));
+    rawCount.textContent = '';
     return;
   }
+  showRaw(graph);
   renderGraph(graphEl, graph, highlights(lastValue), {
     onNode: openNodeMenu,
     onEdge: openEdgeMenu,
@@ -594,12 +662,10 @@ function storedRatio(key, fallback) {
 }
 
 let splitTop = storedRatio('zega.v2.split-top', 0.3);
-let splitBottom = storedRatio('zega.v2.split-bottom', 0.5);
 let splitRows = storedRatio('zega.v2.split-rows', 1.15 / 2);
 
 function applySplits() {
   bandTop.style.setProperty('--lead', `${splitTop * 100}%`);
-  bandBottom.style.setProperty('--lead', `${splitBottom * 100}%`);
   bandTop.style.flex = String(splitRows);
   bandBottom.style.flex = String(1 - splitRows);
 }
@@ -636,9 +702,6 @@ document.querySelectorAll('.split-x').forEach((handle) => {
     if (handle.dataset.band === 'top') {
       splitTop = ratio;
       localStorage.setItem('zega.v2.split-top', String(ratio));
-    } else {
-      splitBottom = ratio;
-      localStorage.setItem('zega.v2.split-bottom', String(ratio));
     }
     applySplits();
   });
