@@ -34,6 +34,50 @@ body {
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; }
 .spacer { flex: 1; }
 
+#panes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  height: calc(100vh - 46px);
+  gap: 8px;
+  padding: 8px;
+}
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.pane h2 {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+.pane textarea, .pane pre {
+  flex: 1;
+  margin: 0;
+  border: 0;
+  resize: none;
+  padding: 10px;
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: transparent;
+  color: var(--ink);
+  min-height: 0;
+  overflow: auto;
+}
+.pane-graph #graph { flex: 1; min-height: 0; position: relative; }
+.pane-graph .graph-wrap { height: 100%; }
+.pane-graph .graph-wrap svg { height: 100%; }
+#json.error { color: #a12626; }
+
 button, .btn-link {
   font: inherit;
   font-size: 12px;

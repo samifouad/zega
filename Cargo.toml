@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["zega-core","zega-graph","zega-kv","zega-parser","zega-wal","zega-bench","zega-server"]
+members = ["zega-core","zega-graph","zega-kv","zega-lang","zega-parser","zega-wal","zega-bench","zega-server"]
 exclude = ["zega-bridge","zega-wasm"]
 
 [workspace.package]
@@ -27,6 +27,7 @@ wasm-bindgen = "0.2"
 
 zega-graph = { path = "zega-graph" }
 zega-kv = { path = "zega-kv" }
+zega-lang = { path = "zega-lang" }
 zega-parser = { path = "zega-parser" }
 zega-wal = { path = "zega-wal" }
 zega-core = { path = "zega-core" }

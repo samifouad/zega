@@ -10,6 +10,10 @@ export class ZegaWasm {
      */
     export_base64(): string;
     /**
+     * Every stored node and relationship, for the graph canvas.
+     */
+    graph(): string;
+    /**
      * Restore a database previously produced by `export_base64`, replacing
      * current state.
      */
@@ -19,6 +23,11 @@ export class ZegaWasm {
     kv_set(key: string, value_json: string, ttl_secs?: bigint | null): void;
     constructor();
     query(zql: string, params_json: string): string;
+    /**
+     * Run a v2 schema-language query. `schema` is the text of `schema.zql`.
+     * `source` is one read or one `mutation`.
+     */
+    run(schema: string, source: string): string;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -27,12 +36,14 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_zegawasm_free: (a: number, b: number) => void;
     readonly zegawasm_export_base64: (a: number) => [number, number, number, number];
+    readonly zegawasm_graph: (a: number) => [number, number, number, number];
     readonly zegawasm_import_base64: (a: number, b: number, c: number) => [number, number];
     readonly zegawasm_kv_del: (a: number, b: number, c: number) => [number, number, number];
     readonly zegawasm_kv_get: (a: number, b: number, c: number) => [number, number, number, number];
     readonly zegawasm_kv_set: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint) => [number, number];
     readonly zegawasm_new: () => [number, number, number];
     readonly zegawasm_query: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly zegawasm_run: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

@@ -15,6 +15,19 @@ impl ZegaWasm {
         Ok(ZegaWasm { inner })
     }
 
+    /// Run a v2 schema-language query. `schema` is the text of `schema.zql`.
+    /// `source` is one read or one `mutation`.
+    pub fn run(&self, schema: String, source: String) -> Result<String, JsValue> {
+        let value = self.inner.run_lang(&schema, &source).map_err(to_js_error)?;
+        serde_json::to_string(&value).map_err(to_js_error)
+    }
+
+    /// Every stored node and relationship, for the graph canvas.
+    pub fn graph(&self) -> Result<String, JsValue> {
+        let value = self.inner.graph_json().map_err(to_js_error)?;
+        serde_json::to_string(&value).map_err(to_js_error)
+    }
+
     pub fn query(&self, zql: String, params_json: String) -> Result<String, JsValue> {
         let params = parse_params(&params_json)?;
         let rows = self.inner.query(&zql, params).map_err(to_js_error)?;

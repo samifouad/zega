@@ -35,6 +35,28 @@ export class ZegaWasm {
         }
     }
     /**
+     * Every stored node and relationship, for the graph canvas.
+     * @returns {string}
+     */
+    graph() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.zegawasm_graph(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Restore a database previously produced by `export_base64`, replacing
      * current state.
      * @param {string} data
@@ -122,6 +144,35 @@ export class ZegaWasm {
             const ptr1 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
             const len1 = WASM_VECTOR_LEN;
             const ret = wasm.zegawasm_query(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * Run a v2 schema-language query. `schema` is the text of `schema.zql`.
+     * `source` is one read or one `mutation`.
+     * @param {string} schema
+     * @param {string} source
+     * @returns {string}
+     */
+    run(schema, source) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(schema, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.zegawasm_run(this.__wbg_ptr, ptr0, len0, ptr1, len1);
             var ptr3 = ret[0];
             var len3 = ret[1];
             if (ret[3]) {

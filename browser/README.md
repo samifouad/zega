@@ -1,10 +1,12 @@
 # zega browser
 
-A Neo4j-Browser-style workbench for zega that runs **entirely in the
-browser** — the database engine itself is compiled to WebAssembly
-(`zega-wasm`), so there is no server to start, nothing to install, and the
-whole graph lives in the page. Your data persists across reloads via
-`localStorage`.
+A four-pane workbench for the v2 schema language. The engine is compiled to
+WebAssembly (`zega-wasm`), so there is no server to start. The graph lives
+in the page and persists across reloads via `localStorage`.
+
+Schema is the top-left pane. A read or a `mutation` is the top-right pane.
+The bottom-left pane is the force-directed graph of everything stored. The
+bottom-right pane is the JSON that came back.
 
 ## Run it
 
@@ -17,25 +19,9 @@ python3 -m http.server 8080
 # open http://localhost:8080
 ```
 
-## Features
-
-- **Editor + result frames** — run ZQL with the Run button or Ctrl/Cmd+Enter;
-  every query becomes a frame (newest on top) that can be re-run, collapsed,
-  downloaded as JSON, or dismissed.
-- **Graph / Table / Text views** per frame, with a results overview
-  (per-label node counts, per-type relationship counts) like Neo4j's.
-- **Graph view** — force-directed layout, drag nodes, pan/zoom the canvas,
-  hover a node for its properties. Nodes are colored by label; relationship
-  type labels sit on the edges.
-- **Sidebar** — live database info: node counts, node labels and
-  relationship types (click to scaffold a `MATCH`), plus query history.
-- **Sample graph** — one click loads a small movie graph
-  (Person/Movie, ACTED_IN/DIRECTED) and opens a graph view of it.
-- **Persistence** — every write query autosaves the database
-  (`export_base64`) to `localStorage`; reload and your data is still there.
-  `export`/`import` in the top bar move snapshots as files; `clear` wipes.
-- **KV commands** work too — `SET KEY foo = "bar"`, `GET KEY foo`, lists,
-  TTLs; it's the same engine.
+Run executes the query pane. Ctrl/Cmd+Enter does the same. Seed library
+writes the Le Guin example. Clear drops the saved database and reloads.
+Writes are saved to `localStorage`.
 
 The graph view's physics is [d3-force](https://github.com/d3/d3-force)
 v3.0.0 (ISC license, © Observable), vendored as ESM in `vendor/` so the page

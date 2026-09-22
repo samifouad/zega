@@ -17,6 +17,7 @@ smallvec = { workspace = true }
 
 zega-graph = { workspace = true }
 zega-kv = { workspace = true }
+zega-lang = { workspace = true }
 zega-parser = { workspace = true }
 zega-wal = { workspace = true }
 

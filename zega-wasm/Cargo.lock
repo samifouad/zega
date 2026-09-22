@@ -687,6 +687,7 @@ dependencies = [
  "tokio",
  "zega-graph",
  "zega-kv",
+ "zega-lang",
  "zega-parser",
  "zega-wal",
 ]
@@ -708,6 +709,14 @@ dependencies = [
  "serde",
  "tokio",
  "zega-parser",
+]
+
+[[package]]
+name = "zega-lang"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
