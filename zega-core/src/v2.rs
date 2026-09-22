@@ -21,7 +21,10 @@ impl Zega {
             .map_err(|error| explain(error, "schema", schema_src))?;
         let query =
             zega_lang::parse_query(source).map_err(|error| explain(error, "query", source))?;
-        zega_lang::check(&schema, &query.root, query.mutation)
+        let Some(root) = query.root else {
+            return Ok(Json::Null);
+        };
+        zega_lang::check(&schema, &root, query.mutation)
             .map_err(|error| explain(error, "query", source))?;
         let mut graph = self
             .graph
@@ -29,10 +32,10 @@ impl Zega {
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let mut budget = self.traversal_work_budget;
         if query.mutation {
-            mutate(&mut graph, &self.wal, &schema, &query.root)
+            mutate(&mut graph, &self.wal, &schema, &root)
                 .map_err(|error| explain(error, "query", source))
         } else {
-            read(&graph, &schema, &query.root, &mut budget)
+            read(&graph, &schema, &root, &mut budget)
                 .map_err(|error| explain(error, "query", source))
         }
     }
@@ -757,6 +760,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(updated["died"], 2018);
+    }
+
+    #[test]
+    fn empty_query_block_returns_null() {
+        let zega = Zega::in_memory().build().unwrap();
+        assert_eq!(zega.run_lang(SCHEMA, "query { }").unwrap(), Json::Null);
+        assert_eq!(
+            zega.run_lang(SCHEMA, "query {\n  Author { name }\n}")
+                .unwrap(),
+            json!([])
+        );
     }
 
     #[test]

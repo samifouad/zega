@@ -105,7 +105,8 @@ pub enum Direction {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Query {
     pub mutation: bool,
-    pub root: Selection,
+    /// None when the block is empty: `query { }`.
+    pub root: Option<Selection>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -276,14 +277,37 @@ pub fn parse_query(source: &str) -> Result<Query> {
     let mut p = Parser::new(source);
     p.skip();
     let mutation = p.eat_word("mutation");
+    if mutation {
+        if p.eat_word("query") {
+            return Err(p
+                .err("a statement is a query or a mutation")
+                .with_help("drop one of the words"));
+        }
+    } else {
+        let _ = p.eat_word("query");
+    }
     p.expect("{")?;
+    p.skip();
+    if p.eat("}") {
+        p.skip();
+        if !p.eof() {
+            return Err(p.err("unexpected input"));
+        }
+        return Ok(Query {
+            mutation,
+            root: None,
+        });
+    }
     let root = p.parse_selection()?;
     p.expect("}")?;
     p.skip();
     if !p.eof() {
         return Err(p.err("unexpected input"));
     }
-    Ok(Query { mutation, root })
+    Ok(Query {
+        mutation,
+        root: Some(root),
+    })
 }
 
 struct Parser<'a> {
@@ -871,13 +895,13 @@ pub fn diagnose(schema_src: &str, query_src: &str) -> Report {
         match parse_query(query_src) {
             Err(error) => out.push(from_error(Pane::Query, error)),
             Ok(query) => {
-                if let Some(schema) = &schema {
+                if let (Some(schema), Some(root)) = (&schema, query.root.as_ref()) {
                     Check {
                         schema,
                         mutation: query.mutation,
                         out: &mut out,
                     }
-                    .selection(&query.root, true);
+                    .selection(root, true);
                 }
             }
         }
@@ -1246,7 +1270,19 @@ mod tests {
         )
         .unwrap();
         assert!(!query.mutation);
-        assert_eq!(query.root.type_name, "Author");
+        assert_eq!(query.root.unwrap().type_name, "Author");
+    }
+
+    #[test]
+    fn query_keyword_wraps_a_read_and_an_empty_block_is_valid() {
+        let wrapped = parse_query("query {\n  Author { name }\n}").unwrap();
+        assert!(!wrapped.mutation);
+        assert_eq!(wrapped.root.unwrap().type_name, "Author");
+        let empty = parse_query("query { }").unwrap();
+        assert!(empty.root.is_none());
+        assert!(parse_query("mutation { }").unwrap().root.is_none());
+        let report = diagnose("type Author {\n  name: String\n}\n", "query { }");
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     }
 
     #[test]

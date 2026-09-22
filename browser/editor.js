@@ -89,7 +89,7 @@ function registerLanguages(monaco) {
       root: [
         [/\/\/.*$/, 'comment'],
         [/"([^"\\]|\\.)*"/, 'string'],
-        [/\b(mutation|link|set|true|false|null)\b/, 'keyword'],
+        [/\b(query|mutation|link|set|true|false|null)\b/, 'keyword'],
         [/\b(CONTAINS|STARTS|WITH|ENDS)\b/, 'keyword'],
         [/->|<-|>=|<=|<>/, 'operator'],
         [/[<>]/, 'operator'],
