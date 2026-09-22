@@ -1,12 +1,13 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
 import { renderGraph } from './graph.js';
 
-const LS_DB = 'zega.v2.nhl';
+const LS_DB = 'zega.v2.countries';
 const LS_SCHEMA = 'zega.v2.schema';
 const LS_QUERY = 'zega.v2.query';
 
 const mug = (id) => `https://assets.nhle.com/mugs/nhl/latest/${id}.png`;
 const logo = (abbr) => `https://assets.nhle.com/logos/nhl/svg/${abbr}_light.svg`;
+const flag = (code) => `https://flagcdn.com/w160/${code}.png`;
 
 const SCHEMA = `type Team {
   name: String
@@ -22,12 +23,23 @@ type Player {
   face: String
 
   roster <- Team
+  born <- Country
+}
+
+type Country {
+  name: String
+  flag: String
+
+  born -> Player[]
 }`;
 
 const QUERY = `{
-  Team(name: "Oilers") {
+  Country(name: "Canada") {
     name
-    roster -> Player { name position }
+    born -> Player {
+      name
+      roster <- Team { name }
+    }
   }
 }`;
 
@@ -41,6 +53,21 @@ function teamSeed(name, city, abbr, players) {
     ${roster}
   }
 }`;
+}
+
+function countrySeed(name, code, players) {
+  const links = players.map((player) =>
+    `born -> link Player(name: "${player}") { name }`
+  ).join('\n    ');
+  return [
+    `mutation { Country(name: "${name}", flag: "${flag(code)}") { name } }`,
+    `mutation {
+  Country(name: "${name}") {
+    name
+    ${links}
+  }
+}`,
+  ];
 }
 
 const SEEDS = [
@@ -66,6 +93,12 @@ const SEEDS = [
     ['Nikita Kucherov', 'RW', 8476453],
     ['Brayden Point', 'C', 8478010],
   ]),
+  ...countrySeed('Canada', 'ca', [
+    'Connor McDavid', 'Mitch Marner', 'Nathan MacKinnon', 'Cale Makar', 'Sidney Crosby', 'Brayden Point',
+  ]),
+  ...countrySeed('United States', 'us', ['Auston Matthews']),
+  ...countrySeed('Germany', 'de', ['Leon Draisaitl']),
+  ...countrySeed('Russia', 'ru', ['Alex Ovechkin', 'Nikita Kucherov']),
 ];
 
 const $ = (sel) => document.querySelector(sel);

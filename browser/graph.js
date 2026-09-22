@@ -14,7 +14,7 @@ function nodeCaption(node) {
 }
 
 function nodeProps(node) {
-  const skip = new Set(['id', 'labels', 'type', 'from', 'to', 'x', 'y', 'vx', 'vy', 'index', 'fx', 'fy', 'face', 'logo']);
+  const skip = new Set(['id', 'labels', 'type', 'from', 'to', 'x', 'y', 'vx', 'vy', 'index', 'fx', 'fy', 'face', 'logo', 'flag']);
   return Object.fromEntries(Object.entries(node).filter(([key]) => !skip.has(key)));
 }
 
@@ -184,7 +184,7 @@ export function renderGraph(container, graph, active = new Set()) {
     const g = document.createElementNS(NS, 'g');
     g.style.cursor = 'pointer';
     const on = lit(node);
-    const picture = node.face || node.logo;
+    const picture = node.face || node.logo || node.flag;
     const plate = document.createElementNS(NS, 'circle');
     plate.setAttribute('r', R);
     plate.setAttribute('fill', picture ? '#fff' : labelColor((node.labels || [])[0]));
@@ -205,7 +205,7 @@ export function renderGraph(container, graph, active = new Set()) {
       image.setAttribute('width', R * 2);
       image.setAttribute('height', R * 2);
       image.setAttribute('clip-path', `url(#mug-${node.id})`);
-      image.setAttribute('preserveAspectRatio', node.logo ? 'xMidYMid meet' : 'xMidYMid slice');
+      image.setAttribute('preserveAspectRatio', node.face ? 'xMidYMid slice' : 'xMidYMid meet');
       g.appendChild(image);
     }
     const text = document.createElementNS(NS, 'text');
