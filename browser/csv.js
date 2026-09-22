@@ -43,7 +43,7 @@ export function openCsv({ run, setSchema, setQuery }) {
     <div class="csv-dialog" role="dialog" aria-label="CSV import">
       <header>
         <strong>CSV</strong>
-        <span class="csv-hint">Drop a column on a type to add a field. Drop it on the bar above the schema to make a new type. If that type already exists, the next drop connects them.</span>
+        <span class="csv-hint">Drop a column on a type to add it there. Drop it anywhere else in the schema to create a type.</span>
         <button id="csv-close" type="button">close</button>
       </header>
       <div class="csv-body">
@@ -54,8 +54,11 @@ export function openCsv({ run, setSchema, setQuery }) {
         </aside>
         <div class="csv-main">
           <section class="csv-schema-pane">
-            <div id="csv-new-type">Drop a column here to create a type</div>
-            <textarea id="csv-schema" spellcheck="false" placeholder="type Pokemon {\n  name: String\n}"></textarea>
+            <div class="csv-schema-frame">
+              <textarea id="csv-schema" spellcheck="false" placeholder="type Pokemon {\n  name: String\n}"></textarea>
+              <div id="csv-drop-hl" hidden></div>
+              <div id="csv-drop-hint" hidden></div>
+            </div>
           </section>
           <section class="csv-table-pane">
             <div id="csv-table-wrap"><p class="csv-empty">Choose a sample, or open a CSV.</p></div>
@@ -113,39 +116,51 @@ export function openCsv({ run, setSchema, setQuery }) {
   root.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeCsv(); });
   schemaEl.addEventListener('input', refresh);
 
-  const newType = root.querySelector('#csv-new-type');
-  newType.addEventListener('dragover', (event) => {
-    event.preventDefault();
-    newType.classList.add('hot');
-    const header = draggingHeader();
-    status.textContent = header ? `New type ${typeNameFrom(header)}` : '';
-  });
-  newType.addEventListener('dragleave', () => newType.classList.remove('hot'));
-  newType.addEventListener('drop', (event) => {
-    event.preventDefault();
-    newType.classList.remove('hot');
-    const header = event.dataTransfer.getData('text/plain');
-    if (!header) return;
-    addType(schemaEl, header);
-    refresh();
-  });
+  const highlight = root.querySelector('#csv-drop-hl');
+  const hint = root.querySelector('#csv-drop-hint');
+
+  const showDrop = (header, block) => {
+    if (!header) {
+      highlight.hidden = true;
+      hint.hidden = true;
+      return;
+    }
+    if (block) {
+      const style = getComputedStyle(schemaEl);
+      const lineHeight = parseFloat(style.lineHeight) || 20;
+      const padTop = parseFloat(style.paddingTop) || 0;
+      const border = parseFloat(style.borderTopWidth) || 0;
+      highlight.style.top = `${border + padTop + block.start * lineHeight - schemaEl.scrollTop}px`;
+      highlight.style.height = `${(block.end - block.start + 1) * lineHeight}px`;
+      highlight.hidden = false;
+      const edge = existingTypeFor(header, schemaEl.value);
+      hint.textContent = edge && edge !== block.name
+        ? `Add ${header} → ${edge} to node ${block.name}`
+        : `Add ${header} to node ${block.name}`;
+    } else {
+      highlight.hidden = true;
+      hint.textContent = `Create node ${typeNameFrom(header)}`;
+    }
+    hint.hidden = false;
+  };
+  const hideDrop = () => {
+    highlight.hidden = true;
+    hint.hidden = true;
+  };
 
   schemaEl.addEventListener('dragover', (event) => {
     event.preventDefault();
-    const header = draggingHeader();
-    const block = typeAtPoint(schemaEl, event);
-    schemaEl.classList.toggle('hot', Boolean(block));
-    if (header && block) {
-      const edge = existingTypeFor(header, schemaEl.value);
-      status.textContent = edge && edge !== block.name
-        ? `Connect ${ident(header)} → ${edge} on ${block.name}`
-        : `Add ${ident(header)} to ${block.name}`;
-    }
+    showDrop(draggingHeader(), typeAtPoint(schemaEl, event));
   });
-  schemaEl.addEventListener('dragleave', () => schemaEl.classList.remove('hot'));
+  schemaEl.addEventListener('dragleave', (event) => {
+    const rect = schemaEl.getBoundingClientRect();
+    const inside = event.clientX >= rect.left && event.clientX <= rect.right
+      && event.clientY >= rect.top && event.clientY <= rect.bottom;
+    if (!inside) hideDrop();
+  });
   schemaEl.addEventListener('drop', (event) => {
     event.preventDefault();
-    schemaEl.classList.remove('hot');
+    hideDrop();
     const header = event.dataTransfer.getData('text/plain') || dragHeader;
     if (!header) return;
     const block = typeAtPoint(schemaEl, event);
@@ -153,6 +168,7 @@ export function openCsv({ run, setSchema, setQuery }) {
     else addType(schemaEl, header);
     refresh();
   });
+  root.addEventListener('dragend', hideDrop);
 
   importBtn.onclick = () => {
     const built = buildImport(schemaEl.value, headers, rows);
