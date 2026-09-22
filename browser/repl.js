@@ -115,11 +115,30 @@ queryEl.addEventListener('keydown', (e) => {
 schemaEl.addEventListener('input', persist);
 queryEl.addEventListener('input', persist);
 
+function storedGraph() {
+  return JSON.parse(db.graph());
+}
+
 function drawGraph() {
-  let graph = { nodes: [], rels: [] };
-  try { graph = JSON.parse(db.graph()); } catch { /* empty until the engine answers */ }
+  let graph;
+  try {
+    graph = storedGraph();
+  } catch (e) {
+    graphEl.innerHTML = `<div class="empty">${e}</div>`;
+    return;
+  }
   renderGraph(graphEl, graph, namesIn(lastValue));
 }
 
-jsonEl.textContent = '';
-drawGraph();
+let opening = { nodes: [] };
+try { opening = storedGraph(); } catch (e) { jsonEl.textContent = String(e); }
+
+if (!opening.nodes.length) {
+  schemaEl.value = SCHEMA;
+  run(SEED);
+  queryEl.value = QUERY;
+  run(QUERY);
+} else {
+  jsonEl.textContent = '';
+  drawGraph();
+}
