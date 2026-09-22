@@ -251,14 +251,19 @@ function run(source) {
   const started = performance.now();
   try {
     const raw = db.run(schemaEl.value, source);
-    const elapsed = performance.now() - started;
-    queryTime.textContent = elapsed < 10 ? `${elapsed.toFixed(2)} ms` : `${Math.round(elapsed)} ms`;
+    const elapsedUs = (performance.now() - started) * 1000;
+    queryTime.textContent = elapsedUs < 1000
+      ? `${Math.round(elapsedUs)} µs`
+      : `${(elapsedUs / 1000).toFixed(2)} ms`;
     const value = JSON.parse(raw);
     try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); }
     show(value, null);
     return value;
   } catch (e) {
-    queryTime.textContent = `${(performance.now() - started).toFixed(2)} ms`;
+    const failedUs = (performance.now() - started) * 1000;
+    queryTime.textContent = failedUs < 1000
+      ? `${Math.round(failedUs)} µs`
+      : `${(failedUs / 1000).toFixed(2)} ms`;
     show(null, e);
     return null;
   }
