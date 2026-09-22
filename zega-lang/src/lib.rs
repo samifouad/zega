@@ -116,7 +116,8 @@ pub struct Selection {
     /// Extra types when the query wrote `(Book | Movie)`.
     pub also: Vec<String>,
     pub also_spans: Vec<Span>,
-    pub predicates: Vec<Pred>,
+    /// The condition in parentheses. `&&` is and, `||` is or, `!=` is not equal.
+    pub condition: Option<BoolExpr>,
     pub sets: Vec<(String, Json, Span)>,
     pub items: Vec<Item>,
 }
@@ -134,7 +135,7 @@ pub enum Item {
         range: Option<(usize, usize)>,
         link: bool,
         direction: Direction,
-        target: Selection,
+        target: Box<Selection>,
     },
 }
 
@@ -146,6 +147,49 @@ pub enum Pred {
     Contains(String, String, Span),
     StartsWith(String, String, Span),
     EndsWith(String, String, Span),
+}
+
+/// A condition, read like the test in an `if`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BoolExpr {
+    Test(Pred),
+    And(Box<BoolExpr>, Box<BoolExpr>),
+    Or(Box<BoolExpr>, Box<BoolExpr>),
+}
+
+impl BoolExpr {
+    pub fn tests(&self) -> Vec<&Pred> {
+        let mut out = Vec::new();
+        self.collect_tests(&mut out);
+        out
+    }
+
+    fn collect_tests<'a>(&'a self, out: &mut Vec<&'a Pred>) {
+        match self {
+            BoolExpr::Test(pred) => out.push(pred),
+            BoolExpr::And(left, right) | BoolExpr::Or(left, right) => {
+                left.collect_tests(out);
+                right.collect_tests(out);
+            }
+        }
+    }
+
+    /// True when the condition is only `&&` of equalities, so a root read
+    /// still returns one object.
+    pub fn is_equality_and(&self) -> bool {
+        match self {
+            BoolExpr::Test(Pred::Eq(_, _, _)) => true,
+            BoolExpr::And(left, right) => left.is_equality_and() && right.is_equality_and(),
+            BoolExpr::Or(_, _) | BoolExpr::Test(_) => false,
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        match self {
+            BoolExpr::Test(pred) => pred.span(),
+            BoolExpr::And(left, _) | BoolExpr::Or(left, _) => left.span(),
+        }
+    }
 }
 
 impl Pred {
@@ -593,20 +637,18 @@ impl<'a> Parser<'a> {
         } else {
             self.ident()?
         };
-        let mut predicates = Vec::new();
-        if self.eat("(") {
+        let condition = if self.eat("(") {
             self.skip();
-            if !self.eat(")") {
-                loop {
-                    predicates.push(self.parse_pred()?);
-                    self.skip();
-                    if self.eat(")") {
-                        break;
-                    }
-                    self.expect(",")?;
-                }
+            if self.eat(")") {
+                None
+            } else {
+                let expr = self.parse_or()?;
+                self.expect(")")?;
+                Some(expr)
             }
-        }
+        } else {
+            None
+        };
         let mut sets = Vec::new();
         if self.eat_word("set") {
             loop {
@@ -631,7 +673,7 @@ impl<'a> Parser<'a> {
             type_span,
             also,
             also_spans,
-            predicates,
+            condition,
             sets,
             items,
         })
@@ -689,7 +731,7 @@ impl<'a> Parser<'a> {
                 range,
                 link,
                 direction,
-                target,
+                target: Box::new(target),
             });
         }
         if range.is_some() {
@@ -705,14 +747,67 @@ impl<'a> Parser<'a> {
         self.src[self.i..].starts_with("->") || self.src[self.i..].starts_with("<-")
     }
 
+    fn parse_or(&mut self) -> Result<BoolExpr> {
+        let mut left = self.parse_and()?;
+        loop {
+            if self.eat("||") {
+                let right = self.parse_and()?;
+                left = BoolExpr::Or(Box::new(left), Box::new(right));
+                continue;
+            }
+            self.skip();
+            if self.src[self.i..].starts_with('|') {
+                return Err(self
+                    .err("or is `||`")
+                    .with_help("one `|` joins types, as in `(Book | Movie)`"));
+            }
+            return Ok(left);
+        }
+    }
+
+    fn parse_and(&mut self) -> Result<BoolExpr> {
+        let mut left = self.parse_atom()?;
+        loop {
+            if self.eat("&&") {
+                let right = self.parse_atom()?;
+                left = BoolExpr::And(Box::new(left), Box::new(right));
+                continue;
+            }
+            self.skip();
+            if self.src[self.i..].starts_with('&') {
+                return Err(self.err("and is `&&`"));
+            }
+            if self.src[self.i..].starts_with(',') {
+                return Err(self
+                    .err("and is `&&`")
+                    .with_help("a comma separates writes in `set`"));
+            }
+            return Ok(left);
+        }
+    }
+
+    fn parse_atom(&mut self) -> Result<BoolExpr> {
+        if self.eat("(") {
+            let inner = self.parse_or()?;
+            self.expect(")")?;
+            return Ok(inner);
+        }
+        Ok(BoolExpr::Test(self.parse_pred()?))
+    }
+
     fn parse_pred(&mut self) -> Result<Pred> {
         let (field, span) = self.ident()?;
         self.skip();
         if self.eat(":") || self.eat("=") {
             return Ok(Pred::Eq(field, self.parse_value()?, span));
         }
-        if self.eat("<>") {
+        if self.eat("!=") || self.eat("<>") {
             return Ok(Pred::Ne(field, self.parse_value()?, span));
+        }
+        if self.src[self.i..].starts_with('!') {
+            return Err(self
+                .err("not-equal is `!=`")
+                .with_help("a condition uses `=`, `!=`, `&&`, and `||`"));
         }
         if self.eat(">=") {
             return Ok(Pred::Cmp(field, Cmp::Gte, self.parse_value()?, span));
@@ -740,7 +835,7 @@ impl<'a> Parser<'a> {
         Err(self
             .err(format!("expected a comparison after {field}"))
             .with_help(
-            "use `:`, `=`, `>`, `<`, `>=`, `<=`, `<>`, `CONTAINS`, `STARTS WITH`, or `ENDS WITH`",
+            "use `=`, `!=`, `>`, `<`, `>=`, `<=`, `<>`, `CONTAINS`, `STARTS WITH`, or `ENDS WITH`",
         ))
     }
 
@@ -969,9 +1064,11 @@ impl Check<'_> {
                 );
             }
         }
-        for pred in &sel.predicates {
-            if pred.field() != "id" {
-                self.ensure_prop(sel, pred.field(), pred.span());
+        if let Some(expr) = &sel.condition {
+            for pred in expr.tests() {
+                if pred.field() != "id" {
+                    self.ensure_prop(sel, pred.field(), pred.span());
+                }
             }
         }
         for (name, _, span) in &sel.sets {
@@ -1281,6 +1378,15 @@ mod tests {
         let empty = parse_query("query { }").unwrap();
         assert!(empty.root.is_none());
         assert!(parse_query("mutation { }").unwrap().root.is_none());
+        let comma = diagnose(
+            "type Author {\n  name: String\n}\n",
+            "{ Author(name: \"A\", name: \"B\") { name } }",
+        );
+        assert!(
+            comma.diagnostics[0].message.contains("and is `&&`"),
+            "{:?}",
+            comma.diagnostics
+        );
         let report = diagnose("type Author {\n  name: String\n}\n", "query { }");
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     }

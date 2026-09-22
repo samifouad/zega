@@ -108,10 +108,10 @@ const TOUR = [
 function teamSeed(name, city, abbr, players) {
   const roster = players.map(([player, position, id, salary, since]) => {
     const joined = since == null ? '' : ` &since: ${since}`;
-    return `playsFor <- Player(name: "${player}", position: "${position}", face: "${mug(id)}", salary: ${salary}) { name salary${joined} }`;
+    return `playsFor <- Player(name: "${player}" && position: "${position}" && face: "${mug(id)}" && salary: ${salary}) { name salary${joined} }`;
   }).join('\n    ');
   return `mutation {
-  Team(name: "${name}", city: "${city}", logo: "${logo(abbr)}") {
+  Team(name: "${name}" && city: "${city}" && logo: "${logo(abbr)}") {
     name
     ${roster}
   }

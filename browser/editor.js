@@ -91,7 +91,7 @@ function registerLanguages(monaco) {
         [/"([^"\\]|\\.)*"/, 'string'],
         [/\b(query|mutation|link|set|true|false|null)\b/, 'keyword'],
         [/\b(CONTAINS|STARTS|WITH|ENDS)\b/, 'keyword'],
-        [/->|<-|>=|<=|<>/, 'operator'],
+        [/->|<-|>=|<=|<>|!=|&&|\|\|/, 'operator'],
         [/[<>]/, 'operator'],
         [/&[A-Za-z_][\w]*/, 'variable'],
         [/\*\d+\.\.\d+/, 'number'],

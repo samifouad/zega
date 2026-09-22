@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::{json, Value as Json};
 use zega_graph::{Graph, Node, NodeId, RelId};
-use zega_lang::{Cmp, Direction, Error as LangError, Item, Pred, Schema, Selection};
+use zega_lang::{BoolExpr, Cmp, Direction, Error as LangError, Item, Pred, Schema, Selection};
 use zega_parser::Value;
 use zega_wal::Operation;
 
@@ -75,7 +75,7 @@ fn read(
     budget: &mut usize,
 ) -> Result<Json, LangError> {
     let mut ids = candidates(graph, root);
-    ids.retain(|id| node_matches(graph, *id, &root.predicates));
+    ids.retain(|id| node_matches(graph, *id, root.condition.as_ref()));
     ids.sort_unstable();
     if equality_lookup(root) {
         return match ids.len() {
@@ -234,7 +234,7 @@ fn apply_node(
 
 fn lookup_one(graph: &Graph, sel: &Selection) -> Result<NodeId, LangError> {
     let mut ids = candidates(graph, sel);
-    ids.retain(|id| node_matches(graph, *id, &sel.predicates));
+    ids.retain(|id| node_matches(graph, *id, sel.condition.as_ref()));
     match ids.len() {
         1 => Ok(ids[0]),
         0 => Err(
@@ -256,20 +256,8 @@ fn has_link(sel: &Selection) -> bool {
 
 fn insert_node(graph: &mut Graph, wal: &crate::Wal, sel: &Selection) -> Result<NodeId, LangError> {
     let mut props = HashMap::new();
-    for pred in &sel.predicates {
-        match pred {
-            Pred::Eq(field, value, _) if field != "id" => {
-                props.insert(field.clone(), json_to_value(value)?);
-            }
-            Pred::Eq(_, _, _) => {}
-            other => {
-                return Err(LangError::at(
-                    other.span(),
-                    format!("creating a {} only accepts field: value", sel.type_name),
-                )
-                .with_help("write `name: \"value\"`"))
-            }
-        }
+    if let Some(expr) = &sel.condition {
+        assign_props(expr, sel, &mut props)?;
     }
     let labels: Vec<String> = std::iter::once(sel.type_name.clone())
         .chain(sel.also.iter().cloned())
@@ -406,7 +394,7 @@ fn project(
                 };
                 let mut rows = Vec::new();
                 for (next, depth, rel_id) in reached {
-                    if !node_matches(graph, next, &target.predicates) {
+                    if !node_matches(graph, next, target.condition.as_ref()) {
                         continue;
                     }
                     rows.push(project(
@@ -552,8 +540,42 @@ fn node_has_any_label(graph: &Graph, id: NodeId, labels: &[String]) -> bool {
     })
 }
 
-fn node_matches(graph: &Graph, id: NodeId, preds: &[Pred]) -> bool {
-    preds.iter().all(|pred| pred_matches(graph, id, pred))
+fn node_matches(graph: &Graph, id: NodeId, condition: Option<&BoolExpr>) -> bool {
+    match condition {
+        None => true,
+        Some(expr) => eval_expr(graph, id, expr),
+    }
+}
+
+fn eval_expr(graph: &Graph, id: NodeId, expr: &BoolExpr) -> bool {
+    match expr {
+        BoolExpr::Test(pred) => pred_matches(graph, id, pred),
+        BoolExpr::And(left, right) => eval_expr(graph, id, left) && eval_expr(graph, id, right),
+        BoolExpr::Or(left, right) => eval_expr(graph, id, left) || eval_expr(graph, id, right),
+    }
+}
+
+fn assign_props(
+    expr: &BoolExpr,
+    sel: &Selection,
+    props: &mut HashMap<String, Value>,
+) -> Result<(), LangError> {
+    match expr {
+        BoolExpr::And(left, right) => {
+            assign_props(left, sel, props)?;
+            assign_props(right, sel, props)
+        }
+        BoolExpr::Test(Pred::Eq(field, value, _)) if field != "id" => {
+            props.insert(field.clone(), json_to_value(value)?);
+            Ok(())
+        }
+        BoolExpr::Test(Pred::Eq(_, _, _)) => Ok(()),
+        other => Err(LangError::at(
+            other.span(),
+            format!("creating a {} only accepts field: value", sel.type_name),
+        )
+        .with_help("write `name: \"value\"`, and join fields with `&&`")),
+    }
 }
 
 fn pred_matches(graph: &Graph, id: NodeId, pred: &Pred) -> bool {
@@ -602,11 +624,9 @@ fn cmp_value(left: &Json, right: &Json) -> Option<std::cmp::Ordering> {
 }
 
 fn equality_lookup(sel: &Selection) -> bool {
-    !sel.predicates.is_empty()
-        && sel
-            .predicates
-            .iter()
-            .all(|pred| matches!(pred, Pred::Eq(_, _, _)))
+    sel.condition
+        .as_ref()
+        .is_some_and(|expr| expr.is_equality_and())
 }
 
 fn prop_json(node: &Node, name: &str) -> Json {
@@ -702,11 +722,11 @@ mod tests {
             .run_lang(
                 SCHEMA,
                 r#"mutation {
-                    Author(name: "Le Guin", died: 2018) {
+                    Author(name: "Le Guin" && died: 2018) {
                       name
                       died
-                      wrote -> Book(title: "The Dispossessed", pages: 387) { title pages }
-                      wrote -> Book(title: "A Wizard of Earthsea", pages: 205) { title pages }
+                      wrote -> Book(title: "The Dispossessed" && pages: 387) { title pages }
+                      wrote -> Book(title: "A Wizard of Earthsea" && pages: 205) { title pages }
                     }
                 }"#,
             )
@@ -734,7 +754,7 @@ mod tests {
 
         zega.run_lang(
             SCHEMA,
-            r#"mutation { Book(title: "The Lathe of Heaven", pages: 175) { title } }"#,
+            r#"mutation { Book(title: "The Lathe of Heaven" && pages: 175) { title } }"#,
         )
         .unwrap();
         let linked = zega
@@ -771,6 +791,41 @@ mod tests {
                 .unwrap(),
             json!([])
         );
+    }
+
+    #[test]
+    fn a_condition_can_or_and_exclude() {
+        let zega = Zega::in_memory().build().unwrap();
+        zega.run_lang(SCHEMA, r#"mutation { Author(name: "Le Guin") { name } }"#)
+            .unwrap();
+        zega.run_lang(SCHEMA, r#"mutation { Author(name: "Butler") { name } }"#)
+            .unwrap();
+        let both = zega
+            .run_lang(
+                SCHEMA,
+                r#"{ Author(name = "Le Guin" || name = "Butler") { name } }"#,
+            )
+            .unwrap();
+        let names: Vec<_> = both
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["Le Guin", "Butler"]);
+
+        let one = zega
+            .run_lang(
+                SCHEMA,
+                r#"{ Author(name = "Le Guin" && name = "Le Guin") { name } }"#,
+            )
+            .unwrap();
+        assert_eq!(one["name"], "Le Guin");
+
+        let rest = zega
+            .run_lang(SCHEMA, r#"{ Author(name != "Le Guin") { name } }"#)
+            .unwrap();
+        assert_eq!(rest[0]["name"], "Butler");
     }
 
     #[test]
@@ -818,7 +873,7 @@ mod tests {
             SCHEMA,
             r#"mutation {
                 Author(name: "Le Guin") {
-                  wrote -> Book(title: "The Dispossessed", pages: 387) {
+                  wrote -> Book(title: "The Dispossessed" && pages: 387) {
                     title
                     &year: 1974
                   }
@@ -856,7 +911,7 @@ mod tests {
             r#"mutation {
                 User(name: "Ada") {
                   likes -> Book(title: "Kindred") { title }
-                  likes -> Movie(title: "Alien", runtime: 117) { title }
+                  likes -> Movie(title: "Alien" && runtime: 117) { title }
                 }
             }"#,
         )
