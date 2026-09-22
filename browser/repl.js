@@ -643,11 +643,10 @@ dragSplit(document.getElementById('split-rows'), (ev) => {
 let opening = { nodes: [] };
 try { opening = storedGraph(); } catch (e) { showThrown(e); }
 
-if (!saved) {
+const defaultSchema = schemaText().trim() === SCHEMA.trim();
+if (!saved || !opening.nodes.length || !defaultSchema) {
   reseed();
-} else if (opening.nodes.length) {
+} else {
   showTour(0);
   startAutoplay();
-} else {
-  drawGraph();
 }
