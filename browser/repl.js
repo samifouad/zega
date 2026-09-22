@@ -308,7 +308,7 @@ function showThrown(error) {
   showReport({ text: plainError(error) });
 }
 
-function run(source) {
+function run(source, options = {}) {
   localStorage.setItem(LS_SCHEMA, schemaText());
   localStorage.setItem(LS_QUERY, queryText());
   const report = review(source);
@@ -327,7 +327,7 @@ function run(source) {
       : `${(elapsedUs / 1000).toFixed(2)} ms`;
     const value = JSON.parse(raw);
     try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); }
-    showJson(value);
+    if (!options.quiet) showJson(value);
     return value;
   } catch (e) {
     const failedUs = (performance.now() - started) * 1000;

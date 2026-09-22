@@ -201,7 +201,7 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery, onImported })
     clearDatabase();
     setSchema(built.schema);
     for (const mutation of built.mutations) {
-      const value = run(mutation);
+      const value = run(mutation, { quiet: true });
       if (value == null) {
         status.textContent = 'Import stopped on a row that did not apply. The output pane has the reason.';
         return;
@@ -413,9 +413,9 @@ export function parseSchema(src) {
     const fields = [];
     for (const raw of match[2].split('\n')) {
       const line = raw.trim();
-      const edge = line.match(/^([A-Za-z_][\w]*)\??\s*(->|<-)\s*([A-Za-z_][\w]*)/);
+      const edge = line.match(/^([A-Za-z_][\w]*)\??\s*(->|<-)\s*([A-Za-z_][\w]*)(\[\])?/);
       const prop = line.match(/^([A-Za-z_][\w]*)\??\s*:\s*([A-Za-z_][\w]*)/);
-      if (edge) fields.push({ name: edge[1], edge: true, dir: edge[2], target: edge[3], zql: edge[3] });
+      if (edge) fields.push({ name: edge[1], edge: true, dir: edge[2], target: edge[3], many: Boolean(edge[4]), zql: edge[3] });
       else if (prop) fields.push({ name: prop[1], edge: false, zql: prop[2] });
     }
     types.push({ name: match[1], fields });
@@ -429,7 +429,15 @@ function columnsForType(type, headers) {
     || ident(header).toLowerCase() === type.name.toLowerCase());
 }
 
-function buildImport(schema, headers, rows) {
+export function pointListsAtMembers(schema) {
+  return schema.replace(
+    /^(\s*[A-Za-z_][\w]*\??\s*)<-(\s*[A-Za-z_][\w]*\[\])/gm,
+    '$1->$2',
+  );
+}
+
+export function buildImport(schema, headers, rows) {
+  schema = pointListsAtMembers(schema);
   const types = parseSchema(schema);
   if (!types.length) return { error: 'The schema has no types yet.' };
   const scalarScore = (type) => type.fields.filter((field) => !field.edge && field.name !== 'name'
@@ -501,7 +509,8 @@ function buildImport(schema, headers, rows) {
           for (const header of cols) {
             const targetVal = cell(row, header);
             if (!targetVal) continue;
-            links.push(`    ${field.name} ${field.dir} link ${targetName}(name: ${quote(targetVal)}) { name }`);
+            const dir = field.many ? '->' : field.dir;
+            links.push(`    ${field.name} ${dir} link ${targetName}(name: ${quote(targetVal)}) { name }`);
           }
         });
         if (links.length) {
@@ -511,9 +520,11 @@ function buildImport(schema, headers, rows) {
     }
   }
 
-  const focus = types.find((type) => type.fields.some((field) => field.edge)) || rowType;
+  const focus = types.find((type) => type.fields.some((field) => field.edge && field.many))
+    || types.find((type) => type.fields.some((field) => field.edge))
+    || rowType;
   const shown = focus.fields.filter((field) => field.edge).slice(0, 3)
-    .map((field) => `    ${field.name} ${field.dir} ${field.target} { name }`)
+    .map((field) => `    ${field.name} ${field.many ? '->' : field.dir} ${field.target} { name }`)
     .join('\n');
   const scalars = focus.fields.filter((field) => !field.edge).slice(0, 4).map((field) => field.name);
   const query = `{\n  ${focus.name} {\n    ${scalars.join('\n    ')}\n${shown}\n  }\n}`;
