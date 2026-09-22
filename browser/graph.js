@@ -188,9 +188,13 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     const my = 0.25 * a.y + 0.5 * cy + 0.25 * b.y;
     drawn.label.setAttribute('x', mx - uy * 10);
     drawn.label.setAttribute('y', my + ux * 10 - 3);
-    const on = lit(a) && lit(b);
-    drawn.path.setAttribute('opacity', on ? '1' : '0.2');
-    drawn.label.setAttribute('opacity', on ? '1' : '0.2');
+    dim(drawn.path, lit(a) && lit(b), 0.2);
+    dim(drawn.label, lit(a) && lit(b), 0.2);
+  }
+
+  function dim(el, on, opacity) {
+    el.setAttribute('opacity', on ? '1' : String(opacity));
+    el.style.filter = on ? '' : 'blur(1.4px)';
   }
 
   const circles = new Map();
@@ -231,7 +235,7 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     const caption = nodeCaption(node);
     text.textContent = caption.length > 22 ? caption.slice(0, 21) + '…' : caption;
     g.appendChild(text);
-    g.setAttribute('opacity', on ? '1' : '0.28');
+    dim(g, on, 0.28);
     g.addEventListener('pointerenter', (event) => {
       const props = nodeProps(node);
       const lines = Object.entries(props).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join('\n');
@@ -254,7 +258,7 @@ export function renderGraph(container, graph, activeArg = new Set()) {
   function paint() {
     for (const { g, node, plate } of circles.values()) {
       const on = lit(node);
-      g.setAttribute('opacity', on ? '1' : '0.28');
+      dim(g, on, 0.28);
       plate.setAttribute('stroke', on && active.size ? '#1a1a1a' : 'rgba(0,0,0,0.25)');
       plate.setAttribute('stroke-width', on && active.size ? '2.5' : '1');
     }
@@ -264,8 +268,8 @@ export function renderGraph(container, graph, activeArg = new Set()) {
       const drawn = edges.get(rel.id);
       if (!a || !b || !drawn) continue;
       const on = lit(a) && lit(b);
-      drawn.path.setAttribute('opacity', on ? '1' : '0.2');
-      drawn.label.setAttribute('opacity', on ? '1' : '0.2');
+      dim(drawn.path, on, 0.2);
+      dim(drawn.label, on, 0.2);
     }
   }
 
