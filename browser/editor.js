@@ -157,6 +157,9 @@ export async function createEditors({ schema, query }) {
     language: 'json',
     readOnly: true,
     domReadOnly: true,
+    folding: true,
+    foldingStrategy: 'indentation',
+    showFoldingControls: 'always',
   });
   return { monaco, schema: schemaEditor, query: queryEditor, output: outputEditor };
 }
