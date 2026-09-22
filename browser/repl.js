@@ -1,7 +1,7 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
 import { renderGraph } from './graph.js';
 
-const LS_DB = 'zega.v2.countries';
+const LS_DB = 'zega.v2.salary';
 const LS_SCHEMA = 'zega.v2.schema';
 const LS_QUERY = 'zega.v2.query';
 
@@ -21,6 +21,7 @@ type Player {
   name: String
   position: String
   face: String
+  salary: Int
 
   roster <- Team
   born <- Country
@@ -38,14 +39,15 @@ const QUERY = `{
     name
     born -> Player {
       name
+      salary
       roster <- Team { name }
     }
   }
 }`;
 
 function teamSeed(name, city, abbr, players) {
-  const roster = players.map(([player, position, id]) =>
-    `roster -> Player(name: "${player}", position: "${position}", face: "${mug(id)}") { name }`
+  const roster = players.map(([player, position, id, salary]) =>
+    `roster -> Player(name: "${player}", position: "${position}", face: "${mug(id)}", salary: ${salary}) { name salary }`
   ).join('\n    ');
   return `mutation {
   Team(name: "${name}", city: "${city}", logo: "${logo(abbr)}") {
@@ -72,26 +74,28 @@ function countrySeed(name, code, players) {
 
 const SEEDS = [
   teamSeed('Oilers', 'Edmonton', 'EDM', [
-    ['Connor McDavid', 'C', 8478402],
-    ['Leon Draisaitl', 'C', 8477934],
+    ['Connor McDavid', 'C', 8478402, 12500000],
+    ['Leon Draisaitl', 'C', 8477934, 14000000],
   ]),
   teamSeed('Maple Leafs', 'Toronto', 'TOR', [
-    ['Auston Matthews', 'C', 8479318],
-    ['Mitch Marner', 'RW', 8478483],
+    ['Auston Matthews', 'C', 8479318, 13250000],
+  ]),
+  teamSeed('Golden Knights', 'Vegas', 'VGK', [
+    ['Mitch Marner', 'RW', 8478483, 12000000],
   ]),
   teamSeed('Avalanche', 'Colorado', 'COL', [
-    ['Nathan MacKinnon', 'C', 8477492],
-    ['Cale Makar', 'D', 8480069],
+    ['Nathan MacKinnon', 'C', 8477492, 12604000],
+    ['Cale Makar', 'D', 8480069, 9000000],
   ]),
   teamSeed('Penguins', 'Pittsburgh', 'PIT', [
-    ['Sidney Crosby', 'C', 8471675],
+    ['Sidney Crosby', 'C', 8471675, 8700000],
   ]),
   teamSeed('Capitals', 'Washington', 'WSH', [
-    ['Alex Ovechkin', 'LW', 8471214],
+    ['Alex Ovechkin', 'LW', 8471214, 4250000],
   ]),
   teamSeed('Lightning', 'Tampa Bay', 'TBL', [
-    ['Nikita Kucherov', 'RW', 8476453],
-    ['Brayden Point', 'C', 8478010],
+    ['Nikita Kucherov', 'RW', 8476453, 9500000],
+    ['Brayden Point', 'C', 8478010, 9500000],
   ]),
   ...countrySeed('Canada', 'ca', [
     'Connor McDavid', 'Mitch Marner', 'Nathan MacKinnon', 'Cale Makar', 'Sidney Crosby', 'Brayden Point',
