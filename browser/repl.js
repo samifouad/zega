@@ -145,7 +145,8 @@ function namesIn(value, into = new Set()) {
 function show(value, error) {
   jsonEl.classList.toggle('error', Boolean(error));
   jsonEl.textContent = error ? String(error) : JSON.stringify(value, null, 2);
-  lastValue = error ? null : value;
+  if (error) return;
+  lastValue = value;
   drawGraph();
 }
 

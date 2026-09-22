@@ -83,12 +83,26 @@ function overviewChips(graph) {
 // `active` is the set of name/title strings from the last JSON result.
 // An empty set draws the whole graph. A non-empty set keeps those nodes
 // bright and fades the rest, so the picture follows the query.
-export function renderGraph(container, graph, active = new Set()) {
+function graphSignature(graph) {
+  const nodes = graph.nodes.map((node) => node.id).sort((a, b) => a - b).join(',');
+  const rels = graph.rels.map((rel) => `${rel.id}:${rel.from}:${rel.to}:${rel.type}`).sort().join(',');
+  return `${nodes}|${rels}`;
+}
+
+export function renderGraph(container, graph, activeArg = new Set()) {
+  const signature = graphSignature(graph);
+  if (container._graph && container._graph.signature === signature) {
+    container._graph.setActive(activeArg);
+    return;
+  }
+  const previous = container._graph?.capture();
   stopSim(container);
+  container._graph = null;
   if (!graph.nodes.length) {
     container.innerHTML = '<div class="empty">no nodes yet</div>';
     return;
   }
+  let active = activeArg;
   const R = NODE_R;
   const wrap = document.createElement('div');
   wrap.className = 'graph-wrap';
@@ -234,7 +248,25 @@ export function renderGraph(container, graph, active = new Set()) {
     });
     g.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
     vp.appendChild(g);
-    circles.set(node.id, { g, node });
+    circles.set(node.id, { g, node, plate });
+  }
+
+  function paint() {
+    for (const { g, node, plate } of circles.values()) {
+      const on = lit(node);
+      g.setAttribute('opacity', on ? '1' : '0.28');
+      plate.setAttribute('stroke', on && active.size ? '#1a1a1a' : 'rgba(0,0,0,0.25)');
+      plate.setAttribute('stroke-width', on && active.size ? '2.5' : '1');
+    }
+    for (const rel of graph.rels) {
+      const a = graph.nodes.find((node) => node.id === rel.from);
+      const b = graph.nodes.find((node) => node.id === rel.to);
+      const drawn = edges.get(rel.id);
+      if (!a || !b || !drawn) continue;
+      const on = lit(a) && lit(b);
+      drawn.path.setAttribute('opacity', on ? '1' : '0.2');
+      drawn.label.setAttribute('opacity', on ? '1' : '0.2');
+    }
   }
 
   function onTick() {
@@ -244,6 +276,24 @@ export function renderGraph(container, graph, active = new Set()) {
       if (entry && Number.isFinite(node.x)) entry.g.setAttribute('transform', `translate(${node.x},${node.y})`);
     }
     for (const rel of graph.rels) drawEdge(rel);
+  }
+
+  if (previous) {
+    for (const node of graph.nodes) {
+      const saved = previous.positions.get(node.id);
+      if (!saved || !Number.isFinite(saved.x)) continue;
+      node.x = saved.x;
+      node.y = saved.y;
+      node.fx = saved.fx;
+      node.fy = saved.fy;
+    }
+    if (previous.view) {
+      state.scale = previous.view.scale;
+      state.tx = previous.view.tx;
+      state.ty = previous.view.ty;
+      state.fitted = true;
+      apply();
+    }
   }
 
   const links = graph.rels.map((rel) => ({ source: rel.from, target: rel.to }));
@@ -349,4 +399,20 @@ export function renderGraph(container, graph, active = new Set()) {
     const y = ((event.clientY - rect.top) / rect.height) * 480;
     return { x: (x - state.tx) / state.scale, y: (y - state.ty) / state.scale };
   }
+
+  container._graph = {
+    signature,
+    setActive(next) {
+      active = next;
+      paint();
+    },
+    capture() {
+      return {
+        positions: new Map(graph.nodes.map((node) => [node.id, {
+          x: node.x, y: node.y, fx: node.fx, fy: node.fy,
+        }])),
+        view: { scale: state.scale, tx: state.tx, ty: state.ty },
+      };
+    },
+  };
 }
