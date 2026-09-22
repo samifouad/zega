@@ -85,8 +85,9 @@ function overviewChips(graph) {
 }
 
 // `active` is the set of name/title strings from the last JSON result.
+// null means the search returned nothing, so every node and edge is inactive.
 // An empty set draws the whole graph. A non-empty set keeps those nodes
-// bright and fades the rest, so the picture follows the query.
+// bright and fades the rest.
 function graphSignature(graph) {
   const nodes = graph.nodes.map((node) => node.id).sort((a, b) => a - b).join(',');
   const rels = graph.rels.map((rel) => `${rel.id}:${rel.from}:${rel.to}:${rel.type}`).sort().join(',');
@@ -126,7 +127,8 @@ export function renderGraph(container, graph, activeArg = new Set()) {
   const NS = 'http://www.w3.org/2000/svg';
   const state = { scale: 1, tx: 0, ty: 0, fitted: false };
   const apply = () => vp.setAttribute('transform', `translate(${state.tx},${state.ty}) scale(${state.scale})`);
-  const lit = (node) => active.size === 0 || active.has(nodeCaption(node));
+  const lit = (node) => active != null && (active.size === 0 || active.has(nodeCaption(node)));
+  const marked = () => active != null && active.size > 0;
 
   function fit() {
     const xs = graph.nodes.map((node) => node.x);
@@ -186,8 +188,10 @@ export function renderGraph(container, graph, activeArg = new Set()) {
   }
 
   function drawEdge(rel) {
-    const a = drift(graph.nodes.find((node) => node.id === rel.from) || {});
-    const b = drift(graph.nodes.find((node) => node.id === rel.to) || {});
+    const from = graph.nodes.find((node) => node.id === rel.from);
+    const to = graph.nodes.find((node) => node.id === rel.to);
+    const a = from && drift(from);
+    const b = to && drift(to);
     if (!a || !b) return;
     const dx = b.x - a.x, dy = b.y - a.y;
     const d = Math.hypot(dx, dy) || 1;
@@ -203,8 +207,8 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     const my = 0.25 * a.y + 0.5 * cy + 0.25 * b.y;
     drawn.label.setAttribute('x', mx - uy * 10);
     drawn.label.setAttribute('y', my + ux * 10 - 3);
-    dim(drawn.path, lit(a) && lit(b), 0.2);
-    dim(drawn.label, lit(a) && lit(b), 0.2);
+    dim(drawn.path, lit(from) && lit(to), 0.2);
+    dim(drawn.label, lit(from) && lit(to), 0.2);
   }
 
   function dim(el, on, opacity) {
@@ -221,8 +225,8 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     const plate = document.createElementNS(NS, 'circle');
     plate.setAttribute('r', R);
     plate.setAttribute('fill', picture ? '#fff' : labelColor((node.labels || [])[0]));
-    plate.setAttribute('stroke', on && active.size ? '#1a1a1a' : 'rgba(0,0,0,0.25)');
-    plate.setAttribute('stroke-width', on && active.size ? '2.5' : '1');
+    plate.setAttribute('stroke', on && marked() ? '#1a1a1a' : 'rgba(0,0,0,0.25)');
+    plate.setAttribute('stroke-width', on && marked() ? '2.5' : '1');
     g.appendChild(plate);
     if (picture) {
       const clip = document.createElementNS(NS, 'clipPath');
@@ -274,8 +278,8 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     for (const { g, node, plate } of circles.values()) {
       const on = lit(node);
       dim(g, on, 0.28);
-      plate.setAttribute('stroke', on && active.size ? '#1a1a1a' : 'rgba(0,0,0,0.25)');
-      plate.setAttribute('stroke-width', on && active.size ? '2.5' : '1');
+      plate.setAttribute('stroke', on && marked() ? '#1a1a1a' : 'rgba(0,0,0,0.25)');
+      plate.setAttribute('stroke-width', on && marked() ? '2.5' : '1');
     }
     for (const rel of graph.rels) {
       const a = graph.nodes.find((node) => node.id === rel.from);

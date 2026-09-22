@@ -440,6 +440,13 @@ function storedGraph() {
   return JSON.parse(db.graph());
 }
 
+function highlights(value) {
+  if (value == null) return null;
+  if (Array.isArray(value)) return value.length ? namesIn(value) : null;
+  if (typeof value === 'object') return Object.keys(value).length ? namesIn(value) : null;
+  return null;
+}
+
 function drawGraph() {
   let graph;
   try {
@@ -448,7 +455,7 @@ function drawGraph() {
     graphEl.innerHTML = `<div class="empty">${e}</div>`;
     return;
   }
-  renderGraph(graphEl, graph, namesIn(lastValue));
+  renderGraph(graphEl, graph, highlights(lastValue));
 }
 
 const panesEl = document.getElementById('panes');
