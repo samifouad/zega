@@ -173,6 +173,8 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     hit.setAttribute('fill', 'none');
     hit.setAttribute('stroke', 'transparent');
     hit.setAttribute('stroke-width', '12');
+    hit.setAttribute('pointer-events', 'stroke');
+    hit.dataset.rel = String(rel.id);
     hit.style.cursor = 'pointer';
     vp.appendChild(hit);
     vp.appendChild(path);
@@ -184,13 +186,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     label.textContent = rel.type;
     if (graph.rels.length > 100) label.style.display = 'none';
     vp.appendChild(label);
-    const onEdgeMenu = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      container._actions?.onEdge?.(rel, event.clientX, event.clientY);
-    };
-    hit.addEventListener('contextmenu', onEdgeMenu);
-    label.addEventListener('contextmenu', onEdgeMenu);
+    label.dataset.rel = String(rel.id);
     label.style.cursor = 'pointer';
     edges.set(rel.id, { path, hit, label, rel });
   }
@@ -244,6 +240,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
   const circles = new Map();
   for (const node of graph.nodes) {
     const g = document.createElementNS(NS, 'g');
+    g.dataset.node = String(node.id);
     g.style.cursor = 'pointer';
     const on = lit(node);
     const picture = imageUrl(node.image) || node.face || node.logo || node.flag;
@@ -295,12 +292,6 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
       tip.style.top = event.clientY - rect.top + 12 + 'px';
     });
     g.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
-    g.addEventListener('contextmenu', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      tip.style.display = 'none';
-      container._actions?.onNode?.(node, event.clientX, event.clientY);
-    });
     vp.appendChild(g);
     circles.set(node.id, { g, node, plate });
   }
@@ -424,8 +415,27 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
   sim.on('end', () => { if (!userInteracted) fit(); });
 
   let drag = null;
+  if (container._onMenu) container.removeEventListener('contextmenu', container._onMenu);
+  container._onMenu = (event) => {
+    event.preventDefault();
+    tip.style.display = 'none';
+    const nodeEl = event.target.closest && event.target.closest('g[data-node]');
+    if (nodeEl) {
+      const entry = circles.get(Number(nodeEl.dataset.node));
+      if (entry) container._actions?.onNode?.(entry.node, event.clientX, event.clientY);
+      return;
+    }
+    const edgeEl = event.target.closest && event.target.closest('[data-rel]');
+    if (edgeEl) {
+      const drawn = edges.get(Number(edgeEl.dataset.rel));
+      if (drawn) container._actions?.onEdge?.(drawn.rel, event.clientX, event.clientY);
+    }
+  };
+  container.addEventListener('contextmenu', container._onMenu);
+
   svg.addEventListener('pointerdown', (event) => {
-    const nodeEl = event.target.closest && event.target.closest('g');
+    if (event.button !== 0) return;
+    const nodeEl = event.target.closest && event.target.closest('g[data-node]');
     svg.setPointerCapture(event.pointerId);
     const entry = nodeEl && [...circles.values()].find((item) => item.g === nodeEl);
     if (entry) {
