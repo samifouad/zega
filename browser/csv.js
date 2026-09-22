@@ -43,7 +43,7 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery }) {
     <div class="csv-dialog" role="dialog" aria-label="CSV import">
       <header>
         <strong>CSV</strong>
-        <span class="csv-hint">Drop a column on a type to add it there. Drop it anywhere else in the schema to create a type.</span>
+        <span class="csv-hint">Drop a column on a type to add a field, or anywhere else to create a type. Drag a type chip onto another type to connect them.</span>
         <button id="csv-close" type="button">close</button>
       </header>
       <div class="csv-body">
@@ -54,6 +54,7 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery }) {
         </aside>
         <div class="csv-main">
           <section class="csv-schema-pane">
+            <div id="csv-type-chips" hidden></div>
             <div class="csv-schema-frame">
               <textarea id="csv-schema" spellcheck="false" placeholder="type Pokemon {\n  name: String\n}"></textarea>
               <div id="csv-drop-hl" hidden></div>
@@ -82,6 +83,7 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery }) {
   const refresh = () => {
     importBtn.disabled = !/type\s+[A-Za-z_]/.test(schemaEl.value) || !rows.length;
     paintTable();
+    paintChips();
   };
 
   const load = (text, label) => {
@@ -126,18 +128,20 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery }) {
       hint.hidden = true;
       return;
     }
+    const draggedType = header.startsWith('zega-type:') ? header.slice('zega-type:'.length) : '';
+    if (draggedType) {
+      if (block && block.name !== draggedType) {
+        placeHighlight(block);
+        hint.textContent = `Drop to connect ${block.name} → ${draggedType}`;
+      } else {
+        highlight.hidden = true;
+        hint.textContent = `Drop to connect ${draggedType} to a node`;
+      }
+      hint.hidden = false;
+      return;
+    }
     if (block) {
-      const style = getComputedStyle(schemaEl);
-      const lineHeight = parseFloat(style.lineHeight) || 20;
-      const padTop = parseFloat(style.paddingTop) || 0;
-      const padLeft = parseFloat(style.paddingLeft) || 0;
-      const borderTop = parseFloat(style.borderTopWidth) || 0;
-      const borderLeft = parseFloat(style.borderLeftWidth) || 0;
-      highlight.style.top = `${borderTop + padTop + block.start * lineHeight - schemaEl.scrollTop}px`;
-      highlight.style.height = `${(block.end - block.start + 1) * lineHeight}px`;
-      highlight.style.left = `${borderLeft + padLeft - schemaEl.scrollLeft}px`;
-      highlight.style.width = `${Math.ceil(blockWidth(schemaEl, block)) + 8}px`;
-      highlight.hidden = false;
+      placeHighlight(block);
       const edge = existingTypeFor(header, schemaEl.value);
       hint.textContent = edge && edge !== block.name
         ? `Drop to add ${header} → ${edge} to node ${block.name}`
@@ -173,6 +177,13 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery }) {
     const header = event.dataTransfer.getData('text/plain') || dragHeader;
     if (!header) return;
     const block = typeAtPoint(schemaEl, event);
+    if (header.startsWith('zega-type:')) {
+      const draggedType = header.slice('zega-type:'.length);
+      if (block && block.name !== draggedType) addEdge(schemaEl, block, draggedType);
+      else status.textContent = `Drop ${draggedType} on a node to connect them.`;
+      refresh();
+      return;
+    }
     if (block) addField(schemaEl, block, header, columnValues(header));
     else if (!addType(schemaEl, header)) {
       status.textContent = `${typeNameFrom(header)} already exists. Drop ${header} on a node to add ${ident(header)}.`;
@@ -200,6 +211,43 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery }) {
     run(built.query);
     closeCsv();
   };
+
+  function placeHighlight(block) {
+    const style = getComputedStyle(schemaEl);
+    const lineHeight = parseFloat(style.lineHeight) || 20;
+    const padTop = parseFloat(style.paddingTop) || 0;
+    const padLeft = parseFloat(style.paddingLeft) || 0;
+    const borderTop = parseFloat(style.borderTopWidth) || 0;
+    const borderLeft = parseFloat(style.borderLeftWidth) || 0;
+    highlight.style.top = `${borderTop + padTop + block.start * lineHeight - schemaEl.scrollTop}px`;
+    highlight.style.height = `${(block.end - block.start + 1) * lineHeight}px`;
+    highlight.style.left = `${borderLeft + padLeft - schemaEl.scrollLeft}px`;
+    highlight.style.width = `${Math.ceil(blockWidth(schemaEl, block)) + 8}px`;
+    highlight.hidden = false;
+  }
+
+  function paintChips() {
+    const chips = root.querySelector('#csv-type-chips');
+    const names = typeBlocks(schemaEl.value).map((block) => block.name);
+    if (!names.length) {
+      chips.hidden = true;
+      chips.innerHTML = '';
+      return;
+    }
+    chips.hidden = false;
+    chips.innerHTML = `<span>Connect</span>${names.map((name) => `<button type="button" draggable="true" data-type="${escapeAttr(name)}">${escapeHtml(name)}</button>`).join('')}`;
+    chips.querySelectorAll('button').forEach((button) => {
+      button.addEventListener('dragstart', (event) => {
+        dragHeader = `zega-type:${button.dataset.type}`;
+        event.dataTransfer.setData('text/plain', dragHeader);
+        event.dataTransfer.effectAllowed = 'copy';
+      });
+      button.addEventListener('dragend', () => {
+        dragHeader = '';
+        hideDrop();
+      });
+    });
+  }
 
   function columnValues(header) {
     const index = headers.indexOf(header);
@@ -329,6 +377,20 @@ function addType(textarea, header) {
   const block = `type ${typeName} {\n  name: String\n}\n`;
   textarea.value = textarea.value.trim() ? `${textarea.value.trim()}\n\n${block}` : block;
   return true;
+}
+
+function addEdge(textarea, block, targetType) {
+  const base = targetType.charAt(0).toLowerCase() + targetType.slice(1);
+  const lines = textarea.value.split('\n');
+  const body = lines.slice(block.start, block.end + 1).join('\n');
+  let name = base;
+  let n = 2;
+  while (new RegExp(`\\b${name}\\b`).test(body)) {
+    name = `${base}${n}`;
+    n += 1;
+  }
+  lines.splice(block.end, 0, `  ${name} -> ${targetType}`);
+  textarea.value = lines.join('\n');
 }
 
 function addField(textarea, block, header, values) {
