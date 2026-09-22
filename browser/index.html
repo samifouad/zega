@@ -17,24 +17,29 @@
   <button id="btn-clear">clear</button>
 </header>
 <div id="panes">
-  <section class="pane">
-    <h2>schema</h2>
-    <textarea id="schema" spellcheck="false"></textarea>
-  </section>
-  <section class="pane pane-graph">
-    <h2>graph</h2>
-    <div id="graph"></div>
-  </section>
-  <section class="pane">
-    <h2>query <span id="query-time" class="pane-stat"></span></h2>
-    <textarea id="query" spellcheck="false"></textarea>
-  </section>
-  <section class="pane">
-    <h2>json <span id="json-size" class="pane-stat"></span></h2>
-    <pre id="json"></pre>
-  </section>
-  <div id="split-x" class="split split-x" title="drag to resize columns"></div>
-  <div id="split-y" class="split split-y" title="drag to resize rows"></div>
+  <div class="band" id="band-top">
+    <section class="pane">
+      <h2>schema</h2>
+      <textarea id="schema" spellcheck="false"></textarea>
+    </section>
+    <div class="split split-x" data-band="top" title="drag the graph wider or narrower"></div>
+    <section class="pane pane-graph">
+      <h2>graph</h2>
+      <div id="graph"></div>
+    </section>
+  </div>
+  <div id="split-rows" class="split split-y" title="drag to resize rows"></div>
+  <div class="band" id="band-bottom">
+    <section class="pane">
+      <h2>query <span id="query-time" class="pane-stat"></span></h2>
+      <textarea id="query" spellcheck="false"></textarea>
+    </section>
+    <div class="split split-x" data-band="bottom" title="drag the json pane wider or narrower"></div>
+    <section class="pane">
+      <h2>json <span id="json-size" class="pane-stat"></span></h2>
+      <pre id="json"></pre>
+    </section>
+  </div>
 </div>
 <div id="tour">
   <button id="btn-play" class="primary">pause</button>

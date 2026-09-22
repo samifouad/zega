@@ -38,28 +38,32 @@ body {
 .spacer { flex: 1; }
 
 #panes {
-  display: grid;
-  grid-template-columns: minmax(160px, var(--split-x, 1fr)) 8px minmax(160px, var(--split-x-rest, 1fr));
-  grid-template-rows: minmax(120px, var(--split-y, 1.15fr)) 8px minmax(100px, var(--split-y-rest, 0.85fr));
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   padding: 8px 8px 0;
 }
-#panes > section:nth-child(1) { grid-column: 1; grid-row: 1; }
-#panes > section:nth-child(2) { grid-column: 3; grid-row: 1; }
-#panes > section:nth-child(3) { grid-column: 1; grid-row: 3; }
-#panes > section:nth-child(4) { grid-column: 3; grid-row: 3; }
-.split { position: relative; z-index: 2; }
-.split-x { grid-column: 2; grid-row: 1 / span 3; cursor: col-resize; z-index: 3; }
-.split-y { grid-column: 1 / span 3; grid-row: 2; cursor: row-resize; }
+.band {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+.band > .pane:first-child { width: var(--lead, 50%); }
+.band > .pane:last-child { flex: 1; min-width: 160px; }
+#band-top { --lead: 30%; flex: 1.15; }
+#band-bottom { --lead: 50%; flex: 0.85; }
+.split { position: relative; flex: 0 0 8px; }
+.split-x { cursor: col-resize; }
+.split-y { cursor: row-resize; }
 .split::after {
   content: "";
   position: absolute;
   border-radius: 2px;
   background: transparent;
 }
-.split-x::after { top: 8px; bottom: 8px; left: 3px; width: 2px; }
-.split-y::after { left: 8px; right: 8px; top: 3px; height: 2px; }
+.split-x::after { top: 4px; bottom: 4px; left: 3px; width: 2px; }
+.split-y::after { left: 4px; right: 4px; top: 3px; height: 2px; }
 .split:hover::after, .split.dragging::after { background: var(--accent); }
 #tour {
   height: 10vh;

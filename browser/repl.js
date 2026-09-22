@@ -385,36 +385,32 @@ function drawGraph() {
 }
 
 const panesEl = document.getElementById('panes');
-let splitX = Number(localStorage.getItem('zega.v2.split-x'));
-let splitY = Number(localStorage.getItem('zega.v2.split-y'));
-if (!Number.isFinite(splitX) || splitX <= 0 || splitX >= 1) splitX = 0.5;
-if (!Number.isFinite(splitY) || splitY <= 0 || splitY >= 1) splitY = 1.15 / 2;
+const bandTop = document.getElementById('band-top');
+const bandBottom = document.getElementById('band-bottom');
+
+function storedRatio(key, fallback) {
+  const value = Number(localStorage.getItem(key));
+  return Number.isFinite(value) && value > 0.15 && value < 0.85 ? value : fallback;
+}
+
+let splitTop = storedRatio('zega.v2.split-top', 0.3);
+let splitBottom = storedRatio('zega.v2.split-bottom', 0.5);
+let splitRows = storedRatio('zega.v2.split-rows', 1.15 / 2);
 
 function applySplits() {
-  panesEl.style.setProperty('--split-x', `${splitX}fr`);
-  panesEl.style.setProperty('--split-x-rest', `${1 - splitX}fr`);
-  panesEl.style.setProperty('--split-y', `${splitY}fr`);
-  panesEl.style.setProperty('--split-y-rest', `${1 - splitY}fr`);
+  bandTop.style.setProperty('--lead', `${splitTop * 100}%`);
+  bandBottom.style.setProperty('--lead', `${splitBottom * 100}%`);
+  bandTop.style.flex = String(splitRows);
+  bandBottom.style.flex = String(1 - splitRows);
 }
 applySplits();
 
-function bindSplit(id, axis) {
-  const handle = document.getElementById(id);
+function dragSplit(handle, onMove) {
   handle.addEventListener('pointerdown', (event) => {
     event.preventDefault();
     handle.setPointerCapture(event.pointerId);
     handle.classList.add('dragging');
-    const move = (ev) => {
-      const rect = panesEl.getBoundingClientRect();
-      if (axis === 'x') {
-        splitX = Math.min(0.8, Math.max(0.2, (ev.clientX - rect.left) / rect.width));
-        localStorage.setItem('zega.v2.split-x', String(splitX));
-      } else {
-        splitY = Math.min(0.8, Math.max(0.2, (ev.clientY - rect.top) / rect.height));
-        localStorage.setItem('zega.v2.split-y', String(splitY));
-      }
-      applySplits();
-    };
+    const move = (ev) => onMove(ev);
     const stop = () => {
       handle.classList.remove('dragging');
       handle.removeEventListener('pointermove', move);
@@ -424,8 +420,29 @@ function bindSplit(id, axis) {
     handle.addEventListener('pointerup', stop);
   });
 }
-bindSplit('split-x', 'x');
-bindSplit('split-y', 'y');
+
+document.querySelectorAll('.split-x').forEach((handle) => {
+  dragSplit(handle, (ev) => {
+    const band = handle.parentElement;
+    const rect = band.getBoundingClientRect();
+    const ratio = Math.min(0.8, Math.max(0.15, (ev.clientX - rect.left) / rect.width));
+    if (handle.dataset.band === 'top') {
+      splitTop = ratio;
+      localStorage.setItem('zega.v2.split-top', String(ratio));
+    } else {
+      splitBottom = ratio;
+      localStorage.setItem('zega.v2.split-bottom', String(ratio));
+    }
+    applySplits();
+  });
+});
+
+dragSplit(document.getElementById('split-rows'), (ev) => {
+  const rect = panesEl.getBoundingClientRect();
+  splitRows = Math.min(0.8, Math.max(0.2, (ev.clientY - rect.top) / rect.height));
+  localStorage.setItem('zega.v2.split-rows', String(splitRows));
+  applySplits();
+});
 
 let opening = { nodes: [] };
 try { opening = storedGraph(); } catch (e) { jsonEl.textContent = String(e); }
