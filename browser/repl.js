@@ -45,6 +45,45 @@ const QUERY = `{
   }
 }`;
 
+const TOUR = [
+  ['Canadian players', QUERY],
+  ['Russian born players', `{
+  Country(name: "Russia") {
+    name
+    born -> Player {
+      name
+      salary
+      roster <- Team { name }
+    }
+  }
+}`],
+  ['Players who make over $10M', `{
+  Player(salary > 10000000) {
+    name
+    salary
+    roster <- Team { name }
+  }
+}`],
+  ['Oilers roster', `{
+  Team(name: "Oilers") {
+    name
+    roster -> Player { name position salary }
+  }
+}`],
+  ['Golden Knights', `{
+  Team(name: "Golden Knights") {
+    name
+    roster -> Player { name salary born <- Country { name } }
+  }
+}`],
+  ['Germany', `{
+  Country(name: "Germany") {
+    name
+    born -> Player { name salary roster <- Team { name } }
+  }
+}`],
+];
+
 function teamSeed(name, city, abbr, players) {
   const roster = players.map(([player, position, id, salary]) =>
     `roster -> Player(name: "${player}", position: "${position}", face: "${mug(id)}", salary: ${salary}) { name salary }`
@@ -182,6 +221,7 @@ queryEl.addEventListener('keydown', (e) => {
 
 let pending = null;
 function scheduleRun() {
+  pauseAutoplay();
   localStorage.setItem(LS_SCHEMA, schemaEl.value);
   localStorage.setItem(LS_QUERY, queryEl.value);
   clearTimeout(pending);
@@ -194,11 +234,62 @@ function scheduleRun() {
 schemaEl.addEventListener('input', scheduleRun);
 queryEl.addEventListener('input', scheduleRun);
 
+let tourIndex = 0;
+let tourTimer = null;
+let playing = false;
+const playBtn = $('#btn-play');
+const tourBox = $('#tour-queries');
+
+TOUR.forEach(([label], index) => {
+  const button = document.createElement('button');
+  button.textContent = label;
+  button.onclick = () => {
+    pauseAutoplay();
+    showTour(index);
+  };
+  tourBox.appendChild(button);
+});
+
+function markTour() {
+  [...tourBox.children].forEach((button, index) => {
+    button.classList.toggle('active', index === tourIndex);
+  });
+}
+
+function showTour(index) {
+  tourIndex = index;
+  queryEl.value = TOUR[index][1];
+  markTour();
+  run(TOUR[index][1]);
+}
+
+function pauseAutoplay() {
+  playing = false;
+  clearInterval(tourTimer);
+  tourTimer = null;
+  if (playBtn) playBtn.textContent = 'play';
+}
+
+function startAutoplay() {
+  playing = true;
+  playBtn.textContent = 'pause';
+  clearInterval(tourTimer);
+  tourTimer = setInterval(() => {
+    showTour((tourIndex + 1) % TOUR.length);
+  }, 5000);
+}
+
+playBtn.onclick = () => {
+  if (playing) pauseAutoplay();
+  else startAutoplay();
+};
+
 function reseed() {
+  pauseAutoplay();
   schemaEl.value = SCHEMA;
   for (const seed of SEEDS) run(seed);
-  queryEl.value = QUERY;
-  run(QUERY);
+  showTour(0);
+  startAutoplay();
 }
 
 function storedGraph() {
@@ -222,6 +313,6 @@ try { opening = storedGraph(); } catch (e) { jsonEl.textContent = String(e); }
 if (!opening.nodes.length) {
   reseed();
 } else {
-  jsonEl.textContent = '';
-  drawGraph();
+  showTour(0);
+  startAutoplay();
 }

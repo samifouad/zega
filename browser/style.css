@@ -12,6 +12,9 @@
 
 body {
   margin: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
   font: 14px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg);
   color: var(--ink);
@@ -37,10 +40,32 @@ body {
 #panes {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-  height: calc(100vh - 46px);
+  grid-template-rows: 1.15fr 0.85fr;
+  flex: 1;
+  min-height: 0;
+  gap: 8px;
+  padding: 8px 8px 0;
+}
+#tour {
+  height: 10vh;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
   gap: 8px;
   padding: 8px;
+}
+#tour-queries {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+}
+#tour-queries button { flex: 0 0 auto; white-space: nowrap; }
+#tour-queries button.active {
+  background: var(--ink);
+  color: #fff;
+  border-color: var(--ink);
 }
 .pane {
   display: flex;
