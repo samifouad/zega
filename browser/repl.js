@@ -189,15 +189,22 @@ function show(value, error) {
   drawGraph();
 }
 
+const queryTime = $('#query-time');
+
 function run(source) {
   localStorage.setItem(LS_SCHEMA, schemaEl.value);
   localStorage.setItem(LS_QUERY, queryEl.value);
+  const started = performance.now();
   try {
-    const value = JSON.parse(db.run(schemaEl.value, source));
+    const raw = db.run(schemaEl.value, source);
+    const elapsed = performance.now() - started;
+    queryTime.textContent = elapsed < 10 ? `${elapsed.toFixed(2)} ms` : `${Math.round(elapsed)} ms`;
+    const value = JSON.parse(raw);
     try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); }
     show(value, null);
     return value;
   } catch (e) {
+    queryTime.textContent = `${(performance.now() - started).toFixed(2)} ms`;
     show(null, e);
     return null;
   }
