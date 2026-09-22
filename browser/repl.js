@@ -1,7 +1,7 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
 import { renderGraph } from './graph.js';
 import { createEditors } from './editor.js';
-import { openCsv } from './csv.js';
+import { openCsv, parseSchema } from './csv.js';
 
 const LS_DB = 'zega.v2.since';
 const LS_SCHEMA = 'zega.v2.schema';
@@ -470,7 +470,107 @@ function drawGraph() {
     graphEl.innerHTML = `<div class="empty">${e}</div>`;
     return;
   }
-  renderGraph(graphEl, graph, highlights(lastValue));
+  renderGraph(graphEl, graph, highlights(lastValue), {
+    onNode: openNodeMenu,
+    onEdge: openEdgeMenu,
+  });
+}
+
+function closeMenu() {
+  document.querySelectorAll('.graph-menu').forEach((menu) => menu.remove());
+}
+
+function showMenu(x, y, rows) {
+  closeMenu();
+  const menu = document.createElement('div');
+  menu.className = 'graph-menu';
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  if (!rows.length) {
+    const empty = document.createElement('button');
+    empty.type = 'button';
+    empty.disabled = true;
+    empty.textContent = 'Nothing here';
+    menu.appendChild(empty);
+  }
+  for (const row of rows) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = row.label;
+    if (row.danger) button.classList.add('danger');
+    button.disabled = Boolean(row.disabled);
+    button.onclick = (event) => {
+      event.stopPropagation();
+      if (row.menu) showMenu(x, y, row.menu);
+      else {
+        closeMenu();
+        row.run?.();
+      }
+    };
+    menu.appendChild(button);
+  }
+  document.body.appendChild(menu);
+}
+
+function schemaEdges(label) {
+  const type = parseSchema(schemaText()).find((item) => item.name === label);
+  return (type?.fields || []).filter((field) => field.edge);
+}
+
+function nodesOf(typeName) {
+  try {
+    return storedGraph().nodes.filter((node) => (node.labels || []).includes(typeName));
+  } catch {
+    return [];
+  }
+}
+
+function refreshGraph() {
+  try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); }
+  const source = queryText().trim();
+  if (source && !isMutation(source)) run(source);
+  else {
+    lastValue = null;
+    drawGraph();
+  }
+}
+
+function openNodeMenu(node, x, y) {
+  const edges = (node.labels || []).flatMap(schemaEdges);
+  showMenu(x, y, [
+    { label: 'Delete Node', danger: true, run: () => { db.delete_node(node.id); refreshGraph(); } },
+    {
+      label: 'Add Edge',
+      disabled: !edges.length,
+      menu: edges.map((edge) => {
+        const targets = nodesOf(edge.target).filter((target) => target.id !== node.id);
+        return {
+          label: `${edge.name} ${edge.dir} ${edge.target}`,
+          menu: targets.length ? targets.map((target) => ({
+            label: nodeCaption(target),
+            run: () => {
+              try {
+                db.connect(schemaText(), node.id, edge.name, target.id);
+                refreshGraph();
+              } catch (error) {
+                showThrown(error);
+              }
+            },
+          })) : [{ label: `No ${edge.target} nodes`, disabled: true }],
+        };
+      }),
+    },
+  ]);
+}
+
+function openEdgeMenu(rel, x, y) {
+  showMenu(x, y, [
+    { label: 'Delete Edge', danger: true, run: () => { db.delete_relationship(rel.id); refreshGraph(); } },
+  ]);
+}
+
+function nodeCaption(node) {
+  return String(node.name ?? node.title ?? node.id);
 }
 
 const panesEl = document.getElementById('panes');
@@ -509,6 +609,13 @@ function dragSplit(handle, onMove) {
     handle.addEventListener('pointerup', stop);
   });
 }
+
+document.addEventListener('pointerdown', (event) => {
+  if (!event.target.closest('.graph-menu')) closeMenu();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeMenu();
+});
 
 document.querySelectorAll('.split-x').forEach((handle) => {
   dragSplit(handle, (ev) => {

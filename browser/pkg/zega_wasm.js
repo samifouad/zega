@@ -35,6 +35,41 @@ export class ZegaWasm {
         }
     }
     /**
+     * `field` is the relationship name on the source node's type.
+     * @param {string} schema
+     * @param {number} from_id
+     * @param {string} field
+     * @param {number} to_id
+     */
+    connect(schema, from_id, field, to_id) {
+        const ptr0 = passStringToWasm0(schema, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(field, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.zegawasm_connect(this.__wbg_ptr, ptr0, len0, from_id, ptr1, len1, to_id);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} id
+     */
+    delete_node(id) {
+        const ret = wasm.zegawasm_delete_node(this.__wbg_ptr, id);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} id
+     */
+    delete_relationship(id) {
+        const ret = wasm.zegawasm_delete_relationship(this.__wbg_ptr, id);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Serialize the whole database (graph + KV) to a base64 string, so the
      * browser build can persist it across reloads.
      * @returns {string}

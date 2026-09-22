@@ -10,6 +10,12 @@ export class ZegaWasm {
      */
     check(schema: string, source: string): string;
     /**
+     * `field` is the relationship name on the source node's type.
+     */
+    connect(schema: string, from_id: number, field: string, to_id: number): void;
+    delete_node(id: number): void;
+    delete_relationship(id: number): void;
+    /**
      * Serialize the whole database (graph + KV) to a base64 string, so the
      * browser build can persist it across reloads.
      */
@@ -41,6 +47,9 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_zegawasm_free: (a: number, b: number) => void;
     readonly zegawasm_check: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly zegawasm_connect: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly zegawasm_delete_node: (a: number, b: number) => [number, number];
+    readonly zegawasm_delete_relationship: (a: number, b: number) => [number, number];
     readonly zegawasm_export_base64: (a: number) => [number, number, number, number];
     readonly zegawasm_graph: (a: number) => [number, number, number, number];
     readonly zegawasm_import_base64: (a: number, b: number, c: number) => [number, number];

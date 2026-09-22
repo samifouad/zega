@@ -3,6 +3,9 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_zegawasm_free: (a: number, b: number) => void;
 export const zegawasm_check: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const zegawasm_connect: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+export const zegawasm_delete_node: (a: number, b: number) => [number, number];
+export const zegawasm_delete_relationship: (a: number, b: number) => [number, number];
 export const zegawasm_export_base64: (a: number) => [number, number, number, number];
 export const zegawasm_graph: (a: number) => [number, number, number, number];
 export const zegawasm_import_base64: (a: number, b: number, c: number) => [number, number];

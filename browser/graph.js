@@ -98,7 +98,8 @@ function graphSignature(graph) {
   return `${nodes}|${rels}`;
 }
 
-export function renderGraph(container, graph, activeArg = new Set()) {
+export function renderGraph(container, graph, activeArg = new Set(), actions = null) {
+  container._actions = actions;
   const signature = graphSignature(graph);
   if (container._graph && container._graph.signature === signature) {
     container._graph.setActive(activeArg);
@@ -168,6 +169,12 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     path.setAttribute('stroke', '#9a9aa4');
     path.setAttribute('stroke-width', '1.4');
     path.setAttribute('marker-end', 'url(#zega-arrow)');
+    const hit = document.createElementNS(NS, 'path');
+    hit.setAttribute('fill', 'none');
+    hit.setAttribute('stroke', 'transparent');
+    hit.setAttribute('stroke-width', '12');
+    hit.style.cursor = 'pointer';
+    vp.appendChild(hit);
     vp.appendChild(path);
     const label = document.createElementNS(NS, 'text');
     label.setAttribute('class', 'rlab');
@@ -177,7 +184,15 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     label.textContent = rel.type;
     if (graph.rels.length > 100) label.style.display = 'none';
     vp.appendChild(label);
-    edges.set(rel.id, { path, label, rel });
+    const onEdgeMenu = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      container._actions?.onEdge?.(rel, event.clientX, event.clientY);
+    };
+    hit.addEventListener('contextmenu', onEdgeMenu);
+    label.addEventListener('contextmenu', onEdgeMenu);
+    label.style.cursor = 'pointer';
+    edges.set(rel.id, { path, hit, label, rel });
   }
 
   function drift(node) {
@@ -206,7 +221,9 @@ export function renderGraph(container, graph, activeArg = new Set()) {
     const cx = (a.x + b.x) / 2 - uy * curve;
     const cy = (a.y + b.y) / 2 + ux * curve;
     const drawn = edges.get(rel.id);
-    drawn.path.setAttribute('d', `M ${a.x + ux * (R + 2)} ${a.y + uy * (R + 2)} Q ${cx} ${cy} ${b.x - ux * (R + 4)} ${b.y - uy * (R + 4)}`);
+    const pathD = `M ${a.x + ux * (R + 2)} ${a.y + uy * (R + 2)} Q ${cx} ${cy} ${b.x - ux * (R + 4)} ${b.y - uy * (R + 4)}`;
+    drawn.path.setAttribute('d', pathD);
+    drawn.hit.setAttribute('d', pathD);
     const mx = 0.25 * a.x + 0.5 * cx + 0.25 * b.x;
     const my = 0.25 * a.y + 0.5 * cy + 0.25 * b.y;
     drawn.label.setAttribute('x', mx - uy * 10);
@@ -274,6 +291,12 @@ export function renderGraph(container, graph, activeArg = new Set()) {
       tip.style.top = event.clientY - rect.top + 12 + 'px';
     });
     g.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
+    g.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      tip.style.display = 'none';
+      container._actions?.onNode?.(node, event.clientX, event.clientY);
+    });
     vp.appendChild(g);
     circles.set(node.id, { g, node, plate });
   }

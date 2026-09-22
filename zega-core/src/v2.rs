@@ -40,6 +40,85 @@ impl Zega {
         }
     }
 
+    pub fn delete_node(&self, id: u64) -> Result<(), ZegaError> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        if graph.get_node(id).is_none() {
+            return Ok(());
+        }
+        graph.delete_node(id);
+        self.wal
+            .append(&Operation::DeleteNode { id })
+            .map_err(|error| ZegaError::Execution(error.to_string()))
+    }
+
+    pub fn delete_relationship(&self, id: u64) -> Result<(), ZegaError> {
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        if graph.get_relationship(id).is_none() {
+            return Ok(());
+        }
+        graph.delete_relationship(id);
+        self.wal
+            .append(&Operation::DeleteRel { id })
+            .map_err(|error| ZegaError::Execution(error.to_string()))
+    }
+
+    /// Store one schema relationship from `from_id` to `to_id`.
+    /// `field` is the name written on the source type, such as `actedIn`.
+    pub fn connect_schema(
+        &self,
+        schema_src: &str,
+        from_id: u64,
+        field: &str,
+        to_id: u64,
+    ) -> Result<(), ZegaError> {
+        let schema = zega_lang::parse_schema(schema_src)
+            .map_err(|error| explain(error, "schema", schema_src))?;
+        let mut graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        let from = graph
+            .get_node(from_id)
+            .cloned()
+            .ok_or_else(|| ZegaError::Execution(format!("missing node {from_id}")))?;
+        let to = graph
+            .get_node(to_id)
+            .cloned()
+            .ok_or_else(|| ZegaError::Execution(format!("missing node {to_id}")))?;
+        let label = from
+            .labels
+            .first()
+            .cloned()
+            .ok_or_else(|| ZegaError::Execution(format!("node {from_id} has no type")))?;
+        let edge = schema.edge(&label, field).map_err(|error| {
+            ZegaError::Execution(format!("{label} has no relationship {field}: {}", error))
+        })?;
+        let (_, rel, direction, targets, _) = edge.as_edge().unwrap();
+        let target_label = to.labels.first().map(String::as_str).unwrap_or("");
+        if !targets.iter().any(|target| target == target_label) {
+            return Err(ZegaError::Execution(format!(
+                "{label}.{field} does not reach {target_label}"
+            )));
+        }
+        connect(
+            &mut graph,
+            &self.wal,
+            from_id,
+            to_id,
+            direction,
+            rel,
+            HashMap::new(),
+        )
+        .map_err(|error| explain(error, "schema", schema_src))?;
+        Ok(())
+    }
+
     pub fn graph_json(&self) -> Result<Json, ZegaError> {
         let graph = self
             .graph
@@ -802,6 +881,50 @@ mod tests {
             .run_lang(SCHEMA, r#"{ Author(name != "Le Guin") { name } }"#)
             .unwrap();
         assert_eq!(rest[0]["name"], "Butler");
+    }
+
+    #[test]
+    fn connect_schema_then_delete_edge_and_node() {
+        let zega = Zega::in_memory().build().unwrap();
+        zega.run_lang(SCHEMA, r#"mutation { Author(name: "Le Guin") { name } }"#)
+            .unwrap();
+        zega.run_lang(
+            SCHEMA,
+            r#"mutation { Book(title: "The Dispossessed") { title } }"#,
+        )
+        .unwrap();
+        let graph = zega.graph_json().unwrap();
+        let author = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["name"] == "Le Guin")
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let book = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["title"] == "The Dispossessed")
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        zega.connect_schema(SCHEMA, author, "wrote", book).unwrap();
+        let linked = zega.graph_json().unwrap();
+        assert_eq!(linked["rels"].as_array().unwrap().len(), 1);
+        let rel_id = linked["rels"][0]["id"].as_u64().unwrap();
+        zega.delete_relationship(rel_id).unwrap();
+        assert!(zega.graph_json().unwrap()["rels"].as_array().unwrap().is_empty());
+        zega.delete_node(author).unwrap();
+        let remaining = zega.graph_json().unwrap();
+        let names: Vec<_> = remaining["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node["name"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert!(!names.iter().any(|name| name == "Le Guin"));
     }
 
     #[test]

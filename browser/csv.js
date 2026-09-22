@@ -404,7 +404,7 @@ function addField(textarea, block, header, values) {
   textarea.value = lines.join('\n');
 }
 
-function parseSchema(src) {
+export function parseSchema(src) {
   const types = [];
   const re = /type\s+([A-Za-z_][\w]*)\s*\{([^}]*)\}/g;
   let match = re.exec(src);

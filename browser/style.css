@@ -176,6 +176,31 @@ body {
 .csv-mark { display: inline-block; width: 14px; }
 .csv-empty { color: var(--dim); padding: 12px; }
 
+.graph-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 180px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.graph-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+.graph-menu button:hover:not(:disabled) { background: #f3f4f6; }
+.graph-menu button.danger { color: #a33; }
+.graph-menu button:disabled { color: var(--dim); }
+
 #tour {
   height: 10vh;
   min-height: 52px;
