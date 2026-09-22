@@ -36,7 +36,7 @@ type Country {
 }`;
 
 const QUERY = `{
-  Country(name: "Canada") {
+  Country(name = "Canada") {
     name
     born <- Player {
       name
@@ -48,8 +48,8 @@ const QUERY = `{
 
 const TOUR = [
   ['Canadian players', QUERY],
-  ['Russian born players', `{
-  Country(name: "Russia") {
+  ['Russia or Canada', `{
+  Country(name = "Russia" || name = "Canada") {
     name
     born <- Player {
       name
@@ -58,34 +58,33 @@ const TOUR = [
     }
   }
 }`],
-  ['Players who make over $10M', `{
-  Player(salary > 10000000) {
+  ['Centers over $10M', `{
+  Player(salary > 10000000 && position = "C") {
     name
     salary
-    &hops
-    playsFor -> Team { name &hops }
+    playsFor -> Team { name }
   }
 }`],
-  ['Oilers arrivals', `{
-  Team(name: "Oilers") {
+  ['Oilers or Avalanche', `{
+  Team(name = "Oilers" || name = "Avalanche") {
     name
     playsFor <- Player { name &since }
   }
 }`],
   ['Golden Knights', `{
-  Team(name: "Golden Knights") {
+  Team(name = "Golden Knights") {
     name
     playsFor <- Player { name salary born -> Country { name } }
   }
 }`],
   ['Germany', `{
-  Country(name: "Germany") {
+  Country(name = "Germany") {
     name
     born <- Player { name salary playsFor -> Team { name } }
   }
 }`],
   ['Hops from Canada', `{
-  Country(name: "Canada") {
+  Country(name = "Canada") {
     born <- Player {
       name
       &hops
@@ -93,14 +92,10 @@ const TOUR = [
     }
   }
 }`],
-  ['Swedish players', `{
-  Country(name: "Sweden") {
+  ['Born outside Canada', `{
+  Country(name != "Canada") {
     name
-    born <- Player {
-      name
-      salary
-      playsFor -> Team { name }
-    }
+    born <- Player { name playsFor -> Team { name } }
   }
 }`],
 ];
@@ -123,7 +118,7 @@ function countrySeed(name, code, players) {
     `born <- link Player(name: "${player}") { name }`
   ).join('\n    ');
   return [
-    `mutation { Country(name: "${name}", flag: "${flag(code)}") { name } }`,
+    `mutation { Country(name: "${name}" && flag: "${flag(code)}") { name } }`,
     `mutation {
   Country(name: "${name}") {
     name
