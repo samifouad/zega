@@ -22,6 +22,13 @@ impl ZegaWasm {
         serde_json::to_string(&value).map_err(to_js_error)
     }
 
+    /// Parse and type-check. Returns a JSON array of diagnostics. An empty
+    /// array means the schema and query are clean.
+    pub fn check(&self, schema: String, source: String) -> String {
+        serde_json::to_string(&zega_core::diagnose(&schema, &source))
+            .unwrap_or_else(|_| "[]".into())
+    }
+
     /// Every stored node and relationship, for the graph canvas.
     pub fn graph(&self) -> Result<String, JsValue> {
         let value = self.inner.graph_json().map_err(to_js_error)?;

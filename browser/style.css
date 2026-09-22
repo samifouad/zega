@@ -124,6 +124,11 @@ body {
   min-height: 0;
   overflow: auto;
 }
+.pane .editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
 .pane-graph #graph {
   flex: 1;
   min-height: 0;

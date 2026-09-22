@@ -20,6 +20,8 @@ pub mod planner;
 pub mod policy;
 mod v2;
 
+pub use zega_lang::diagnose;
+
 pub use config::{JwtConfig, JwtKey};
 pub use context::{ResolvedContext, ZegaContext};
 pub use policy::{Expr as PolicyExpr, ExprValue, Policy, PolicyCondition, PolicyTargets};

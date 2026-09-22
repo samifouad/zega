@@ -1,5 +1,6 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
 import { renderGraph } from './graph.js';
+import { createEditors } from './editor.js';
 
 const LS_DB = 'zega.v2.since';
 const LS_SCHEMA = 'zega.v2.schema';
@@ -205,13 +206,12 @@ const SEEDS = [
 ];
 
 const $ = (sel) => document.querySelector(sel);
-const schemaEl = $('#schema');
-const queryEl = $('#query');
-const jsonEl = $('#json');
 const graphEl = $('#graph');
 
-schemaEl.value = localStorage.getItem(LS_SCHEMA) || SCHEMA;
-queryEl.value = localStorage.getItem(LS_QUERY) || QUERY;
+const editorsReady = createEditors({
+  schema: localStorage.getItem(LS_SCHEMA) || SCHEMA,
+  query: localStorage.getItem(LS_QUERY) || QUERY,
+});
 
 await init();
 const db = new ZegaWasm();
@@ -221,9 +221,20 @@ if (saved) {
 }
 window.__zega = db;
 
+const { schema: schemaEditor, query: queryEditor, output: outputEditor, monaco } = await editorsReady;
+
+let suppress = 0;
+function setQuiet(editor, value) {
+  suppress += 1;
+  editor.setValue(value);
+  suppress -= 1;
+}
+function schemaText() { return schemaEditor.getValue(); }
+function queryText() { return queryEditor.getValue(); }
+
 function persist() {
-  localStorage.setItem(LS_SCHEMA, schemaEl.value);
-  localStorage.setItem(LS_QUERY, queryEl.value);
+  localStorage.setItem(LS_SCHEMA, schemaText());
+  localStorage.setItem(LS_QUERY, queryText());
   try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); }
 }
 
@@ -241,46 +252,135 @@ function namesIn(value, into = new Set()) {
   return into;
 }
 
-const jsonSize = $('#json-size');
+const outputSize = $('#output-size');
+const queryTime = $('#query-time');
 
-function show(value, error) {
-  jsonEl.classList.toggle('error', Boolean(error));
-  const text = error ? String(error) : JSON.stringify(value, null, 2);
-  jsonEl.textContent = text;
+function diagnostics() {
+  try {
+    const parsed = JSON.parse(db.check(schemaText(), queryText()));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [{
+      pane: 'query',
+      line: 1,
+      column: 1,
+      endLine: 1,
+      endColumn: 2,
+      underlineLength: 1,
+      message: String(e.message || e).replace(/^Error:\s*/, ''),
+      help: null,
+    }];
+  }
+}
+
+function mark(diags) {
+  for (const [pane, editor] of [['schema', schemaEditor], ['query', queryEditor]]) {
+    const markers = diags.filter((d) => d.pane === pane).map((d) => ({
+      startLineNumber: d.line || 1,
+      startColumn: d.column || 1,
+      endLineNumber: d.endLine || d.line || 1,
+      endColumn: d.endColumn || ((d.column || 1) + (d.underlineLength || 1)),
+      message: d.help ? `${d.message}\n\n${d.help}` : d.message,
+      severity: monaco.MarkerSeverity.Error,
+    }));
+    monaco.editor.setModelMarkers(editor.getModel(), 'zega', markers);
+  }
+}
+
+function formatDiagnostics(diags) {
+  return diags.map((d) => {
+    if (!d.line) {
+      return d.help ? `error: ${d.message}\n  help: ${d.help}` : `error: ${d.message}`;
+    }
+    const editor = d.pane === 'schema' ? schemaEditor : queryEditor;
+    const model = editor.getModel();
+    const lineText = d.line >= 1 && d.line <= model.getLineCount() ? model.getLineContent(d.line) : '';
+    const col = Math.max(1, d.column || 1);
+    const len = Math.max(1, d.underlineLength || ((d.endColumn || col + 1) - col));
+    const caret = `${' '.repeat(col - 1)}${'^'.repeat(len)}`;
+    let text = `error: ${d.message}\n  ${d.pane}:${d.line}:${col}\n  ${lineText}\n  ${caret}`;
+    if (d.help) text += `\n  help: ${d.help}`;
+    return text;
+  }).join('\n\n');
+}
+
+function showJson(value) {
+  const text = JSON.stringify(value, null, 2);
+  monaco.editor.setModelLanguage(outputEditor.getModel(), 'json');
+  outputEditor.setValue(text);
   const kb = new TextEncoder().encode(text).length / 1024;
-  jsonSize.textContent = kb < 10 ? `${kb.toFixed(2)} KB` : `${kb.toFixed(1)} KB`;
-  if (error) return;
+  outputSize.textContent = kb < 10 ? `${kb.toFixed(2)} KB` : `${kb.toFixed(1)} KB`;
   lastValue = value;
   drawGraph();
 }
 
-const queryTime = $('#query-time');
+function showErrors(diags) {
+  monaco.editor.setModelLanguage(outputEditor.getModel(), 'zega-output');
+  outputEditor.setValue(formatDiagnostics(diags));
+  outputSize.textContent = '';
+}
+
+function parseThrown(error) {
+  let text = String(error?.message || error);
+  text = text.replace(/^Error:\s*/, '').replace(/^execution error:\s*/, '');
+  const lines = text.split('\n');
+  const message = lines[0] || 'error';
+  let at = null;
+  let help = null;
+  for (const line of lines.slice(1)) {
+    if (line.startsWith('help: ')) help = line.slice('help: '.length);
+    else if (line.startsWith('at ')) at = line.slice(3);
+  }
+  const diag = {
+    pane: 'query', line: 0, column: 1, endLine: 1, endColumn: 2, underlineLength: 1, message, help,
+  };
+  const match = /^(schema|query):(\d+):(\d+):(\d+):(\d+)$/.exec(at || '');
+  if (!match) return diag;
+  diag.pane = match[1];
+  diag.line = Number(match[2]);
+  diag.column = Number(match[3]);
+  diag.endLine = Number(match[4]);
+  diag.endColumn = Number(match[5]);
+  diag.underlineLength = Math.max(1, diag.endColumn - diag.column);
+  return diag;
+}
+
+function showThrown(error) {
+  showErrors([parseThrown(error)]);
+}
 
 function run(source) {
-  localStorage.setItem(LS_SCHEMA, schemaEl.value);
-  localStorage.setItem(LS_QUERY, queryEl.value);
+  localStorage.setItem(LS_SCHEMA, schemaText());
+  localStorage.setItem(LS_QUERY, queryText());
+  const diags = diagnostics();
+  mark(diags);
+  if (diags.length) {
+    queryTime.textContent = '';
+    showErrors(diags);
+    return null;
+  }
   const started = performance.now();
   try {
-    const raw = db.run(schemaEl.value, source);
+    const raw = db.run(schemaText(), source);
     const elapsedUs = (performance.now() - started) * 1000;
     queryTime.textContent = elapsedUs < 1000
       ? `${Math.round(elapsedUs)} µs`
       : `${(elapsedUs / 1000).toFixed(2)} ms`;
     const value = JSON.parse(raw);
     try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); }
-    show(value, null);
+    showJson(value);
     return value;
   } catch (e) {
     const failedUs = (performance.now() - started) * 1000;
     queryTime.textContent = failedUs < 1000
       ? `${Math.round(failedUs)} µs`
       : `${(failedUs / 1000).toFixed(2)} ms`;
-    show(null, e);
+    showThrown(e);
     return null;
   }
 }
 
-$('#btn-run').onclick = () => run(queryEl.value);
+$('#btn-run').onclick = () => run(queryText());
 $('#btn-seed').onclick = () => reseed();
 $('#btn-clear').onclick = () => {
   localStorage.removeItem(LS_DB);
@@ -288,28 +388,39 @@ $('#btn-clear').onclick = () => {
   localStorage.removeItem(LS_QUERY);
   location.reload();
 };
-queryEl.addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-    e.preventDefault();
-    clearTimeout(pending);
-    run(queryEl.value);
-  }
-});
 
 let pending = null;
+function isMutation(source) {
+  return /^mutation\b/.test(source.replace(/\/\/.*$/gm, '').trim());
+}
 function scheduleRun() {
+  if (suppress) return;
   pauseAutoplay();
-  localStorage.setItem(LS_SCHEMA, schemaEl.value);
-  localStorage.setItem(LS_QUERY, queryEl.value);
+  localStorage.setItem(LS_SCHEMA, schemaText());
+  localStorage.setItem(LS_QUERY, queryText());
   clearTimeout(pending);
   pending = setTimeout(() => {
-    const source = queryEl.value.trim();
-    if (!source || source.startsWith('mutation')) return;
+    const source = queryText().trim();
+    const diags = diagnostics();
+    mark(diags);
+    if (diags.length) {
+      queryTime.textContent = '';
+      showErrors(diags);
+      return;
+    }
+    if (!source || isMutation(source)) return;
     run(source);
   }, 350);
 }
-schemaEl.addEventListener('input', scheduleRun);
-queryEl.addEventListener('input', scheduleRun);
+schemaEditor.onDidChangeModelContent(scheduleRun);
+queryEditor.onDidChangeModelContent(scheduleRun);
+const runNow = () => {
+  clearTimeout(pending);
+  run(queryText());
+};
+const chord = monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter;
+schemaEditor.addCommand(chord, runNow);
+queryEditor.addCommand(chord, runNow);
 
 let tourIndex = 0;
 let tourTimer = null;
@@ -335,7 +446,7 @@ function markTour() {
 
 function showTour(index) {
   tourIndex = index;
-  queryEl.value = TOUR[index][1];
+  setQuiet(queryEditor, TOUR[index][1]);
   markTour();
   run(TOUR[index][1]);
 }
@@ -363,7 +474,7 @@ playBtn.onclick = () => {
 
 function reseed() {
   pauseAutoplay();
-  schemaEl.value = SCHEMA;
+  setQuiet(schemaEditor, SCHEMA);
   for (const seed of SEEDS) run(seed);
   showTour(0);
   startAutoplay();
@@ -445,7 +556,7 @@ dragSplit(document.getElementById('split-rows'), (ev) => {
 });
 
 let opening = { nodes: [] };
-try { opening = storedGraph(); } catch (e) { jsonEl.textContent = String(e); }
+try { opening = storedGraph(); } catch (e) { showThrown(e); }
 
 if (!opening.nodes.length) {
   reseed();

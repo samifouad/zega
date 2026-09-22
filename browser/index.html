@@ -6,6 +6,7 @@
 <title>zega</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
 </head>
 <body>
 <header id="topbar">
@@ -20,7 +21,7 @@
   <div class="band" id="band-top">
     <section class="pane">
       <h2>schema</h2>
-      <textarea id="schema" spellcheck="false"></textarea>
+      <div id="schema" class="editor"></div>
     </section>
     <div class="split split-x" data-band="top" title="drag the graph wider or narrower"></div>
     <section class="pane pane-graph">
@@ -32,12 +33,12 @@
   <div class="band" id="band-bottom">
     <section class="pane">
       <h2>query <span id="query-time" class="pane-stat"></span></h2>
-      <textarea id="query" spellcheck="false"></textarea>
+      <div id="query" class="editor"></div>
     </section>
-    <div class="split split-x" data-band="bottom" title="drag the json pane wider or narrower"></div>
+    <div class="split split-x" data-band="bottom" title="drag the output pane wider or narrower"></div>
     <section class="pane">
-      <h2>json <span id="json-size" class="pane-stat"></span></h2>
-      <pre id="json"></pre>
+      <h2>output <span id="output-size" class="pane-stat"></span></h2>
+      <div id="output" class="editor"></div>
     </section>
   </div>
 </div>

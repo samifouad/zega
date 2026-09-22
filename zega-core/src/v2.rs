@@ -9,9 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::{json, Value as Json};
 use zega_graph::{Graph, Node, NodeId, RelId};
-use zega_lang::{
-    Cmp, Direction, Error as LangError, Item, Pred, Schema, Selection,
-};
+use zega_lang::{Cmp, Direction, Error as LangError, Item, Pred, Schema, Selection};
 use zega_parser::Value;
 use zega_wal::Operation;
 
@@ -21,7 +19,7 @@ impl Zega {
     pub fn run_lang(&self, schema_src: &str, source: &str) -> Result<Json, ZegaError> {
         let schema = zega_lang::parse_schema(schema_src).map_err(lang)?;
         let query = zega_lang::parse_query(source).map_err(lang)?;
-        check_selection(&schema, &query.root, true).map_err(lang)?;
+        zega_lang::check(&schema, &query.root, query.mutation).map_err(lang)?;
         let mut graph = self
             .graph
             .lock()
@@ -39,11 +37,7 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut nodes: Vec<Json> = graph
-            .all_nodes()
-            .values()
-            .map(node_json)
-            .collect();
+        let mut nodes: Vec<Json> = graph.all_nodes().values().map(node_json).collect();
         nodes.sort_by_key(|node| node["id"].as_u64().unwrap_or(0));
         let mut rels: Vec<Json> = graph
             .all_relationships()
@@ -63,7 +57,18 @@ impl Zega {
 }
 
 fn lang(error: LangError) -> ZegaError {
-    ZegaError::Execution(error.0)
+    let mut text = error.message;
+    if error.line > 0 {
+        text.push_str(&format!(
+            "\nat query:{}:{}:{}:{}",
+            error.line, error.column, error.end_line, error.end_column
+        ));
+    }
+    if let Some(help) = error.help {
+        text.push_str("\nhelp: ");
+        text.push_str(&help);
+    }
+    ZegaError::Execution(text)
 }
 
 fn read(
@@ -79,10 +84,11 @@ fn read(
         return match ids.len() {
             0 => Ok(Json::Null),
             1 => project(graph, schema, root, ids[0], 0, None, budget),
-            n => Err(LangError(format!(
-                "{} matched {n} rows",
-                root.type_name
-            ))),
+            n => Err(LangError::at(
+                root.type_span,
+                format!("{} matched {n} rows", root.type_name),
+            )
+            .with_help("an equality filter has to match one row")),
         };
     }
     let mut rows = Vec::new();
@@ -119,11 +125,11 @@ fn apply_node(
         let props = sel
             .sets
             .iter()
-            .map(|(key, value)| Ok((key.clone(), json_to_value(value)?)))
+            .map(|(key, value, _)| Ok((key.clone(), json_to_value(value)?)))
             .collect::<Result<HashMap<_, _>, LangError>>()?;
         graph.update_node(id, props.clone());
         wal.append(&Operation::UpdateNode { id, props })
-            .map_err(|error| LangError(error.to_string()))?;
+            .map_err(|error| LangError::bare(error.to_string()))?;
     }
     if let Some((parent_id, direction, rel)) = &parent {
         let props = edge_sets(sel)?;
@@ -131,24 +137,24 @@ fn apply_node(
     }
     let node = graph
         .get_node(id)
-        .ok_or_else(|| LangError(format!("missing node {id}")))?
+        .ok_or_else(|| LangError::bare(format!("missing node {id}")))?
         .clone();
     let mut object = serde_json::Map::new();
     let mut lists: HashMap<String, Vec<Json>> = HashMap::new();
     for item in &sel.items {
         match item {
-            Item::Prop(name) => {
+            Item::Prop(name, _) => {
                 object.insert(name.clone(), prop_json(&node, name));
             }
             Item::Hops => {
                 object.insert("hops".into(), json!(0));
             }
-            Item::EdgeProp(name) | Item::EdgeSet(name, _) => {
+            Item::EdgeProp(name, _) | Item::EdgeSet(name, _, _) => {
                 let value = sel
                     .items
                     .iter()
                     .find_map(|item| match item {
-                        Item::EdgeSet(field, value) if field == name => Some(value.clone()),
+                        Item::EdgeSet(field, value, _) if field == name => Some(value.clone()),
                         _ => None,
                     })
                     .unwrap_or(Json::Null);
@@ -160,32 +166,41 @@ fn apply_node(
                 direction,
                 target,
                 range,
+                ..
             } => {
                 if range.is_some() {
-                    return Err(LangError("a mutation cannot use a hop range".into()));
+                    return Err(LangError::bare("a mutation cannot use a hop range"));
                 }
                 let edge = schema.edge(&sel.type_name, field)?;
                 let (_, rel, schema_dir, targets, many) = edge.as_edge().unwrap();
                 if *direction != schema_dir || !targets.contains(&target.type_name) {
-                    return Err(LangError(format!(
+                    return Err(LangError::bare(format!(
                         "{}.{} does not reach {}",
                         sel.type_name, field, target.type_name
                     )));
                 }
                 let child = if *link {
                     let child_id = lookup_one(graph, target)?;
-                    connect(graph, wal, id, child_id, *direction, rel, edge_sets(target)?)?;
+                    connect(
+                        graph,
+                        wal,
+                        id,
+                        child_id,
+                        *direction,
+                        rel,
+                        edge_sets(target)?,
+                    )?;
                     let saved = graph.get_node(child_id).unwrap().clone();
                     let mut child_object = serde_json::Map::new();
                     for child_item in &target.items {
                         match child_item {
-                            Item::Prop(name) => {
+                            Item::Prop(name, _) => {
                                 child_object.insert(name.clone(), prop_json(&saved, name));
                             }
-                            Item::EdgeSet(name, value) => {
+                            Item::EdgeSet(name, value, _) => {
                                 child_object.insert(name.clone(), value.clone());
                             }
-                            Item::EdgeProp(name) => {
+                            Item::EdgeProp(name, _) => {
                                 child_object.insert(name.clone(), Json::Null);
                             }
                             _ => {}
@@ -225,8 +240,14 @@ fn lookup_one(graph: &Graph, sel: &Selection) -> Result<NodeId, LangError> {
     ids.retain(|id| node_matches(graph, *id, &sel.predicates));
     match ids.len() {
         1 => Ok(ids[0]),
-        0 => Err(LangError(format!("no {} matched", sel.type_name))),
-        n => Err(LangError(format!("{} matched {n} rows", sel.type_name))),
+        0 => Err(
+            LangError::at(sel.type_span, format!("no {} matched", sel.type_name))
+                .with_help("`link` and `set` need exactly one matching row"),
+        ),
+        n => Err(
+            LangError::at(sel.type_span, format!("{} matched {n} rows", sel.type_name))
+                .with_help("`link` and `set` need exactly one matching row"),
+        ),
     }
 }
 
@@ -240,15 +261,16 @@ fn insert_node(graph: &mut Graph, wal: &crate::Wal, sel: &Selection) -> Result<N
     let mut props = HashMap::new();
     for pred in &sel.predicates {
         match pred {
-            Pred::Eq(field, value) if field != "id" => {
+            Pred::Eq(field, value, _) if field != "id" => {
                 props.insert(field.clone(), json_to_value(value)?);
             }
-            Pred::Eq(_, _) => {}
-            _ => {
-                return Err(LangError(format!(
-                    "creating a {} only accepts field: value",
-                    sel.type_name
-                )))
+            Pred::Eq(_, _, _) => {}
+            other => {
+                return Err(LangError::at(
+                    other.span(),
+                    format!("creating a {} only accepts field: value", sel.type_name),
+                )
+                .with_help("write `name: \"value\"`"))
             }
         }
     }
@@ -257,14 +279,14 @@ fn insert_node(graph: &mut Graph, wal: &crate::Wal, sel: &Selection) -> Result<N
         .collect();
     let id = graph.create_node(labels.clone(), props.clone());
     wal.append(&Operation::InsertNode { id, labels, props })
-        .map_err(|error| LangError(error.to_string()))?;
+        .map_err(|error| LangError::bare(error.to_string()))?;
     Ok(id)
 }
 
 fn edge_sets(sel: &Selection) -> Result<HashMap<String, Value>, LangError> {
     let mut props = HashMap::new();
     for item in &sel.items {
-        if let Item::EdgeSet(name, value) = item {
+        if let Item::EdgeSet(name, value, _) = item {
             props.insert(name.clone(), json_to_value(value)?);
         }
     }
@@ -292,7 +314,7 @@ fn connect(
         to,
         props,
     })
-    .map_err(|error| LangError(error.to_string()))?;
+    .map_err(|error| LangError::bare(error.to_string()))?;
     Ok(id)
 }
 
@@ -307,26 +329,26 @@ fn project(
 ) -> Result<Json, LangError> {
     let node = graph
         .get_node(id)
-        .ok_or_else(|| LangError(format!("missing node {id}")))?;
+        .ok_or_else(|| LangError::bare(format!("missing node {id}")))?;
     let mut object = serde_json::Map::new();
     let mut landing_types = Vec::new();
     for item in &sel.items {
         match item {
-            Item::Prop(name) => {
+            Item::Prop(name, _) => {
                 ensure_prop(schema, sel, name)?;
                 object.insert(name.clone(), prop_json(node, name));
             }
             Item::Hops => {
                 object.insert("hops".into(), json!(hops));
             }
-            Item::EdgeSet(name, _) => {
-                return Err(LangError(format!(
+            Item::EdgeSet(name, _, _) => {
+                return Err(LangError::bare(format!(
                     "&{name}: value is stored by a mutation"
                 )));
             }
-            Item::EdgeProp(name) => {
+            Item::EdgeProp(name, _) => {
                 let rel_id = arrived.ok_or_else(|| {
-                    LangError(format!("&{name} needs the relationship that arrived here"))
+                    LangError::bare(format!("&{name} needs the relationship that arrived here"))
                 })?;
                 let value = graph
                     .get_relationship(rel_id)
@@ -345,7 +367,7 @@ fn project(
                 let edge = schema.edge(node_type(node, sel)?, field)?;
                 let (_, rel, schema_dir, targets, many) = edge.as_edge().unwrap();
                 if *direction != schema_dir {
-                    return Err(LangError(format!(
+                    return Err(LangError::bare(format!(
                         "{}.{} does not point that way",
                         node_type(node, sel)?,
                         field
@@ -353,8 +375,11 @@ fn project(
                 }
                 let wanted = std::iter::once(target.type_name.as_str())
                     .chain(target.also.iter().map(String::as_str));
-                if wanted.clone().any(|name| !targets.contains(&name.to_string())) {
-                    return Err(LangError(format!(
+                if wanted
+                    .clone()
+                    .any(|name| !targets.contains(&name.to_string()))
+                {
+                    return Err(LangError::bare(format!(
                         "{field} does not reach {}",
                         target.type_name
                     )));
@@ -366,7 +391,7 @@ fn project(
                 };
                 if target.also.is_empty() {
                     if landing_types.contains(&key_type) {
-                        return Err(LangError(format!(
+                        return Err(LangError::bare(format!(
                             "two relationships in one brace land on {key_type}"
                         )));
                     }
@@ -425,7 +450,7 @@ fn node_type<'a>(node: &'a Node, sel: &'a Selection) -> Result<&'a str, LangErro
             return Ok(extra.as_str());
         }
     }
-    Err(LangError(format!(
+    Err(LangError::bare(format!(
         "node {} is not a {}",
         node.id, sel.type_name
     )))
@@ -439,7 +464,7 @@ fn ensure_prop(schema: &Schema, sel: &Selection, name: &str) -> Result<(), LangE
     if types.clone().any(|ty| schema.prop(ty, name).is_ok()) {
         return Ok(());
     }
-    Err(LangError(format!(
+    Err(LangError::bare(format!(
         "{} has no field {name}",
         sel.type_name
     )))
@@ -539,16 +564,16 @@ fn pred_matches(graph: &Graph, id: NodeId, pred: &Pred) -> bool {
         return false;
     };
     match pred {
-        Pred::Eq(field, value) => prop_json(node, field) == *value,
-        Pred::Ne(field, value) => prop_json(node, field) != *value,
-        Pred::Cmp(field, op, value) => cmp_json(&prop_json(node, field), *op, value),
-        Pred::Contains(field, needle) => prop_json(node, field)
+        Pred::Eq(field, value, _) => prop_json(node, field) == *value,
+        Pred::Ne(field, value, _) => prop_json(node, field) != *value,
+        Pred::Cmp(field, op, value, _) => cmp_json(&prop_json(node, field), *op, value),
+        Pred::Contains(field, needle, _) => prop_json(node, field)
             .as_str()
             .is_some_and(|text| text.contains(needle)),
-        Pred::StartsWith(field, needle) => prop_json(node, field)
+        Pred::StartsWith(field, needle, _) => prop_json(node, field)
             .as_str()
             .is_some_and(|text| text.starts_with(needle)),
-        Pred::EndsWith(field, needle) => prop_json(node, field)
+        Pred::EndsWith(field, needle, _) => prop_json(node, field)
             .as_str()
             .is_some_and(|text| text.ends_with(needle)),
     }
@@ -580,7 +605,11 @@ fn cmp_value(left: &Json, right: &Json) -> Option<std::cmp::Ordering> {
 }
 
 fn equality_lookup(sel: &Selection) -> bool {
-    !sel.predicates.is_empty() && sel.predicates.iter().all(|pred| matches!(pred, Pred::Eq(_, _)))
+    !sel.predicates.is_empty()
+        && sel
+            .predicates
+            .iter()
+            .all(|pred| matches!(pred, Pred::Eq(_, _, _)))
 }
 
 fn prop_json(node: &Node, name: &str) -> Json {
@@ -633,97 +662,22 @@ fn json_to_value(value: &Json) -> Result<Value, LangError> {
             } else if let Some(value) = value.as_f64() {
                 Ok(Value::from_f64(value))
             } else {
-                Err(LangError(format!("number {value} is out of range")))
+                Err(LangError::bare(format!("number {value} is out of range")))
             }
         }
         Json::Bool(value) => Ok(Value::Bool(*value)),
         Json::Null => Ok(Value::Null),
-        _ => Err(LangError("only scalar values can be stored".into())),
+        _ => Err(LangError::bare("only scalar values can be stored")),
     }
 }
 
 fn charge(budget: &mut usize, n: usize) -> Result<(), LangError> {
     if *budget < n {
-        return Err(LangError(
-            "relationship traversal work budget exceeded".into(),
+        return Err(LangError::bare(
+            "relationship traversal work budget exceeded",
         ));
     }
     *budget -= n;
-    Ok(())
-}
-
-fn check_selection(schema: &Schema, sel: &Selection, root: bool) -> Result<(), LangError> {
-    schema.get(&sel.type_name)?;
-    for extra in &sel.also {
-        schema.get(extra)?;
-    }
-    for pred in &sel.predicates {
-        let field = match pred {
-            Pred::Eq(field, _)
-            | Pred::Ne(field, _)
-            | Pred::Cmp(field, _, _)
-            | Pred::Contains(field, _)
-            | Pred::StartsWith(field, _)
-            | Pred::EndsWith(field, _) => field,
-        };
-        if field != "id" {
-            ensure_prop(schema, sel, field)?;
-        }
-    }
-    let mut landing: Vec<(String, String)> = Vec::new();
-    for item in &sel.items {
-        match item {
-            Item::Prop(name) => ensure_prop(schema, sel, name)?,
-            Item::Hops | Item::EdgeSet(_, _) => {}
-            Item::EdgeProp(name) => {
-                if root {
-                    return Err(LangError(format!(
-                        "&{name} is an edge field, and this value was not reached by an edge"
-                    )));
-                }
-            }
-            Item::Walk {
-                field,
-                direction,
-                target,
-                ..
-            } => {
-                let edge = schema.edge(&sel.type_name, field)?;
-                let (_, _, schema_dir, targets, _) = edge.as_edge().unwrap();
-                if *direction != schema_dir {
-                    return Err(LangError(format!(
-                        "{}.{} does not point that way",
-                        sel.type_name, field
-                    )));
-                }
-                let names = std::iter::once(target.type_name.as_str())
-                    .chain(target.also.iter().map(String::as_str));
-                for name in names {
-                    if !targets.iter().any(|target| target == name) {
-                        return Err(LangError(format!(
-                            "{}.{} does not reach {name}",
-                            sel.type_name, field
-                        )));
-                    }
-                }
-                if target.also.is_empty() {
-                    if landing
-                        .iter()
-                        .any(|(other_field, other_type)| {
-                            other_field != field && other_type == &target.type_name
-                        })
-                    {
-                        return Err(LangError(format!(
-                            "two relationships in one brace land on {}",
-                            target.type_name
-                        )));
-                    }
-                    landing.push((field.clone(), target.type_name.clone()));
-                }
-                check_selection(schema, target, false)?;
-            }
-        }
-    }
     Ok(())
 }
 

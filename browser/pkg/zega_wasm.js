@@ -12,6 +12,29 @@ export class ZegaWasm {
         wasm.__wbg_zegawasm_free(ptr, 0);
     }
     /**
+     * Parse and type-check. Returns a JSON array of diagnostics. An empty
+     * array means the schema and query are clean.
+     * @param {string} schema
+     * @param {string} source
+     * @returns {string}
+     */
+    check(schema, source) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(schema, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.zegawasm_check(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            deferred3_0 = ret[0];
+            deferred3_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Serialize the whole database (graph + KV) to a base64 string, so the
      * browser build can persist it across reloads.
      * @returns {string}
