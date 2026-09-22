@@ -66,6 +66,8 @@ pub enum Item {
     Prop(String),
     Hops,
     EdgeProp(String),
+    /// `&year: 1974` on a mutation stores `year` on the edge that arrived here.
+    EdgeSet(String, Json),
     Walk {
         field: String,
         range: Option<(usize, usize)>,
@@ -427,6 +429,12 @@ impl<'a> Parser<'a> {
         self.skip();
         if self.eat("&") {
             let name = self.ident()?;
+            if self.eat(":") {
+                if name == "hops" {
+                    return Err(Error("&hops is measured, not stored".into()));
+                }
+                return Ok(Item::EdgeSet(name, self.parse_value()?));
+            }
             return Ok(if name == "hops" {
                 Item::Hops
             } else {
@@ -578,7 +586,12 @@ impl<'a> Parser<'a> {
             self.i += 1;
         }
         let mut float = false;
-        if self.src[self.i..].starts_with('.') {
+        if self.src[self.i..].starts_with('.')
+            && self.src[self.i + 1..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+        {
             float = true;
             self.i += 1;
             while self.peek_digit() {

@@ -125,8 +125,9 @@ fn apply_node(
         wal.append(&Operation::UpdateNode { id, props })
             .map_err(|error| LangError(error.to_string()))?;
     }
-    if let Some((parent_id, direction, rel)) = parent {
-        connect(graph, wal, parent_id, id, direction, &rel)?;
+    if let Some((parent_id, direction, rel)) = &parent {
+        let props = edge_sets(sel)?;
+        connect(graph, wal, *parent_id, id, *direction, rel, props)?;
     }
     let node = graph
         .get_node(id)
@@ -142,8 +143,16 @@ fn apply_node(
             Item::Hops => {
                 object.insert("hops".into(), json!(0));
             }
-            Item::EdgeProp(_) => {
-                object.insert("edge".into(), Json::Null);
+            Item::EdgeProp(name) | Item::EdgeSet(name, _) => {
+                let value = sel
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        Item::EdgeSet(field, value) if field == name => Some(value.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or(Json::Null);
+                object.insert(name.clone(), value);
             }
             Item::Walk {
                 field,
@@ -165,12 +174,21 @@ fn apply_node(
                 }
                 let child = if *link {
                     let child_id = lookup_one(graph, target)?;
-                    connect(graph, wal, id, child_id, *direction, rel)?;
+                    connect(graph, wal, id, child_id, *direction, rel, edge_sets(target)?)?;
                     let saved = graph.get_node(child_id).unwrap().clone();
                     let mut child_object = serde_json::Map::new();
                     for child_item in &target.items {
-                        if let Item::Prop(name) = child_item {
-                            child_object.insert(name.clone(), prop_json(&saved, name));
+                        match child_item {
+                            Item::Prop(name) => {
+                                child_object.insert(name.clone(), prop_json(&saved, name));
+                            }
+                            Item::EdgeSet(name, value) => {
+                                child_object.insert(name.clone(), value.clone());
+                            }
+                            Item::EdgeProp(name) => {
+                                child_object.insert(name.clone(), Json::Null);
+                            }
+                            _ => {}
                         }
                     }
                     Json::Object(child_object)
@@ -243,6 +261,16 @@ fn insert_node(graph: &mut Graph, wal: &crate::Wal, sel: &Selection) -> Result<N
     Ok(id)
 }
 
+fn edge_sets(sel: &Selection) -> Result<HashMap<String, Value>, LangError> {
+    let mut props = HashMap::new();
+    for item in &sel.items {
+        if let Item::EdgeSet(name, value) = item {
+            props.insert(name.clone(), json_to_value(value)?);
+        }
+    }
+    Ok(props)
+}
+
 fn connect(
     graph: &mut Graph,
     wal: &crate::Wal,
@@ -250,18 +278,19 @@ fn connect(
     child: NodeId,
     direction: Direction,
     rel: &str,
+    props: HashMap<String, Value>,
 ) -> Result<RelId, LangError> {
     let (from, to) = match direction {
         Direction::Out => (parent, child),
         Direction::In => (child, parent),
     };
-    let id = graph.create_relationship(rel.to_string(), from, to, HashMap::new());
+    let id = graph.create_relationship(rel.to_string(), from, to, props.clone());
     wal.append(&Operation::InsertRel {
         id,
         kind: rel.to_string(),
         from,
         to,
-        props: HashMap::new(),
+        props,
     })
     .map_err(|error| LangError(error.to_string()))?;
     Ok(id)
@@ -289,6 +318,11 @@ fn project(
             }
             Item::Hops => {
                 object.insert("hops".into(), json!(hops));
+            }
+            Item::EdgeSet(name, _) => {
+                return Err(LangError(format!(
+                    "&{name}: value is stored by a mutation"
+                )));
             }
             Item::EdgeProp(name) => {
                 let rel_id = arrived.ok_or_else(|| {
@@ -640,7 +674,7 @@ fn check_selection(schema: &Schema, sel: &Selection, root: bool) -> Result<(), L
     for item in &sel.items {
         match item {
             Item::Prop(name) => ensure_prop(schema, sel, name)?,
-            Item::Hops => {}
+            Item::Hops | Item::EdgeSet(_, _) => {}
             Item::EdgeProp(name) => {
                 if root {
                     return Err(LangError(format!(
@@ -775,5 +809,111 @@ mod tests {
             )
             .unwrap();
         assert_eq!(updated["died"], 2018);
+    }
+
+    #[test]
+    fn hop_range_counts_from_the_start() {
+        let zega = Zega::in_memory().build().unwrap();
+        let schema = r#"
+            type Person {
+              name: String
+              manages -> Person[]
+            }
+        "#;
+        zega.run_lang(
+            schema,
+            r#"mutation {
+                Person(name: "Ada") {
+                  manages -> Person(name: "Bob") {
+                    manages -> Person(name: "Dee") { name }
+                  }
+                }
+            }"#,
+        )
+        .unwrap();
+        let read = zega
+            .run_lang(
+                schema,
+                r#"{
+                    Person(name: "Ada") {
+                      manages *1..3 -> Person { name &hops }
+                    }
+                }"#,
+            )
+            .unwrap();
+        let people = read["Persons"].as_array().unwrap();
+        assert_eq!(people.len(), 2);
+        assert_eq!(people[0]["name"], "Bob");
+        assert_eq!(people[0]["hops"], 1);
+        assert_eq!(people[1]["name"], "Dee");
+        assert_eq!(people[1]["hops"], 2);
+    }
+
+    #[test]
+    fn edge_field_roundtrips() {
+        let zega = Zega::in_memory().build().unwrap();
+        zega.run_lang(
+            SCHEMA,
+            r#"mutation {
+                Author(name: "Le Guin") {
+                  wrote -> Book(title: "The Dispossessed", pages: 387) {
+                    title
+                    &year: 1974
+                  }
+                }
+            }"#,
+        )
+        .unwrap();
+        let read = zega
+            .run_lang(
+                SCHEMA,
+                r#"{
+                    Author(name: "Le Guin") {
+                      wrote -> Book { title &year }
+                    }
+                }"#,
+            )
+            .unwrap();
+        assert_eq!(read["Books"][0]["title"], "The Dispossessed");
+        assert_eq!(read["Books"][0]["year"], 1974);
+    }
+
+    #[test]
+    fn union_field_missing_on_one_type_is_null() {
+        let zega = Zega::in_memory().build().unwrap();
+        let schema = r#"
+            type User {
+              name: String
+              likes -> (Book | Movie)[]
+            }
+            type Book { title: String }
+            type Movie { title: String  runtime: Int }
+        "#;
+        zega.run_lang(
+            schema,
+            r#"mutation {
+                User(name: "Ada") {
+                  likes -> Book(title: "Kindred") { title }
+                  likes -> Movie(title: "Alien", runtime: 117) { title }
+                }
+            }"#,
+        )
+        .unwrap();
+        let read = zega
+            .run_lang(
+                schema,
+                r#"{
+                    User(name: "Ada") {
+                      likes -> (Book | Movie) { title runtime }
+                    }
+                }"#,
+            )
+            .unwrap();
+        let likes = read["likes"].as_array().unwrap();
+        assert_eq!(likes.len(), 2);
+        let book = likes.iter().find(|row| row["title"] == "Kindred").unwrap();
+        let movie = likes.iter().find(|row| row["title"] == "Alien").unwrap();
+        assert_eq!(book["runtime"], Json::Null);
+        assert_eq!(movie["runtime"], 117);
     }
 }

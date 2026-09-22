@@ -82,6 +82,15 @@ const TOUR = [
     born <- Player { name salary playsFor -> Team { name } }
   }
 }`],
+  ['Hops from Canada', `{
+  Country(name: "Canada") {
+    born <- Player {
+      name
+      &hops
+      playsFor -> Team { name &hops }
+    }
+  }
+}`],
   ['Swedish players', `{
   Country(name: "Sweden") {
     name
