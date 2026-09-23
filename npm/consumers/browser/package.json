@@ -1,0 +1,6 @@
+{
+  "name": "zega-browser-consumer",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "vite build" }
+}

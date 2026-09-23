@@ -1,0 +1,84 @@
+name: Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      canary:
+        description: 'Tested canary tag (vX.Y.Z-canary-<7-char-sha>)'
+        required: true
+        type: string
+  # These events run the offline integrity proof only. They cannot promote.
+  push:
+    branches: [codex/channels]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  integrity-proof:
+    runs-on: ubuntu-latest
+    environment: public-ci
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest -v scripts.test_channels.Promotion
+
+  promote:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'zegadb/zega'
+    needs: integrity-proof
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    concurrency:
+      group: zega-channel-writes
+      cancel-in-progress: false
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_SCCACHE_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SCCACHE_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      CANARY: ${{ inputs.canary }}
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: ./.github/actions/release-credentials
+      # No Rust toolchain, cargo, wasm-pack, npm install, or build scripts.
+      - name: Verify commit, copy and read back bytes, tag, then advance latest
+        run: python3 scripts/channels.py promote "$CANARY" .tmp/promotion
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-stable
+          path: .tmp/promotion/package.tgz
+          if-no-files-found: error
+
+  npm:
+    # Sami configures trust, then Ava removes this literal hard stop in a PR.
+    if: ${{ false }}
+    needs: promote
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm install --global npm@11.16.0 --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-stable
+          path: artifact
+      - run: npm publish artifact/package.tgz --tag latest --access public --provenance --ignore-scripts --registry=https://registry.npmjs.org/

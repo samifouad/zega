@@ -7,7 +7,7 @@ exclude = ["zega-bridge","zega-wasm"]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/samifouad/zega"
+repository = "https://github.com/zegadb/zega"
 
 [workspace.dependencies]
 dashmap = "6.1"

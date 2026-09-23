@@ -1,0 +1,24 @@
+name: Required R2 Rust cache
+description: Fail closed without the job-level sccache configuration and bucket access
+runs:
+  using: composite
+  steps:
+    - name: Require cache credentials at job scope
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "$RUSTC_WRAPPER" != sccache ] || [ -z "$R2_ACCOUNT_ID" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$SCCACHE_BUCKET" ]; then
+          echo '::error::Needs Sami: R2_ACCOUNT_ID and the correct R2 credential pair on zegadb/zega job environment'
+          exit 1
+        fi
+    - uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+    - name: Verify cache bucket is reachable
+      shell: bash
+      run: |
+        set -euo pipefail
+        command -v aws >/dev/null
+        if ! aws s3api head-bucket --bucket "$SCCACHE_BUCKET" --endpoint-url "$SCCACHE_ENDPOINT" >/dev/null 2>&1; then
+          echo '::error::Cannot access the required sccache bucket; no uncached fallback'
+          exit 1
+        fi
+        sccache --version

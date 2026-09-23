@@ -1,0 +1,25 @@
+{
+  "name": "zega-package-tools",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "build": "node npm/build.mjs",
+    "pack:package": "node npm/pack.mjs",
+    "test": "node npm/check-consumers.mjs && node npm/check-next.mjs",
+    "test:exports": "node npm/check-consumers.mjs --break-exports"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "esbuild": "0.28.2",
+    "next": "16.3.6",
+    "playwright": "1.63.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "smol-toml": "1.9.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.0"
+  }
+}

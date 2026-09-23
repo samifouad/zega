@@ -4,7 +4,7 @@ name: cqx export
 #
 # The score itself is `cqx.yml`, which runs on every pull request and needs no
 # credentials. This is the other half: a push to main gets exported so that
-# cqx.bio/samifouad/zega opens on a dataset that already exists.
+# cqx.bio/zegadb/zega opens on a dataset that already exists.
 #
 # Without it the page still works — it reads the repository from GitHub and
 # runs the analysis in the reader's browser — but it does that on every visit,

@@ -8,6 +8,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    environment: public-ci
     timeout-minutes: 10
     env:
       WRANGLER_SEND_METRICS: 'false'
@@ -20,6 +21,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: browser/package-lock.json
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run build

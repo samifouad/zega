@@ -1,0 +1,198 @@
+name: Release (canary)
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags: ['v*-canary-*']
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    environment: public-ci
+    outputs:
+      tag: ${{ steps.ref.outputs.tag }}
+      npm_version: ${{ steps.ref.outputs.npm_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Validate release ref; branches only exercise builds
+        id: ref
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = tag ] || [ "$EVENT_NAME" = workflow_dispatch ]; then
+            python3 scripts/channels.py resolve "$GITHUB_REF_NAME"
+          fi
+
+  package:
+    needs: resolve
+    runs-on: ${{ matrix.runner }}
+    environment: public-ci
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            sccache_bucket: zega-sccache-linux-x64
+    env:
+      RUSTC_WRAPPER: sccache
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      SCCACHE_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      SCCACHE_REGION: auto
+      SCCACHE_BUCKET: ${{ matrix.sccache_bucket }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.target
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tmp/playwright
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/npm-package
+        with:
+          npm-version: ${{ needs.resolve.outputs.npm_version }}
+      - name: Assemble the tested package and its WASM files
+        run: |
+          mkdir -p artifacts/npm-package
+          cp -r dist/wasm artifacts/npm-package/wasm
+          node --input-type=module -e 'import fs from "node:fs"; const pack = JSON.parse(fs.readFileSync("artifacts/pack.json")); fs.copyFileSync("artifacts/" + pack.filename, "artifacts/npm-package/package.tgz");'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: artifacts/npm-package/
+          if-no-files-found: error
+
+  native:
+    needs: resolve
+    runs-on: ${{ matrix.runner }}
+    environment: public-ci
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            sccache_bucket: zega-sccache-linux-x64
+            extension: ''
+          - platform: darwin-arm64
+            runner: macos-14
+            sccache_bucket: zega-sccache-darwin-arm64
+            extension: ''
+          - platform: darwin-x64
+            runner: macos-15-intel
+            sccache_bucket: zega-sccache-darwin-x64
+            extension: ''
+          - platform: windows-x64
+            runner: windows-latest
+            sccache_bucket: zega-sccache-windows-x64
+            extension: .exe
+    env:
+      RUSTC_WRAPPER: sccache
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      SCCACHE_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      SCCACHE_REGION: auto
+      SCCACHE_BUCKET: ${{ matrix.sccache_bucket }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.target
+      PLATFORM: ${{ matrix.platform }}
+      EXTENSION: ${{ matrix.extension }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.96.0'
+          components: clippy
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/rust-cache
+      - name: Check and lint the workspace
+        if: needs.resolve.outputs.tag == ''
+        run: |
+          cargo check --locked --workspace --all-targets
+          cargo clippy --locked --workspace --all-targets --all-features
+      - name: Build server
+        run: cargo build --locked --release -p zega-server
+      - name: Smoke test the built server
+        run: python scripts/smoke-server.py ".target/release/zega-server${EXTENSION}"
+      - name: Prepare native artifact
+        run: |
+          mkdir -p artifacts/native
+          cp ".target/release/zega-server${EXTENSION}" "artifacts/native/zega-server-${PLATFORM}${EXTENSION}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: artifacts/native/
+          if-no-files-found: error
+
+  publish:
+    if: needs.resolve.outputs.tag != '' && github.repository == 'zegadb/zega'
+    needs: [resolve, package, native]
+    runs-on: ubuntu-latest
+    environment: release
+    concurrency:
+      group: zega-channel-writes
+      cancel-in-progress: false
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_SCCACHE_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SCCACHE_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      CANARY: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: ./.github/actions/release-credentials
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble checksummed canary
+        run: python3 scripts/channels.py prepare "$CANARY" artifacts .tmp/release
+      - name: Upload, verify readback, advance canary only
+        run: python3 scripts/channels.py publish-r2 "$CANARY" .tmp/release
+
+  npm:
+    # Sami configures trust, then Ava removes this literal hard stop in a PR.
+    if: ${{ false }}
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm install --global npm@11.16.0 --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: artifact
+      - run: npm publish artifact/package.tgz --tag canary --access public --provenance --ignore-scripts --registry=https://registry.npmjs.org/

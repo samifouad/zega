@@ -14,3 +14,9 @@ browser/node_modules/
 browser/test-results/
 browser/dist/
 browser/playwright-report/
+/node_modules/
+/dist/
+/artifacts/
+/npm/consumers/*/node_modules/
+/npm/consumers/*/dist/
+__pycache__/
