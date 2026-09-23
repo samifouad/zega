@@ -14,7 +14,7 @@ pub fn zega_value(value: &Value) -> Json {
         Value::String(value) => typed("string", json!(value)),
         Value::Int(value) => typed("integer", json!(value)),
         Value::Float(bits) => float(f64::from_bits(*bits)),
-        Value::Bool(value) => typed("boolean", json!(value)),
+        Value::Bool(value) => boolean(*value),
         Value::List(values) => typed("list", Json::Array(values.iter().map(zega_value).collect())),
         Value::Map(values) => {
             let mapped = values

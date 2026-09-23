@@ -6,13 +6,11 @@ mod parity {
 use neo4rs::{query, Graph};
 use parity::canonical::{self, CanonicalRows};
 use parity::corpus::{ColumnKind, GraphOp};
-use redis::Connection;
 use serde_json::Value as Json;
 use std::collections::HashMap;
 use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zega_core::Zega;
-use zega_parser::Value;
 
 #[test]
 fn unordered_rows_compare_equal_after_normalization() {
@@ -103,10 +101,10 @@ fn missing_null_and_empty_string_are_not_equal() {
 }
 
 #[tokio::test]
-async fn live_zega_neo4j_redis_parity() {
+async fn live_zega_neo4j_parity() {
     if env::var("ZEGA_PARITY_LIVE").as_deref() != Ok("1") {
         println!("reference not configured, ran 2 self-tests");
-        println!("Set ZEGA_PARITY_LIVE=1 to use localhost defaults or override NEO4J_URI/USER/PASS and REDIS_URL.");
+        println!("Set ZEGA_PARITY_LIVE=1 to use localhost defaults or override NEO4J_URI/USER/PASS.");
         return;
     }
 
@@ -125,15 +123,10 @@ async fn live_zega_neo4j_redis_parity() {
         .unwrap_or(&neo4j_uri);
     let neo4j_user = env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".into());
     let neo4j_pass = env::var("NEO4J_PASS").unwrap_or_else(|_| "neo4j".into());
-    let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
 
     let graph = Graph::new(neo4j_address, &neo4j_user, &neo4j_pass)
         .await
         .unwrap_or_else(|error| panic!("Neo4j reference connection failed ({neo4j_uri}): {error}"));
-    let client = redis::Client::open(redis_url.as_str()).expect("valid REDIS_URL");
-    let mut redis = client
-        .get_connection()
-        .unwrap_or_else(|error| panic!("Redis reference connection failed ({redis_url}): {error}"));
     let zega = Zega::in_memory().build().expect("embedded Zega");
 
     load_fixture(&zega, &graph, &run).await;
@@ -141,15 +134,9 @@ async fn live_zega_neo4j_redis_parity() {
     for op in parity::corpus::graph_ops(&run) {
         reports.push(run_graph_op(&zega, &graph, &op).await);
     }
-    reports.extend(run_kv_ops(&zega, &mut redis, &run));
     let _ = graph
         .run(query("MATCH (n {parity_run: $run}) DETACH DELETE n").param("run", run.clone()))
         .await;
-    let _: redis::RedisResult<()> = redis::cmd("DEL")
-        .arg(format!("{run}:value"))
-        .arg(format!("{run}:counter"))
-        .query(&mut redis);
-
     println!("\n{:<34} RESULT", "OPERATION");
     for report in &reports {
         println!(
@@ -248,77 +235,3 @@ fn compare_results(
     }
 }
 
-fn run_kv_ops(zega: &Zega, redis: &mut Connection, run: &str) -> Vec<Report> {
-    let value_key = format!("{run}:value");
-    let counter_key = format!("{run}:counter");
-    let missing_key = format!("{run}:missing");
-    let mut reports = Vec::new();
-
-    let zega_set = zega.kv_set(value_key.clone(), Value::String("hello".into()), None);
-    let redis_set: redis::RedisResult<String> =
-        redis::cmd("SET").arg(&value_key).arg("hello").query(redis);
-    reports.push(kv_report(
-        "kv.set",
-        zega_set.map(|_| canonical::string("OK")),
-        redis_set.map(canonical::string),
-    ));
-    reports.push(kv_report(
-        "kv.get",
-        Ok(zega
-            .kv_get(&value_key)
-            .map_or_else(canonical::null, |v| canonical::zega_value(&v))),
-        redis::cmd("GET")
-            .arg(&value_key)
-            .query::<Option<String>>(redis)
-            .map(|v| v.map_or_else(canonical::null, canonical::string)),
-    ));
-    reports.push(kv_report(
-        "kv.del",
-        zega.kv_del(&value_key).map(canonical::boolean),
-        redis::cmd("DEL")
-            .arg(&value_key)
-            .query::<i64>(redis)
-            .map(|v| canonical::boolean(v == 1)),
-    ));
-    reports.push(kv_report(
-        "kv.incr",
-        zega.query(&format!("INCR KEY '{counter_key}'"), HashMap::new())
-            .map(|rows| canonical::zega_rows(rows, true)[0]["value"].clone()),
-        redis::cmd("INCR")
-            .arg(&counter_key)
-            .query::<i64>(redis)
-            .map(canonical::integer),
-    ));
-    reports.push(kv_report(
-        "kv.get_missing",
-        Ok(zega
-            .kv_get(&missing_key)
-            .map_or_else(canonical::null, |v| canonical::zega_value(&v))),
-        redis::cmd("GET")
-            .arg(&missing_key)
-            .query::<Option<String>>(redis)
-            .map(|v| v.map_or_else(canonical::null, canonical::string)),
-    ));
-    reports
-}
-
-fn kv_report(
-    name: &'static str,
-    zega: Result<Json, zega_core::ZegaError>,
-    reference: redis::RedisResult<Json>,
-) -> Report {
-    let diff = match (zega, reference) {
-        (Ok(zega), Ok(reference)) if zega == reference => None,
-        (Ok(zega), Ok(reference)) => Some(format!("zega: {zega}\n  reference: {reference}")),
-        (Err(zega), Ok(reference)) => {
-            Some(format!("zega errored: {zega}\n  reference: {reference}"))
-        }
-        (Ok(zega), Err(reference)) => {
-            Some(format!("reference errored: {reference}\n  zega: {zega}"))
-        }
-        (Err(zega), Err(reference)) => Some(format!(
-            "zega errored: {zega}\n  reference errored: {reference}"
-        )),
-    };
-    Report { name, diff }
-}

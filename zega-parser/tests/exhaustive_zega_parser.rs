@@ -218,11 +218,6 @@ fn lex_all_keywords_uppercase() {
     assert_eq!(lex_all("ASC"), vec![Token::Asc]);
     assert_eq!(lex_all("DESC"), vec![Token::Desc]);
     assert_eq!(lex_all("ON"), vec![Token::On]);
-    assert_eq!(lex_all("KEY"), vec![Token::Key]);
-    assert_eq!(lex_all("GET"), vec![Token::Get]);
-    assert_eq!(lex_all("DEL"), vec![Token::Del]);
-    assert_eq!(lex_all("INCR"), vec![Token::Incr]);
-    assert_eq!(lex_all("TTL"), vec![Token::Ttl]);
 }
 
 #[test]
@@ -1675,94 +1670,14 @@ fn parse_delete_no_identifiers_yields_empty_vec() {
 }
 
 // =====================================================================
-// PARSER: KV statements (GET / SET KEY / DEL / INCR)
-// =====================================================================
-
-#[test]
-fn parse_kv_get() {
-    let stmt = parse_one("GET KEY $k");
-    match &stmt {
-        Statement::KvGet { key } => assert_eq!(key, &Expr::Parameter("k".to_string())),
-        other => panic!("expected KvGet, got {other:?}"),
-    }
-}
-
-#[test]
-fn parse_kv_get_string_key() {
-    let stmt = parse_one("GET KEY 'session:123'");
-    match &stmt {
-        Statement::KvGet { key } => {
-            assert_eq!(
-                key,
-                &Expr::Literal(Value::String("session:123".to_string()))
-            );
-        }
-        other => panic!("got {other:?}"),
-    }
-}
-
-#[test]
-fn parse_kv_set_without_ttl() {
-    let stmt = parse_one("SET KEY $k = $v");
-    match &stmt {
-        Statement::KvSet { key, value, ttl } => {
-            assert_eq!(key, &Expr::Parameter("k".to_string()));
-            assert_eq!(value, &Expr::Parameter("v".to_string()));
-            assert!(ttl.is_none());
-        }
-        other => panic!("expected KvSet, got {other:?}"),
-    }
-}
-
-#[test]
-fn parse_kv_set_with_ttl() {
-    let stmt = parse_one("SET KEY $k = $v TTL 60");
-    match &stmt {
-        Statement::KvSet { ttl, .. } => {
-            assert_eq!(ttl.as_ref().unwrap(), &Expr::Literal(Value::Int(60)));
-        }
-        other => panic!("got {other:?}"),
-    }
-}
-
-#[test]
-fn parse_kv_del() {
-    let stmt = parse_one("DEL KEY $k");
-    match &stmt {
-        Statement::KvDel { key } => assert_eq!(key, &Expr::Parameter("k".to_string())),
-        other => panic!("expected KvDel, got {other:?}"),
-    }
-}
-
-#[test]
-fn parse_kv_incr() {
-    let stmt = parse_one("INCR KEY 'counter'");
-    match &stmt {
-        Statement::KvIncr { key } => {
-            assert_eq!(key, &Expr::Literal(Value::String("counter".to_string())));
-        }
-        other => panic!("expected KvIncr, got {other:?}"),
-    }
-}
-
-#[test]
-fn parse_kv_get_missing_key_keyword_is_error() {
-    // GET must be followed by KEY.
-    let res = try_parse("GET $k");
-    assert!(res.is_err());
-}
-
-// =====================================================================
 // PARSER: parameter syntax edge cases
 // =====================================================================
 
 #[test]
 fn parse_parameter_simple() {
-    let stmt = parse_one("SET KEY $myParam = 1");
-    match &stmt {
-        Statement::KvSet { key, .. } => assert_eq!(key, &Expr::Parameter("myParam".to_string())),
-        other => panic!("got {other:?}"),
-    }
+    let stmt = parse_one("MATCH (n {value: $myParam}) RETURN n");
+    let (pattern, _, _) = as_match(&stmt);
+    assert_eq!(pattern[0].properties.get("value"), Some(&Expr::Parameter("myParam".to_string())));
 }
 
 #[test]
@@ -1852,15 +1767,6 @@ fn parse_two_statements_separated_by_semicolon() {
 fn parse_trailing_semicolon_ok() {
     let stmts = try_parse("DELETE n;").unwrap();
     assert_eq!(stmts.len(), 1);
-}
-
-#[test]
-fn parse_multiple_kv_statements() {
-    let stmts = try_parse("SET KEY $a = 1; GET KEY $a; DEL KEY $a").unwrap();
-    assert_eq!(stmts.len(), 3);
-    assert!(matches!(stmts[0], Statement::KvSet { .. }));
-    assert!(matches!(stmts[1], Statement::KvGet { .. }));
-    assert!(matches!(stmts[2], Statement::KvDel { .. }));
 }
 
 // =====================================================================
@@ -2615,60 +2521,6 @@ fn parse_set_target_bare_identifier() {
             assert_eq!(assignments[0].value, Expr::Parameter("v".to_string()));
         }
         other => panic!("expected Set, got {other:?}"),
-    }
-}
-
-// =====================================================================
-// PARSER (gap): KV error paths + literal value/ttl shapes
-// =====================================================================
-
-#[test]
-fn parse_kv_set_string_value_and_int_ttl() {
-    let stmt = parse_one("SET KEY 'k' = 'v' TTL 30");
-    match &stmt {
-        Statement::KvSet { key, value, ttl } => {
-            assert_eq!(key, &Expr::Literal(Value::String("k".to_string())));
-            assert_eq!(value, &Expr::Literal(Value::String("v".to_string())));
-            assert_eq!(ttl.as_ref().unwrap(), &Expr::Literal(Value::Int(30)));
-        }
-        other => panic!("got {other:?}"),
-    }
-}
-
-#[test]
-fn parse_kv_set_ttl_parameter() {
-    let stmt = parse_one("SET KEY $k = $v TTL $ttl");
-    match &stmt {
-        Statement::KvSet { ttl, .. } => {
-            assert_eq!(ttl.as_ref().unwrap(), &Expr::Parameter("ttl".to_string()));
-        }
-        other => panic!("got {other:?}"),
-    }
-}
-
-#[test]
-fn parse_kv_set_missing_eq_is_error() {
-    // `SET KEY $k $v` -> expect(Eq) fails.
-    assert!(try_parse("SET KEY $k $v").is_err());
-}
-
-#[test]
-fn parse_kv_del_missing_key_keyword_is_error() {
-    assert!(try_parse("DEL $k").is_err());
-}
-
-#[test]
-fn parse_kv_incr_missing_key_keyword_is_error() {
-    assert!(try_parse("INCR $k").is_err());
-}
-
-#[test]
-fn parse_kv_get_integer_key() {
-    // Keys can be any primary, including an integer literal.
-    let stmt = parse_one("GET KEY 42");
-    match &stmt {
-        Statement::KvGet { key } => assert_eq!(key, &Expr::Literal(Value::Int(42))),
-        other => panic!("got {other:?}"),
     }
 }
 

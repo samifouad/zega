@@ -1,6 +1,6 @@
 # zegadb
 
-An in-memory graph database and KV engine with ZQL v2. One package contains
+An embeddable graph database with ZQL v2. One package contains
 the JavaScript API, TypeScript declarations and WebAssembly engine. It has no
 runtime npm dependencies or install scripts. Requires an ES module environment
 and, on the server, Node 22.14 or later.
@@ -43,8 +43,7 @@ and query blocks. `db.check(schema, source)` returns JSON diagnostics.
 `db.query(source, paramsJson)` exposes the older Cypher-style query interface.
 Results from these methods are JSON strings; use `JSON.parse`.
 The generated types also cover graph inspection, node/relationship deletion,
-connections, KV operations and base64 snapshot import/export. KV TTLs use
-`bigint` seconds. Errors from the bindings can be strings, so catch `unknown`.
+connections and base64 snapshot import/export. Errors from the bindings can be strings, so catch `unknown`.
 
 The database is in memory in both environments. Persist explicitly using
 `export_base64()` and `import_base64()`. Call `free()` when finished and do not

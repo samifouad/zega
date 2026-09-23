@@ -81,27 +81,7 @@ impl ZegaWasm {
         serde_json::to_string(&json_rows).map_err(to_js_error)
     }
 
-    pub fn kv_get(&self, key: String) -> Result<String, JsValue> {
-        let value = self.inner.kv_get(&key).unwrap_or(Value::Null);
-        serde_json::to_string(&value_to_json(value)).map_err(to_js_error)
-    }
-
-    pub fn kv_set(
-        &self,
-        key: String,
-        value_json: String,
-        ttl_secs: Option<u64>,
-    ) -> Result<(), JsValue> {
-        let json = serde_json::from_str(&value_json).map_err(to_js_error)?;
-        let value = json_to_value(json);
-        self.inner.kv_set(key, value, ttl_secs).map_err(to_js_error)
-    }
-
-    pub fn kv_del(&self, key: String) -> Result<bool, JsValue> {
-        self.inner.kv_del(&key).map_err(to_js_error)
-    }
-
-    /// Serialize the whole database (graph + KV) to a base64 string, so the
+    /// Serialize the whole graph database to a base64 string, so the
     /// browser build can persist it across reloads.
     pub fn export_base64(&self) -> Result<String, JsValue> {
         use base64::Engine;

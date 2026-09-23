@@ -11,7 +11,6 @@ pub struct Policy {
 pub enum PolicyTargets {
     Labels(Vec<String>),
     All,
-    Kv,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,7 +54,6 @@ impl Policy {
         match &self.targets {
             PolicyTargets::Labels(labels) => labels.iter().any(|candidate| candidate == label),
             PolicyTargets::All => true,
-            PolicyTargets::Kv => false,
         }
     }
 
@@ -63,7 +61,4 @@ impl Policy {
         matches!(self.targets, PolicyTargets::All)
     }
 
-    pub fn applies_to_kv(&self) -> bool {
-        matches!(self.targets, PolicyTargets::Kv)
-    }
 }

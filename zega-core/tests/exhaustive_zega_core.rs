@@ -1,7 +1,7 @@
 //! Exhaustive integration tests for the `zega-core` integrating engine.
 //!
 //! These exercise the public API surface (`Zega`, `ZegaBuilder`, `query`,
-//! `query_with_context`, KV helpers, contexts, policies) and the query
+//! `query_with_context`, contexts, policies) and the query
 //! execution paths: MATCH/WHERE expression evaluation, RETURN projection +
 //! aliases, ORDER BY, LIMIT, aggregations + GROUP BY, null/Option handling,
 //! Neo4j-style type coercion, and error-as-value paths.
@@ -1283,100 +1283,6 @@ fn incoming_direction_traversal() {
 }
 
 // ===========================================================================
-// 13. KV operations: SQL surface + helper methods
-// ===========================================================================
-
-#[test]
-fn kv_set_and_get_via_query() {
-    let zega = db();
-    zega.query("SET KEY 'k' = 'v'", no_params()).unwrap();
-    let rows = zega.query("GET KEY 'k'", no_params()).unwrap();
-    assert_eq!(one_field(&rows, "value"), Value::String("v".into()));
-}
-
-#[test]
-fn kv_get_missing_key_returns_null_value() {
-    let zega = db();
-    let rows = zega.query("GET KEY 'absent'", no_params()).unwrap();
-    assert_eq!(one_field(&rows, "value"), Value::Null);
-}
-
-#[test]
-fn kv_set_via_parameters() {
-    let zega = db();
-    zega.query(
-        "SET KEY $k = $v",
-        params(&[
-            ("k", Value::String("session".into())),
-            ("v", Value::Int(42)),
-        ]),
-    )
-    .unwrap();
-    let rows = zega
-        .query("GET KEY $k", params(&[("k", Value::String("session".into()))]))
-        .unwrap();
-    assert_eq!(one_field(&rows, "value"), Value::Int(42));
-}
-
-#[test]
-fn kv_del_via_query_removes_value() {
-    let zega = db();
-    zega.query("SET KEY 'k' = 'v'", no_params()).unwrap();
-    zega.query("DEL KEY 'k'", no_params()).unwrap();
-    let rows = zega.query("GET KEY 'k'", no_params()).unwrap();
-    assert_eq!(one_field(&rows, "value"), Value::Null);
-}
-
-#[test]
-fn kv_incr_on_new_key_starts_at_one() {
-    let zega = db();
-    let rows = zega.query("INCR KEY 'counter'", no_params()).unwrap();
-    assert_eq!(one_field(&rows, "value"), Value::Int(1));
-}
-
-#[test]
-fn kv_incr_increments_existing_int() {
-    let zega = db();
-    zega.query("SET KEY 'counter' = 5", no_params()).unwrap();
-    let rows = zega.query("INCR KEY 'counter'", no_params()).unwrap();
-    assert_eq!(one_field(&rows, "value"), Value::Int(6));
-}
-
-#[test]
-fn kv_incr_on_non_int_returns_null() {
-    let zega = db();
-    zega.query("SET KEY 'k' = 'not-a-number'", no_params())
-        .unwrap();
-    let rows = zega.query("INCR KEY 'k'", no_params()).unwrap();
-    assert_eq!(one_field(&rows, "value"), Value::Null);
-}
-
-#[test]
-fn kv_helper_methods_set_get_del() {
-    let zega = db();
-    zega.kv_set("hk".into(), Value::String("hv".into()), None)
-        .unwrap();
-    assert_eq!(zega.kv_get("hk"), Some(Value::String("hv".into())));
-    assert!(zega.kv_del("hk").unwrap());
-    assert_eq!(zega.kv_get("hk"), None);
-}
-
-#[test]
-fn kv_helper_del_missing_returns_false() {
-    let zega = db();
-    assert!(!zega.kv_del("never-existed").unwrap());
-}
-
-#[test]
-fn kv_set_overwrites_previous_value() {
-    let zega = db();
-    zega.query("SET KEY 'k' = 'first'", no_params()).unwrap();
-    zega.query("SET KEY 'k' = 'second'", no_params()).unwrap();
-    let rows = zega.query("GET KEY 'k'", no_params()).unwrap();
-    assert_eq!(one_field(&rows, "value"), Value::String("second".into()));
-}
-
-// ===========================================================================
 // 14. MERGE
 // ===========================================================================
 
@@ -1604,7 +1510,7 @@ fn jwt_context_with_invalid_token_is_error() {
 }
 
 // ===========================================================================
-// 18. Policy enforcement (label + KV)
+// 18. Policy enforcement (label)
 // ===========================================================================
 
 fn create_doc(zega: &Zega, name: &str, org: &str) {
@@ -1750,42 +1656,6 @@ fn policy_role_in_list_allows_matching_role() {
     assert!(viewer.is_empty());
 }
 
-#[test]
-fn policy_kv_prefix_filter_blocks_other_tenants_keys() {
-    let zega = Zega::in_memory()
-        .policy(
-            "kv_tenant",
-            PolicyTargets::Kv,
-            PolicyCondition::AllowWhen(PolicyExpr::Eq(
-                ExprValue::NodeField("key_prefix".into()),
-                ExprValue::ContextField(".org_id".into()),
-            )),
-        )
-        .build()
-        .unwrap();
-    zega.query("SET KEY 'org1:file' = 'allowed'", no_params())
-        .unwrap();
-    zega.query("SET KEY 'org2:file' = 'denied'", no_params())
-        .unwrap();
-
-    let allowed = zega
-        .query_with_context(
-            "GET KEY 'org1:file'",
-            no_params(),
-            ZegaContext::claims(claims(&[("org_id", "org1")])),
-        )
-        .unwrap();
-    let denied = zega
-        .query_with_context(
-            "GET KEY 'org2:file'",
-            no_params(),
-            ZegaContext::claims(claims(&[("org_id", "org1")])),
-        )
-        .unwrap();
-    assert_eq!(allowed[0].fields.get("value"), Some(&Value::String("allowed".into())));
-    assert_eq!(denied[0].fields.get("value"), Some(&Value::Null));
-}
-
 // ===========================================================================
 // 19. Multi-statement queries
 // ===========================================================================
@@ -1876,14 +1746,13 @@ fn many_nodes_count_is_accurate() {
 // ===========================================================================
 
 #[test]
-fn wal_recovery_restores_nodes_and_kv_after_reopen() {
+fn wal_recovery_restores_nodes_after_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_str().unwrap();
     {
         let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
         zega.query("CREATE (n:Person {name: 'Alice'})", no_params())
             .unwrap();
-        zega.query("SET KEY 'k' = 'v'", no_params()).unwrap();
     }
     {
         let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
@@ -1891,8 +1760,6 @@ fn wal_recovery_restores_nodes_and_kv_after_reopen() {
             .query("MATCH (n:Person) RETURN n", no_params())
             .unwrap();
         assert_eq!(rows.len(), 1);
-        let kv = zega.query("GET KEY 'k'", no_params()).unwrap();
-        assert_eq!(kv[0].fields.get("value"), Some(&Value::String("v".into())));
     }
 }
 
@@ -2926,78 +2793,6 @@ fn negative_integer_value_round_trips() {
 }
 
 // ---------------------------------------------------------------------------
-// KV: TTL on SET, kv_set helper with ttl, non-string key coercion, INCR WAL,
-// helper-vs-query interop.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn kv_set_with_ttl_clause_is_readable_immediately() {
-    let zega = db();
-    // A generous TTL so the value is still present when we read it back.
-    zega.query("SET KEY 'k' = 'v' TTL 3600", no_params()).unwrap();
-    let rows = zega.query("GET KEY 'k'", no_params()).unwrap();
-    assert_eq!(rows[0].fields.get("value"), Some(&Value::String("v".into())));
-}
-
-#[test]
-fn kv_set_helper_with_ttl_round_trips() {
-    let zega = db();
-    zega.kv_set("hk".into(), Value::Int(42), Some(3600)).unwrap();
-    assert_eq!(zega.kv_get("hk"), Some(Value::Int(42)));
-}
-
-#[test]
-fn kv_int_key_is_coerced_to_string_form() {
-    // exec_kv_set stringifies a non-string key via Display; reading with the
-    // same int key must hit the same coerced string.
-    let zega = db();
-    zega.query("SET KEY 123 = 'v'", no_params()).unwrap();
-    let rows = zega.query("GET KEY 123", no_params()).unwrap();
-    assert_eq!(rows[0].fields.get("value"), Some(&Value::String("v".into())));
-    // And the helper sees the stringified key too.
-    assert_eq!(zega.kv_get("123"), Some(Value::String("v".into())));
-}
-
-#[test]
-fn kv_helper_and_query_surface_share_one_store() {
-    let zega = db();
-    zega.kv_set("shared".into(), Value::String("from-helper".into()), None)
-        .unwrap();
-    let rows = zega.query("GET KEY 'shared'", no_params()).unwrap();
-    assert_eq!(
-        rows[0].fields.get("value"),
-        Some(&Value::String("from-helper".into()))
-    );
-    // And a query-side DEL is visible to the helper getter.
-    zega.query("DEL KEY 'shared'", no_params()).unwrap();
-    assert_eq!(zega.kv_get("shared"), None);
-}
-
-#[test]
-fn kv_incr_twice_accumulates() {
-    let zega = db();
-    zega.query("INCR KEY 'c'", no_params()).unwrap();
-    let rows = zega.query("INCR KEY 'c'", no_params()).unwrap();
-    assert_eq!(rows[0].fields.get("value"), Some(&Value::Int(2)));
-}
-
-#[test]
-fn kv_incr_persists_through_wal_recovery() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().to_str().unwrap();
-    {
-        let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
-        zega.query("INCR KEY 'c'", no_params()).unwrap();
-        zega.query("INCR KEY 'c'", no_params()).unwrap();
-    }
-    {
-        let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
-        let rows = zega.query("GET KEY 'c'", no_params()).unwrap();
-        assert_eq!(rows[0].fields.get("value"), Some(&Value::Int(2)));
-    }
-}
-
-// ---------------------------------------------------------------------------
 // MERGE: unlabeled element always creates; multi-statement MERGE then SET.
 // ---------------------------------------------------------------------------
 
@@ -3031,7 +2826,7 @@ fn merge_on_create_does_not_fire_on_existing_match() {
 
 // ---------------------------------------------------------------------------
 // Additional policy coverage: Neq / Or / Not / And conditions, AlwaysAllow,
-// PolicyTargets::All on labeled + unlabeled nodes, In-as-prefix on KV.
+// PolicyTargets::All on labeled + unlabeled nodes.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -3228,54 +3023,6 @@ fn policy_targets_all_applies_to_labeled_and_unlabeled_nodes() {
         .unwrap();
     // Both the o1 Doc and the o1 unlabeled node survive (2), o2 Doc filtered.
     assert_eq!(unlabeled.len(), 2);
-}
-
-#[test]
-fn policy_kv_prefix_allows_matching_tenant_key() {
-    // Positive companion to the existing "blocks other tenants" test: the
-    // allowed-prefix key returns its real value, not the filtered Null.
-    let zega = Zega::in_memory()
-        .policy(
-            "kv_tenant",
-            PolicyTargets::Kv,
-            PolicyCondition::AllowWhen(PolicyExpr::Eq(
-                ExprValue::NodeField("key_prefix".into()),
-                ExprValue::ContextField(".org_id".into()),
-            )),
-        )
-        .build()
-        .unwrap();
-    // Seed under system context (system bypasses policy in plan_statement).
-    zega.query_with_context("SET KEY 'org1:file' = 'secret'", no_params(), ZegaContext::system())
-        .unwrap();
-
-    let allowed = zega
-        .query_with_context(
-            "GET KEY 'org1:file'",
-            no_params(),
-            ZegaContext::claims(claims(&[("org_id", "org1")])),
-        )
-        .unwrap();
-    assert_eq!(
-        allowed[0].fields.get("value"),
-        Some(&Value::String("secret".into()))
-    );
-}
-
-#[test]
-fn policy_system_only_on_kv_denies_non_system_get() {
-    let zega = Zega::in_memory()
-        .policy(
-            "kv_locked",
-            PolicyTargets::Kv,
-            PolicyCondition::SystemOnly,
-        )
-        .build()
-        .unwrap();
-    let err = zega
-        .query_with_context("GET KEY 'anything'", no_params(), ZegaContext::anonymous())
-        .unwrap_err();
-    assert!(matches!(err, ZegaError::PermissionDenied(_)));
 }
 
 // ---------------------------------------------------------------------------

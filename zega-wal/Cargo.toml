@@ -10,7 +10,6 @@ crc32fast = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 zega-graph = { workspace = true }
-zega-kv = { workspace = true }
 zega-parser = { workspace = true }
 
 [dev-dependencies]
