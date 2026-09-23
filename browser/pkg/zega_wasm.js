@@ -66,6 +66,7 @@ export class ZegaWasm {
         }
     }
     /**
+     * Return a diagnostic report with rendered text and editor source spans.
      * @param {string} schema
      * @param {string} source
      * @returns {string}
@@ -325,8 +326,7 @@ export class ZegaWasm {
         }
     }
     /**
-     * Parse and type-check. Returns a JSON array of diagnostics. An empty
-     * array means the schema and query are clean.
+     * Return checked schema types and the explicit display configuration as JSON.
      * @param {string} source
      * @returns {string}
      */

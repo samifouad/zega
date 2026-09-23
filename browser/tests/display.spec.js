@@ -110,3 +110,20 @@ test('bad display produces the engine diagnostic and exact editor underline', as
   }]);
   await expect(page.getByRole('tab')).toHaveCount(0);
 });
+
+test('timeline uses the checked year field and shares the node inspector', async ({ page }) => {
+  await ready(page);
+  await page.locator('#btn-clear').click();
+  await setEditor(page, 'schema', `schema {
+    type Event { name: String year: Int }
+    display { timeline { Event }: Default table }
+  }
+  mutation { Event(name: "Later" && year: 2024) { name year } }
+  mutation { Event(name: "Earlier" && year: 1988) { name year } }`);
+  await setEditor(page, 'query', '{ Event { id name year } }');
+  await page.locator('#btn-run').click();
+  await expect(page.getByRole('tab')).toHaveText(['Timeline', 'Table']);
+  await expect(page.locator('.timeline-view button')).toHaveText(['1988 · Earlier', '2024 · Later']);
+  await page.locator('.timeline-view button').first().click();
+  await expect(page.locator('#node-inspector')).toContainText('Earlier');
+});

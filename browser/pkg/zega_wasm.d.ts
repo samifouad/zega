@@ -11,6 +11,9 @@ export class ZegaWasm {
      */
     apply(source: string): string;
     apply_with_sources(source: string, sources: string): string;
+    /**
+     * Return a diagnostic report with rendered text and editor source spans.
+     */
     check(schema: string, source: string): string;
     /**
      * `field` is the relationship name on the source node's type.
@@ -46,8 +49,7 @@ export class ZegaWasm {
      */
     run_with_sources(schema: string, source: string, sources: string): string;
     /**
-     * Parse and type-check. Returns a JSON array of diagnostics. An empty
-     * array means the schema and query are clean.
+     * Return checked schema types and the explicit display configuration as JSON.
      */
     schema(source: string): string;
 }

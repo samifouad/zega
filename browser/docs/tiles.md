@@ -27,8 +27,12 @@ pinned at `028c18f713baecad011301ff7a69acc39bcc2ae7`.
 Upload keys, relative to the `zega-tiles` bucket root:
 
 - `calgary.pmtiles` → `https://tiles.zega.dev/calgary.pmtiles`
-- Every file in `fonts/` → `https://tiles.zega.dev/fonts/{fontstack}/{range}.pbf`;
-  preserve spaces in directory names (the browser percent-encodes them).
+- `fonts/OFL.txt`, plus `fonts/{fontstack}/{n}-{n+255}.pbf`, where `n` is
+  every multiple of 256 from 0 through 65280 and `fontstack` is each of
+  `Noto Sans Regular`, `Noto Sans Medium`, `Noto Sans Italic`, and
+  `Noto Sans Devanagari Regular v1` (1,024 glyph files). These map to
+  `https://tiles.zega.dev/fonts/{fontstack}/{range}.pbf`; preserve spaces in
+  directory names (the browser percent-encodes them).
 - `sprites/v4/light.json`, `light.png`, `light@2x.json`, `light@2x.png`
 - `sprites/v4/dark.json`, `dark.png`, `dark@2x.json`, `dark@2x.png`
 
