@@ -6,72 +6,13 @@ schema {
   type Place {
     name: String
     kind: String
-    lat: Float
-    lon: Float
+    at: Point from (lat, lon)
   }
   display { map { Place }: Default table { Place } graph }
 }
 unique { Place { name } }
 
-// Protomaps feature 17601594951856
-mutation { Place(name: "Bono Coffee Roasters" && kind: "cafe" && lat: 51.045687432533384 && lon: -114.06346768140793) { name kind lat lon } }
-// Protomaps feature 35184575399488
-mutation { Place(name: "Calgary Cenotaph" && kind: "memorial" && lat: 51.041174657490245 && lon: -114.0710985660553) { name kind lat lon } }
-// Protomaps feature 35184397808625
-mutation { Place(name: "Calgary Tower" && kind: "attraction" && lat: 51.044299581787385 && lon: -114.06313508749008) { name kind lat lon } }
-// Protomaps feature 35184542862839
-mutation { Place(name: "Central Memorial Park" && kind: "park" && lat: 51.04112237687767 && lon: -114.06990230083466) { name kind lat lon } }
-// Protomaps feature 17602008256619
-mutation { Place(name: "Conversation" && kind: "artwork" && lat: 51.045680687308305 && lon: -114.06584411859512) { name kind lat lon } }
-// Protomaps feature 17592763325345
-mutation { Place(name: "Devonian Gardens" && kind: "park" && lat: 51.046228733642494 && lon: -114.0687569975853) { name kind lat lon } }
-// Protomaps feature 35184841348230
-mutation { Place(name: "Enoch Park" && kind: "park" && lat: 51.041754799683105 && lon: -114.05797451734543) { name kind lat lon } }
-// Protomaps feature 35184579918820
-mutation { Place(name: "Glenbow Museum" && kind: "museum" && lat: 51.045129261837104 && lon: -114.06125754117966) { name kind lat lon } }
-// Protomaps feature 35184917634998
-mutation { Place(name: "Harley Hotchkiss Gardens" && kind: "park" && lat: 51.04724723945287 && lon: -114.07268106937408) { name kind lat lon } }
-// Protomaps feature 35184499830342
-mutation { Place(name: "Harmony Park" && kind: "park" && lat: 51.04890985148006 && lon: -114.06359910964966) { name kind lat lon } }
-// Protomaps feature 35184543931489
-mutation { Place(name: "Haultain Park" && kind: "park" && lat: 51.04012397450333 && lon: -114.06742662191391) { name kind lat lon } }
-// Protomaps feature 17597597433532
-mutation { Place(name: "Heliopolis Social Cafe" && kind: "cafe" && lat: 51.0448510171351 && lon: -114.06573683023453) { name kind lat lon } }
-// Protomaps feature 35184875338028
-mutation { Place(name: "Humpy Hollow Park" && kind: "park" && lat: 51.038098433316264 && lon: -114.06421065330505) { name kind lat lon } }
-// Protomaps feature 35184936056972
-mutation { Place(name: "James Short School Cupola" && kind: "memorial" && lat: 51.048557436673775 && lon: -114.06309217214584) { name kind lat lon } }
-// Protomaps feature 17602269138483
-mutation { Place(name: "Legacy" && kind: "artwork" && lat: 51.04808867024005 && lon: -114.0689206123352) { name kind lat lon } }
-// Protomaps feature 17597505631054
-mutation { Place(name: "National Music Centre" && kind: "museum" && lat: 51.04457951614813 && lon: -114.05290514230728) { name kind lat lon } }
-// Protomaps feature 35184500032819
-mutation { Place(name: "Olympic Plaza" && kind: "park" && lat: 51.045930259981475 && lon: -114.05909299850464) { name kind lat lon } }
-// Protomaps feature 35184543931590
-mutation { Place(name: "Rouleauville Square" && kind: "park" && lat: 51.037319225695285 && lon: -114.06611233949661) { name kind lat lon } }
-// Protomaps feature 52776576147254
-mutation { Place(name: "Sien Lok Park" && kind: "park" && lat: 51.051951636241 && lon: -114.06404167413712) { name kind lat lon } }
-// Protomaps feature 17593921775591
-mutation { Place(name: "Starbucks" && kind: "cafe" && lat: 51.04483415376609 && lon: -114.06286150217056) { name kind lat lon } }
-// Protomaps feature 35184543868741
-mutation { Place(name: "TELUS Spark Science Centre" && kind: "museum" && lat: 51.05387203936587 && lon: -114.02443885803223) { name kind lat lon } }
-// Protomaps feature 17601910444030
-mutation { Place(name: "Thanks for Being There to Hold My Ears as they Burn" && kind: "artwork" && lat: 51.03818950867637 && lon: -114.06417042016983) { name kind lat lon } }
-// Protomaps feature 35184553772291
-mutation { Place(name: "The Confluence Historic Site & Parkland" && kind: "museum" && lat: 51.044820663066474 && lon: -114.04442399740219) { name kind lat lon } }
-// Protomaps feature 17597201764402
-mutation { Place(name: "The Family of Man" && kind: "artwork" && lat: 51.04775985642132 && lon: -114.05995398759842) { name kind lat lon } }
-// Protomaps feature 35184658448182
-mutation { Place(name: "The Hangar Flight Museum" && kind: "museum" && lat: 51.09397322736521 && lon: -114.01376098394394) { name kind lat lon } }
-// Protomaps feature 35185644951273
-mutation { Place(name: "The Military Museums" && kind: "museum" && lat: 51.0135268483985 && lon: -114.11610335111618) { name kind lat lon } }
-// Protomaps feature 17601996318591
-mutation { Place(name: "Traveling Family" && kind: "artwork" && lat: 51.04177166417307 && lon: -114.05873626470566) { name kind lat lon } }
-// Protomaps feature 17605484404362
-mutation { Place(name: "Waves Coffee House" && kind: "cafe" && lat: 51.043412549688384 && lon: -114.06124413013458) { name kind lat lon } }
-// Protomaps feature 17594614827429
-mutation { Place(name: "Wonderland" && kind: "artwork" && lat: 51.047650251296346 && lon: -114.06209170818329) { name kind lat lon } }
-// Protomaps feature 17602235783132
-mutation { Place(name: "World's Tallest Mural" && kind: "artwork" && lat: 51.04309888028041 && lon: -114.06339257955551) { name kind lat lon } }
+mutation csv ["./samples/calgary.csv"] { Place(name: $name && kind: $kind) { name kind at } }
 
-query { Place { id name kind lat lon } }
+// Places within 1.5 km of the Calgary Tower
+query { Place(distance(at, point(51.044299581787385, -114.06313508749008)) <= 1500) order by distance(at, point(51.044299581787385, -114.06313508749008)) { id name kind at distance(at, point(51.044299581787385, -114.06313508749008)) } }
