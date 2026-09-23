@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "zega-wal"
 version.workspace = true
 edition.workspace = true

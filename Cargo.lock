@@ -2531,6 +2531,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zega"
+version = "0.1.0"
+
+[[package]]
 name = "zega-bench"
 version = "0.1.0"
 dependencies = [

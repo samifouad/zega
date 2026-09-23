@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "zega-bench"
 version.workspace = true
 edition = "2021"
