@@ -2428,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "zega"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "bincode",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "zega-bench"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "neo4rs",
  "serde_json",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "zega-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "num_cpus",
