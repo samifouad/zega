@@ -11,7 +11,7 @@ assert.deepEqual(await hashFiles('pkg'), source.sha256, 'pkg/ changed without a 
 await WebAssembly.compile(await readFile('pkg/zega_wasm_bg.wasm'));
 
 let count = 0;
-for (const dir of ['.', 'pkg', 'vendor', 'scripts', 'tests']) {
+for (const dir of ['.', 'pkg', 'vendor', 'scripts', 'tests', 'cli-tests']) {
   for (const file of await readdir(dir)) {
     if (!/\.(mjs|js)$/.test(file)) continue;
     execFileSync(process.execPath, ['--check', `${dir}/${file}`], { stdio: 'inherit' });

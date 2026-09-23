@@ -34,73 +34,88 @@ just like [cqx](https://cqx.bio) does for running queries without a server:
 - **Durable** — CRC32-framed write-ahead log with group commit, torn-write
   detection, snapshots, and automatic WAL replay on open.
 - **Optional server** — a tokio/axum HTTP server with token auth and
-  read/write lock classification.
+  ZQL execution on the blocking pool.
 - **JWT auth + policy engine** — HS256/RS256 token verification and row-level
   access control when you need multi-tenant semantics.
 
-## Run the server
+## Use the CLI
 
-The server binary is `zega-server`. It needs a data directory and a bearer
-token:
+Build the native executable with `cargo build --locked --release -p zega-cli`.
+The resulting binary is `.target/release/zega` when using the repository's
+`CARGO_TARGET_DIR=.target` convention (`.exe` on Windows).
 
-```bash
-ZEGA_DATA=./data ZEGA_SERVER_TOKEN=change-me cargo run --release -p zega-server
+```sh
+zega --help
+zega --version
+zega start --data ./data
+# http://127.0.0.1:9342
+zega explorer --data ./data
+# http://127.0.0.1:9343
 ```
 
-| Variable | Required | Default | Purpose |
-|---|---|---|---|
-| `ZEGA_DATA` | yes | — | directory for `wal.bin` and `snapshot.bin` |
-| `ZEGA_SERVER_TOKEN` | yes | — | bearer token for every route |
-| `ZEGA_SERVER_ADDR` | no | `127.0.0.1:7700` | listen address |
-| `ZEGA_SERVER_WORKERS` | no | number of CPUs | worker threads |
+The CLI locks its data directory for the life of the process; starting another
+CLI process against that directory fails instead of sharing the WAL. `start` defaults to port **9342** (ZEGA on a
+phone keypad); `explorer` defaults to **9343**. Both accept `--port 0` to ask the
+OS for an available port and print the actual URL. The default data directory
+is `./zega-data`. The explorer serves the embedded browser bundle and uses the
+native database for every query, import and graph edit; it never opens a browser
+automatically or reseeds an existing database. Its editor currently loads Monaco
+from the same CDN used by the standalone explorer, so editor startup needs a
+network connection even though the application assets and wasm are embedded.
 
-### Run a query over HTTP
+`zega start --host 0.0.0.0 --token-file ./token --data ./data` enables an
+explicit remote bind. The file must contain one nonempty bearer token (a final
+newline is fine). With a token file, every database route requires
+`Authorization: Bearer <token>`, including `/health`. Without one, only the exact
+address `127.0.0.1` is accepted. Explorer always binds to `127.0.0.1`.
+Configuration is through flags; product behavior does not use environment
+variables. The old server executable, environment-variable startup and `/cql`
+route have been removed.
 
-`POST /cql` executes a ZQL query. Reads and writes are classified
-automatically and take the appropriate lock:
+### Run ZQL over HTTP
 
-```bash
-curl -s http://127.0.0.1:7700/cql \
-  -H "Authorization: Bearer change-me" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "CREATE (n:Person {name: $name}) RETURN n",
-    "params": {"name": "Ada"}
-  }'
+`POST /zql` accepts `{ "schema": "...", "query": "..." }` and returns
+`{ "ok": true, "result": ... }`. Errors return `{ "ok": false, "error": "..." }`
+with an error status. `GET /health` returns `{ "ok": true }`.
+
+```sh
+curl -s http://127.0.0.1:9342/zql \
+  -H 'Content-Type: application/json' \
+  -d '{"schema":"type Player { name: String }","query":"mutation json [\"./players.json\"] { Player(name: $Name) { name } }"}'
+curl -s http://127.0.0.1:9342/zql \
+  -H 'Content-Type: application/json' \
+  -d '{"schema":"type Player { name: String }","query":"{ Player { name } }"}'
 ```
 
-```json
-{"count": 1, "ok": true, "rows": [{"n": {"id": 1, "labels": ["Person"], "name": "Ada"}}]}
-```
+Native load paths resolve against the process cwd. HTTP(S) loads use the library
+loader. `--allow-private-imports` explicitly permits private/loopback URLs for
+trusted callers; the default rejects them. Browser file-picker imports supply an
+optional `sources` object mapping literal ZQL locations to raw text. The engine
+parses and inserts that text. To execute a full ZQL file, set `document: true`
+and put the document in `query` (no separate schema needed).
 
-```bash
-curl -s http://127.0.0.1:7700/cql \
-  -H "Authorization: Bearer change-me" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "MATCH (n:Person) RETURN n.name AS name"}'
-```
+The explorer also uses authenticated `/graph` read/clear and graph edit routes.
+Requests execute on the blocking pool under a shared database gate; slow native
+loads do not block the HTTP health worker. See [data loading](docs/data-loading.md)
+for format, limits and WAL semantics.
+
+Release manifests contain `zega-darwin-arm64`, `zega-darwin-x64`, `zega-linux-x64`
+and `zega-windows-x64.exe`, with SHA-256 hashes. These are the artifact keys
+expected by the site's installer.
 
 ## Use it as a library
 
 Add `zega` to your `Cargo.toml` (path or git dependency for now):
 
 ```rust
-use std::collections::HashMap;
-use zega::{Zega, Value};
+use zega::Zega;
 
-// on-disk (wal.bin + snapshot.bin live in ./data)
-let zega = Zega::open("./data").build()?;
-
-// or purely in-memory
-let zega = Zega::in_memory().build()?;
-
-let mut params = HashMap::new();
-params.insert("name".to_string(), Value::String("Alice".to_string()));
-
-zega.query("CREATE (n:Person {name: $name})", params.clone())?;
-
-let rows = zega.query("MATCH (n:Person {name: $name}) RETURN n", params)?;
-assert_eq!(rows.len(), 1);
+// Disk databases replay their WAL on open; in_memory() has the same ZQL API.
+let db = Zega::open("./data").build()?;
+let schema = "type Person { name: String }";
+db.run_lang(schema, r#"mutation { Person(name: "Ada") { name } }"#)?;
+let result = db.run_lang(schema, "{ Person { name } }")?;
+assert_eq!(result[0]["name"], "Ada");
 
 ```
 
@@ -152,54 +167,38 @@ import init, { ZegaWasm } from "./pkg/zega_wasm.js";
 await init();
 const db = new ZegaWasm();
 
-db.query(
-  "CREATE (n:Person {name: $name})",
-  JSON.stringify({ name: "Ada" })
-);
-
-const rows = db.query(
-  "MATCH (n:Person {name: $name}) RETURN n",
-  JSON.stringify({ name: "Ada" })
-);
-console.log(JSON.parse(rows));
+const schema = 'type Person { name: String }';
+db.run(schema, 'mutation { Person(name: "Ada") { name } }');
+console.log(JSON.parse(db.run(schema, '{ Person { name } }')));
 
 ```
 
 ## The query language
 
-ZQL looks like Cypher and behaves like it. A few real queries:
+ZQL has explicit schemas, mutations and graph-shaped queries:
 
-```text
-// create
-CREATE (n:User:Agent {email: $e})
-
-// match with predicate, aggregate, order, page
-MATCH (u:User)-[:PLACED]->(o:Order)
-RETURN u.id, count(o) AS orders, sum(o.total) AS revenue
-ORDER BY revenue DESC LIMIT 20
-
-// variable-length traversal (subcategories up to 4 deep)
-MATCH (c:Category {id: $cid})-[:SUBCATEGORY*1..4]->(sub:Category)
-RETURN sub.id
-
-// recommendations: co-purchased products
-MATCH (pr:Product {id:$pid})<-[:CONTAINS]-(o:Order)-[:CONTAINS]->(rec:Product)
-RETURN rec.id, count(*) AS freq
-ORDER BY freq DESC LIMIT 10
-
-// merge with defaults (upsert)
-MERGE (u:User {email: $e})
-ON CREATE SET u.password = $p, u.created = datetime()
-ON MATCH SET u.password = coalesce(u.password, $p)
-
-// detach delete
-MATCH (s:Shop {id: $s}) DETACH DELETE s
+```zql
+schema {
+  type Team { name: String players -> Player[] }
+  type Player { name: String salary: Int }
+}
+mutation csv ["./players.csv"] {
+  Team(name: $Team) {
+    players -> Player(name: $Name && salary: $Salary) { name salary }
+  }
+}
+query {
+  Team {
+    name
+    players -> Player(salary > 10000000) { name salary }
+  }
+}
 ```
 
-Other supported pieces: `OPTIONAL MATCH`, `STARTS WITH`/`ENDS WITH`/
-`CONTAINS`, `IS NULL`, string/math functions (`toLower`, `replace`, `split`,
-`substring`, `size`…), `datetime()`, `timestamp()`, `duration({hours: 1})`,
-`DISTINCT`, `CASE`, `FOREACH`, `UNWIND`, and `//` line comments.
+Use `run_lang(schema, statement)` for one operation or `apply_zql(document)` for
+an entire file. The [data-loading guide](docs/data-loading.md) covers raw sources,
+JSON/CSV types and linking. The conformance corpus lives in
+[zegadb/testsuite](https://github.com/zegadb/testsuite).
 
 ## How persistence works
 
@@ -232,7 +231,8 @@ consumer that depends on `zega` by path and is never published:
 | Crate | What it is |
 |---|---|
 | `zega` | the database: the only thing on crates.io |
-| `zega-server` | the optional HTTP server binary |
+| `zega-server` | reusable ZQL HTTP service |
+| `zega-cli` | `zega start` and the embedded `zega explorer` |
 | `zega-wasm` | wasm-bindgen wrapper for the browser (in-memory) |
 | `zega-bench` | benchmarks against Neo4j |
 

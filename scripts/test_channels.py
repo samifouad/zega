@@ -232,7 +232,7 @@ class Release(Fixture):
         for platform in ("linux-x64", "darwin-arm64", "darwin-x64", "windows-x64"):
             native = artifacts / f"native-{platform}"
             native.mkdir()
-            name = f"zega-server-{platform}" + (".exe" if platform == "windows-x64" else "")
+            name = f"zega-{platform}" + (".exe" if platform == "windows-x64" else "")
             (native / name).write_bytes(platform.encode())
         with tarfile.open(artifacts / "npm-package/package.tgz", "w:gz") as archive:
             for name, payload in {
@@ -246,6 +246,10 @@ class Release(Fixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         channels.verify(self.repo / "release", self.tag, self.commit)
         self.assertEqual(len(channels.read_json(self.repo / "release/release.json")["artifacts"]), 6)
+        inventory = channels.read_json(self.repo / "release/manifest.json")["artifacts"]
+        for name in ("zega-linux-x64", "zega-darwin-arm64", "zega-darwin-x64", "zega-windows-x64.exe"):
+            self.assertEqual(inventory[name], channels.digest(self.repo / "release" / name))
+        self.assertFalse(any(name.startswith("zega-server-") for name in inventory))
         (wasm / "engine.wasm").write_bytes(b"different-from-tested-package")
         result = self.command("prepare", self.tag, "artifacts", "bad-release")
         self.assertNotEqual(result.returncode, 0)

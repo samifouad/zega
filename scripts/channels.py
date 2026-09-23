@@ -18,6 +18,7 @@ import tomllib
 CANARY = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-canary-([0-9a-f]{7})")
 BUCKETS = ("zega-releases", "zega-wasm")
 METADATA = ("manifest.json", "release.json")
+NATIVE_PLATFORMS = ("linux-x64", "darwin-arm64", "darwin-x64", "windows-x64")
 
 
 def run(*args):
@@ -124,12 +125,22 @@ def repack(source, destination, expected, target):
             raise ValueError("npm archive has no package.json")
 
 
+def native_artifact(platform):
+    if platform not in NATIVE_PLATFORMS:
+        raise ValueError(f"Unsupported native platform: {platform}")
+    return f"zega-{platform}" + (".exe" if platform == "windows-x64" else "")
+
+
+def artifact_name(platform):
+    print(native_artifact(platform))
+
+
 def prepare(tag, artifacts, destination):
     base, commit = identity(tag)
     source, dest = Path(artifacts), Path(destination)
     dest.mkdir(parents=True, exist_ok=False)
-    for platform in ("linux-x64", "darwin-arm64", "darwin-x64", "windows-x64"):
-        name = f"zega-server-{platform}" + (".exe" if platform == "windows-x64" else "")
+    for platform in NATIVE_PLATFORMS:
+        name = native_artifact(platform)
         shutil.copyfile(source / f"native-{platform}" / name, dest / name)
     shutil.copytree(source / "npm-package" / "wasm", dest / "wasm")
     shutil.copyfile(source / "npm-package" / "package.tgz", dest / "package.tgz")
@@ -249,11 +260,11 @@ def promote(tag, directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["tag-canary", "resolve", "prepare", "publish-r2", "promote", "repack"])
+    parser.add_argument("command", choices=["tag-canary", "resolve", "prepare", "publish-r2", "promote", "repack", "artifact-name"])
     parser.add_argument("args", nargs="*")
     args = parser.parse_args()
     commands = {"tag-canary": tag_canary, "resolve": resolve, "prepare": prepare,
-                "publish-r2": publish_r2, "promote": promote, "repack": repack}
+                "publish-r2": publish_r2, "promote": promote, "repack": repack, "artifact-name": artifact_name}
     try:
         commands[args.command](*args.args)
     except (ValueError, RuntimeError, KeyError, OSError, subprocess.CalledProcessError) as error:
