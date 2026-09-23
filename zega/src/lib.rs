@@ -14,11 +14,11 @@ use crate::wal::{Operation, Wal};
 
 pub mod config;
 pub mod context;
-pub mod jwt;
 mod graph;
+mod jwt;
 mod lang;
 mod parser;
-pub mod planner;
+mod planner;
 pub mod policy;
 mod v2;
 mod validation;
