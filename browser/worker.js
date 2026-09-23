@@ -7,7 +7,7 @@ export default {
     if (asset.ok) {
       if (pathname.endsWith('.wasm')) {
         response.headers.set('Content-Type', 'application/wasm');
-      } else if (pathname.endsWith('.js')) {
+      } else if (/\.m?js$/.test(pathname)) {
         response.headers.set('Content-Type', 'text/javascript; charset=utf-8');
       }
     }

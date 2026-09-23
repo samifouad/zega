@@ -602,3 +602,39 @@ pre.result-json {
 .empty { color: var(--dim); font-size: 12.5px; padding: 18px 6px; text-align: center; }
 
 #csv-modal[hidden] { display: none; }
+
+/* Schema-declared views share the explorer palette and inspector. */
+.pane-graph { position: relative; }
+#view-tabs { display: flex; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--rule); }
+#view-tabs [aria-selected="true"] { background: var(--ink); color: var(--panel); }
+#view-tabs button { border-color: transparent; }
+#graph:has(.map-view), #graph:has(.table-view) { padding: 0; }
+.map-view { position: relative; flex: 1; min-height: 0; }
+.map-canvas { position: absolute; inset: 0; }
+.map-notice, .map-count { position: absolute; z-index: 2; background: var(--panel); color: var(--ink); padding: 5px 9px; border: 1px solid var(--rule); border-radius: 4px; font-size: 12px; }
+.map-count { top: 10px; left: 10px; }
+.map-notice { bottom: 35px; left: 10px; max-width: calc(100% - 20px); }
+.maplibregl-ctrl-attrib { background: var(--panel) !important; color: var(--ink) !important; }
+.maplibregl-ctrl-attrib a { color: inherit !important; }
+.table-view { overflow: auto; flex: 1; padding: 8px 12px 20px; }
+.table-view h3 { font-size: 13px; margin: 12px 0 7px; }
+.table-view table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.table-view th, .table-view td { text-align: left; border-bottom: 1px solid var(--rule); padding: 7px 9px; white-space: nowrap; }
+.table-view th { position: sticky; top: 0; background: var(--panel); }
+.table-view th button { border: 0; padding: 0; font-weight: 600; background: none; }
+.table-view th[aria-sort="ascending"] button::after { content: ' ↑'; }
+.table-view th[aria-sort="descending"] button::after { content: ' ↓'; }
+.table-view tbody tr:hover { background: var(--ground); }
+.table-view td { cursor: pointer; }
+.table-view .chip { margin-right: 4px; color: var(--ink); background: var(--ground); border-color: var(--rule); }
+#node-inspector { position: absolute; z-index: 5; right: 12px; top: 48px; width: min(300px, 85%); max-height: calc(100% - 60px); overflow: auto; padding: 15px; background: var(--panel); border: 1px solid var(--strongRule); border-radius: 6px; box-shadow: 0 6px 24px #0003; }
+#node-inspector > button { float: right; }
+#node-inspector h3 { margin-top: 4px; font-size: 15px; }
+#node-inspector dt { color: var(--soft); font-size: 11px; margin-top: 8px; }
+#node-inspector dd { margin: 0; overflow-wrap: anywhere; }
+.timeline-view { overflow: auto; }
+.timeline-view li { margin: 8px; }
+[data-theme] button { color: var(--ink); background-color: var(--panel); border-color: var(--rule); }
+[data-theme] .graph-wrap { background: var(--ground); }
+[data-theme] .graph-wrap .cap, [data-theme] .graph-wrap .rlab { fill: var(--ink); stroke: var(--ground); }
+[data-theme] .graph-tip, [data-theme] .graph-menu, [data-theme] .graph-physics { background: var(--panel); color: var(--ink); border-color: var(--rule); }

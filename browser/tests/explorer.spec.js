@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './offline.js';
 
 test('Wrangler serves modules and wasm with the correct MIME types', async ({ request }) => {
   for (const [path, type] of [['/', 'text/html'], ['/repl.js', 'text/javascript'], ['/pkg/zega_wasm.js', 'text/javascript'], ['/pkg/zega_wasm_bg.wasm', 'application/wasm']]) {

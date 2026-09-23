@@ -440,7 +440,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     const entry = nodeEl && [...circles.values()].find((item) => item.g === nodeEl);
     if (entry) {
       userInteracted = true;
-      drag = { node: entry.node };
+      drag = { node: entry.node, sx: event.clientX, sy: event.clientY };
       sim.alphaTarget(0.25).restart();
       drag.node.fx = drag.node.x;
       drag.node.fy = drag.node.y;
@@ -461,8 +461,9 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
       drag.node.fy = point.y;
     }
   });
-  svg.addEventListener('pointerup', () => {
+  svg.addEventListener('pointerup', (event) => {
     if (drag && drag.node) {
+      if (Math.hypot(event.clientX - drag.sx, event.clientY - drag.sy) < 5) container._actions?.onInspect?.(drag.node);
       drag.node.fx = null;
       drag.node.fy = null;
       sim.alphaTarget(0);

@@ -1,5 +1,8 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
-import { renderGraph } from './graph.js';
+import { renderGraph, stopSim } from './graph.js';
+import { renderMap } from './map.js';
+import { renderTable } from './table.js';
+import { applyTheme } from './theme.js';
 import { createEditors } from './editor.js';
 import { openCsv, parseSchema } from './csv.js';
 
@@ -205,6 +208,11 @@ const SEEDS = [
 
 const $ = (sel) => document.querySelector(sel);
 const graphEl = $('#graph');
+let theme = localStorage.getItem('zega.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+if (!['light', 'dark'].includes(theme)) theme = 'light';
+applyTheme(theme);
+let activeView = null, displayKey = '', disposeView = null;
+
 
 const editorsReady = createEditors({
   schema: localStorage.getItem(LS_SCHEMA) || SCHEMA,
@@ -221,6 +229,18 @@ if (saved) {
 window.__zega = db;
 
 const { schema: schemaEditor, query: queryEditor, output: outputEditor, raw: rawEditor, monaco } = await editorsReady;
+
+monaco.editor.setTheme(theme === 'dark' ? 'vs-dark' : 'vs');
+$('#btn-theme').textContent = theme === 'dark' ? 'Light' : 'Dark';
+$('#btn-theme').onclick = () => {
+  theme = theme === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('zega.theme', theme);
+  applyTheme(theme);
+  monaco.editor.setTheme(theme === 'dark' ? 'vs-dark' : 'vs');
+  $('#btn-theme').textContent = theme === 'dark' ? 'Light' : 'Dark';
+  resetView();
+  drawGraph();
+};
 
 let suppress = 0;
 function setQuiet(editor, value) {
@@ -312,7 +332,7 @@ function showThrown(error) {
 }
 
 function looksLikeZqlFile(text) {
-  return /^\s*schema\b/.test(text);
+  return /^(?:\s|\/\/[^\n]*(?:\n|$))*schema\b/.test(text);
 }
 
 async function loadSources(source, document = false, provided = {}) {
@@ -383,6 +403,20 @@ $('#btn-csv').onclick = () => {
   });
 };
 $('#btn-seed').onclick = () => reseed();
+$('#btn-calgary').onclick = async () => {
+  try {
+    const response = await fetch('./samples/calgary.zql');
+    if (!response.ok) throw new Error(`Cannot load Calgary: HTTP ${response.status}`);
+    const source = await response.text();
+    db.schema(source); // Validate before replacing the current sample.
+    hideTour();
+    clearDatabase();
+    setQuiet(schemaEditor, source);
+    setQuiet(queryEditor, '{ Place { id name kind lat lon } }');
+    await run(queryText(), { apply: true });
+    persist();
+  } catch (error) { showThrown(error); }
+};
 $('#btn-clear').onclick = () => {
   pauseAutoplay();
   clearDatabase();
@@ -412,11 +446,12 @@ function scheduleRun() {
     const report = review();
     mark(report.diagnostics);
     if (report.diagnostics.length || report.failed) {
+      drawGraph();
       queryTime.textContent = '';
       showReport(report);
       return;
     }
-    if (!source || isMutation(source)) return;
+    if (!source || isMutation(source)) { drawGraph(); return; }
     run(source);
   }, 350);
 }
@@ -550,21 +585,111 @@ function highlights(value) {
   return null;
 }
 
+function resetView() {
+  disposeView?.();
+  disposeView = null;
+  stopSim(graphEl);
+  graphEl._graph = null;
+  graphEl.replaceChildren();
+}
+
+function inspectNode(node) {
+  document.getElementById('node-inspector')?.remove();
+  const panel = document.createElement('aside');
+  panel.id = 'node-inspector';
+  panel.setAttribute('aria-label', 'Node inspector');
+  const close = document.createElement('button');
+  close.textContent = 'Close';
+  close.onclick = () => panel.remove();
+  const title = document.createElement('h3');
+  title.textContent = nodeCaption(node);
+  const props = document.createElement('dl');
+  for (const [key, value] of Object.entries(node)) {
+    if (['x', 'y', 'vx', 'vy', 'fx', 'fy', 'index'].includes(key)) continue;
+    const term = document.createElement('dt');
+    const detail = document.createElement('dd');
+    term.textContent = key;
+    detail.textContent = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    props.append(term, detail);
+  }
+  panel.append(close, title, props);
+  graphEl.parentElement.append(panel);
+}
+
+// Projection values carry coordinates. Resolve their stored identity for the
+// shared inspector; an explicit `id` also distinguishes equal-valued nodes.
+function mapResults(value, nodes, into = new Map()) {
+  if (Array.isArray(value)) value.forEach((item) => mapResults(item, nodes, into));
+  else if (value && typeof value === 'object') {
+    if (typeof value.lat === 'number' && typeof value.lon === 'number') {
+      const matches = nodes.filter((node) => value.id != null ? node.id === value.id :
+        Object.entries(value).filter(([, v]) => v == null || typeof v !== 'object').every(([key, v]) => node[key] === v));
+      for (const node of matches) into.set(node.id, { ...node, lat: value.lat, lon: value.lon });
+    }
+    Object.values(value).forEach((child) => mapResults(child, nodes, into));
+  }
+  return [...into.values()];
+}
+
 function drawGraph() {
-  let graph;
-  try {
-    graph = storedGraph();
-  } catch (e) {
-    graphEl.innerHTML = `<div class="empty">${e}</div>`;
-    rawEditor.setValue(String(e));
-    rawCount.textContent = '';
+  const graph = storedGraph();
+  showRaw(graph);
+  let schema;
+  try { schema = JSON.parse(db.schema(schemaText())); }
+  catch {
+    resetView();
+    $('#view-tabs').replaceChildren();
+    graphEl.textContent = schemaText().trim() ? 'Fix the schema error to display your data.' : 'No schema yet.';
     return;
   }
-  showRaw(graph);
-  renderGraph(graphEl, graph, highlights(lastValue), {
-    onNode: openNodeMenu,
-    onEdge: openEdgeMenu,
-  });
+  const key = JSON.stringify(schema.display);
+  if (key !== displayKey) {
+    resetView();
+    displayKey = key;
+    activeView = schema.display.default;
+  }
+  const tabs = $('#view-tabs');
+  tabs.replaceChildren();
+  for (const view of schema.display.views) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.role = 'tab';
+    button.textContent = view.kind[0].toUpperCase() + view.kind.slice(1);
+    button.dataset.view = view.kind;
+    button.setAttribute('aria-selected', String(view.kind === activeView));
+    button.onclick = () => { activeView = view.kind; resetView(); drawGraph(); };
+    tabs.append(button);
+  }
+  const view = schema.display.views.find((view) => view.kind === activeView);
+  const types = schema.types.filter((type) => !view.types || view.types.includes(type.name));
+  const allowed = new Set(types.map((type) => type.name));
+  const nodes = graph.nodes.filter((node) => node.labels.some((label) => allowed.has(label)));
+  if (activeView === 'graph') {
+    const ids = new Set(nodes.map((node) => node.id));
+    renderGraph(graphEl, { nodes, rels: graph.rels.filter((rel) => ids.has(rel.from) && ids.has(rel.to)) }, highlights(lastValue), {
+      onNode: openNodeMenu, onEdge: openEdgeMenu, onInspect: inspectNode,
+    });
+  } else if (activeView === 'table') {
+    renderTable(graphEl, graph, types, inspectNode);
+  } else if (activeView === 'map') {
+    disposeView?.();
+    disposeView = renderMap(graphEl, mapResults(lastValue, nodes), theme, inspectNode);
+  } else if (activeView === 'timeline') {
+    const list = document.createElement('ol');
+    list.className = 'timeline-view';
+    const dated = nodes.map((node) => ({ node, field: types.find((type) => node.labels.includes(type.name))?.timeline_field }))
+      .filter(({ node, field }) => field && node[field] != null)
+      .sort((a, b) => String(a.node[a.field]).localeCompare(String(b.node[b.field]), undefined, { numeric: true }));
+    for (const { node, field } of dated) {
+      const entry = document.createElement('li');
+      const button = document.createElement('button');
+      button.textContent = `${node[field]} · ${nodeCaption(node)}`;
+      button.onclick = () => inspectNode(node);
+      entry.append(button);
+      list.append(entry);
+    }
+    graphEl.replaceChildren(list);
+  }
 }
 
 function closeMenu() {
@@ -730,9 +855,13 @@ let opening = { nodes: [] };
 try { opening = storedGraph(); } catch (e) { showThrown(e); }
 
 const defaultSchema = schemaText().trim() === SCHEMA.trim();
-if (!saved || !opening.nodes.length || !defaultSchema) {
+if (!saved && !localStorage.getItem(LS_SCHEMA)) {
   await reseed();
-} else {
+} else if (defaultSchema) {
   showTour(0);
   startAutoplay();
+} else {
+  hideTour();
+  drawGraph();
+  if (queryText().trim() && !isMutation(queryText())) await run(queryText());
 }
