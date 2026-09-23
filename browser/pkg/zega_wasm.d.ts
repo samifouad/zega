@@ -11,10 +11,6 @@ export class ZegaWasm {
      */
     apply(source: string): string;
     apply_with_sources(source: string, sources: string): string;
-    /**
-     * Parse and type-check. Returns a JSON array of diagnostics. An empty
-     * array means the schema and query are clean.
-     */
     check(schema: string, source: string): string;
     /**
      * `field` is the relationship name on the source node's type.
@@ -49,6 +45,11 @@ export class ZegaWasm {
      * bytes; JSON/CSV parsing, binding and insertion stay in the engine.
      */
     run_with_sources(schema: string, source: string, sources: string): string;
+    /**
+     * Parse and type-check. Returns a JSON array of diagnostics. An empty
+     * array means the schema and query are clean.
+     */
+    schema(source: string): string;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -71,6 +72,7 @@ export interface InitOutput {
     readonly zegawasm_query: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_run: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_run_with_sources: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly zegawasm_schema: (a: number, b: number, c: number) => [number, number, number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

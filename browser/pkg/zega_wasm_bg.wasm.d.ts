@@ -17,6 +17,7 @@ export const zegawasm_preview_import: (a: number, b: number, c: number) => [numb
 export const zegawasm_query: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const zegawasm_run: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const zegawasm_run_with_sources: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const zegawasm_schema: (a: number, b: number, c: number) => [number, number, number, number];
 export const __wbindgen_externrefs: WebAssembly.Table;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

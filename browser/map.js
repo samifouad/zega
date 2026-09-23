@@ -42,7 +42,14 @@ export function renderMap(container, nodes, theme, onNode) {
     map.fitBounds(bounds, { padding: 55, maxZoom: 14, duration: 0 });
   }
   map.on('click', 'zega-nodes', (event) => {
-    const node = plotted.find((node) => node.id === event.features[0]?.properties.id);
+    // Dense city markers overlap: choose the point nearest the click, rather
+    // than whichever feature happens to be last in the source's draw order.
+    const distance = (feature) => {
+      const point = map.project(feature.geometry.coordinates);
+      return Math.hypot(point.x - event.point.x, point.y - event.point.y);
+    };
+    const feature = [...event.features].sort((a, b) => distance(a) - distance(b))[0];
+    const node = plotted.find((node) => node.id === feature?.properties.id);
     if (node) onNode(node);
   });
   map.on('mouseenter', 'zega-nodes', () => { map.getCanvas().style.cursor = 'pointer'; });

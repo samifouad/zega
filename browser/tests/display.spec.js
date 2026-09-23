@@ -15,7 +15,10 @@ async function tileFixture(page) {
   const archive = await readFile('tests/fixtures/calgary.pmtiles');
   await page.route('https://tiles.zega.dev/**', async (route) => {
     const url = new URL(route.request().url());
-    if (url.pathname !== '/calgary.pmtiles') return route.fulfill({ status: 404 });
+    if (url.pathname !== '/calgary.pmtiles') {
+      try { return route.fulfill({ body: await readFile(`tests/fixtures${decodeURIComponent(url.pathname)}`), contentType: url.pathname.endsWith('.json') ? 'application/json' : url.pathname.endsWith('.png') ? 'image/png' : 'application/x-protobuf' }); }
+      catch { return route.fulfill({ status: 404 }); }
+    }
     const range = /bytes=(\d+)-(\d+)/.exec(route.request().headers().range || '');
     if (!range) return route.fulfill({ body: archive, contentType: 'application/octet-stream' });
     const start = Number(range[1]), end = Math.min(Number(range[2]), archive.length - 1);
@@ -69,6 +72,7 @@ test('Calgary map draws query markers, attribution, theme, and the shared inspec
   await expect(page.locator('.map-count')).toHaveText('30 places');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('© OpenStreetMap contributors');
   await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).length || 0)).toBe(30);
+  await expect(page.locator('.map-notice')).toBeHidden();
   const position = await page.evaluate(() => {
     const map = document.querySelector('#graph')._map;
     const feature = map.queryRenderedFeatures({ layers: ['zega-nodes'] }).find((f) => f.properties.name === 'Calgary Tower');
@@ -80,7 +84,7 @@ test('Calgary map draws query markers, attribution, theme, and the shared inspec
   await page.locator('#btn-theme').click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).length || 0)).toBe(30);
-  await setEditor(page, 'query', '{ Place(kind = "cafe") { id name kind lat lon } }');
+  await setEditor(page, 'query', '{ Place(kind CONTAINS "cafe") { id name kind lat lon } }');
   await expect(page.locator('.map-count')).toHaveText('4 places');
   await page.reload();
   await expect(page.locator('.map-count')).toHaveText('4 places');

@@ -638,3 +638,6 @@ pre.result-json {
 [data-theme] .graph-wrap { background: var(--ground); }
 [data-theme] .graph-wrap .cap, [data-theme] .graph-wrap .rlab { fill: var(--ink); stroke: var(--ground); }
 [data-theme] .graph-tip, [data-theme] .graph-menu, [data-theme] .graph-physics { background: var(--panel); color: var(--ink); border-color: var(--rule); }
+.maplibregl-ctrl-group { background: var(--panel); }
+.maplibregl-ctrl-group button + button { border-top-color: var(--rule); }
+[data-theme="dark"] .maplibregl-ctrl-icon { filter: invert(1); }

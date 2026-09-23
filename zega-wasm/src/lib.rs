@@ -64,13 +64,13 @@ impl ZegaWasm {
             .map_err(to_js_error)
     }
 
-    /// Parse and type-check. Returns a JSON array of diagnostics. An empty
-    /// array means the schema and query are clean.
+    /// Return checked schema types and the explicit display configuration as JSON.
     pub fn schema(&self, source: String) -> Result<String, JsValue> {
         let schema = self.inner.schema(&source).map_err(to_js_error)?;
         serde_json::to_string(&schema).map_err(to_js_error)
     }
 
+    /// Return a diagnostic report with rendered text and editor source spans.
     pub fn check(&self, schema: String, source: String) -> String {
         serde_json::to_string(&zega::diagnose(&schema, &source))
             .unwrap_or_else(|_| "[]".into())

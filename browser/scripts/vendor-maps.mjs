@@ -1,7 +1,6 @@
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 const copies = {
   'maplibre-gl/dist': ['maplibre-gl.mjs', 'maplibre-gl-shared.mjs', 'maplibre-gl-worker.mjs', 'maplibre-gl.css'],
-  'pmtiles/dist/esm': ['index.js'],
   '@protomaps/basemaps/dist/esm': ['index.js'],
 };
 for (const [source, files] of Object.entries(copies)) {
@@ -13,4 +12,7 @@ for (const [source, files] of Object.entries(copies)) {
     await writeFile(`vendor/${name}/${file}`, contents);
   }
 }
+await mkdir('vendor/pmtiles', { recursive: true });
+const pmtiles = await readFile('node_modules/pmtiles/dist/pmtiles.js', 'utf8');
+await writeFile('vendor/pmtiles/index.js', pmtiles.replace(/^\/\/# sourceMappingURL=.*$/gm, '') + '\nexport const Protocol = pmtiles.Protocol;\n');
 // NPM distributions omit some licenses; source licenses are pinned in vendor/README.md.
