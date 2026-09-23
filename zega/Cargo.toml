@@ -1,0 +1,11 @@
+[package]
+name = "zega"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "zega, a graph database built for speed. The engine is developed at github.com/zegadb/zega and will be published under this name."
+homepage = "https://zega.dev"
+readme = "README.md"
+keywords = ["graph", "database", "query", "zql"]
+categories = ["database-implementations"]

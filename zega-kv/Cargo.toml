@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "zega-kv"
 version.workspace = true
 edition.workspace = true
