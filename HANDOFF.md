@@ -87,6 +87,31 @@ Logs are in `.tmp/`: cargo-check.log, cargo-clippy.log, native-build.log,
 native-smoke.log, npm-build.log, npm-pack.log, npm-test.log, npm-negative.log,
 channel-proofs.log, npm-stable-test.log, and mutation-{promoted,duplicate,integrity}.log.
 
+## GitHub run evidence
+
+Channel implementation commit: `bca82a9f14ef5997a95ec61fc8edbfc1bc4d9e91`.
+Repository commits use Sami Fouad <sfouad@gmail.com>, have SSH signature
+headers, and contain no agent attribution. Main and codex/npm were not pushed.
+
+- [Tag canary — success](https://github.com/zegadb/zega/actions/runs/35805409630):
+  both required refusal messages printed; three tag tests plus two release
+  assembly/ref-validation tests passed. Real tag job skipped on the branch.
+- [Promote — success](https://github.com/zegadb/zega/actions/runs/35805409624):
+  four promotion proofs passed. The production script printed the release.json
+  commit mismatch and exited nonzero before any writes; the test asserted it.
+  Actual promotion and npm jobs skipped on the branch.
+- [Explorer — initial failure](https://github.com/zegadb/zega/actions/runs/35805409602):
+  existing browser build tried to copy nonexistent browser/LICENSE. Fixed to
+  copy ../LICENSE. Local explorer build passes and its emitted license exactly
+  matches the repository license. Both existing Explorer Playwright tests also
+  pass locally: real editor/Run button/WASM graph flow and HTTP MIME checks.
+  No product behavior changed.
+
+Workflow logs are saved in `.tmp/github-{tag-proof,promotion-proof,explorer-failed}.log`.
+The real npm archives also pass a byte comparison: only package/package.json
+changes, and only its version field; the other nine members are identical.
+See `.tmp/npm-byte-proof.log` for archive hashes.
+
 ## Credential blocker — needs Sami
 
 Read-only GitHub secret-name inspection found the configured names reversed:
