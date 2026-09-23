@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 
 async function start(directory) {
-  const child = spawn(resolve('../.target/debug/zega'), ['explorer', '--port', '0', '--data', directory], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(resolve('../.target/debug/zega'), ['explorer', '--port', '0', '--data', directory], { cwd: directory, stdio: ['ignore', 'pipe', 'pipe'] });
   let stderr = '';
   child.stderr.on('data', (data) => { stderr += data; });
   const url = await new Promise((resolve, reject) => {
@@ -103,6 +103,9 @@ test('embedded Calgary Point map uses native storage and survives reload and res
     }
     const names = expected.map((row) => row.name).sort();
     await expect.poll(markers).toEqual(names);
+    await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.loaded())).toBe(true);
+    await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map
+      ?.queryRenderedFeatures().filter((feature) => feature.source === 'basemap').length || 0)).toBeGreaterThan(0);
     await expect(page.locator('.map-notice')).toBeHidden();
     await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('© OpenStreetMap contributors');
     await page.screenshot({ path: '../.tmp/cli-calgary-map.png', fullPage: true });
