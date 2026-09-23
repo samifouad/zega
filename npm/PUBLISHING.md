@@ -1,123 +1,141 @@
-# Building and releasing `zega`
+# Releasing zegadb
 
-No package has been published by this change. `npm-release.yml` has a literal
-`if: ${{ false }}` on its build job; its dependent publisher cannot run.
-Only Ava may merge/enable the workflow, and only Sami may promote a release.
+The unscoped npm package is **zegadb**. The name zega is unavailable (npm's
+similarity filter matched egg); npm organizations do not own unscoped names.
+The repository and Rust crate names remain zega.
 
-## Local build and consumer checks
+## Build once, promote the tested payload
 
-Use Node >=22.14 (CI uses 24), Rust 1.96.0 with `wasm32-unknown-unknown`,
-wasm-pack 0.15.0, and sccache. From the repository root:
+This follows [RFD 68](https://github.com/dekaruntime/rfd/issues/68) and dsc's
+`tag-canary.yml`, `release.yml`, and `promote.yml`.
+
+| Channel | Git / R2 prefix | npm version | npm dist-tag |
+| --- | --- | --- | --- |
+| canary | `v<V>-canary-<sha7>` | `<V>-canary.<sha7>` | `canary` |
+| stable | `v<V>` | `<V>` | `latest` |
+
+`Cargo.toml` keeps a plain stable workspace version. Every main push runs
+`tag-canary.yml`: it refuses an already-promoted version or existing canary
+tag, otherwise pushes the tag and explicitly dispatches `release.yml` against
+it. GitHub's built-in token does not trigger workflows from its own tag pushes.
+A user-pushed canary tag also triggers the build; a plain stable tag never does.
+
+Release builds zega-server on Linux x64, macOS arm64/x64, and Windows x64. It
+starts each resulting binary and executes an authenticated HTTP query. The
+npm branch's builder compiles WASM once, stamps zegadb's canary version, packs,
+and runs installed-tarball consumers in Node, Chromium, Vite, esbuild and Next.
+The same WASM files and tested npm tarball, plus native binaries, are stored in
+both `zega-releases/<CANARY>/` and `zega-wasm/<CANARY>/`. Each has a checksum
+inventory in `manifest.json` and `release.json`. Readback is verified before
+`canary/` and `canary.json` advance. Existing canary prefixes are immutable.
+
+Sami promotes with **Actions → Promote → Run workflow → Branch: main → canary:
+full tested tag → Run workflow**. Promotion resolves the tag's commit, refuses
+an existing stable tag, and reads the canary's own `release.json` from R2.
+Its commit must match the tag. Both bucket copies and every payload checksum
+are checked before any writes. It copies objects to `v<V>/`, rewrites only
+`version`, `tag`, `channel`, and `promoted_from` in both metadata files, verifies
+readback, creates the stable tag at the canary commit, then advances `latest/`
+and `latest.json` in both buckets. No compilation or dependency installation
+occurs in the promotion job. The npm publishing job only installs the npm CLI.
+
+**R2 payload artifacts are byte-identical between canary and stable.** The two
+JSON bookkeeping files intentionally differ. Even R2's `package.tgz` remains
+the original canary archive, with unchanged checksum. **npm tarballs differ by
+their package.json version string.** Promotion repacks that R2 archive locally
+for npm, preserving every other file byte and package field. It never uploads
+the repacked archive over the original R2 payload or pretends the tarballs are
+byte-identical. Tar/gzip container encoding can also change during repacking.
+
+If a run stops after copying objects, before tagging, rerun the same canary;
+readback gates still apply. If the stable tag was pushed but pointer updates
+failed, do not delete or move the tag: Ava/Sami must inspect the recorded commit
+and hashes and recover the pointers. Promotion deliberately refuses an existing
+stable tag. A canary upload interrupted partway leaves a prefix that is refused
+on rerun; inspect and remove only that incomplete prefix before retrying. npm
+publishing failures can be retried using GitHub's **Re-run failed jobs**; never
+rebuild or replace an already-published npm version.
+
+## Environments and compilation
+
+All PR jobs declare `public-ci`. All publishing and tagging jobs declare
+`release`. Compilation uses the matrix's sccache bucket and a job-level
+`RUSTC_WRAPPER: sccache`, including wasm-pack installation. The cache setup
+fails closed on absent credentials or inaccessible bucket. Release compilation
+also uses the limited public-ci cache identity; full R2 keys are used only by
+copy/upload jobs. No PR job references full release credentials.
+
+| Environment | Secret names |
+| --- | --- |
+| release | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` |
+| public-ci | `R2_ACCOUNT_ID`, `R2_SCCACHE_ACCESS_KEY_ID`, `R2_SCCACHE_SECRET_ACCESS_KEY` |
+
+The endpoint is always composed from the account ID:
+`https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com`.
+Cache buckets: `zega-sccache-{linux-x64,darwin-arm64,darwin-x64,windows-x64}`.
+There is no stored npm credential or crates.io publisher.
+
+## Sami's npm clicks, before enabling publication
+
+Both npm jobs have a literal `if: ${{ false }}`. Keep them disabled until Sami
+has configured trust. Existing npm settings from the old npm branch, if any,
+need replacing: the package is zegadb, the environment is release, and there
+is no longer an npm-release.yml workflow.
+
+1. Sign in to npmjs.com → profile → **Packages** → **zegadb** → **Settings** →
+   **Trusted publishing** → **Add trusted publisher** → **GitHub Actions**.
+   The package must already exist under Sami's user account. If it does not,
+   stop at this step and resolve package creation with npm; this task does not
+   bootstrap by publishing a placeholder or adding credentials.
+2. Add a connection with **Organization or user: zegadb**, **Repository: zega**,
+   **Workflow filename: release.yml**, **Environment name: release**. Under
+   **Allowed actions**, allow direct **npm publish**. Save and complete 2FA.
+3. Add another connection with the same fields except **Workflow filename:
+   promote.yml**. This covers stable publication. npm currently supports
+   multiple trusted publishers. OIDC's caller identity on the automatically
+   dispatched canary path must be confirmed by the first real publish; if npm
+   reports `tag-canary.yml` as caller, configure that exact additional identity
+   in the same release environment before retrying the failed npm job.
+4. **Settings → Publishing access → Require two-factor authentication and
+   disallow tokens → Update Package Settings**.
+5. Ava reviews a PR removing the two literal false guards only after that setup.
+   npm 11.16.0 (>=11.5.1), Node 24 and `id-token: write` are already wired in
+   both GitHub-hosted publishing jobs. The next main merge creates a canary.
+6. Test `npm install zegadb@canary`. After acceptance use the Promote button
+   above. Confirm `npm install zegadb@latest`, provenance, versions, and R2
+   readback hashes on that first actual release.
+
+The field names, npm requirements and multiple-publisher support were checked
+against [npm's trusted-publisher documentation](https://docs.npmjs.com/trusted-publishers/).
+Saving trust settings does not verify an OIDC publish. This change performs no
+npm/crates.io publication, live canary tagging, stable promotion or R2 writes.
+
+## Reproduce local checks
+
+Use Node >=22.14 (CI 24), Rust 1.96.0, wasm-pack 0.15.0 and sccache. On this Mac,
+keep the globally configured Rust wrapper and use a private build directory:
 
 ```sh
 export CARGO_TARGET_DIR="$PWD/.target" TMPDIR="$PWD/.tmp"
 export npm_config_cache="$PWD/.tmp/npm-cache"
-export PLAYWRIGHT_BROWSERS_PATH="$PWD/.tmp/playwright"
 mkdir -p "$TMPDIR"
 chmod 700 "$TMPDIR"
+python3 -m unittest -v scripts.test_channels
+cargo check --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets --all-features
 npm ci --ignore-scripts --no-audit --no-fund
-npx --no-install playwright install chromium
 npm run build
+node npm/stamp-version.mjs "0.1.0-canary.$(git rev-parse HEAD | cut -c1-7)"
 npm run pack:package
+# macOS: use installed Chrome; CI installs Playwright's Chromium.
+export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 npm test
 npm run test:exports
 ```
 
-On the iMac, the installed Chrome can be used instead of downloading Chromium:
-`export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'`.
-Fixtures live in `npm/consumers/`; the checks copy them into `.tmp/`, install the
-tarball there, and test the installed package. There are no workspace links or
-imports from `dist/` in consumer code. Artifacts are ignored by Git.
-
-`npm run build` reads `workspace.package.version` from root `Cargo.toml` and
-generates `dist/package.json`. It refuses a mismatched standalone WASM crate
-version. On a version bump, mirror the workspace version into
-`zega-wasm/Cargo.toml` and update its committed lockfile before building; do not
-version npm independently. All local crates and the npm package are currently
-0.1.0. `npm pack` runs only against `dist/`; the root tooling package is private.
-
-Keep `zega-wasm` excluded from the root Cargo workspace. Commit `f8b8ce5`
-introduced its standalone workspace specifically to isolate browser builds
-from native server targets. A targeted `cargo build -p` could select WASM in a
-shared workspace, but adding it would also change workspace-wide build/feature
-resolution and locking for no packaging benefit. The dedicated WASM lockfile
-and `wasm-pack --target web --locked` already build the current core through
-path dependencies. Browser and Node load the same emitted binary, not two
-independently compiled engine versions.
-
-## CI and release boundary
-
-`npm-ci.yml` runs on **every push** and pull request, without secrets or publish
-permissions. It builds, packs, executes the Node and real browser consumers,
-checks Vite development/production, esbuild and Next production in Chromium,
-checks both TypeScript resolution modes, and proves exports failures then
-restores and retests. Rust compilation requires sccache at job scope and fails
-if unavailable. Dependencies and Actions are pinned; Rust and WASM use the
-committed WASM lockfile.
-
-`npm-release.yml` accepts **only tag pushes** matching `v*`, remains disabled,
-and checks the exact stable tag against the workspace version (e.g. `v0.1.0`).
-It rebuilds and tests before uploading the exact tarball. A separate clean,
-GitHub-hosted publish job downloads it and uses npm 11.16.0, `id-token: write`,
-the `npm` environment and provenance. No npm token, secret, login, token
-fallback configuration, manual dispatch, branch publish or npm lifecycle
-script is configured. The publish job does not check out or build source.
-
-Lint with:
-
-```sh
-actionlint -ignore 'constant expression "false"' .github/workflows/npm-ci.yml .github/workflows/npm-release.yml
-```
-
-The ignored diagnostic is the intentional hard disable; remove that exception
-when enabling the workflow. Local validation is not a successful OIDC publish.
-
-## Sami's npmjs.com setup and the first-publish blocker
-
-1. Sign into npmjs.com. Profile picture → **Add an Organization** → Name
-   **zega** → **Unlimited public packages** (free) → **Create** → optionally
-   invite members → **Continue**.
-2. The bare package **zega** must be owned by a **user account**. Creating the
-   organization creates the `@zega` scope; it neither creates nor reserves the
-   unscoped package. Do not rename this package to `@zega/zega`.
-3. **Blocked before first publication:** npm's documented trusted-publisher
-   setup starts in an existing package's settings. npm's September 17, 2026
-   roadmap still lists automated first-package creation as future work.
-   There is no verified npmjs.com click sequence to establish trust for this
-   nonexistent bare package. Sami must resolve this with npm support or a
-   supported token-free bootstrap. Keep this workflow disabled meanwhile.
-   Do not add a token, log in through the CLI, publish a placeholder, or silently
-   switch to a manual first publication; those would change the stated policy.
-4. Once **zega** exists under Sami's control: npmjs.com → profile → **Packages**
-   → **zega** → **Settings** → **Trusted publishing / Trusted Publisher** →
-   **Add trusted publisher** → **GitHub Actions**. Enter:
-
-   | Field | Exact value |
-   | --- | --- |
-   | Organization or user | `zegadb` (the GitHub organization, not npm org) |
-   | Repository | `zega` |
-   | Workflow filename | `npm-release.yml` (no path) |
-   | Environment name | `npm` |
-   | Allowed actions | Enable direct `npm publish` |
-
-   Save the connection and complete any 2FA prompt. Current new connections
-   default to staging permission; direct publish must be explicitly allowed.
-5. Package **Settings** → **Publishing access** → **Require two-factor
-   authentication and disallow tokens** → **Update Package Settings**.
-6. On GitHub, Sami creates/configures the `npm` environment with himself as a
-   required reviewer and release-tag protection. After resolving bootstrap and
-   reviewing CI, Ava can remove the literal false guard in a reviewed change.
-   Sami then chooses the workspace version and pushes the matching tag. Do not
-   reuse an already-published version. This task creates or pushes no tags.
-
-The registry configuration cannot be proven by saving a form: the actual
-OIDC exchange happens on publication. No claim of a verified release is made.
-
-Sources checked September 22, 2026:
-
-- [npm organization creation](https://docs.npmjs.com/creating-an-organization/)
-- [Unscoped packages are managed by user accounts](https://docs.npmjs.com/package-scope-access-level-and-visibility/)
-- [npm trusted publishing requirements and settings](https://docs.npmjs.com/trusted-publishers/)
-- [npm PM roadmap: first-package creation is still planned](https://github.com/orgs/community/discussions/208130)
-- [Vite asset handling](https://vite.dev/guide/assets)
-- [esbuild file loader](https://esbuild.github.io/content-types/#file)
+Keep zega-wasm's standalone workspace: its committed lockfile and path
+dependencies isolate browser builds from the native server workspace.
+The release workflow runs builds on PR events without publishing. The
+Tag canary and Promote proof jobs exercise their production scripts against
+isolated local Git/R2 fixtures and print both refusal messages and the integrity
+failure. They are not live-bucket or live-tag tests.

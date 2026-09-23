@@ -26,6 +26,7 @@ jobs:
   score:
     name: score
     runs-on: ubuntu-latest
+    environment: public-ci
     steps:
       # Deep enough to reach the base of the pull request without a second
       # fetch: that is what turns a score into a direction.

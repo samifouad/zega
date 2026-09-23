@@ -161,10 +161,10 @@ let zega = Zega::open("./data")
 
 ## Embed the engine from npm
 
-The `zega` package is prepared for browser bundlers and Node:
+The `zegadb` package is prepared for browser bundlers and Node:
 
 ```js
-import { createDatabase } from 'zega';
+import { createDatabase } from 'zegadb';
 
 const db = await createDatabase();
 try {
@@ -179,7 +179,7 @@ try {
 
 See the [package API and bundler notes](npm/README.md) and
 [build, consumer checks, and disabled release setup](npm/PUBLISHING.md).
-Registry publication is pending; local consumers install `artifacts/zega-0.1.0.tgz`.
+Registry publication is pending; local consumers install `artifacts/zegadb-0.1.0.tgz`.
 The repository's own explorer stays in `browser/` and uses the WASM crate directly.
 
 ## Build the raw browser bindings

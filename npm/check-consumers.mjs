@@ -76,7 +76,7 @@ async function checkConsumers() {
   // differs from Vite/Webpack. Exercise the documented override against the tarball.
   const outDir = resolve(work, 'browser/dist-esbuild');
   await mkdir(outDir, { recursive: true });
-  await writeFile(resolve(work, 'browser/esbuild-main.js'), `import wasmURL from 'zega/zega_wasm_bg.wasm';\nimport { run } from './query.js';\nawait run({ wasm: wasmURL });\n`);
+  await writeFile(resolve(work, 'browser/esbuild-main.js'), `import wasmURL from 'zegadb/zega_wasm_bg.wasm';\nimport { run } from './query.js';\nawait run({ wasm: wasmURL });\n`);
   await esbuild({
     absWorkingDir: resolve(work, 'browser'), entryPoints: ['esbuild-main.js'],
     bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2022',
@@ -98,8 +98,8 @@ if (process.argv.includes('--break-exports')) {
     assert.notEqual(node.status, 0, 'Broken exports unexpectedly passed Node');
     assert.match(node.stderr, /ERR_MODULE_NOT_FOUND/);
     console.log(`broken exports/node: exit ${node.status}; ${node.stderr.split('\n').find(line => line.includes('Error ['))}`);
-    await assert.rejects(viteBuild({ root: resolve(work, 'browser'), logLevel: 'silent' }), /[Ff]ailed to resolve (entry for package|import) "zega"/);
-    console.log('broken exports/browser: Vite failed to resolve import "zega"');
+    await assert.rejects(viteBuild({ root: resolve(work, 'browser'), logLevel: 'silent' }), /[Ff]ailed to resolve (entry for package|import) "zegadb"/);
+    console.log('broken exports/browser: Vite failed to resolve import "zegadb"');
   } finally {
     await writeFile(manifestPath, original);
     run('node', ['npm/pack.mjs']);

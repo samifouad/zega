@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { createDatabase } from 'zega';
+import { createDatabase } from 'zegadb';
 
 export default function Page() {
   const [result, setResult] = useState('Loading');

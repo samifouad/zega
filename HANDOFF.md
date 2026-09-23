@@ -1,165 +1,142 @@
-# zega npm engine handoff
+# zega canary and stable handoff
 
-- Checkout: `/Volumes/Projects/codex/zega-npm`
-- Branch: `codex/npm`
-- Base: `grok/v2-repl-10` at `d3fa695` (not `main`)
-- Package: `zega@0.1.0`
-- Tarball: `/Volumes/Projects/codex/zega-npm/artifacts/zega-0.1.0.tgz`
+Checkout: `/Volumes/Projects/codex/zega-channels`
+Branch: `codex/channels`
+Base: main `718349d`, with npm branch `63de5ba` merged locally as `9e39ec5`.
 
-Nothing was published, tagged, merged, or pushed to main. The release workflow
-is deliberately disabled. Review/merge remains with Ava. No npm credential was
-requested, created, read, copied, or configured.
+## Landing order and ownership
+
+Ava owns review and merging. Do not push this branch to main directly.
+`codex/npm` remains untouched: its existing builder, package API and installed
+consumer tests are reused through a merge commit, not reimplemented. Ava should
+land `codex/npm` first, then `codex/channels` with merge commits. The second merge
+renames the emitted package/imports to **zegadb**, retires the old disabled
+npm-release.yml publisher, and replaces its GHA cache wiring with the required
+R2 environment/matrix setup. Both branches keep the original npm publisher
+disabled throughout landing. Alternatively Ava can review this combined branch
+as the integration PR; it already contains the npm commit as an ancestor.
+
+This task changes no Rust implementation and adds no secrets, npm credentials,
+crates.io publisher, live release tags, live R2 objects or main pushes.
+The two npm publishing jobs are hard-disabled by literal `if: ${{ false }}`.
 
 ## Delivered
 
-`npm run build` runs wasm-pack 0.15.0 against `zega-wasm/` with `--target web
---release --locked`, then assembles `dist/`. It derives npm metadata/version
-from `workspace.package` in root `Cargo.toml`; the root npm tooling package is
-private and has no independent version. The standalone WASM version must match
-the workspace or the build fails. The benchmark crate now also inherits the
-workspace version.
+Read the existing dsc checkout's three workflows and RFD 68 before writing.
+`tag-canary.yml` derives `v<V>-canary-<sha7>`, refuses promoted versions and
+duplicates, pushes the tag, then dispatches release.yml at that ref (required
+because GITHUB_TOKEN tag pushes do not themselves start another workflow).
 
-The public engine API is `createDatabase(options?)` and the generated
-`ZegaWasm` class. `zega/wasm` exposes the original bindings and `init`/`initSync`;
-`zega/zega_wasm_bg.wasm` exposes the asset for bundlers. The wrapper and generated
-WASM declarations ship. Query results retain the bindings' JSON-string contract.
-The engine is in memory in Node and the browser, with explicit snapshot export,
-restore and `free()` lifecycle. See [the package README](npm/README.md).
+`release.yml` builds/test-packs zegadb `<V>-canary.<sha7>`, builds native servers
+for Linux x64, macOS arm64/x64 and Windows x64, checks metadata and payload hashes,
+uploads to both named R2 buckets and verifies readback before moving canary.
+Native artifacts are exercised through authenticated /health and /cql requests.
+Stable tags cannot start builds. Existing immutable canary prefixes are refused.
 
-One WASM binary serves both environments. Conditional exports choose a browser
-URL loader or a Node filesystem loader. The generated glue is retained by the
-`sideEffects` allowlist. Vite and Next emit the URL asset; esbuild uses its file
-loader and the documented `wasm` initialization option. There are no runtime
-npm dependencies, install scripts, native addons or second engine package.
+`promote.yml` only accepts an explicitly dispatched canary on main. Its script
+checks the canary tag's workspace version and commit suffix, refuses existing
+stable tags, compares the R2 canary release.json commit with the tag's commit,
+and verifies both buckets' complete payload inventories before any writes.
+It copies to `v<V>/`, rewrites only version/tag/channel/promoted_from in both
+metadata files, verifies copied bytes, tags the canary commit and moves latest.
+No Rust/WASM/JavaScript rebuild occurs during promotion.
 
-A remote HTTP client belongs in a later separate client package: network/auth
-and protocol compatibility differ from in-process execution, and remote-only
-users need not download WASM. This does not split the coupled JS/WASM engine.
+**R2 payload artifacts are byte-identical; manifest.json and release.json are
+bookkeeping exceptions. npm tarballs differ by package.json's version string.**
+Repacking may also change tar/gzip container encoding; all other extracted file
+bytes and manifest fields stay equal. R2's copied package.tgz deliberately stays
+the original canary tarball; the stable npm tarball is a separate Actions artifact.
 
-**Keep `zega-wasm` excluded from the root Cargo workspace.** Its explicit
-standalone workspace was introduced in `f8b8ce5` to isolate WASM from server
-builds. Targeted builds could work in a combined workspace, but changing
-workspace-wide targeting/feature resolution and locks adds no benefit here.
-The dedicated lockfile and path dependency on the current core already work.
+Every PR job declares public-ci; every publishing/tagging job declares release.
+Rust compilation uses job-level RUSTC_WRAPPER and matrix-selected sccache buckets.
+Even release builds use the restricted cache identity; only release upload/copy
+jobs use full R2 credentials. No endpoint secret is read: endpoints are composed
+from R2_ACCOUNT_ID. Cache and release credentials fail closed without values in logs.
 
-`npm-ci.yml` runs on every push and PR, uses no secrets and never publishes.
-It builds/packs, installs the tarball into independent consumers, runs queries
-in Node and real Chromium, checks types, and runs the broken-exports proof.
-Rust compilation in CI requires job-level sccache. Action revisions, npm dev
-dependencies, wasm-pack and Rust are pinned.
+## Local proof
 
-`npm-release.yml` accepts only tag pushes, checks the exact stable workspace
-version, and publishes the tested tarball from a separate GitHub-hosted OIDC
-job. The upstream build job has literal `if: ${{ false }}`, so neither it nor
-the dependent publisher can run. No dispatch trigger or token fallback exists.
+- `cargo check --locked --workspace --all-targets`: pass, no warnings.
+- `cargo clippy --locked --workspace --all-targets --all-features`: pass, no warnings.
+- `cargo build --locked --release -p zega-server` and built-binary HTTP smoke: pass.
+- npm build/pack and installed canary consumers: pass in Node, Chromium,
+  Vite development/production, esbuild, and Next server/client; types pass in
+  NodeNext and Bundler modes.
+- Broken exports fail in Node and browser; restored exports pass again.
+- Repacked stable npm tarball passes the same installed Node/browser/bundler/Next consumers; no rebuild.
+- Nine production-channel tests pass isolated Git/R2 fixture tests. Actual output:
 
-## Tarball inventory
+  ```text
+  REFUSED: v1.2.3 is already promoted; bump the workspace version
+  REFUSED: canary tag v1.2.3-canary-<fixture-sha> already exists; nothing to do
+  ERROR: release.json commit mismatch: tag ... points at ..., artifacts record ffffffffffffffffffffffffffffffffffffffff
+  PROMOTED: R2 payloads byte-identical; npm contents differ only by package.json version
+  ```
 
-`npm run pack:package` ran real `npm pack` and checked the complete allowlist.
-Every path below is beneath `package/` in the tar archive:
+  Refusals assert no pushed refs, dispatch, or R2 mutation. The mismatch stops
+  after the first release.json read, before copying payloads. Positive promotion
+  runs with a newer HEAD and still tags the canary commit. A corrupted WASM
+  payload is also rejected. Canary assembly checks the separate WASM objects
+  equal the tested npm archive's bytes.
+- Removing each of the promoted-version, duplicate-tag and commit checks from
+  a temporary script makes its corresponding proof fail. The production source was unchanged by mutation probes.
+- actionlint passes with only the intentional literal-false diagnostic excluded.
+- WASM compilation reports the 10 existing native/WASM conditional warnings
+  inherited from the npm branch; no new Rust warnings introduced.
 
-| File | Bytes | Purpose |
-| --- | ---: | --- |
-| `package.json` | 1,122 | Name/version, correct repository, conditional exports, asset/side-effect metadata |
-| `browser.js` | 448 | Async browser initialization and independent database creation |
-| `node.js` | 551 | Same API, reading the packaged WASM through Node filesystem APIs |
-| `index.d.ts` | 498 | Handwritten factory/options declarations and generated type re-exports |
-| `wasm/zega_wasm.js` | 20,825 | wasm-bindgen generated JS glue |
-| `wasm/zega_wasm.d.ts` | 4,470 | Generated class and initialization declarations |
-| `wasm/zega_wasm_bg.wasm` | 998,715 | The single compiled engine |
-| `wasm/zega_wasm_bg.wasm.d.ts` | 2,026 | Generated binary export declarations |
-| `README.md` | 4,068 | Consumer API and bundler instructions |
-| `LICENSE` | 11,341 | Apache-2.0 license |
+Logs are in `.tmp/`: cargo-check.log, cargo-clippy.log, native-build.log,
+native-smoke.log, npm-build.log, npm-pack.log, npm-test.log, npm-negative.log,
+channel-proofs.log, npm-stable-test.log, and mutation-{promoted,duplicate,integrity}.log.
 
-10 files, **394,309 bytes packed**, **1,044,064 bytes unpacked**. No source Rust,
-test fixtures, build tools, explorer files, second manifest, caches or secrets.
+## Credential blocker — needs Sami
 
-SHA-256: `e89cd120d95aa38ec48a006c1ff2d4ce576ee13b73aeb80792e1e640b9a3217a`
+Read-only GitHub secret-name inspection found the configured names reversed:
 
-## Actual consumer output
+| Environment | Observed names (no values read) | Required correction |
+| --- | --- | --- |
+| release | R2_ACCOUNT_ID, R2_ENDPOINT, R2_SCCACHE_ACCESS_KEY_ID, R2_SCCACHE_SECRET_ACCESS_KEY | Needs Sami: R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY on zegadb/zega/release |
+| public-ci | R2_ACCOUNT_ID, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY | Needs Sami: R2_SCCACHE_ACCESS_KEY_ID and R2_SCCACHE_SECRET_ACCESS_KEY on zegadb/zega/public-ci; remove the full release keys |
 
-Every consumer installs this tarball with npm. None imports the source tree or
-uses a workspace symlink. Each executes ZQL v2:
+Sami: GitHub **zegadb/zega → Settings → Environments → release**, correct the
+release credential pair; then **public-ci**, remove full release keys and
+configure the cache-only pair. Keep R2_ACCOUNT_ID in both. These actions belong
+to Sami; no secret was created, copied, retrieved or printed by this task.
+The existing R2_ENDPOINT names are unused by the channel workflows.
 
-```js
-db.run('type Person { name: String }', 'mutation { Person(name: "Ada") { name } }')
-```
+Credential-dependent runs are paused. Branch-push proof jobs are secret-free;
+they exercise the production scripts using fixture-only Git repositories and
+an R2 CLI simulator. Real native matrix/cache jobs start on PRs and real canary
+release events after this environment correction. Do not open the PR while
+public-ci contains the full release keys.
 
-Captured output:
+## npm setup and real-release proof still needed
 
-```text
-node: {"name":"Ada"}
-browser/vite: {"name":"Ada"} (WASM HTTP 200, application/wasm)
-browser/vite-dev: {"name":"Ada"} (WASM HTTP 200, application/wasm)
-browser/esbuild: {"name":"Ada"} (WASM HTTP 200, application/wasm)
-next/server: {"name":"Ada"}
-browser/next: {"name":"Ada"}
-```
+Exact click sequence is in [npm/PUBLISHING.md](npm/PUBLISHING.md).
+Once the unscoped package zegadb exists under Sami's user account:
 
-The Node fixture also reads the mutation back, checks independent instances and
-restores a snapshot. Browser checks assert the result, rather than just a
-successful build, and Vite/esbuild verify a real HTTP WASM request under
-`/consumer/`. Next 16.3.6 uses its default Turbopack production build and checks
-both a server route and a client effect. TypeScript passes with `NodeNext` and
-`Bundler` resolution against the installed declarations. Local runtime:
-Node 26.3.1, npm 11.16.0, installed Chrome via Playwright; CI is configured for
-Node 24 and Playwright Chromium. GitHub CI was not polled or claimed green.
+1. npmjs.com → profile → Packages → **zegadb** → Settings → Trusted publishing
+   → Add trusted publisher → GitHub Actions.
+2. Set owner **zegadb**, repository **zega**, workflow **release.yml**,
+   environment **release**, allow direct **npm publish**, save/2FA.
+3. Add the second connection for **promote.yml**, otherwise identical. The
+   automatically dispatched canary's OIDC caller identity needs confirmation
+   on the first real publication; npm may require the tag-canary.yml caller
+   connection too. Both publishing jobs use npm 11.16.0 and id-token: write.
+4. Settings → Publishing access → **Require two-factor authentication and
+   disallow tokens** → Update Package Settings.
+5. After Sami configures trust, Ava reviews a change removing both literal
+   false guards. Only then can a main merge publish a canary under `canary`.
+6. Sami tests that canary, then GitHub Actions → **Promote** → Run workflow →
+   branch **main**, type the full canary tag, Run workflow. Stable npm uses `latest`.
 
-## Verify by reverting
+If zegadb does not yet exist, package creation is still Sami-held; no placeholder
+or token bootstrap was attempted. The unscoped name zega cannot be used because
+npm's similarity filter matched egg; creating an npm organization does not
+reserve or own an unscoped name.
 
-`npm run test:exports` points `exports["."]` at missing `./missing-entry.js`,
-packs/installs the broken package, and observes both consumers fail:
-
-```text
-broken exports/node: exit 1; Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/Volumes/Projects/codex/zega-npm/.tmp/consumers/node/node_modules/zega/missing-entry.js' imported from /Volumes/Projects/codex/zega-npm/.tmp/consumers/node/index.mjs
-broken exports/browser: Vite failed to resolve import "zega"
-Restored original exports and repacked.
-node: {"name":"Ada"}
-browser/vite: {"name":"Ada"} (WASM HTTP 200, application/wasm)
-browser/vite-dev: {"name":"Ada"} (WASM HTTP 200, application/wasm)
-browser/esbuild: {"name":"Ada"} (WASM HTTP 200, application/wasm)
-```
-
-Restoration is in `finally`, and the delivered tarball has the valid exports.
-
-Other completed checks:
-
-- Clean `npm ci --ignore-scripts --no-audit --no-fund`, build, pack and consumer checks.
-- `cargo check --locked --workspace --all-targets`: exit 0, no warnings.
-- `cargo clippy --locked --workspace --all-targets --all-features`: exit 0, no warnings.
-- WASM build: exit 0, with 10 existing unused-import/constant/variable/field
-  warnings in unchanged native/WASM conditional code; no new warnings introduced.
-- `actionlint -ignore 'constant expression "false"' ...`: pass. The sole
-  ignored diagnostic is the intentional literal release disable.
-- Release gate accepts `push` + `refs/tags/v0.1.0`; rejects main branch,
-  `v0.2.0`, and `workflow_dispatch`, each with exit 1.
-- `git diff --check`: pass. `git diff --name-only -- browser/`: empty.
-
-Local logs are under `.tmp/`: `npm-build.log`, `npm-pack.log`, `npm-test.log`,
-`npm-next-server.log`, `npm-negative.log`, `cargo-check.log`, `cargo-clippy.log`.
-Reproduction commands and all registry/GitHub setup instructions are in
-[npm/PUBLISHING.md](npm/PUBLISHING.md).
-
-## Still blocked on Sami
-
-1. Create the `zega` npm organization if desired. This creates `@zega`; npm
-   organizations cannot own the **unscoped** `zega` package. That package needs
-   user-account ownership. The public registry returned HTTP 404 for `zega`
-   during this run; that is absence, not a reservation or guaranteed name grant.
-2. Resolve first-package registration under the strict OIDC-only/no-token
-   policy. npm's documented trust setup requires an existing package, and the
-   npm PM's September 17 roadmap still describes automatic first-package
-   creation as planned. No token or manual-bootstrap workaround was attempted.
-   The workflow stays disabled pending a supported token-free route.
-3. When the package exists, use the exact npmjs.com click path in
-   [npm/PUBLISHING.md](npm/PUBLISHING.md): configure GitHub owner `zegadb`, repo
-   `zega`, workflow `npm-release.yml`, environment `npm`, allow direct publish,
-   and disallow token publishing. Configure the protected GitHub `npm`
-   environment; Ava may then review enabling the workflow and Sami may tag.
-4. Resolve the conflicting metadata instruction: `browser/pkg/package.json:8`
-   still points to the previous repository owner. The explicit **do not
-   touch `browser/`** rule was preserved while the metadata-only exception
-   question remained unanswered. Every occurrence outside that frozen tree
-   was corrected, and the new npm tarball advertises `zegadb/zega` correctly.
+Unproven until actual infrastructure/release execution: live R2 permissions and
+readback/copy behavior, all four hosted native builds and cache writes, automatic
+main→tag→dispatch behavior, live stable tag/pointer updates, npm OIDC exchange,
+registry provenance and actual canary/latest installs. Fixture proofs do not
+claim to establish those facts. No npm or crates.io publication occurred.
 
 -codex

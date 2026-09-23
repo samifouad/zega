@@ -1,5 +1,9 @@
 name: Build and verify zega npm package
 description: Build one WASM artifact and run installed-tarball consumers without publishing
+inputs:
+  npm-version:
+    description: Optional canary version to stamp before packing and testing
+    default: ''
 runs:
   using: composite
   steps:
@@ -11,7 +15,7 @@ runs:
       with:
         toolchain: '1.96.0'
         targets: wasm32-unknown-unknown
-    - uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+    - uses: ./.github/actions/rust-cache
     - name: Check compiler cache and install wasm-pack
       shell: bash
       run: |
@@ -27,8 +31,13 @@ runs:
       run: npx --no-install playwright install --with-deps chromium
     - name: Build and pack
       shell: bash
+      env:
+        PACKAGE_VERSION: ${{ inputs.npm-version }}
       run: |
         npm run build
+        if [ -n "$PACKAGE_VERSION" ]; then
+          node npm/stamp-version.mjs "$PACKAGE_VERSION"
+        fi
         npm run pack:package
     - name: Run installed package consumers
       shell: bash

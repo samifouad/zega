@@ -19,3 +19,4 @@ browser/playwright-report/
 /artifacts/
 /npm/consumers/*/node_modules/
 /npm/consumers/*/dist/
+__pycache__/

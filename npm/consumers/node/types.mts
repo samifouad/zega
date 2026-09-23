@@ -1,5 +1,5 @@
-import { createDatabase, type DatabaseOptions, type ZegaWasm } from 'zega';
-import init, { initSync, type InitInput } from 'zega/wasm';
+import { createDatabase, type DatabaseOptions, type ZegaWasm } from 'zegadb';
+import init, { initSync, type InitInput } from 'zegadb/wasm';
 
 const options: DatabaseOptions = {};
 const db: ZegaWasm = await createDatabase(options);

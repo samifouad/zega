@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createDatabase, ZegaWasm } from 'zega';
+import { createDatabase, ZegaWasm } from 'zegadb';
 
 const [db, empty] = await Promise.all([createDatabase(), createDatabase()]);
 assert.ok(db instanceof ZegaWasm);

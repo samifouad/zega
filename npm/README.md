@@ -1,4 +1,4 @@
-# zega
+# zegadb
 
 An in-memory graph database and KV engine with ZQL v2. One package contains
 the JavaScript API, TypeScript declarations and WebAssembly engine. It has no
@@ -6,11 +6,11 @@ runtime npm dependencies or install scripts. Requires an ES module environment
 and, on the server, Node 22.14 or later.
 
 ```sh
-npm install zega
+npm install zegadb
 ```
 
 ```js
-import { createDatabase } from 'zega';
+import { createDatabase } from 'zegadb';
 
 const db = await createDatabase();
 try {
@@ -26,16 +26,16 @@ try {
 
 The same code works in Node and Vite. Initialization is asynchronous and shared;
 each call creates an independent database. Queries are synchronous. In CommonJS,
-use `await import('zega')`. For large workloads use a Web Worker or worker thread.
+use `await import('zegadb')`. For large workloads use a Web Worker or worker thread.
 
 ## Exports
 
-- `zega`: `createDatabase(options?)`, `ZegaWasm`, and the `DatabaseOptions` and
+- `zegadb`: `createDatabase(options?)`, `ZegaWasm`, and the `DatabaseOptions` and
   `InitInput` types. `ZegaWasm` is the generated class; initialize via
   `createDatabase()` before constructing it directly.
-- `zega/wasm`: the unmodified wasm-bindgen API and declarations, including
+- `zegadb/wasm`: the unmodified wasm-bindgen API and declarations, including
   default async `init` and `initSync`, for callers managing initialization.
-- `zega/zega_wasm_bg.wasm`: the binary asset for bundler loaders or custom hosting.
+- `zegadb/zega_wasm_bg.wasm`: the binary asset for bundler loaders or custom hosting.
 
 `db.run(schema, source)` executes ZQL v2 against a schema string.
 `db.apply(source)` executes a complete `.zql` file containing schema, mutation
@@ -66,8 +66,8 @@ loader or copy the exported binary to your public assets:
 
 ```js
 // esbuild: loader: { '.wasm': 'file' }, publicPath matching your asset server
-import wasmURL from 'zega/zega_wasm_bg.wasm';
-import { createDatabase } from 'zega';
+import wasmURL from 'zegadb/zega_wasm_bg.wasm';
+import { createDatabase } from 'zegadb';
 const db = await createDatabase({ wasm: wasmURL });
 ```
 
@@ -79,7 +79,7 @@ not initialize WASM. This supports custom asset hosting and SSR imports.
 
 ## Scope
 
-This package embeds the engine. A remote HTTP client for a `zega start` server
+This package embeds the engine. A remote HTTP client for a `zega-server` server
 belongs in a later, separately scoped client package once the remote protocol
 is stable: it needs authentication, network errors, cancellation and protocol
 version handling, and remote-only users should not download a local engine.

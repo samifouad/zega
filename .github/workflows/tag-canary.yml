@@ -1,0 +1,47 @@
+name: Tag canary
+
+on:
+  push:
+    branches: [main, codex/channels]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    name: Prove promoted-version and duplicate-tag refusals
+    runs-on: ubuntu-latest
+    environment: public-ci
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest -v scripts.test_channels.TagGuards
+      - run: python3 -m unittest -v scripts.test_channels.Release
+
+  tag-canary:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'zegadb/zega'
+    needs: guards
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: zega-tag-canary-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Compute, guard, push and dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: python3 scripts/channels.py tag-canary

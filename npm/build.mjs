@@ -26,7 +26,7 @@ for (const file of ['browser.js', 'node.js', 'index.d.ts']) await cp(`npm/src/${
 await cp('npm/README.md', 'dist/README.md');
 await cp('LICENSE', 'dist/LICENSE');
 await writeFile('dist/package.json', JSON.stringify({
-  name: 'zega',
+  name: 'zegadb',
   version: workspace.version,
   description: 'An in-memory graph database and KV engine with ZQL v2, for browsers and Node.js',
   type: 'module',
@@ -48,4 +48,4 @@ await writeFile('dist/package.json', JSON.stringify({
   files: ['browser.js', 'node.js', 'index.d.ts', 'wasm/*.js', 'wasm/*.wasm', 'wasm/*.d.ts', 'README.md', 'LICENSE'],
   publishConfig: { access: 'public', registry: 'https://registry.npmjs.org/' },
 }, null, 2) + '\n');
-console.log(`Built zega@${workspace.version} in dist/`);
+console.log(`Built zegadb@${workspace.version} in dist/`);
