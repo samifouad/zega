@@ -89,18 +89,20 @@ channel-proofs.log, npm-stable-test.log, and mutation-{promoted,duplicate,integr
 
 ## GitHub run evidence
 
-Channel implementation commit: `bca82a9f14ef5997a95ec61fc8edbfc1bc4d9e91`.
+Verified implementation commit: `892eda8986f0ef747d29000d487825fa6012e5fe`.
+The final handoff-only commit uses [skip ci]; no implementation changed after these runs.
 Repository commits use Sami Fouad <sfouad@gmail.com>, have SSH signature
 headers, and contain no agent attribution. Main and codex/npm were not pushed.
 
-- [Tag canary — success](https://github.com/zegadb/zega/actions/runs/35805409630):
+- [Tag canary — success](https://github.com/zegadb/zega/actions/runs/35805640979):
   both required refusal messages printed; three tag tests plus two release
   assembly/ref-validation tests passed. Real tag job skipped on the branch.
-- [Promote — success](https://github.com/zegadb/zega/actions/runs/35805409624):
+- [Promote — success](https://github.com/zegadb/zega/actions/runs/35805640919):
   four promotion proofs passed. The production script printed the release.json
   commit mismatch and exited nonzero before any writes; the test asserted it.
   Actual promotion and npm jobs skipped on the branch.
-- [Explorer — initial failure](https://github.com/zegadb/zega/actions/runs/35805409602):
+- [Explorer — success](https://github.com/zegadb/zega/actions/runs/35805640913),
+  following the [initial failure](https://github.com/zegadb/zega/actions/runs/35805409602):
   existing browser build tried to copy nonexistent browser/LICENSE. Fixed to
   copy ../LICENSE. Local explorer build passes and its emitted license exactly
   matches the repository license. Both existing Explorer Playwright tests also
