@@ -1212,6 +1212,41 @@ fn node_description(node: &Node) -> String {
     format!("{ty}#{}", node.id)
 }
 
+fn ensure_single_valued(
+    graph: &Graph,
+    id: NodeId,
+    rel: &str,
+    field: &str,
+    direction: Direction,
+    span: Span,
+) -> Result<(), LangError> {
+    let mut edges = neighbors(graph, id, rel, direction);
+    if edges.len() <= 1 {
+        return Ok(());
+    }
+    edges.sort_unstable();
+    let node = graph
+        .get_node(id)
+        .ok_or_else(|| LangError::bare(format!("missing node {id}")))?;
+    let first = graph
+        .get_node(edges[0].0)
+        .map(node_description)
+        .unwrap_or_else(|| format!("node {}", edges[0].0));
+    let second = graph
+        .get_node(edges[1].0)
+        .map(node_description)
+        .unwrap_or_else(|| format!("node {}", edges[1].0));
+    Err(LangError::at(
+        span,
+        format!(
+            "single-valued relationship {}.{field} on {} connects both {first} and {second}",
+            node.labels.first().map(String::as_str).unwrap_or("node"),
+            node_description(node)
+        ),
+    )
+    .with_help("declare it `Book[]` if many are intended, or unlink the current one first"))
+}
+
 fn project(
     graph: &Graph,
     schema: &Schema,
@@ -1287,8 +1322,24 @@ fn project(
                     )));
                 }
                 let reached = if let Some((min, max)) = range {
-                    walk_range(graph, id, rel, *direction, targets, (*min, *max), budget)?
+                    walk_range(
+                        graph,
+                        id,
+                        WalkSpec {
+                            rel,
+                            field,
+                            direction: *direction,
+                            targets,
+                            range: (*min, *max),
+                            single_valued: !many,
+                            span: *span,
+                        },
+                        budget,
+                    )?
                 } else {
+                    if !many {
+                        ensure_single_valued(graph, id, rel, field, *direction, *span)?;
+                    }
                     charge(budget, 1)?;
                     neighbors(graph, id, rel, *direction)
                         .into_iter()
@@ -1296,29 +1347,6 @@ fn project(
                         .map(|(next, rel_id)| (next, 1usize, rel_id))
                         .collect()
                 };
-                if !many && range.is_none() {
-                    let mut edges = neighbors(graph, id, rel, *direction);
-                    edges.sort_unstable();
-                    if edges.len() > 1 {
-                        let first = graph
-                            .get_node(edges[0].0)
-                            .map(node_description)
-                            .unwrap_or_else(|| format!("node {}", edges[0].0));
-                        let second = graph
-                            .get_node(edges[1].0)
-                            .map(node_description)
-                            .unwrap_or_else(|| format!("node {}", edges[1].0));
-                        return Err(LangError::at(
-                            *span,
-                            format!(
-                                "single-valued relationship {}.{field} on {} connects both {first} and {second}",
-                                node.labels.first().map(String::as_str).unwrap_or("node"),
-                                node_description(node)
-                            ),
-                        )
-                        .with_help("declare it `Book[]` if many are intended, or unlink the current one first"));
-                    }
-                }
                 let mut reached = reached;
                 reached.retain(|(next, ..)| node_matches(graph, *next, target.condition.as_ref()));
                 order_limit(graph, target, &mut reached, |(id, ..)| *id);
@@ -1376,20 +1404,39 @@ fn ensure_prop(schema: &Schema, sel: &Selection, name: &str) -> Result<(), LangE
     )))
 }
 
+struct WalkSpec<'a> {
+    rel: &'a str,
+    field: &'a str,
+    direction: Direction,
+    targets: &'a [String],
+    range: (usize, usize),
+    single_valued: bool,
+    span: Span,
+}
+
 fn walk_range(
     graph: &Graph,
     start: NodeId,
-    rel: &str,
-    direction: Direction,
-    targets: &[String],
-    range: (usize, usize),
+    spec: WalkSpec<'_>,
     budget: &mut usize,
 ) -> Result<Vec<(NodeId, usize, RelId)>, LangError> {
+    let WalkSpec {
+        rel,
+        field,
+        direction,
+        targets,
+        range,
+        single_valued,
+        span,
+    } = spec;
     let (min, max) = range;
     let mut seen = HashSet::from([start]);
     let mut queue = VecDeque::from([(start, 0usize, 0u64)]);
     let mut found = Vec::new();
     while let Some((node, depth, via)) = queue.pop_front() {
+        if single_valued {
+            ensure_single_valued(graph, node, rel, field, direction, span)?;
+        }
         if depth >= min && depth > 0 && node_has_any_label(graph, node, targets) {
             found.push((node, depth, via));
         }
@@ -2516,6 +2563,109 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("Author.favorite"), "{error}");
         assert!(error.to_string().contains("Book#"), "{error}");
+
+        let ranged_error = zega
+            .run_lang(
+                schema,
+                r#"{ Author(name = "A") { favorite *1..1 -> Book { title } } }"#,
+            )
+            .unwrap_err();
+        assert!(
+            ranged_error.to_string().contains("Author.favorite"),
+            "{ranged_error}"
+        );
+        assert!(
+            ranged_error
+                .to_string()
+                .contains(&format!("Author#{author}")),
+            "{ranged_error}"
+        );
+        for target in &books {
+            assert!(
+                ranged_error
+                    .to_string()
+                    .contains(&format!("Book#{target}")),
+                "{ranged_error}"
+            );
+        }
+        assert!(
+            ranged_error
+                .to_string()
+                .contains("unlink the current one first"),
+            "{ranged_error}"
+        );
+    }
+
+    #[test]
+    fn ranged_single_valued_walk_checks_every_node_in_the_walk() {
+        let zega = Zega::in_memory().build().unwrap();
+        let schema = r#"type Person { name: String parent -> Person }"#;
+        zega.run_lang(
+            schema,
+            r#"mutation {
+                Person(name: "A") {
+                  parent -> Person(name: "B") {
+                    parent -> Person(name: "C") {
+                      parent -> Person(name: "D") { name }
+                    }
+                  }
+                }
+            }"#,
+        )
+        .unwrap();
+        let clean = zega
+            .run_lang(
+                schema,
+                r#"{ Person(name = "A") { parent *1..3 -> Person { name } } }"#,
+            )
+            .unwrap();
+        let chain = clean["parent"].as_array().unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0]["name"], "B");
+        assert_eq!(chain[1]["name"], "C");
+        assert_eq!(chain[2]["name"], "D");
+
+        zega.run_lang(schema, r#"mutation { Person(name: "E") { name } }"#)
+            .unwrap();
+        let graph = zega.graph_json().unwrap();
+        let nodes = graph["nodes"].as_array().unwrap();
+        let b_id = nodes.iter().find(|node| node["name"] == "B").unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let c_id = nodes.iter().find(|node| node["name"] == "C").unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let e_id = nodes.iter().find(|node| node["name"] == "E").unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        {
+            let mut raw = zega.graph.lock().unwrap();
+            raw.create_relationship("parent".into(), b_id, e_id, HashMap::new());
+        }
+
+        let error = zega
+            .run_lang(
+                schema,
+                r#"{ Person(name = "A") { parent *1..3 -> Person { name } } }"#,
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(&format!("Person#{b_id}")),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains(&format!("Person#{c_id}")),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains(&format!("Person#{e_id}")),
+            "{error}"
+        );
+        assert!(error.to_string().contains("Person.parent"), "{error}");
+        assert!(
+            error.to_string().contains("unlink the current one first"),
+            "{error}"
+        );
     }
 
     #[test]
