@@ -48,14 +48,27 @@ pub fn check_zql(entry_point: ZqlEntryPoint, source: &str) -> std::result::Resul
 }
 
 impl Zega {
+    /// Execute ZQL. Native loads resolve relative paths against the process cwd.
+    /// HTTP(S) loads require the default `http` feature. Wasm hosts must supply
+    /// raw UTF-8 sources with [`Self::run_lang_with_sources`].
     pub fn run_lang(&self, schema_src: &str, source: &str) -> Result<Json, ZegaError> {
+        self.run_lang_with_loader(schema_src, source, &|location| read_location(location, self.allow_private_imports))
+    }
+
+    /// Execute with host-provided raw text, using the same Rust parsers and WAL
+    /// write path. Every named source must be present; there is no I/O fallback.
+    pub fn run_lang_with_sources(&self, schema_src: &str, source: &str, sources: &HashMap<String, String>) -> Result<Json, ZegaError> {
+        self.run_lang_with_loader(schema_src, source, &|location| supplied_source(location, sources))
+    }
+
+    fn run_lang_with_loader(&self, schema_src: &str, source: &str, loader: &dyn Fn(&str) -> Result<String, LangError>) -> Result<Json, ZegaError> {
         let schema = crate::lang::parse_schema(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
         let uniques = crate::lang::parse_uniques(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
         let statement =
             crate::lang::parse_statement(source).map_err(|error| explain(error, "query", source))?;
-        self.execute(&schema, &uniques, &statement, "query", source)
+        self.execute(&schema, &uniques, &statement, "query", source, loader)
     }
 
     pub fn delete_node(&self, id: u64) -> Result<(), ZegaError> {
@@ -144,11 +157,20 @@ impl Zega {
 
     /// Run a `.zql` file: schema, unique, mutations, then an optional query.
     pub fn apply_zql(&self, source: &str) -> Result<Json, ZegaError> {
+        self.apply_zql_with_loader(source, &|location| read_location(location, self.allow_private_imports))
+    }
+
+    /// Apply a document using raw text supplied by its host (for example JS fetch).
+    pub fn apply_zql_with_sources(&self, source: &str, sources: &HashMap<String, String>) -> Result<Json, ZegaError> {
+        self.apply_zql_with_loader(source, &|location| supplied_source(location, sources))
+    }
+
+    fn apply_zql_with_loader(&self, source: &str, loader: &dyn Fn(&str) -> Result<String, LangError>) -> Result<Json, ZegaError> {
         let file =
             crate::lang::parse_zql(source).map_err(|error| explain(error, "schema", source))?;
         let mut last = Json::Null;
         for statement in &file.statements {
-            last = self.execute(&file.schema, &file.uniques, statement, "schema", source)?;
+            last = self.execute(&file.schema, &file.uniques, statement, "schema", source, loader)?;
         }
         Ok(last)
     }
@@ -160,6 +182,7 @@ impl Zega {
         statement: &Statement,
         source_name: &str,
         source: &str,
+        loader: &dyn Fn(&str) -> Result<String, LangError>,
     ) -> Result<Json, ZegaError> {
         if let Statement::Run(query) = statement {
             if query.root.is_none() {
@@ -167,6 +190,11 @@ impl Zega {
             }
         }
         prepare(schema, statement).map_err(|error| explain(error, source_name, source))?;
+        // I/O and parsing happen before the graph lock. Each complete load is
+        // inserted under the same lock as ordinary mutations.
+        let rows = if let Statement::Load { format, locations, .. } = statement {
+            load_rows(*format, locations, loader).map_err(|error| explain(error, source_name, source))?
+        } else { Vec::new() };
         let mut graph = self
             .graph
             .lock()
@@ -179,6 +207,7 @@ impl Zega {
             uniques,
             statement,
             &mut budget,
+            &rows,
         )
         .map_err(|error| explain(error, source_name, source))
     }
@@ -230,6 +259,7 @@ fn run_statement(
     uniques: &[(String, String)],
     statement: &Statement,
     budget: &mut usize,
+    rows: &[HashMap<String, Json>],
 ) -> Result<Json, LangError> {
     match statement {
         Statement::Run(query) => {
@@ -242,20 +272,15 @@ fn run_statement(
                 read(graph, schema, root, budget)
             }
         }
-        Statement::Load {
-            format,
-            locations,
-            template,
-        } => {
-            let rows = load_rows(*format, locations)?;
-            if let Some(error) = crate::lang::missing_columns(template, &rows)
+        Statement::Load { template, .. } => {
+            if let Some(error) = crate::lang::missing_columns(template, rows)
                 .into_iter()
                 .next()
             {
                 return Err(error);
             }
             let mut out = Vec::new();
-            for row in &rows {
+            for row in rows {
                 let Some(query) = crate::lang::bind_row(template, row)? else {
                     continue;
                 };
@@ -272,34 +297,75 @@ fn run_statement(
 fn load_rows(
     format: LoadFormat,
     locations: &[String],
+    loader: &dyn Fn(&str) -> Result<String, LangError>,
 ) -> Result<Vec<HashMap<String, Json>>, LangError> {
     let mut rows = Vec::new();
     for location in locations {
-        let text = read_location(location)?;
-        match format {
-            LoadFormat::Csv => {
-                rows.extend(crate::lang::csv_rows(&text).map_err(LangError::bare)?);
-            }
-            LoadFormat::Json => {
-                let value = serde_json::from_str(&text)
-                    .map_err(|error| LangError::bare(format!("{location} is not json: {error}")))?;
-                rows.extend(crate::lang::json_rows(value).map_err(LangError::bare)?);
-            }
-        }
+        let text = loader(location)?;
+        rows.extend(parse_load(format, &text, location)?);
     }
     Ok(rows)
 }
 
-const MAX_IMPORT_BYTES: usize = 2_000_000;
+pub(crate) const MAX_IMPORT_BYTES: usize = 2_000_000;
 
-fn read_location(location: &str) -> Result<String, LangError> {
-    validate_location(location).map_err(LangError::bare)?;
-    let text = read_location_text(location)
-        .map_err(|error| LangError::bare(format!("cannot read {location}: {error}")))?;
+/// Parse raw UTF-8 import text using the same parser used by load mutations.
+/// Hosts can use this to display a preview; insertion should use the raw source.
+pub fn parse_import(format: LoadFormat, text: &str) -> Result<Vec<HashMap<String, Json>>, String> {
+    parse_load(format, text, "import").map_err(|error| error.to_string())
+}
+
+fn parse_load(format: LoadFormat, text: &str, location: &str) -> Result<Vec<HashMap<String, Json>>, LangError> {
     if text.len() > MAX_IMPORT_BYTES {
         return Err(LangError::bare(format!("{location} is larger than 2MB")));
     }
-    Ok(text)
+    match format {
+        LoadFormat::Csv => crate::lang::csv_rows(text).map_err(LangError::bare),
+        LoadFormat::Json => {
+            let value = serde_json::from_str(text)
+                .map_err(|error| LangError::bare(format!("{location} is not json: {error}")))?;
+            crate::lang::json_rows(value).map_err(LangError::bare)
+        }
+    }
+}
+
+fn supplied_source(location: &str, sources: &HashMap<String, String>) -> Result<String, LangError> {
+    validate_location(location).map_err(LangError::bare)?;
+    sources.get(location).cloned().ok_or_else(|| LangError::bare(format!("cannot read {location}: host did not supply this source")))
+}
+
+/// Return the locations a host must fetch for a statement or document. The
+/// standard public-network/path policy is checked before any host I/O.
+pub fn zql_load_locations(entry_point: ZqlEntryPoint, source: &str) -> Result<Vec<String>, String> {
+    let statements = match entry_point {
+        ZqlEntryPoint::File => crate::lang::parse_zql(source).map(|file| file.statements),
+        ZqlEntryPoint::Statement | ZqlEntryPoint::Query => crate::lang::parse_statement(source).map(|statement| vec![statement]),
+    }.map_err(|error| crate::lang::render_error("schema", source, &error))?;
+    let mut locations = Vec::new();
+    for statement in statements {
+        if let Statement::Load { locations: sources, .. } = statement {
+            for location in sources {
+                validate_location(&location)?;
+                if !locations.contains(&location) { locations.push(location); }
+            }
+        }
+    }
+    Ok(locations)
+}
+
+fn read_location(location: &str, allow_private: bool) -> Result<String, LangError> {
+    if allow_private && is_remote(location) {
+        validate_remote_syntax(location).map_err(LangError::bare)?;
+    } else {
+        validate_location(location).map_err(LangError::bare)?;
+    }
+    read_location_text(location, allow_private)
+        .map_err(|error| LangError::bare(format!("cannot read {location}: {error}")))
+}
+
+fn is_remote(location: &str) -> bool {
+    let lower = location.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
 }
 
 /// A document may name a relative file or a public http(s) address.
@@ -322,7 +388,8 @@ fn validate_location(location: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_remote(location: &str) -> Result<(), String> {
+fn validate_remote_syntax(location: &str) -> Result<(), String> {
+    if !is_remote(location) { return Err("only http and https addresses are allowed".into()); }
     let rest = location
         .split_once("://")
         .map(|(_, rest)| rest)
@@ -339,95 +406,101 @@ fn validate_remote(location: &str) -> Result<(), String> {
     if host.is_empty() {
         return Err("the address has no host".into());
     }
-    if blocked_host(host) {
-        return Err("that address points at a private network".into());
-    }
+    Ok(())
+}
+
+fn validate_remote(location: &str) -> Result<(), String> {
+    validate_remote_syntax(location)?;
+    let authority = location.split_once("://").unwrap().1.split(['/', '?', '#']).next().unwrap();
+    let host = if let Some(host) = authority.strip_prefix('[') { host.split(']').next().unwrap() } else { authority.split(':').next().unwrap() };
+    if blocked_host(host) { return Err("that address points at a private network".into()); }
     Ok(())
 }
 
 fn blocked_host(host: &str) -> bool {
     let host = host.trim().to_ascii_lowercase();
-    if host == "localhost"
-        || host.ends_with(".localhost")
-        || host.ends_with(".local")
-        || host == "metadata.google.internal"
-        || host == "::1"
-        || host == "https://example.net/id/garnet"
-    {
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") || host == "metadata.google.internal" {
         return true;
     }
-    if host.starts_with("fe80:") || host.starts_with("fc") || host.starts_with("fd") {
-        return true;
+    host.parse::<std::net::IpAddr>().is_ok_and(blocked_ip)
+}
+
+fn blocked_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast() || ip.octets()[0] == 0,
+        std::net::IpAddr::V6(ip) => ip.to_ipv4_mapped().map(|ip| blocked_ip(ip.into())).unwrap_or_else(|| ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local() || ip.is_unicast_link_local() || ip.is_multicast()),
     }
-    let parts: Vec<&str> = host.split('.').collect();
-    if parts.len() != 4 {
-        return false;
+}
+
+// Check the actual addresses used by the connector, including DNS responses
+// and redirect targets; a textual hostname check alone permits DNS rebinding.
+#[cfg(all(not(target_arch = "wasm32"), feature = "http"))]
+#[derive(Debug)]
+struct ImportResolver { allow_private: bool }
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "http"))]
+impl ureq::unversioned::resolver::Resolver for ImportResolver {
+    fn resolve(&self, uri: &ureq::http::Uri, config: &ureq::config::Config, timeout: ureq::unversioned::transport::NextTimeout) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        use ureq::unversioned::resolver::DefaultResolver;
+        let addresses = DefaultResolver::default().resolve(uri, config, timeout)?;
+        if !self.allow_private && addresses.iter().any(|addr| blocked_ip(addr.ip())) {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "that address points at a private network").into());
+        }
+        Ok(addresses)
     }
-    let mut octets = [0u8; 4];
-    for (index, part) in parts.iter().enumerate() {
-        let Ok(value) = part.parse::<u8>() else {
-            return false;
-        };
-        octets[index] = value;
-    }
-    let [a, b, _, _] = octets;
-    a == 0
-        || a == 10
-        || a == 127
-        || (a == 169 && b == 254)
-        || (a == 172 && (16..=31).contains(&b))
-        || (a == 192 && b == 168)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn read_location_text(location: &str) -> Result<String, String> {
-    let xhr = web_sys::XmlHttpRequest::new().map_err(|error| format!("{error:?}"))?;
-    xhr.open_with_async("GET", location, false)
-        .map_err(|error| format!("{error:?}"))?;
-    xhr.set_timeout(20_000);
-    xhr.send().map_err(|error| format!("{error:?}"))?;
-    let status = xhr.status().map_err(|error| format!("{error:?}"))?;
-    if !(200..300).contains(&status) {
-        return Err(format!(
-            "status {status}. A browser can only fetch a url the server allows this page to read"
-        ));
-    }
-    xhr.response_text()
-        .map_err(|error| format!("{error:?}"))?
-        .ok_or_else(|| "empty response".to_string())
+fn read_location_text(_location: &str, _allow_private: bool) -> Result<String, String> {
+    Err("wasm cannot read files or perform blocking HTTP; supply raw text with run_lang_with_sources or apply_zql_with_sources".into())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn read_location_text(location: &str) -> Result<String, String> {
-    let lower = location.to_ascii_lowercase();
-    if lower.starts_with("https://") || lower.starts_with("http://") {
-        let response = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if validate_remote(attempt.url().as_str()).is_err() || attempt.previous().len() >= 5
-                {
-                    attempt.stop()
-                } else {
-                    attempt.follow()
-                }
-            }))
-            .build()
-            .map_err(|error| error.to_string())?
-            .get(location)
-            .send()
-            .map_err(|error| error.to_string())?;
-        if validate_remote(response.url().as_str()).is_err() {
-            return Err("that address points at a private network".into());
-        }
-        let status = response.status();
-        if !status.is_success() {
-            return Err(format!("status {status}"));
-        }
-        let bytes = response.bytes().map_err(|error| error.to_string())?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| "not utf-8".to_string())
+fn read_location_text(location: &str, allow_private: bool) -> Result<String, String> {
+    if is_remote(location) {
+        fetch_location(location, allow_private)
     } else {
-        std::fs::read_to_string(location).map_err(|error| error.to_string())
+        let file = std::fs::File::open(location).map_err(|error| error.to_string())?;
+        read_bounded(file)
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_bounded(reader: impl std::io::Read) -> Result<String, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    reader.take(MAX_IMPORT_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_IMPORT_BYTES { return Err("larger than 2MB".into()); }
+    String::from_utf8(bytes).map_err(|_| "not utf-8".into())
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "http")))]
+fn fetch_location(_location: &str, _allow_private: bool) -> Result<String, String> {
+    Err("HTTP loading requires the zega `http` cargo feature".into())
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "http"))]
+fn fetch_location(location: &str, allow_private: bool) -> Result<String, String> {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .proxy(None)
+        .build();
+    let agent = ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::default(), ImportResolver { allow_private });
+    let mut url = location.to_string();
+    for _ in 0..=5 {
+        if allow_private { validate_remote_syntax(&url)?; } else { validate_remote(&url)?; }
+        let mut response = agent.get(&url).call().map_err(|error| error.to_string())?;
+        if response.status().is_redirection() {
+            let next = response.headers().get("location").and_then(|value| value.to_str().ok()).ok_or("redirect has no location")?;
+            url = url::Url::parse(&url).and_then(|base| base.join(next)).map_err(|error| error.to_string())?.to_string();
+            continue;
+        }
+        if !response.status().is_success() { return Err(format!("status {}", response.status())); }
+        return read_bounded(response.body_mut().as_reader());
+    }
+    Err("too many redirects".into())
 }
 
 fn explain(error: LangError, source_name: &str, source: &str) -> ZegaError {

@@ -25,7 +25,7 @@ try {
   execFileSync('wasm-pack', ['build', join(engine, 'zega-wasm'), '--target', 'web', '--release', '--out-dir', output, '--locked'], {
     cwd: root,
     stdio: 'inherit',
-    env: { ...process.env, CARGO_TARGET_DIR: join(root, '.target/wasm'), TMPDIR: join(root, '.tmp') },
+    env: { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(root, '../.target'), TMPDIR: process.env.TMPDIR || join(root, '.tmp') },
   });
   // wasm-pack ignores generated files by default; these files are vendored here.
   await rm(join(output, '.gitignore'), { force: true });

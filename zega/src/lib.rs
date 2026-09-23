@@ -31,7 +31,8 @@ pub use config::{JwtConfig, JwtKey};
 pub use context::{ResolvedContext, ZegaContext};
 pub use parser::grammar::ParseError;
 pub use policy::{Expr as PolicyExpr, ExprValue, Policy, PolicyCondition, PolicyTargets};
-pub use v2::{check_zql, ZqlEntryPoint};
+pub use v2::{check_zql, parse_import, zql_load_locations, ZqlEntryPoint};
+pub use lang::LoadFormat;
 
 #[derive(Error, Debug)]
 pub enum ZegaError {
@@ -146,8 +147,7 @@ pub struct Zega {
     jwt_config: Option<JwtConfig>,
     policies: Vec<Policy>,
     traversal_work_budget: usize,
-    #[cfg(not(target_arch = "wasm32"))]
-    _rt: Option<tokio::runtime::Runtime>,
+    allow_private_imports: bool,
 }
 
 pub struct ZegaBuilder {
@@ -160,6 +160,7 @@ pub struct ZegaBuilder {
     jwt_issuer: Option<String>,
     policies: Vec<Policy>,
     traversal_work_budget: usize,
+    allow_private_imports: bool,
 }
 
 const DEFAULT_TRAVERSAL_WORK_BUDGET: usize = 1_000_000;
@@ -218,6 +219,13 @@ impl ZegaBuilder {
         self
     }
 
+    /// Permit HTTP imports from private/loopback hosts. Off by default; only
+    /// enable for trusted ZQL callers that may access this machine's network.
+    pub fn allow_private_imports(mut self, allow: bool) -> Self {
+        self.allow_private_imports = allow;
+        self
+    }
+
     pub fn build(self) -> Result<Zega> {
         Zega::open_with_builder(self)
     }
@@ -235,6 +243,7 @@ impl Zega {
             jwt_issuer: None,
             policies: Vec::new(),
             traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
+            allow_private_imports: false,
         }
     }
 
@@ -249,6 +258,7 @@ impl Zega {
             jwt_issuer: None,
             policies: Vec::new(),
             traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
+            allow_private_imports: false,
         }
     }
 
@@ -299,9 +309,6 @@ impl Zega {
             }
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let rt = None;
-
         Ok(Zega {
             graph: Mutex::new(graph),
             wal,
@@ -311,8 +318,7 @@ impl Zega {
             jwt_config,
             policies,
             traversal_work_budget,
-            #[cfg(not(target_arch = "wasm32"))]
-            _rt: rt,
+            allow_private_imports: builder.allow_private_imports,
         })
     }
 

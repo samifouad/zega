@@ -600,3 +600,5 @@ pre.result-json {
 }
 
 .empty { color: var(--dim); font-size: 12.5px; padding: 18px 6px; text-align: center; }
+
+#csv-modal[hidden] { display: none; }

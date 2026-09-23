@@ -28,6 +28,42 @@ impl ZegaWasm {
         serde_json::to_string(&value).map_err(to_js_error)
     }
 
+    /// Raw source texts keyed by the locations written in ZQL. JS only transports
+    /// bytes; JSON/CSV parsing, binding and insertion stay in the engine.
+    pub fn run_with_sources(&self, schema: String, source: String, sources: String) -> Result<String, JsValue> {
+        let sources = serde_json::from_str(&sources).map_err(to_js_error)?;
+        let value = self.inner.run_lang_with_sources(&schema, &source, &sources).map_err(to_js_error)?;
+        serde_json::to_string(&value).map_err(to_js_error)
+    }
+
+    pub fn apply_with_sources(&self, source: String, sources: String) -> Result<String, JsValue> {
+        let sources = serde_json::from_str(&sources).map_err(to_js_error)?;
+        let value = self.inner.apply_zql_with_sources(&source, &sources).map_err(to_js_error)?;
+        serde_json::to_string(&value).map_err(to_js_error)
+    }
+
+    pub fn load_locations(&self, source: String, document: bool) -> Result<String, JsValue> {
+        let entry = if document { zega::ZqlEntryPoint::File } else { zega::ZqlEntryPoint::Statement };
+        let locations = zega::zql_load_locations(entry, &source).map_err(to_js_error)?;
+        serde_json::to_string(&locations).map_err(to_js_error)
+    }
+
+    /// Preview metadata and cells come from the same Rust parser as insertion.
+    pub fn preview_import(&self, text: String) -> Result<String, JsValue> {
+        let format = if text.trim_start().starts_with(['[', '{']) { zega::LoadFormat::Json } else { zega::LoadFormat::Csv };
+        let rows = zega::parse_import(format, &text).map_err(to_js_error)?;
+        let headers: std::collections::BTreeSet<_> = rows.iter().flat_map(|row| row.keys().cloned()).collect();
+        let headers: Vec<_> = headers.into_iter().collect();
+        let cells: Vec<Vec<String>> = rows.iter().map(|row| headers.iter().map(|header| match row.get(header) {
+            None | Some(serde_json::Value::Null) => String::new(),
+            Some(serde_json::Value::String(text)) => text.clone(),
+            Some(value) => value.to_string(),
+        }).collect()).collect();
+        serde_json::to_string(&serde_json::json!({ "headers": headers, "rows": cells,
+            "kind": if format == zega::LoadFormat::Json { "json" } else { "csv" }, "value": rows }))
+            .map_err(to_js_error)
+    }
+
     /// Parse and type-check. Returns a JSON array of diagnostics. An empty
     /// array means the schema and query are clean.
     pub fn check(&self, schema: String, source: String) -> String {

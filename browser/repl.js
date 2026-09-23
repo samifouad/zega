@@ -315,12 +315,23 @@ function looksLikeZqlFile(text) {
   return /^\s*schema\b/.test(text);
 }
 
-function run(source, options = {}) {
+async function loadSources(source, document = false, provided = {}) {
+  const sources = { ...provided };
+  for (const location of JSON.parse(db.load_locations(source, document))) {
+    if (Object.hasOwn(sources, location)) continue;
+    const response = await fetch(location, { redirect: 'error' });
+    if (!response.ok) throw new Error(`Cannot read ${location}: HTTP ${response.status}`);
+    sources[location] = await response.text();
+  }
+  return sources;
+}
+
+async function run(source, options = {}) {
   localStorage.setItem(LS_SCHEMA, schemaText());
   localStorage.setItem(LS_QUERY, queryText());
   if (options.apply && looksLikeZqlFile(schemaText())) {
     try {
-      const applied = JSON.parse(db.apply(schemaText()));
+      const applied = JSON.parse(db.apply_with_sources(schemaText(), JSON.stringify(await loadSources(schemaText(), true))));
       if (!String(source || '').trim()) {
         showJson(applied);
         return applied;
@@ -339,7 +350,7 @@ function run(source, options = {}) {
   }
   const started = performance.now();
   try {
-    const raw = db.run(schemaText(), source);
+    const raw = db.run_with_sources(schemaText(), source, JSON.stringify(await loadSources(source, false, options.sources)));
     const elapsedUs = (performance.now() - started) * 1000;
     queryTime.textContent = elapsedUs < 1000
       ? `${Math.round(elapsedUs)} µs`
@@ -363,6 +374,7 @@ $('#btn-csv').onclick = () => {
   pauseAutoplay();
   openCsv({
     run,
+    previewImport: (text) => JSON.parse(db.preview_import(text)),
     clearDatabase,
     setSchema: (text) => setQuiet(schemaEditor, text),
     setQuery: (text) => setQuiet(queryEditor, text),
@@ -477,11 +489,11 @@ function showTourBar() {
   document.getElementById('tour').hidden = false;
 }
 
-function reseed() {
+async function reseed() {
   pauseAutoplay();
   clearDatabase();
   setQuiet(schemaEditor, SCHEMA);
-  for (const seed of SEEDS) run(seed);
+  for (const seed of SEEDS) await run(seed);
   showTourBar();
   showTour(0);
   startAutoplay();
@@ -719,7 +731,7 @@ try { opening = storedGraph(); } catch (e) { showThrown(e); }
 
 const defaultSchema = schemaText().trim() === SCHEMA.trim();
 if (!saved || !opening.nodes.length || !defaultSchema) {
-  reseed();
+  await reseed();
 } else {
   showTour(0);
   startAutoplay();

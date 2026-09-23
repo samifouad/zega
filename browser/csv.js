@@ -33,11 +33,13 @@ Robert Zemeckis,Forrest Gump,1994,Director,https://api.dicebear.com/9.x/personas
 Robert Zemeckis,Cast Away,2000,Director,https://api.dicebear.com/9.x/personas/svg?seed=Robert%20Zemeckis`,
 };
 
-const ROW_CAP = 150;
 const MAX_IMPORT_CHARS = 2_000_000;
 
-export function openCsv({ run, clearDatabase, setSchema, setQuery, onImported, currentSchema }) {
-  closeCsv();
+export function openCsv({ run, previewImport, clearDatabase, setSchema, setQuery, onImported, currentSchema }) {
+  // Reuse the editor when reopening Import; detached Monaco instances leak
+  // state and disposing one during its async initialization rejects promises.
+  const existing = document.getElementById('csv-modal');
+  if (existing) { existing.hidden = false; return; }
   const root = document.createElement('div');
   root.id = 'csv-modal';
   root.innerHTML = `
@@ -129,9 +131,11 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery, onImported, c
   const mergeBtn = root.querySelector('#csv-merge');
   let headers = [];
   let rows = [];
+  let rawText = '';
   let sourceKind = 'csv';
   let jsonValue = null;
   let jsonEditor = null;
+
 
   const refresh = () => {
     const ready = !/type\s+[A-Za-z_]/.test(schemaEl.value) || !rows.length;
@@ -143,7 +147,8 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery, onImported, c
 
   const load = (text, label) => {
     typeOrigin.clear();
-    const parsed = parseTable(text);
+    let parsed;
+    try { parsed = previewImport(text); } catch (error) { parsed = { error: String(error) }; }
     if (parsed.error) {
       headers = [];
       rows = [];
@@ -154,12 +159,11 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery, onImported, c
       return;
     }
     headers = parsed.headers;
-    rows = parsed.rows.slice(0, ROW_CAP);
+    rows = parsed.rows;
+    rawText = text;
     sourceKind = parsed.kind || 'csv';
     jsonValue = parsed.value ?? null;
-    status.textContent = rows.length < parsed.rows.length
-      ? `${label}: first ${ROW_CAP} of ${parsed.rows.length} rows`
-      : `${label}: ${rows.length} rows`;
+    status.textContent = `${label}: ${rows.length} rows`;
     refresh();
   };
 
@@ -179,7 +183,7 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery, onImported, c
     status.textContent = `Loading ${url}…`;
     urlError.textContent = '';
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { redirect: 'error' });
       const landed = remoteAddressError(response.url);
       if (landed) throw new Error(landed);
       if (!response.ok) throw new Error(String(response.status));
@@ -389,8 +393,8 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery, onImported, c
   });
   root.addEventListener('dragend', hideDrop);
 
-  const apply = (merge) => {
-    const built = buildImport(schemaEl.value, headers, rows);
+  const apply = async (merge) => {
+    const built = buildImport(schemaEl.value, headers, sourceKind);
     if (built.error) {
       status.textContent = built.error;
       return;
@@ -398,11 +402,11 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery, onImported, c
     if (merge) {
       setSchema(mergeSchema(currentSchema?.() || '', built.schema));
     } else {
-      clearDatabase();
+      await clearDatabase();
       setSchema(built.schema);
     }
     for (const mutation of built.mutations) {
-      const value = run(mutation, { quiet: true });
+      const value = await run(mutation, { quiet: true, sources: { "./import": rawText } });
       if (value == null) {
         status.textContent = merge
           ? 'Merge stopped on a row that did not apply. The output pane has the reason.'
@@ -411,7 +415,7 @@ export function openCsv({ run, clearDatabase, setSchema, setQuery, onImported, c
       }
     }
     setQuery(built.query);
-    run(built.query);
+    await run(built.query);
     onImported?.();
     closeCsv();
   };
@@ -559,7 +563,8 @@ function mergeSchema(current, incoming) {
 }
 
 function closeCsv() {
-  document.getElementById('csv-modal')?.remove();
+  const root = document.getElementById('csv-modal');
+  if (root) root.hidden = true;
 }
 
 let dragHeader = '';
@@ -745,38 +750,6 @@ function skipBrace(lines, start) {
   return start;
 }
 
-function parseTable(text) {
-  const trimmed = text.trim();
-  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-    const parsed = jsonTable(trimmed);
-    return parsed.error ? parsed : { ...parsed, kind: 'json' };
-  }
-  return { ...parseCsv(text), error: null, kind: 'csv', value: null };
-}
-
-function jsonTable(text) {
-  let value;
-  try { value = JSON.parse(text); } catch { return { error: 'That file is not JSON.', headers: [], rows: [], value: null }; }
-  const original = value;
-  if (value && !Array.isArray(value) && typeof value === 'object') value = [value];
-  if (!Array.isArray(value) || !value.length) return { error: 'The JSON file has no rows.', headers: [], rows: [], value: null };
-  if (value.every((row) => row && typeof row === 'object' && !Array.isArray(row))) {
-    const headers = [];
-    for (const row of value) {
-      for (const key of Object.keys(row)) if (!headers.includes(key)) headers.push(key);
-    }
-    const rows = value.map((row) => headers.map((key) => cellText(row[key])));
-    return { headers, rows, error: null, value: original };
-  }
-  return { error: 'JSON import expects a list of objects.', headers: [], rows: [], value: null };
-}
-
-function cellText(value) {
-  if (value == null) return '';
-  if (typeof value === 'object') return JSON.stringify(value);
-  return String(value);
-}
-
 function columnsForType(type, headers) {
   return headers.filter((header) => ident(header) === type.name);
 }
@@ -789,7 +762,7 @@ export function pointListsAtMembers(schema) {
 }
 
 function fieldMatches(header, fieldName) {
-  return ident(header) === fieldName;
+  return ident(header).toLowerCase() === fieldName.toLowerCase();
 }
 
 function matchingFields(type, headers) {
@@ -802,259 +775,43 @@ function matchingFields(type, headers) {
   return pairs;
 }
 
-function migrationMutations(schema, headers = [], rows = []) {
-  const mutations = [];
-  const types = new Set();
-  const re = /mutation\s+([A-Za-z_][\w]*)\s*\{/g;
-  let match = re.exec(schema);
-  while (match) {
-    let depth = 1;
-    let i = re.lastIndex;
-    while (i < schema.length && depth > 0) {
-      if (schema[i] === '{') depth += 1;
-      else if (schema[i] === '}') depth -= 1;
-      i += 1;
-    }
-    const fields = [];
-    for (const line of schema.slice(re.lastIndex, i - 1).split('\n')) {
-      const found = line.trim().match(/^([A-Za-z_][\w]*)\s*:\s*(.+)$/);
-      if (!found) continue;
-      fields.push({ name: found[1], value: found[2].trim().replace(/,$/, '') });
-    }
-    const typeName = match[1];
-    const usesColumn = fields.some((field) => /^\$[A-Za-z_][\w]*$/.test(field.value));
-    if (usesColumn) types.add(typeName);
-    const emit = (bound) => {
-      if (!bound.length) return;
-      mutations.push(`mutation {\n  ${typeName}(${bound.map((field) => `${field.name}: ${field.expr}`).join(' && ')}) { ${bound.map((field) => field.name).join(' ')} }\n}`);
-    };
-    if (!usesColumn) {
-      emit(fields.map((field) => ({ name: field.name, expr: field.value })));
-    } else {
-      const seen = new Set();
-      for (const row of rows) {
-        const bound = [];
-        for (const field of fields) {
-          const dollar = field.value.match(/^\$([A-Za-z_][\w]*)$/);
-          if (!dollar) {
-            bound.push({ name: field.name, expr: field.value });
-            continue;
-          }
-          const index = headers.findIndex((header) => ident(header) === dollar[1]);
-          if (index < 0) return { error: `no column ${dollar[1]}`, mutations, types };
-          const raw = (row[index] ?? '').trim();
-          if (!raw) continue;
-          bound.push({ name: field.name, expr: literalRaw(raw) });
-        }
-        const key = bound.map((field) => field.expr).join('\n');
-        if (!bound.length || seen.has(key)) continue;
-        seen.add(key);
-        emit(bound);
-      }
-    }
-    re.lastIndex = i;
-    match = re.exec(schema);
-  }
-  return { mutations, types, error: null };
-}
-
-function literalRaw(raw) {
-  if (/^-?\d+$/.test(raw) || /^-?\d+\.\d+$/.test(raw)) return raw;
-  if (/^(true|false)$/i.test(raw)) return raw.toLowerCase();
-  return quote(raw);
-}
-
-function stripMigrationBlocks(schema) {
-  let out = '';
-  const re = /mutation\s+[A-Za-z_][\w]*\s*\{/g;
-  let last = 0;
-  let match = re.exec(schema);
-  while (match) {
-    out += schema.slice(last, match.index);
-    let depth = 1;
-    let i = re.lastIndex;
-    while (i < schema.length && depth > 0) {
-      if (schema[i] === '{') depth += 1;
-      else if (schema[i] === '}') depth -= 1;
-      i += 1;
-    }
-    last = i;
-    re.lastIndex = i;
-    match = re.exec(schema);
-  }
-  return `${out}${schema.slice(last)}`.replace(/\n{3,}/g, '\n\n').trim();
-}
-
-export function buildImport(schema, headers, rows) {
-  const migrated = migrationMutations(schema, headers, rows);
-  if (migrated.error) return { error: migrated.error };
-  const extras = migrated.mutations;
-  schema = pointListsAtMembers(stripMigrationBlocks(schema));
+// The UI maps columns to a ZQL template. It never binds individual rows or
+// converts their values; the engine receives the original text for every load.
+export function buildImport(schema, headers, format) {
+  schema = pointListsAtMembers(schema);
   const types = parseSchema(schema);
   if (!types.length) return { error: 'The schema has no types yet.' };
-  const scalarScore = (type) => type.fields.filter((field) => !field.edge && field.name !== 'name'
-    && headers.some((header) => fieldMatches(header, field.name))).length;
-  const rowType = types.slice().sort((a, b) => scalarScore(b) - scalarScore(a))[0];
-  const claimed = new Set(types.flatMap((type) => columnsForType(type, headers)));
-  const sources = (type) => {
-    const direct = columnsForType(type, headers);
-    if (direct.length) return direct;
-    if (type === rowType && type.fields.some((field) => !field.edge && field.name === 'name')) {
-      const nameHeader = headers.find((header) => ident(header) === 'name' && !claimed.has(header));
-      if (nameHeader) return [nameHeader];
+  const rowType = types.slice().sort((a, b) => matchingFields(b, headers).length - matchingFields(a, headers).length)[0];
+  const fields = (type) => type.fields.filter((field) => !field.edge).map((field) => {
+    let header = headers.find((item) => fieldMatches(item, field.name));
+    if (field.name === 'name') {
+      header = columnsForType(type, headers)[0] || (type === rowType ? header : undefined);
     }
-    return [];
+    return header ? { field: field.name, header } : null;
+  }).filter(Boolean);
+  const visited = new Set();
+  const selection = (type, ancestors = new Set()) => {
+    const props = fields(type);
+    if (!props.length || ancestors.has(type.name)) return null;
+    visited.add(type.name);
+    const path = new Set([...ancestors, type.name]);
+    const edges = type.fields.filter((field) => field.edge).map((edge) => {
+      const target = types.find((item) => item.name === edge.target);
+      const child = target && selection(target, path);
+      return child ? `${edge.name} ${edge.dir} ${child}` : null;
+    }).filter(Boolean);
+    return `${type.name}(${props.map(({ field, header }) => `${field}: $${JSON.stringify(header)}`).join(' && ')}) { ${props.map(({ field }) => field).join(' ')} ${edges.join(' ')} }`;
   };
-  const rowTypes = types.filter((type) => !migrated.types.has(type.name) && !sources(type).length && matchingFields(type, headers).length);
-  if (!types.some((type) => sources(type).length) && !rowTypes.length && !extras.length) {
-    return { error: 'None of the columns match a field on a type yet. Drag a column onto a type, or name the fields after the columns.' };
-  }
-
-  const cell = (row, header) => (row[headers.indexOf(header)] ?? '').trim();
   const mutations = [];
-  for (const type of types) {
-    const cols = sources(type);
-    if (!cols.length) continue;
-    const seen = new Set();
-    for (const row of rows) {
-      for (const header of cols) {
-        const value = cell(row, header);
-        if (!value || seen.has(value)) continue;
-        seen.add(value);
-        const props = [`name: ${quote(value)}`];
-        if (type === rowType) {
-          for (const field of type.fields) {
-            if (field.edge || field.name === 'name') continue;
-            const headerForField = headers.find((item) => ident(item) === field.name);
-            if (!headerForField) continue;
-            const raw = cell(row, headerForField);
-            if (!raw) continue;
-            props.push(`${field.name}: ${literal(raw, field.zql)}`);
-          }
-        }
-        mutations.push(`mutation {\n  ${type.name}(${props.join(' && ')}) { name }\n}`);
-      }
-    }
+  // One graph per source row, exactly as native mutation csv/json behaves.
+  for (const type of [rowType, ...types.filter((type) => type !== rowType)]) {
+    if (visited.has(type.name)) continue;
+    const root = selection(type);
+    if (root) mutations.push(`mutation ${format} ["./import"] { ${root} }`);
   }
-
-  for (const type of types) {
-    const sourceCols = sources(type);
-    if (!sourceCols.length) continue;
-    const byTarget = new Map();
-    for (const field of type.fields) {
-      if (!field.edge) continue;
-      const list = byTarget.get(field.target) || [];
-      list.push(field);
-      byTarget.set(field.target, list);
-    }
-    for (const [targetName, fields] of byTarget) {
-      const targetType = types.find((item) => item.name === targetName);
-      const targetCols = targetType ? sources(targetType) : [];
-      if (!targetCols.length) continue;
-      for (const row of rows) {
-        const sourceVal = cell(row, sourceCols[0]);
-        if (!sourceVal) continue;
-        const links = [];
-        fields.forEach((field, index) => {
-          const cols = targetCols.length > fields.length && index === fields.length - 1
-            ? targetCols.slice(index)
-            : [targetCols[Math.min(index, targetCols.length - 1)]];
-          for (const header of cols) {
-            const targetVal = cell(row, header);
-            if (!targetVal) continue;
-            const dir = field.many ? '->' : field.dir;
-            links.push(`    ${field.name} ${dir} link ${targetName}(name: ${quote(targetVal)}) { name }`);
-          }
-        });
-        if (links.length) {
-          mutations.push(`mutation {\n  ${type.name}(name: ${quote(sourceVal)}) {\n${links.join('\n')}\n  }\n}`);
-        }
-      }
-    }
-  }
-
-  const cellProps = (type, row) => {
-    const props = [];
-    const names = [];
-    for (const { field, header } of matchingFields(type, headers)) {
-      const raw = cell(row, header);
-      if (!raw) continue;
-      props.push(`${field.name}: ${literal(raw, field.zql)}`);
-      names.push(field.name);
-    }
-    return { props, names };
-  };
-  for (const type of rowTypes) {
-    const seen = new Set();
-    for (const row of rows) {
-      const { props, names } = cellProps(type, row);
-      if (!props.length) continue;
-      const key = props.join('\n');
-      if (seen.has(key)) continue;
-      seen.add(key);
-      mutations.push(`mutation {\n  ${type.name}(${props.join(' && ')}) { ${names.join(' ')} }\n}`);
-    }
-  }
-  for (const type of rowTypes) {
-    const edges = type.fields.filter((field) => field.edge);
-    if (!edges.length) continue;
-    const seen = new Set();
-    for (const row of rows) {
-      const parent = cellProps(type, row);
-      if (!parent.props.length) continue;
-      const links = [];
-      for (const field of edges) {
-        const target = types.find((item) => item.name === field.target);
-        if (!target) continue;
-        const dir = field.many ? '->' : field.dir;
-        if (rowTypes.includes(target)) {
-          const child = cellProps(target, row);
-          if (!child.props.length) continue;
-          links.push(`    ${field.name} ${dir} link ${target.name}(${child.props.join(' && ')}) { ${child.names.join(' ')} }`);
-        } else {
-          const cols = sources(target);
-          if (!cols.length) continue;
-          const value = cell(row, cols[0]);
-          if (!value) continue;
-          links.push(`    ${field.name} ${dir} link ${target.name}(name: ${quote(value)}) { name }`);
-        }
-      }
-      if (!links.length) continue;
-      const key = `${parent.props.join('\n')}\n${links.join('\n')}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      mutations.push(`mutation {\n  ${type.name}(${parent.props.join(' && ')}) {\n${links.join('\n')}\n  }\n}`);
-    }
-  }
-  mutations.push(...extras);
-
-  const focus = rowTypes[0] || types.find((type) => type.fields.some((field) => field.edge && field.many))
-    || types.find((type) => type.fields.some((field) => field.edge))
-    || rowType;
-  const shown = focus.fields.filter((field) => field.edge).slice(0, 3)
-    .map((field) => `    ${field.name} ${field.many ? '->' : field.dir} ${field.target} { name }`)
-    .join('\n');
-  const scalars = focus.fields.filter((field) => !field.edge).slice(0, 4).map((field) => field.name);
-  const query = `{\n  ${focus.name} {\n    ${scalars.join('\n    ')}\n${shown}\n  }\n}`;
+  if (!mutations.length) return { error: 'None of the columns match a field on a type yet.' };
+  const query = `{ ${rowType.name} { ${fields(rowType).map(({ field }) => field).join(' ')} } }`;
   return { schema, mutations, query };
-}
-
-function literal(value, zql) {
-  if (zql === 'Int' || zql === 'Float') return /^-?\d+(\.\d+)?$/.test(value) ? value : '0';
-  if (zql === 'Bool') return /^(true|yes|1)$/i.test(value) ? 'true' : 'false';
-  return quote(value);
-}
-
-function quote(value) {
-  const text = String(value)
-    .slice(0, 10_000)
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t')
-    .replace(/[\u0000-\u001f\u007f]/g, '');
-  return `"${text}"`;
 }
 
 function remoteAddressError(raw) {
@@ -1080,27 +837,6 @@ function blockedHost(host) {
   if (n[0] === 172 && n[1] >= 16 && n[1] <= 31) return true;
   if (n[0] === 192 && n[1] === 168) return true;
   return false;
-}
-
-function parseCsv(text) {
-  const rows = [];
-  let row = [];
-  let cell = '';
-  let quoted = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (quoted) {
-      if (ch === '"') {
-        if (text[i + 1] === '"') { cell += '"'; i += 1; } else quoted = false;
-      } else cell += ch;
-    } else if (ch === '"') quoted = true;
-    else if (ch === ',') { row.push(cell); cell = ''; }
-    else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
-    else if (ch !== '\r') cell += ch;
-  }
-  if (cell.length || row.length) { row.push(cell); rows.push(row); }
-  const headers = (rows.shift() || []).map((header) => header.trim());
-  return { headers, rows: rows.filter((cells) => cells.some((value) => value.trim())) };
 }
 
 function escapeHtml(value) {
