@@ -9,6 +9,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
         .route("/zql", post(handlers::zql))
+        .route("/vector-view", post(handlers::vector_view))
         .route("/graph", get(handlers::graph).delete(handlers::clear))
         .route("/graph/nodes/:id", delete(handlers::delete_node))
         .route(

@@ -70,6 +70,14 @@ impl ZegaWasm {
         serde_json::to_string(&schema).map_err(to_js_error)
     }
 
+    /// PCA and full-vector explanations, attached to a query result by the host.
+    pub fn vector_view(&self, schema: String, result: String, kind: String, selected: Option<u32>, k: usize, threshold: f64) -> Result<String, JsValue> {
+        let result = serde_json::from_str(&result).map_err(to_js_error)?;
+        let kind = match kind.as_str() { "vector2d" => zega::ViewKind::Vector2d, "vector3d" => zega::ViewKind::Vector3d, _ => return Err(JsValue::from_str("expected vector2d or vector3d")) };
+        let value = self.inner.vector_view(&schema, &result, kind, selected.map(u64::from), k, threshold).map_err(to_js_error)?;
+        serde_json::to_string(&value).map_err(to_js_error)
+    }
+
     /// Return a diagnostic report with rendered text and editor source spans.
     pub fn check(&self, schema: String, source: String) -> String {
         serde_json::to_string(&zega::diagnose(&schema, &source))
@@ -195,6 +203,7 @@ fn value_to_json(value: Value) -> serde_json::Value {
             serde_json::Value::Array(values.into_iter().map(value_to_json).collect())
         }
         Value::Point(point) => point.to_json(),
+        Value::Vector(v) => v.to_json(),
         Value::Map(values) => serde_json::Value::Object(
             values
                 .into_iter()

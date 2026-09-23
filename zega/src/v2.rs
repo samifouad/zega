@@ -6,6 +6,7 @@
 //! as the existing executor.
 
 use crate::location::{Bounds, Point, EARTH_RADIUS};
+use crate::vector::{Vector, VectorSpec, Metric};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::graph::{Graph, Node, NodeId, RelId};
@@ -774,13 +775,13 @@ fn apply_node(
         lookup_one(graph, sel, uniques)?
     } else {
         require_points(schema, sel)?;
-        insert_node(graph, wal, sel, uniques)?
+        insert_node(graph, wal, schema, sel, uniques)?
     };
     if !sel.sets.is_empty() {
         let props = sel
             .sets
             .iter()
-            .map(|(key, value, _)| Ok((key.clone(), json_to_value(value)?)))
+            .map(|(key, value, _)| Ok((key.clone(), json_to_prop(schema, sel, key, value)?)))
             .collect::<Result<HashMap<_, _>, LangError>>()?;
         let labels = graph
             .get_node(id)
@@ -831,6 +832,8 @@ fn apply_node(
             Item::Prop(name, _) => {
                 object.insert(name.clone(), prop_json(&node, name));
             }
+            Item::Score(alias, _) => { object.insert(alias.clone(), score_json(&node, sel)); }
+            Item::Similarity(alias, sim) => { object.insert(alias.clone(), similarity_json(&node, sim)); }
             Item::Distance(alias, distance) => {
                 object.insert(
                     alias.clone(),
@@ -901,6 +904,8 @@ fn apply_node(
                             Item::Prop(name, _) => {
                                 child_object.insert(name.clone(), prop_json(&saved, name));
                             }
+                            Item::Score(alias, _) => { child_object.insert(alias.clone(), score_json(&saved, target)); }
+                            Item::Similarity(alias, sim) => { child_object.insert(alias.clone(), similarity_json(&saved, sim)); }
                             Item::Distance(alias, distance) => {
                                 child_object.insert(
                                     alias.clone(),
@@ -978,6 +983,7 @@ fn unique_candidates(
             .as_ref()
             .and_then(|expr| guaranteed_eq(expr, field))
         {
+            if value.is_array() { return None; }
             let value = json_to_value(value).ok()?;
             let mut ids: Vec<_> = graph
                 .nodes_by_property(field, &value)
@@ -1015,12 +1021,13 @@ fn has_link(sel: &Selection) -> bool {
 fn insert_node(
     graph: &mut Graph,
     wal: &crate::Wal,
+    schema: &Schema,
     sel: &Selection,
     uniques: &[(String, String)],
 ) -> Result<NodeId, LangError> {
     let mut props = HashMap::new();
     if let Some(expr) = &sel.condition {
-        assign_props(expr, sel, &mut props)?;
+        assign_props(expr, sel, schema, &mut props)?;
     }
     let labels: Vec<String> = std::iter::once(sel.type_name.clone())
         .chain(sel.also.iter().cloned())
@@ -1266,6 +1273,8 @@ fn project(
                 ensure_prop(schema, sel, name)?;
                 object.insert(name.clone(), prop_json(node, name));
             }
+            Item::Score(alias, _) => { object.insert(alias.clone(), score_json(node, sel)); }
+            Item::Similarity(alias, sim) => { object.insert(alias.clone(), similarity_json(node, sim)); }
             Item::Distance(alias, distance) => {
                 object.insert(
                     alias.clone(),
@@ -1574,6 +1583,20 @@ fn node_distance(graph: &Graph, id: NodeId, distance: &crate::lang::Distance) ->
     Some(point_prop(graph.get_node(id)?, &distance.field)?.distance(distance.origin))
 }
 fn order_limit<T>(graph: &Graph, sel: &Selection, ids: &mut Vec<T>, id: impl Fn(&T) -> NodeId) {
+    if let Some(near) = &sel.near {
+        let allowed: HashSet<_> = ids.iter().map(&id).collect();
+        // A union may contain different metrics. Search each compatible index,
+        // then rank the candidates by their actual stored field's metric.
+        let mut ranked = Vec::new();
+        for metric in [Metric::Cosine, Metric::Dot, Metric::L2] {
+            let mut q = near.similarity.query.clone(); q.metric = metric;
+            ranked.extend(graph.vector_nearest(&near.similarity.field, &q, near.k, near.exact, |n| allowed.contains(&n)));
+        }
+        ranked.sort_by(|a,b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0))); ranked.truncate(near.k);
+        let ranks: HashMap<_,_> = ranked.iter().enumerate().map(|(i,(id,_))| (*id,i)).collect();
+        ids.retain(|row| ranks.contains_key(&id(row)));
+        ids.sort_by_key(|row| ranks[&id(row)]);
+    }
     if let Some(order) = &sel.order {
         ids.retain(|row| node_distance(graph, id(row), order).is_some());
         ids.sort_by(|a, b| {
@@ -1602,14 +1625,14 @@ fn require_points(schema: &Schema, sel: &Selection) -> Result<(), LangError> {
                 ..
             } = field
             {
-                if ty == "Point"
+                if (ty == "Point" || VectorSpec::parse(ty).is_some())
                     && !tests
                         .iter()
                         .any(|pred| matches!(pred, Pred::Eq(field, _, _) if field == name))
                 {
                     return Err(LangError::at(
                         sel.type_span,
-                        format!("{} requires Point field {name}", sel.type_name),
+                        format!("{} requires {ty} field {name}", sel.type_name),
                     ));
                 }
             }
@@ -1644,15 +1667,16 @@ fn eval_expr(graph: &Graph, id: NodeId, expr: &BoolExpr) -> bool {
 fn assign_props(
     expr: &BoolExpr,
     sel: &Selection,
+    schema: &Schema,
     props: &mut HashMap<String, Value>,
 ) -> Result<(), LangError> {
     match expr {
         BoolExpr::And(left, right) => {
-            assign_props(left, sel, props)?;
-            assign_props(right, sel, props)
+            assign_props(left, sel, schema, props)?;
+            assign_props(right, sel, schema, props)
         }
         BoolExpr::Test(Pred::Eq(field, value, _)) if field != "id" => {
-            props.insert(field.clone(), json_to_value(value)?);
+            props.insert(field.clone(), json_to_prop(schema, sel, field, value)?);
             Ok(())
         }
         BoolExpr::Test(Pred::Eq(_, _, _)) => Ok(()),
@@ -1669,6 +1693,7 @@ fn pred_matches(graph: &Graph, id: NodeId, pred: &Pred) -> bool {
         return false;
     };
     match pred {
+        Pred::Similarity(sim, op, threshold) => node_similarity(node, sim).is_some_and(|s| cmp_json(&json!(s), *op, &json!(threshold))),
         Pred::Distance(distance, op, metres) => {
             point_prop(node, &distance.field).is_some_and(|point| {
                 cmp_json(&json!(point.distance(distance.origin)), *op, &json!(metres))
@@ -1718,7 +1743,7 @@ fn cmp_value(left: &Json, right: &Json) -> Option<std::cmp::Ordering> {
 }
 
 fn equality_lookup(sel: &Selection) -> bool {
-    sel.order.is_none()
+    sel.near.is_none() && sel.order.is_none()
         && sel.limit.is_none()
         && sel
             .condition
@@ -1758,6 +1783,7 @@ fn value_to_json(value: &Value) -> Json {
         Value::Null => Json::Null,
         Value::List(values) => Json::Array(values.iter().map(value_to_json).collect()),
         Value::Point(point) => point.to_json(),
+        Value::Vector(v) => v.to_json(),
         Value::Map(values) => {
             let mut object = serde_json::Map::new();
             for (key, value) in values {
@@ -1768,6 +1794,19 @@ fn value_to_json(value: &Value) -> Json {
     }
 }
 
+fn node_similarity(node: &Node, sim: &crate::lang::Similarity) -> Option<f64> {
+    match node.props.get(&sim.field) { Some(Value::Vector(v)) => v.score(&sim.query), _ => None }
+}
+fn similarity_json(node: &Node, sim: &crate::lang::Similarity) -> Json { node_similarity(node,sim).map_or(Json::Null, |s| json!(s)) }
+fn score_json(node: &Node, sel: &Selection) -> Json { sel.near.as_ref().map_or(Json::Null, |n| similarity_json(node,&n.similarity)) }
+fn json_to_prop(schema: &Schema, sel: &Selection, field: &str, value: &Json) -> Result<Value, LangError> {
+    if !value.is_null() {
+        if let Ok(crate::lang::Field::Prop { ty, .. }) = schema.prop(&sel.type_name, field) {
+            if let Some(spec) = VectorSpec::parse(ty) { return spec.value(value).map(Value::Vector).map_err(|m| LangError::at(sel.type_span,m)); }
+        }
+    }
+    json_to_value(value)
+}
 fn json_to_value(value: &Json) -> Result<Value, LangError> {
     match value {
         Json::String(value) => Ok(Value::String(value.clone())),
@@ -1785,9 +1824,7 @@ fn json_to_value(value: &Json) -> Result<Value, LangError> {
         Json::Object(_) => Point::from_json(value)
             .map(Value::Point)
             .map_err(LangError::bare),
-        _ => Err(LangError::bare(
-            "only scalar values and Points can be stored",
-        )),
+        Json::Array(_) => Vector::from_json(value, Metric::Cosine).map(Value::Vector).map_err(LangError::bare),
     }
 }
 

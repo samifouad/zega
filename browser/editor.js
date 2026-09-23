@@ -57,7 +57,7 @@ function registerLanguages(monaco) {
         [/\/\/.*$/, 'comment'],
         [/\}/, { token: 'delimiter.bracket', next: '@root' }],
         [/"([^"\\]|\\.)*"/, 'string'],
-        [/\b(String|Int|Float|Bool|Point)\b/, 'type'],
+        [/\b(String|Int|Float|Bool|Point|Vector)\b/, 'type'],
         [/->|<-/, { token: 'operator', next: '@target' }],
         [/[\[\]()|?:]/, 'delimiter'],
         [/[A-Z][\w]*/, 'type'],
@@ -90,7 +90,7 @@ function registerLanguages(monaco) {
       root: [
         [/\/\/.*$/, 'comment'],
         [/"([^"\\]|\\.)*"/, 'string'],
-        [/\b(query|mutation|link|set|true|false|null|order|by|limit|distance|within_box|point)\b/, 'keyword'],
+        [/\b(query|mutation|link|set|true|false|null|order|by|limit|distance|within_box|point|vector|near|similarity|score|exact)\b/, 'keyword'],
         [/\b(CONTAINS|STARTS|WITH|ENDS)\b/, 'keyword'],
         [/->|<-|>=|<=|<>|!=|&&|\|\|/, 'operator'],
         [/[<>]/, 'operator'],

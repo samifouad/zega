@@ -40,6 +40,11 @@ class NativeDatabase {
   schema(source) { return this.parser.schema(source); }
   load_locations(source, document) { return this.parser.load_locations(source, document); }
   check(schema, source) { return this.parser.check(schema, source); }
+  async vector_view(schema, result, kind, selected, k, threshold) {
+    return this.request('/vector-view', 'POST', {
+      schema, result: typeof result === 'string' ? JSON.parse(result) : result, kind, selected, k, threshold,
+    });
+  }
   preview_import(text) { return this.parser.preview_import(text); }
   graph() { return JSON.stringify(this.snapshot); }
   async clear() { await this.request('/graph', 'DELETE'); await this.refresh(); }

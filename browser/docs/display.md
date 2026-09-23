@@ -52,3 +52,10 @@ vendored. Map asset failure removes the basemap, preserves query markers, and
 keeps the OSM attribution visible. The existing Monaco loader still uses its
 existing CDN; tests serve pinned Monaco package files locally and block external
 requests. An entirely offline explorer install must also provide Monaco locally.
+
+`vector2d` and `vector3d` require a Vector field on every listed type (every
+schema type when braces are omitted). They show the current query's selected
+IDs, with engine-computed PCA positions, full-vector nearest neighbors and
+relationship disagreement flags. Both use the shared inspector. The **Tickets**
+button loads the deterministic synthetic support-ticket sample. See
+[Vectors and meaning views](../../docs/vector.md) for syntax, metrics and controls.

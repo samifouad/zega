@@ -27,6 +27,7 @@ pub struct Graph {
     label_index: HashMap<String, HashSet<NodeId>>,
     property_index: HashMap<(String, Value), HashSet<NodeId>>,
     spatial_index: crate::location::SpatialIndex,
+    vector_index: crate::vector::VectorIndex,
     outgoing: HashMap<NodeId, HashSet<RelId>>,
     incoming: HashMap<NodeId, HashSet<RelId>>,
     next_node_id: AtomicU64,
@@ -35,20 +36,20 @@ pub struct Graph {
 
 impl Clone for Graph {
     fn clone(&self) -> Self {
-        let mut graph = Self::new();
-        for node in self.nodes.values() {
-            graph.restore_node(node.id, node.labels.clone(), node.props.clone());
+        // Transaction staging preserves index topology, including routing
+        // tombstones. Rebuilding HNSW here would make every write quadratic.
+        Self {
+            nodes: self.nodes.clone(),
+            relationships: self.relationships.clone(),
+            label_index: self.label_index.clone(),
+            property_index: self.property_index.clone(),
+            spatial_index: self.spatial_index.clone(),
+            vector_index: self.vector_index.clone(),
+            outgoing: self.outgoing.clone(),
+            incoming: self.incoming.clone(),
+            next_node_id: AtomicU64::new(self.next_node_id.load(Ordering::SeqCst)),
+            next_rel_id: AtomicU64::new(self.next_rel_id.load(Ordering::SeqCst)),
         }
-        for rel in self.relationships.values() {
-            graph.restore_relationship(
-                rel.id,
-                rel.kind.clone(),
-                rel.from,
-                rel.to,
-                rel.props.clone(),
-            );
-        }
-        graph
     }
 }
 
@@ -66,6 +67,7 @@ impl Graph {
             label_index: HashMap::new(),
             property_index: HashMap::new(),
             spatial_index: Default::default(),
+            vector_index: Default::default(),
             outgoing: HashMap::new(),
             incoming: HashMap::new(),
             next_node_id: AtomicU64::new(1),
@@ -80,6 +82,10 @@ impl Graph {
         bounds: crate::location::Bounds,
     ) -> HashSet<NodeId> {
         self.spatial_index.candidates(field, bounds)
+    }
+
+    pub fn vector_nearest(&self, field: &str, query: &crate::vector::Vector, k: usize, exact: bool, allowed: impl Fn(NodeId) -> bool) -> Vec<(NodeId, f64)> {
+        self.vector_index.nearest(field, query, k, exact, allowed)
     }
 
     pub fn create_node(&mut self, labels: Vec<String>, props: HashMap<String, Value>) -> NodeId {
@@ -107,6 +113,7 @@ impl Graph {
             if let Value::Point(point) = v {
                 self.spatial_index.insert(k, *point, id);
             }
+            if let Value::Vector(v) = v { self.vector_index.insert(k, v, id); }
             self.property_index
                 .entry((k.clone(), v.clone()))
                 .or_default()
@@ -121,6 +128,7 @@ impl Graph {
                 if let Value::Point(point) = v {
                     self.spatial_index.remove(k, *point, id);
                 }
+                if let Value::Vector(v) = v { self.vector_index.remove(k, v, id); }
                 if let Some(set) = self.property_index.get_mut(&(k.clone(), v.clone())) {
                     set.remove(&id);
                 }
@@ -130,6 +138,7 @@ impl Graph {
                 if let Value::Point(point) = v {
                     self.spatial_index.insert(k, *point, id);
                 }
+                if let Value::Vector(v) = v { self.vector_index.insert(k, v, id); }
                 self.property_index
                     .entry((k.clone(), v.clone()))
                     .or_default()
@@ -148,6 +157,7 @@ impl Graph {
             if let Value::Point(point) = v {
                 self.spatial_index.remove(k, *point, node.id);
             }
+            if let Value::Vector(v) = v { self.vector_index.remove(k, v, node.id); }
             if let Some(set) = self.property_index.get_mut(&(k.clone(), v.clone())) {
                 set.remove(&node.id);
             }
@@ -269,6 +279,8 @@ impl Graph {
     pub fn set_state(&mut self, nodes: HashMap<NodeId, Node>, rels: HashMap<RelId, Relationship>) {
         // Snapshots and WAL replay use the same index-maintenance paths.
         *self = Self::new();
+        let mut nodes: Vec<_> = nodes.into_iter().collect();
+        nodes.sort_by_key(|(id, _)| *id);
         for (id, node) in nodes {
             self.restore_node(id, node.labels, node.props);
         }

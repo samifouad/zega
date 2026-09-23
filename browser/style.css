@@ -653,3 +653,28 @@ pre.result-json {
 .maplibregl-ctrl-group { background: var(--panel); }
 .maplibregl-ctrl-group button + button { border-top-color: var(--rule); }
 [data-theme="dark"] .maplibregl-ctrl-icon { filter: invert(1); }
+
+.vector-view { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.vector-toolbar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 12px 14px 4px; font-size: 12px; }
+.vector-toolbar strong { font-size: 16px; }
+.vector-toolbar input[type=search] { width: 125px; }
+.vector-toolbar label { white-space: nowrap; }
+.vector-view select,.vector-view input { color: inherit; background: var(--bg); border: 1px solid #81918a60; border-radius: 5px; padding: 4px; }
+.vector-stage { min-height: 180px; flex: 1; display: flex; overflow: hidden; }
+.vector-stage canvas { display: block; min-width: 0; width: 100%; flex: 1; height: 100%; touch-action: none; cursor: grab; }
+.vector-side { width: 225px; min-width: 170px; max-width: 32%; overflow: auto; padding: 0 12px; font-size: 11px; }
+.vector-side h3 { font-size: 13px; margin: 13px 0 7px; }
+.vector-side p { opacity: .7; }
+.vector-side select { width: 100%; }
+.vector-side input { width: 55px; }
+.vector-side label { display: block; margin-top: 10px; }
+.vector-nearest { padding-left: 20px; }
+.vector-nearest li { padding: 3px 0; }
+.vector-nearest button { padding: 0; border: 0; max-width: 130px; text-align: left; background: none; font-size: 11px; }
+.vector-nearest span { float: right; font-variant-numeric: tabular-nums; opacity: .7; }
+.vector-flags { padding-left: 12px; line-height: 1.6; }
+.vector-note { margin: 0; padding: 8px 14px; font-size: 10px; opacity: .7; }
+.vector-legend { display: flex; flex-wrap: wrap; gap: 14px; padding: 5px 14px 8px; font-size: 10px; }
+.vector-nearest li { display: list-item; padding: 5px 0; border-bottom: 1px solid #81918a20; }
+.vector-nearest button { width: calc(100% - 42px); vertical-align: top; line-height: 1.45; }
+.vector-nearest span { width: 40px; text-align: right; line-height: 1.45; }

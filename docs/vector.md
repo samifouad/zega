@@ -1,0 +1,149 @@
+# Vectors and meaning views
+
+A Vector is a fixed-size array of finite float32 numbers. The dimension is
+1 through 4096. Values are rounded once to float32 on input; results report
+those stored values. A wrong dimension, non-number or float32 overflow is a
+type error with a source span. Optional fields use `embedding?: Vector<384>`.
+
+```zql
+schema {
+  type Ticket { title: String status: String embedding: Vector<384> related -> Ticket[] }
+  display { vector2d { Ticket }: Default vector3d { Ticket } table }
+}
+```
+
+The default metric is cosine. `Vector<384, dot>` selects dot product;
+`Vector<384, l2>` selects Euclidean distance. All scores are larger-is-better:
+cosine in [-1, 1], raw dot product, or **negative** Euclidean distance.
+Cosine involving a zero vector is defined as zero. Ties break by ascending
+node ID. No model is run by the index: text and embeddings are separate fields.
+
+## Write and load
+
+```zql
+schema { type Ticket { title: String embedding: Vector<3> } }
+mutation { Ticket(title: "Reset password" && embedding: vector[0.8, 0.2, 0.1]) { id } }
+mutation { Ticket(title: "Reset password") set embedding: vector[1, 0, 0] { embedding } }
+```
+
+JSON loads accept arrays under the declared field name, or explicit bindings:
+
+```json
+[{"title":"Reset password","embedding":[0.8,0.2,0.1]}]
+```
+
+```zql
+mutation json ["tickets.json"] { Ticket(title: $title && embedding: $embedding) { id } }
+```
+
+CSV requires an explicit mapping of exactly N numeric columns:
+
+```zql
+schema { type Ticket { title: String embedding: Vector<3> from (x, y, z) } }
+mutation csv ["tickets.csv"] { Ticket(title: $title) { id embedding } }
+```
+
+No coordinate or embedding columns are guessed. The mapping also works with
+JSON. An explicit assignment wins, then a named JSON array, then mapped
+columns. All rows are bound and checked before a load writes any of them.
+
+## Nearest and threshold queries
+
+These use the existing selection syntax. `near` follows the optional filter,
+and precedes the fields. Select `score` or alias it as `relevance: score`.
+
+```zql
+query {
+  Ticket(status = "Open") near(embedding, vector[1, 0, 0], 10) {
+    id title score related -> Ticket { id title }
+  }
+}
+
+// Explicit exact scan, including all matching vectors.
+query { Ticket near(embedding, vector[1, 0, 0], 10, exact) { id title score } }
+
+// Full-vector threshold, combinable with && and ||.
+query {
+  Ticket(similarity(embedding, vector[1, 0, 0]) >= 0.8 && status = "Open") {
+    id title relevance: similarity(embedding, vector[1, 0, 0])
+  }
+}
+
+// Nearest within the nodes reached by a real relationship.
+query {
+  Ticket(title = "Reset password") {
+    related -> Ticket near(embedding, vector[1, 0, 0], 5) { id title score }
+  }
+}
+```
+
+The query vector must have the field's dimension. The examples above use
+`Vector<3>`; a `Vector<384>` query needs 384 components. ZQL's `$name` syntax
+remains an import binding, so queries write `vector[...]` literals. Nearest
+selections return arrays, including with equality filters. `near` is read-only
+and cannot be combined with distance ordering. Missing optional vectors are
+excluded. An additional `limit` can truncate the nearest result.
+
+Nearest searches use HNSW by default. Ordinary filters and relationship
+traversals restrict eligible results before nearest-k is chosen. Search
+expands its candidate budget if filtering leaves too few results. Threshold
+filters evaluate full-vector scores by scanning candidates, so they do not
+silently discard threshold matches. `exact` always scans the full eligible
+set, with the same scores and tie order.
+
+## Index and persistence
+
+Every Vector field automatically maintains an in-tree Rust HNSW index, with
+no C/C++ dependencies, threads or network access. It runs on native and wasm32.
+The implementation follows the layered greedy search, bounded best-first
+search and diversity heuristic in [Malkov and Yashunin's HNSW paper](https://arxiv.org/abs/1603.09320).
+M=24, the bottom layer permits 48 links, construction ef=160 and search ef=768
+(or at least k). A fixed seed and node IDs determine levels; ties are stable.
+Index partitions separate field names, dimensions and metrics.
+
+Insert and replacement update the index. Deletes immediately remove eligibility;
+tombstones remain routing nodes until a deterministic rebuild when over half
+the allocated entries are dead (above 64 entries). Updates remove the previous
+entry and insert the new vector. WAL and snapshots store float32 values and
+metrics; replay rebuilds the index through normal writes, as for Point. Snapshot
+restoration inserts nodes in ID order. Rebuilding can change approximate
+neighbors after a history of updates; exact results remain identical.
+
+The regression test measures recall@10 against independent brute force on
+10,000 seeded 128-dimensional vectors and 40 held-out queries. It requires
+at least 0.95 recall, and checks exact IDs **and scores** against the reference.
+This branch measured **1.0000 recall@10** (400/400 neighbors).
+Approximate recall is data-dependent; the measured corpus is not a guarantee
+for every dataset.
+
+## Explorer
+
+Only explicitly declared views are offered. Every type in a vector view must
+have a Vector field. With no type list, every declared type must qualify.
+The first Vector field in schema order supplies that type's points. Optional
+missing values have no point. Select `id` in the query: the engine projects
+exactly the result IDs, including nested relationship results, and fetches
+their stored vectors. Unselected nodes do not participate.
+
+The engine's `vector_view` API returns the query result alongside PCA metadata.
+Centered PCA computes up to three axes using deterministic power iteration,
+orthogonal deflation and stable signs. Both views use the same three-axis
+projection; 2D shows its first two axes. Incompatible dimensions or metrics
+form independent projection groups, whose positions should not be compared.
+PCA positions are approximate; the UI states that scores use full vectors.
+
+- **vector2d**: drag to pan, scroll to zoom; click a point to open the shared inspector.
+- **vector3d**: drag to rotate, Shift-drag to pan, scroll to zoom.
+- Choose a scalar colour field; Search glow highlights matching text.
+- **Similar to this** lists exact nearest neighbors within the plotted result set,
+  excluding the selected node, with scores and highlighted points.
+- **Links vs meaning** draws actual relationships. A linked pair below the chosen
+  score threshold is *linked-but-far*; an unlinked pair at or above it is
+  *near-but-unlinked*. Links in either direction count. Flags use full vectors,
+  never projected distance. Adjust the threshold for dot or negative-L2 scores.
+
+Rendering uses the browser's native Canvas API and repository JavaScript;
+there is no renderer CDN or remote projection service. The **Tickets** sample
+has 200 synthetic support tickets across five topics, with deliberate
+cross-topic relationships. Its vectors are synthetic, **not from a model**.
+Regenerate exactly with `node browser/scripts/tickets-sample.mjs`.

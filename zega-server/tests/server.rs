@@ -72,6 +72,61 @@ async fn zql_mutation_then_query_returns_typed_json() {
 }
 
 #[tokio::test]
+async fn vector_view_endpoint_uses_native_vectors_for_both_dimensions() {
+    let server = start_server().await;
+    let client = Client::new();
+    let schema = "type Ticket { title: String embedding: Vector<2> } display { vector2d { Ticket }: Default vector3d { Ticket } }";
+    for mutation in [
+        "mutation { Ticket(title: \"A\" && embedding: vector[1,0]) { id } }",
+        "mutation { Ticket(title: \"B\" && embedding: vector[0.9,0.1]) { id } }",
+        "mutation { Ticket(title: \"C\" && embedding: vector[-1,0]) { id } }",
+    ] {
+        post(&client, &server)
+            .json(&json!({"schema":schema,"query":mutation}))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+    }
+    let query: Value = post(&client, &server)
+        .json(&json!({"schema":schema,"query":"{ Ticket { id title } }"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for kind in ["vector2d", "vector3d"] {
+        let view: Value = client
+            .post(format!("{}/vector-view", server.base_url))
+            .bearer_auth(TOKEN)
+            .json(&json!({
+                "schema":schema,
+                "result":query["result"],
+                "kind":kind,
+                "selected":null,
+                "k":10,
+                "threshold":0.8
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(view["result"]["points"].as_array().unwrap().len(), 3);
+        assert!(view["result"]["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|point| point["dimensions"] == 2));
+    }
+}
+
+#[tokio::test]
 async fn raw_import_uses_the_engine_and_graph_edits_use_wal_paths() {
     let server = start_server().await;
     let client = Client::new();
@@ -113,6 +168,7 @@ async fn every_database_route_requires_the_bearer() {
     for (method, path) in [
         (reqwest::Method::GET, "/health"),
         (reqwest::Method::POST, "/zql"),
+        (reqwest::Method::POST, "/vector-view"),
         (reqwest::Method::GET, "/graph"),
         (reqwest::Method::DELETE, "/graph"),
         (reqwest::Method::DELETE, "/graph/nodes/1"),

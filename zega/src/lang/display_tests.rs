@@ -132,7 +132,7 @@ fn display_syntax_errors() {
         2,
         11,
         16,
-        "use `graph`, `table`, `map`, or `timeline`",
+        "use `graph`, `table`, `map`, `timeline`, `vector2d`, or `vector3d`",
     );
     error(
         "type Place {}\ndisplay { graph: default }",

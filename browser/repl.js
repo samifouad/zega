@@ -1,6 +1,7 @@
 import init, { ZegaWasm } from './pkg/zega_wasm.js';
 import { renderGraph, stopSim } from './graph.js';
 import { renderMap } from './map.js';
+import { renderVector } from './vector.js';
 import { renderTable } from './table.js';
 import { applyTheme } from './theme.js';
 import { createEditors } from './editor.js';
@@ -425,6 +426,18 @@ $('#btn-calgary').onclick = async () => {
     persist();
   } catch (error) { showThrown(error); }
 };
+$('#btn-tickets').onclick = async () => {
+  try {
+    const response = await fetch('./samples/tickets.zql');
+    if (!response.ok) throw new Error(`Cannot load tickets: HTTP ${response.status}`);
+    const source = await response.text();
+    db.schema(source);
+    hideTour(); await clearDatabase();
+    setQuiet(schemaEditor, source);
+    setQuiet(queryEditor, source.slice(source.lastIndexOf('query {')).trim());
+    await run(queryText(), { apply: true }); persist();
+  } catch (error) { showThrown(error); }
+};
 $('#btn-clear').onclick = async () => {
   pauseAutoplay();
   await clearDatabase();
@@ -691,6 +704,13 @@ function drawGraph() {
   } else if (activeView === 'map') {
     disposeView?.();
     disposeView = renderMap(graphEl, mapResults(lastValue, nodes, types), theme, inspectNode);
+  } else if (activeView === 'vector2d' || activeView === 'vector3d') {
+    disposeView?.();
+    const analyze = async (selected, k, threshold) => {
+      const value = db.vector_view(schemaText(), JSON.stringify(lastValue), activeView, selected ?? undefined, k, threshold);
+      return typeof value === 'string' ? JSON.parse(value) : await value;
+    };
+    disposeView = renderVector(graphEl, { nodes, rels: graph.rels }, activeView, theme, analyze, inspectNode);
   } else if (activeView === 'timeline') {
     const list = document.createElement('ol');
     list.className = 'timeline-view';
