@@ -36,7 +36,10 @@ Robert Zemeckis,Cast Away,2000,Director,https://api.dicebear.com/9.x/personas/sv
 const MAX_IMPORT_CHARS = 2_000_000;
 
 export function openCsv({ run, previewImport, clearDatabase, setSchema, setQuery, onImported, currentSchema }) {
-  closeCsv();
+  // Reuse the editor when reopening Import; detached Monaco instances leak
+  // state and disposing one during its async initialization rejects promises.
+  const existing = document.getElementById('csv-modal');
+  if (existing) { existing.hidden = false; return; }
   const root = document.createElement('div');
   root.id = 'csv-modal';
   root.innerHTML = `
@@ -132,6 +135,7 @@ export function openCsv({ run, previewImport, clearDatabase, setSchema, setQuery
   let sourceKind = 'csv';
   let jsonValue = null;
   let jsonEditor = null;
+
 
   const refresh = () => {
     const ready = !/type\s+[A-Za-z_]/.test(schemaEl.value) || !rows.length;
@@ -559,7 +563,8 @@ function mergeSchema(current, incoming) {
 }
 
 function closeCsv() {
-  document.getElementById('csv-modal')?.remove();
+  const root = document.getElementById('csv-modal');
+  if (root) root.hidden = true;
 }
 
 let dragHeader = '';

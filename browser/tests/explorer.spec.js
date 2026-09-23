@@ -74,7 +74,7 @@ test('Import UI sends raw CSV and JSON to Rust and inserts every row', async ({ 
       .find((editor) => editor.getDomNode()?.closest('#csv-schema'))
       .setValue('type Player {\n  name: String\n  salary: Int\n}'));
     await page.locator('#csv-import').click();
-    await expect(page.locator('#csv-modal')).toHaveCount(0);
+    await expect(page.locator('#csv-modal')).toBeHidden();
     await expect.poll(async () => { try { return JSON.parse(await output()); } catch { return null; } }).toEqual(expected);
     await expect(page.locator('#raw-count')).toContainText(`${expected.length} nodes`);
   }

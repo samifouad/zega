@@ -10,6 +10,7 @@ export class ZegaWasm {
      * Run a `.zql` file of `schema`, `unique`, `mutation`, and `query` blocks.
      */
     apply(source: string): string;
+    apply_with_sources(source: string, sources: string): string;
     /**
      * Parse and type-check. Returns a JSON array of diagnostics. An empty
      * array means the schema and query are clean.
@@ -35,9 +36,19 @@ export class ZegaWasm {
      * current state.
      */
     import_base64(data: string): void;
+    load_locations(source: string, document: boolean): string;
     constructor();
+    /**
+     * Preview metadata and cells come from the same Rust parser as insertion.
+     */
+    preview_import(text: string): string;
     query(zql: string, params_json: string): string;
     run(schema: string, source: string): string;
+    /**
+     * Raw source texts keyed by the locations written in ZQL. JS only transports
+     * bytes; JSON/CSV parsing, binding and insertion stay in the engine.
+     */
+    run_with_sources(schema: string, source: string, sources: string): string;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -46,6 +57,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_zegawasm_free: (a: number, b: number) => void;
     readonly zegawasm_apply: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly zegawasm_apply_with_sources: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_check: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly zegawasm_connect: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly zegawasm_delete_node: (a: number, b: number) => [number, number];
@@ -53,14 +65,15 @@ export interface InitOutput {
     readonly zegawasm_export_base64: (a: number) => [number, number, number, number];
     readonly zegawasm_graph: (a: number) => [number, number, number, number];
     readonly zegawasm_import_base64: (a: number, b: number, c: number) => [number, number];
+    readonly zegawasm_load_locations: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly zegawasm_new: () => [number, number, number];
+    readonly zegawasm_preview_import: (a: number, b: number, c: number) => [number, number, number, number];
     readonly zegawasm_query: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_run: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly zegawasm_run_with_sources: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_exn_store: (a: number) => void;
-    readonly __externref_table_alloc: () => number;
-    readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_start: () => void;
