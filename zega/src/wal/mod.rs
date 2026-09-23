@@ -144,6 +144,9 @@ impl Wal {
         }
     }
 
+    // On wasm32 `Wal` is a stub with no file I/O (see `new` above), so this
+    // constructor is only reachable on the native, file-backed path.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn with_group_commit(
         path: &Path,
         flush_every: bool,
@@ -267,6 +270,8 @@ impl Wal {
         }
     }
 
+    // Replays the on-disk log; nothing to replay for the wasm32 stub.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn iter(&self) -> Result<Vec<Operation>, WalError> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -546,6 +551,10 @@ fn group_commit_worker(group: Arc<GroupCommit>) {
     }
 }
 
+// `Zega::open`/`Zega::snapshot` only call this on the native, file-backed
+// path (see the `cfg(not(target_arch = "wasm32"))` call sites in lib.rs);
+// the wasm32 build persists through `encode_snapshot`/`restore_bytes` instead.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn snapshot(graph: &Graph, path: &Path) -> Result<(), WalError> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -569,6 +578,7 @@ pub fn snapshot(graph: &Graph, path: &Path) -> Result<(), WalError> {
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn restore(graph: &mut Graph, path: &Path) -> Result<bool, WalError> {
     #[cfg(target_arch = "wasm32")]
     {

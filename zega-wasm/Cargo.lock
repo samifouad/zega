@@ -1519,11 +1519,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "zega-core"
+name = "zega"
 version = "0.1.0"
 dependencies = [
  "base64",
  "bincode",
+ "crc32fast",
  "getrandom 0.2.17",
  "hmac",
  "js-sys",
@@ -1536,54 +1537,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "web-sys",
- "zega-graph",
- "zega-lang",
- "zega-parser",
- "zega-wal",
-]
-
-[[package]]
-name = "zega-graph"
-version = "0.1.0"
-dependencies = [
- "serde",
- "zega-parser",
-]
-
-[[package]]
-name = "zega-lang"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "thiserror 1.0.69",
- "zega-validation",
-]
-
-[[package]]
-name = "zega-parser"
-version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "zega-validation"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "zega-wal"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "crc32fast",
- "serde",
- "thiserror 1.0.69",
- "zega-graph",
- "zega-parser",
 ]
 
 [[package]]
@@ -1593,7 +1546,7 @@ dependencies = [
  "base64",
  "serde_json",
  "wasm-bindgen",
- "zega-core",
+ "zega",
 ]
 
 [[package]]
