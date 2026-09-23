@@ -11,9 +11,17 @@
 </head>
 <body>
 <header id="topbar">
-  <span class="brand">zega</span>
+  <a class="brand" href="https://zega.dev" aria-label="zega">
+    <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+      <path d="M8 7 H24 L8 25 H24" fill="none" stroke="currentColor" stroke-width="3.1" stroke-linecap="round" stroke-linejoin="round" />
+      <circle cx="24" cy="7" r="4.2" fill="#0C8B43" />
+      <circle cx="8" cy="25" r="4.2" fill="#0C8B43" />
+    </svg>
+    <span class="brand-word">zega</span>
+  </a>
   <span class="conn"><span class="conn-dot"></span> local · wasm</span>
   <span class="spacer"></span>
+  <a class="btn-link green" href="https://zega.dev">back to zega.dev</a>
   <button id="btn-calgary">Calgary</button>
   <button id="btn-theme" aria-label="Switch theme">Dark</button>
   <button id="btn-csv">Import</button>

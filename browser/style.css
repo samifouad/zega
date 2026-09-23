@@ -8,6 +8,14 @@
   --green: #2e8b57;
 }
 
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(fonts/space-grotesk-700.ttf) format('truetype');
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -31,7 +39,9 @@ body {
   top: 0;
   z-index: 10;
 }
-.brand { font-size: 17px; font-weight: 700; letter-spacing: 0.2px; }
+.brand { display: flex; align-items: center; gap: 6px; color: var(--ink); text-decoration: none; }
+.brand svg { display: block; flex: none; }
+.brand-word { font-family: 'Space Grotesk', sans-serif; font-size: 17px; font-weight: 700; letter-spacing: -0.045em; }
 .brand-dim { color: var(--dim); font-weight: 400; }
 .conn { color: var(--dim); font-size: 12px; display: flex; align-items: center; gap: 5px; }
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; }
@@ -354,6 +364,8 @@ button, .btn-link {
 button:hover, .btn-link:hover { background: #f0f0f3; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 button.primary:hover { filter: brightness(1.1); }
+.btn-link.green { background: #0C8B43; border-color: #0C8B43; color: #fff; font-weight: 600; }
+.btn-link.green:hover { filter: brightness(1.1); }
 button.mini { padding: 0 6px; font-size: 11px; }
 
 #main { display: flex; align-items: flex-start; }
