@@ -1,4 +1,4 @@
-use zega_parser::value::Value;
+use crate::parser::value::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Policy {

@@ -3,9 +3,9 @@
 
 use serde_json::Value as Json;
 use thiserror::Error;
-use zega_validation::{closest, render};
+use crate::validation::{closest, render};
 
-pub use zega_validation::{Diagnostic, Pane, Report, Severity};
+pub use crate::validation::{Diagnostic, Pane, Report};
 
 /// A source range. Columns are 1-based and count UTF-16 code units, which is
 /// what the editor uses. `end_column` is exclusive.

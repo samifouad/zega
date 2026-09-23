@@ -8,24 +8,53 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::{json, Value as Json};
-use zega_graph::{Graph, Node, NodeId, RelId};
-use zega_lang::{
+use crate::graph::{Graph, Node, NodeId, RelId};
+use crate::lang::{
     BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, Pred, Schema, Selection, Span,
     Statement,
 };
-use zega_parser::Value;
-use zega_wal::Operation;
+use crate::parser::Value;
+use crate::wal::Operation;
 
 use crate::{Zega, ZegaError};
 
+/// Which ZQL grammar entry point [`check_zql`] should parse `source` as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZqlEntryPoint {
+    /// A full `.zql` file: schema, `unique`, mutations, and an optional query.
+    File,
+    /// A single query block, standalone.
+    Query,
+    /// A single statement (schema, mutation, or query), standalone.
+    Statement,
+}
+
+/// Parse-check `source` as `entry_point` without building or touching a
+/// database. On success the source is syntactically valid (and, for
+/// [`ZqlEntryPoint::File`], its schema is internally consistent); on failure
+/// returns the same rendered diagnostic a parse-stage error from
+/// [`Zega::apply_zql`] or [`Zega::run_lang`] would produce.
+///
+/// This exists for conformance testing of the parser's rejection paths in
+/// isolation, without executing anything — the same three entry points
+/// `apply_zql` (file) and `run_lang` (statement) already parse internally.
+pub fn check_zql(entry_point: ZqlEntryPoint, source: &str) -> std::result::Result<(), String> {
+    let result = match entry_point {
+        ZqlEntryPoint::File => crate::lang::parse_zql(source).map(|_| ()),
+        ZqlEntryPoint::Query => crate::lang::parse_query(source).map(|_| ()),
+        ZqlEntryPoint::Statement => crate::lang::parse_statement(source).map(|_| ()),
+    };
+    result.map_err(|error| crate::lang::render_error("schema", source, &error))
+}
+
 impl Zega {
     pub fn run_lang(&self, schema_src: &str, source: &str) -> Result<Json, ZegaError> {
-        let schema = zega_lang::parse_schema(schema_src)
+        let schema = crate::lang::parse_schema(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
-        let uniques = zega_lang::parse_uniques(schema_src)
+        let uniques = crate::lang::parse_uniques(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
         let statement =
-            zega_lang::parse_statement(source).map_err(|error| explain(error, "query", source))?;
+            crate::lang::parse_statement(source).map_err(|error| explain(error, "query", source))?;
         self.execute(&schema, &uniques, &statement, "query", source)
     }
 
@@ -66,7 +95,7 @@ impl Zega {
         field: &str,
         to_id: u64,
     ) -> Result<(), ZegaError> {
-        let schema = zega_lang::parse_schema(schema_src)
+        let schema = crate::lang::parse_schema(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
         let mut graph = self
             .graph
@@ -116,7 +145,7 @@ impl Zega {
     /// Run a `.zql` file: schema, unique, mutations, then an optional query.
     pub fn apply_zql(&self, source: &str) -> Result<Json, ZegaError> {
         let file =
-            zega_lang::parse_zql(source).map_err(|error| explain(error, "schema", source))?;
+            crate::lang::parse_zql(source).map_err(|error| explain(error, "schema", source))?;
         let mut last = Json::Null;
         for statement in &file.statements {
             last = self.execute(&file.schema, &file.uniques, statement, "schema", source)?;
@@ -189,7 +218,7 @@ fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
         Statement::Load { template, .. } => (template.root.as_ref(), true),
     };
     if let Some(root) = root {
-        zega_lang::check(schema, root, mutation)?;
+        crate::lang::check(schema, root, mutation)?;
     }
     Ok(())
 }
@@ -219,7 +248,7 @@ fn run_statement(
             template,
         } => {
             let rows = load_rows(*format, locations)?;
-            if let Some(error) = zega_lang::missing_columns(template, &rows)
+            if let Some(error) = crate::lang::missing_columns(template, &rows)
                 .into_iter()
                 .next()
             {
@@ -227,7 +256,7 @@ fn run_statement(
             }
             let mut out = Vec::new();
             for row in &rows {
-                let Some(query) = zega_lang::bind_row(template, row)? else {
+                let Some(query) = crate::lang::bind_row(template, row)? else {
                     continue;
                 };
                 let Some(root) = &query.root else {
@@ -249,12 +278,12 @@ fn load_rows(
         let text = read_location(location)?;
         match format {
             LoadFormat::Csv => {
-                rows.extend(zega_lang::csv_rows(&text).map_err(LangError::bare)?);
+                rows.extend(crate::lang::csv_rows(&text).map_err(LangError::bare)?);
             }
             LoadFormat::Json => {
                 let value = serde_json::from_str(&text)
                     .map_err(|error| LangError::bare(format!("{location} is not json: {error}")))?;
-                rows.extend(zega_lang::json_rows(value).map_err(LangError::bare)?);
+                rows.extend(crate::lang::json_rows(value).map_err(LangError::bare)?);
             }
         }
     }
@@ -402,7 +431,7 @@ fn read_location_text(location: &str) -> Result<String, String> {
 }
 
 fn explain(error: LangError, source_name: &str, source: &str) -> ZegaError {
-    ZegaError::Execution(zega_lang::render_error(source_name, source, &error))
+    ZegaError::Execution(crate::lang::render_error(source_name, source, &error))
 }
 
 fn read(
@@ -688,7 +717,7 @@ fn require_edge_props(
 ) -> Result<(), LangError> {
     let declared = schema.types.iter().find_map(|ty| {
         ty.fields.iter().find_map(|field| match field {
-            zega_lang::Field::Edge {
+            crate::lang::Field::Edge {
                 rel: kind, props, ..
             } if kind == rel && !props.is_empty() => Some(props),
             _ => None,

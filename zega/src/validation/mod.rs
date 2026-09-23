@@ -1,6 +1,6 @@
 //! Diagnostics and the text that presents them.
 //!
-//! The checker in `zega-lang` decides what is wrong. This crate owns the
+//! The checker in `zega::lang` decides what is wrong. This crate owns the
 //! value it reports and the layout of that report, so a CLI and the wasm
 //! build print the same characters. A browser displays the string.
 

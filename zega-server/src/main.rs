@@ -1,6 +1,6 @@
 use std::{env, io};
 use tokio::net::TcpListener;
-use zega_core::Zega;
+use zega::Zega;
 use zega_server::{server, AppState};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use zega_parser::Value;
+use crate::parser::Value;
 
 pub type NodeId = u64;
 pub type RelId = u64;
@@ -282,3 +282,6 @@ mod tests {
         assert_eq!(rel.to, b);
     }
 }
+
+#[cfg(test)]
+mod exhaustive_tests;

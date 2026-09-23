@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 use std::io::Write;
-use zega_core::Zega;
-use zega_parser::Value;
+use zega::Zega;
+use zega::Value;
 
 const USERS: usize = 10_000;
 const PRODUCTS: usize = 5_000;

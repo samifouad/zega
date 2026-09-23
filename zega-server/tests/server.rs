@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::{net::TcpListener, task::JoinHandle};
-use zega_core::Zega;
+use zega::Zega;
 use zega_server::{server, AppState};
 
 const TOKEN: &str = "test-secret";

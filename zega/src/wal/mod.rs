@@ -16,8 +16,8 @@ use std::thread::{self, JoinHandle};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 use thiserror::Error;
-use zega_graph::{Graph, Node, NodeId, RelId, Relationship};
-use zega_parser::Value;
+use crate::graph::{Graph, Node, NodeId, RelId, Relationship};
+use crate::parser::Value;
 
 const WAL_MAGIC: &[u8; 4] = b"ZWAL";
 const WAL_VERSION: u16 = 2;
@@ -123,6 +123,10 @@ impl Wal {
         }
     }
 
+    // Only this module's own durability tests call `new`/`flush` directly;
+    // `Zega` always goes through `with_group_commit`. Kept public and
+    // allowed here rather than deleted: it's real WAL API, not dead code.
+    #[allow(dead_code)]
     pub fn new(path: &Path, flush_every: bool) -> Result<Self, WalError> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -244,6 +248,7 @@ impl Wal {
         }
     }
 
+    #[allow(dead_code)]
     pub fn flush(&self) -> Result<(), WalError> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -840,7 +845,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let wal_path = dir.path().join("wal.bin");
             let mut child = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "tests::crash_writer_helper", "--nocapture"])
+                .args(["--exact", "wal::tests::crash_writer_helper", "--nocapture"])
                 .env("ZEGA_CRASH_WRITER_PATH", &wal_path)
                 .stdout(Stdio::piped())
                 .spawn()
@@ -885,3 +890,6 @@ mod tests {
         assert_eq!(graph2.all_nodes().len(), 1);
     }
 }
+
+#[cfg(test)]
+mod exhaustive_tests;

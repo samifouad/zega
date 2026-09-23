@@ -5,8 +5,7 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
-zega-core = { path = "../zega-core" }
-zega-parser = { path = "../zega-parser" }
+zega = { path = "../zega" }
 neo4rs = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"

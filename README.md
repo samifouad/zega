@@ -27,7 +27,7 @@ just like [cqx](https://cqx.bio) does for running queries without a server:
   `SET`, `DELETE`/`DETACH DELETE`, `WHERE`, `WITH`, `UNWIND`, `FOREACH`,
   `ORDER BY`/`SKIP`/`LIMIT`, aggregates (`count`, `sum`, `avg`, `min`, `max`,
   `collect`), `CASE`, and scalar functions.
-- **Embeddable** — `zega-core` is a library first. Open a database with two
+- **Embeddable** — `zega` is a library first. Open a database with two
   lines of Rust and run graph queries against it.
 - **WebAssembly** — `zega-wasm` exposes the same engine to JavaScript,
   in-memory, in the browser.
@@ -82,11 +82,11 @@ curl -s http://127.0.0.1:7700/cql \
 
 ## Use it as a library
 
-Add `zega-core` to your `Cargo.toml` (path or git dependency for now):
+Add `zega` to your `Cargo.toml` (path or git dependency for now):
 
 ```rust
 use std::collections::HashMap;
-use zega_core::{Zega, Value};
+use zega::{Zega, Value};
 
 // on-disk (wal.bin + snapshot.bin live in ./data)
 let zega = Zega::open("./data").build()?;
@@ -224,12 +224,14 @@ cargo run --release -p zega-bench --bin commerce-bench
 
 ## Workspace layout
 
+`zega` is the only published crate — the whole engine (query execution,
+planner, JWT, policies, WAL, graph storage, ZQL parser and language) lives
+inside it as private modules. Everything else in this workspace is a
+consumer that depends on `zega` by path and is never published:
+
 | Crate | What it is |
 |---|---|
-| `zega-core` | the database: query execution, planner, JWT, policies, snapshots |
-| `zega-graph` | property graph with label/property indexes and adjacency lists |
-| `zega-parser` | lexer + parser for ZQL |
-| `zega-wal` | the write-ahead log: framing, group commit, replay, migration |
+| `zega` | the database: the only thing on crates.io |
 | `zega-server` | the optional HTTP server binary |
 | `zega-wasm` | wasm-bindgen wrapper for the browser (in-memory) |
 | `zega-bench` | benchmarks against Neo4j |

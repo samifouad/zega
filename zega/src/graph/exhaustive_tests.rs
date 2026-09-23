@@ -1,6 +1,6 @@
-//! Exhaustive integration tests for the `zega-graph` crate.
+//! Exhaustive tests for the `zega::graph` module.
 //!
-//! Covers the full public surface of [`zega_graph::Graph`]:
+//! Covers the full surface of [`super::Graph`]:
 //! node + relationship CRUD, label/property indexing & lookups,
 //! adjacency (outgoing/incoming) bookkeeping, cascade deletion,
 //! id-counter semantics (create vs restore vs set_state), traversal
@@ -14,8 +14,8 @@
 //! by signature, so we assert on observable graph state instead.
 
 use std::collections::{HashMap, HashSet};
-use zega_graph::{Graph, Node, NodeId, RelId, Relationship};
-use zega_parser::Value;
+use super::{Graph, Node, NodeId, RelId, Relationship};
+use crate::parser::Value;
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -1,11 +1,11 @@
-// zega-bench — side-by-side: zega-core (embedded) vs Neo4j (client/server).
+// zega-bench — side-by-side: zega (embedded) vs Neo4j (client/server).
 // Identical workloads. Reports throughput (ops/sec) and latency (p50/p99).
 // Memory (RSS) is captured by the surrounding driver script via /proc.
 
 use std::collections::HashMap;
 use std::time::Instant;
-use zega_core::Zega;
-use zega_parser::Value;
+use zega::Zega;
+use zega::Value;
 
 const USERS: usize = 10_000;
 const ORDERS: usize = 50_000;

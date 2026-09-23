@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
-use zega_core::{Value, Zega};
+use zega::{Value, Zega};
 
 #[wasm_bindgen]
 pub struct ZegaWasm {
@@ -31,7 +31,7 @@ impl ZegaWasm {
     /// Parse and type-check. Returns a JSON array of diagnostics. An empty
     /// array means the schema and query are clean.
     pub fn check(&self, schema: String, source: String) -> String {
-        serde_json::to_string(&zega_core::diagnose(&schema, &source))
+        serde_json::to_string(&zega::diagnose(&schema, &source))
             .unwrap_or_else(|_| "[]".into())
     }
 

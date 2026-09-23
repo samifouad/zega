@@ -1,12 +1,11 @@
 pub mod auth;
-pub mod classification;
 pub mod handlers;
 pub mod routes;
 pub mod server;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use zega_core::Zega;
+use zega::Zega;
 
 /// One canonical database behind an exclusion gate.
 ///
