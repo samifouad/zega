@@ -22,7 +22,7 @@ export class ZegaWasm {
     delete_node(id: number): void;
     delete_relationship(id: number): void;
     /**
-     * Serialize the whole database (graph + KV) to a base64 string, so the
+     * Serialize the whole graph database to a base64 string, so the
      * browser build can persist it across reloads.
      */
     export_base64(): string;
@@ -35,9 +35,6 @@ export class ZegaWasm {
      * current state.
      */
     import_base64(data: string): void;
-    kv_del(key: string): boolean;
-    kv_get(key: string): string;
-    kv_set(key: string, value_json: string, ttl_secs?: bigint | null): void;
     constructor();
     query(zql: string, params_json: string): string;
     run(schema: string, source: string): string;
@@ -56,9 +53,6 @@ export interface InitOutput {
     readonly zegawasm_export_base64: (a: number) => [number, number, number, number];
     readonly zegawasm_graph: (a: number) => [number, number, number, number];
     readonly zegawasm_import_base64: (a: number, b: number, c: number) => [number, number];
-    readonly zegawasm_kv_del: (a: number, b: number, c: number) => [number, number, number];
-    readonly zegawasm_kv_get: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly zegawasm_kv_set: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint) => [number, number];
     readonly zegawasm_new: () => [number, number, number];
     readonly zegawasm_query: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_run: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
