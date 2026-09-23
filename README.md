@@ -1,14 +1,13 @@
 # zega
 
-An embeddable graph database — with a KV store inside. Written in Rust.
+An embeddable graph database. Written in Rust.
 
 <p align="left">
   <img src="image.png" alt="zega browser" width="70%">
 </p>
 
-zega gives you what Neo4j gives you (a property graph with a Cypher-inspired
-query language) and what Redis gives you (strings, lists, TTLs, atomic
-counters) in one engine, one binary, one dependency. It runs in-process in
+zega provides a property graph with a Cypher-inspired query language in
+one engine, one binary, one dependency. It runs in-process in
 any Rust application, persists through a write-ahead log with snapshots, and
 compiles to WebAssembly for the browser.
 
@@ -28,11 +27,8 @@ just like [cqx](https://cqx.bio) does for running queries without a server:
   `SET`, `DELETE`/`DETACH DELETE`, `WHERE`, `WITH`, `UNWIND`, `FOREACH`,
   `ORDER BY`/`SKIP`/`LIMIT`, aggregates (`count`, `sum`, `avg`, `min`, `max`,
   `collect`), `CASE`, and scalar functions.
-- **KV store** — `GET`/`SET`/`DEL`/`INCR`, list operations (`LPUSH`/`RPUSH`/
-  `LRANGE`/`LTRIM`), TTLs, and cursor-based `SCAN` — through the same query
-  language or the same handle.
 - **Embeddable** — `zega-core` is a library first. Open a database with two
-  lines of Rust and run graph and KV queries against it.
+  lines of Rust and run graph queries against it.
 - **WebAssembly** — `zega-wasm` exposes the same engine to JavaScript,
   in-memory, in the browser.
 - **Durable** — CRC32-framed write-ahead log with group commit, torn-write
@@ -84,44 +80,6 @@ curl -s http://127.0.0.1:7700/cql \
   -d '{"query": "MATCH (n:Person) RETURN n.name AS name"}'
 ```
 
-### KV over HTTP
-
-`POST /kv` takes an `op`, a `key`, and op-specific fields:
-
-```bash
-# set a key
-curl -s http://127.0.0.1:7700/kv \
-  -H "Authorization: Bearer change-me" -H "Content-Type: application/json" \
-  -d '{"op": "set", "key": "greeting", "value": "hello"}'
-
-# set only if absent (useful for claims/locks)
-curl -s http://127.0.0.1:7700/kv \
-  -H "Authorization: Bearer change-me" -H "Content-Type: application/json" \
-  -d '{"op": "set", "key": "claim", "value": 1, "nx": true}'
-
-# read it back
-curl -s http://127.0.0.1:7700/kv \
-  -H "Authorization: Bearer change-me" -H "Content-Type: application/json" \
-  -d '{"op": "get", "key": "greeting"}'
-
-# lists
-curl -s http://127.0.0.1:7700/kv \
-  -H "Authorization: Bearer change-me" -H "Content-Type: application/json" \
-  -d '{"op": "lpush", "key": "items", "value": 42}'
-```
-
-Supported ops — reads: `get`, `lrange`, `ttl`, `exists`, `scan`; writes:
-`set`, `del`, `incr`, `lpush`, `rpush`, `ltrim`, `expire`, `incr_with_ttl`.
-
-KV operations are also part of ZQL itself:
-
-```text
-SET KEY session = $token TTL 3600
-GET KEY session
-INCR KEY hits
-DEL KEY session
-```
-
 ## Use it as a library
 
 Add `zega-core` to your `Cargo.toml` (path or git dependency for now):
@@ -144,9 +102,6 @@ zega.query("CREATE (n:Person {name: $name})", params.clone())?;
 let rows = zega.query("MATCH (n:Person {name: $name}) RETURN n", params)?;
 assert_eq!(rows.len(), 1);
 
-// the KV store is on the same handle
-zega.kv_set("greeting".to_string(), Value::String("hello".to_string()), None)?;
-zega.kv_incr("hits")?;
 ```
 
 Durability is configurable on the builder:
@@ -208,7 +163,6 @@ const rows = db.query(
 );
 console.log(JSON.parse(rows));
 
-db.kv_set("greeting", JSON.stringify("hello"), null);
 ```
 
 ## The query language
@@ -258,13 +212,12 @@ automatically.
 
 ## Benchmarks
 
-`zega-bench` runs the same workloads against zega (embedded), Redis (RESP),
-and Neo4j (Bolt) side by side, and `commerce-bench` runs a commerce-shaped
+`zega-bench` runs the same workloads against zega (embedded) and
+Neo4j (Bolt) side by side, and `commerce-bench` runs a commerce-shaped
 graph (10k users, 5k products, 50k orders):
 
 ```bash
 cargo run --release -p zega-bench -- zega
-cargo run --release -p zega-bench -- redis   # needs redis on localhost:6379
 cargo run --release -p zega-bench -- neo4j   # needs neo4j on localhost:7687
 cargo run --release -p zega-bench --bin commerce-bench
 ```
@@ -275,12 +228,11 @@ cargo run --release -p zega-bench --bin commerce-bench
 |---|---|
 | `zega-core` | the database: query execution, planner, JWT, policies, snapshots |
 | `zega-graph` | property graph with label/property indexes and adjacency lists |
-| `zega-kv` | the KV store: TTLs, lists, pub/sub, snapshot/restore |
 | `zega-parser` | lexer + parser for ZQL |
 | `zega-wal` | the write-ahead log: framing, group commit, replay, migration |
 | `zega-server` | the optional HTTP server binary |
 | `zega-wasm` | wasm-bindgen wrapper for the browser (in-memory) |
-| `zega-bench` | benchmarks against Redis and Neo4j |
+| `zega-bench` | benchmarks against Neo4j |
 
 ## Status
 

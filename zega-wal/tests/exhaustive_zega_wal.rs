@@ -22,7 +22,6 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 use zega_graph::Graph;
-use zega_kv::KvStore;
 use zega_parser::Value;
 use zega_wal::{restore, snapshot, Operation, Wal, WalError};
 
@@ -38,22 +37,28 @@ const ENTRY_HEADER_LEN: u64 = 12;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build a simple `KvSet` operation whose key encodes a label so tests can
-/// assert on ordering and content cheaply.
-fn kv_set(key: &str) -> Operation {
-    Operation::KvSet {
-        key: key.to_string(),
-        value: Value::String(key.to_string()),
-        ttl: None,
+/// Build a node operation with a label identifying its position in the log.
+fn insert_node(label: &str) -> Operation {
+    Operation::InsertNode {
+        id: 1,
+        labels: vec![label.to_string()],
+        props: HashMap::new(),
     }
 }
 
-/// Extract the keys of a run of `KvSet` operations, in order.
-fn kv_keys(ops: &[Operation]) -> Vec<String> {
+fn update_property(key: &str, value: Value) -> Operation {
+    Operation::UpdateNode {
+        id: 1,
+        props: HashMap::from([(key.to_string(), value)]),
+    }
+}
+
+/// Extract the labels of a run of node operations, in order.
+fn node_labels(ops: &[Operation]) -> Vec<String> {
     ops.iter()
         .map(|op| match op {
-            Operation::KvSet { key, .. } => key.clone(),
-            other => panic!("expected KvSet, got {other:?}"),
+            Operation::InsertNode { labels, .. } => labels[0].clone(),
+            other => panic!("expected InsertNode, got {other:?}"),
         })
         .collect()
 }
@@ -98,8 +103,7 @@ fn handcraft_legacy_wal(path: &Path, ops: &[Operation]) {
 
 fn assert_snapshot_corruption(path: &Path) {
     let mut graph = Graph::new();
-    let kv = KvStore::new();
-    match restore(&mut graph, &kv, path) {
+    match restore(&mut graph, path) {
         Err(WalError::Corruption { .. }) => {}
         Ok(restored) => panic!("expected snapshot corruption, got Ok({restored})"),
         Err(other) => panic!("expected snapshot corruption, got {other:?}"),
@@ -151,7 +155,7 @@ fn in_memory_wal_accepts_appends_and_iterates_empty() {
     // in_memory() has no backing file: appends are accepted (no-op) and iter
     // returns whatever the in-memory path returns. It must never panic.
     let wal = Wal::in_memory();
-    assert!(wal.append(&kv_set("ghost")).is_ok());
+    assert!(wal.append(&insert_node("ghost")).is_ok());
     assert!(wal.flush().is_ok());
     // iter() opens self.path which is empty for in_memory; this is expected to
     // surface as an Err (no such file), NOT a panic. Assert it does not panic.
@@ -167,11 +171,11 @@ fn single_append_roundtrips() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
     let wal = Wal::new(&path, true).unwrap();
-    wal.append(&kv_set("only")).unwrap();
+    wal.append(&insert_node("only")).unwrap();
     drop(wal);
 
     let wal2 = Wal::new(&path, false).unwrap();
-    assert_eq!(kv_keys(&wal2.iter().unwrap()), vec!["only".to_string()]);
+    assert_eq!(node_labels(&wal2.iter().unwrap()), vec!["only".to_string()]);
 }
 
 #[test]
@@ -181,11 +185,11 @@ fn appends_preserve_insertion_order() {
     let wal = Wal::new(&path, true).unwrap();
     let keys = ["a", "b", "c", "d", "e", "f", "g"];
     for k in &keys {
-        wal.append(&kv_set(k)).unwrap();
+        wal.append(&insert_node(k)).unwrap();
     }
     drop(wal);
 
-    let recovered = kv_keys(&Wal::new(&path, false).unwrap().iter().unwrap());
+    let recovered = node_labels(&Wal::new(&path, false).unwrap().iter().unwrap());
     let expected: Vec<String> = keys.iter().map(|s| s.to_string()).collect();
     assert_eq!(recovered, expected, "WAL must replay in append order");
 }
@@ -219,14 +223,6 @@ fn all_operation_variants_roundtrip() {
         },
         Operation::DeleteRel { id: 10 },
         Operation::DeleteNode { id: 1 },
-        Operation::KvSet {
-            key: "k".to_string(),
-            value: Value::Int(42),
-            ttl: Some(60),
-        },
-        Operation::KvDel {
-            key: "k".to_string(),
-        },
     ];
     for op in &ops {
         wal.append(op).unwrap();
@@ -246,8 +242,8 @@ fn all_operation_variants_roundtrip() {
         other => panic!("expected InsertNode, got {other:?}"),
     }
     match &recovered[recovered.len() - 1] {
-        Operation::KvDel { key } => assert_eq!(key, "k"),
-        other => panic!("expected KvDel, got {other:?}"),
+        Operation::DeleteNode { id } => assert_eq!(*id, 1),
+        other => panic!("expected DeleteNode, got {other:?}"),
     }
 }
 
@@ -257,14 +253,14 @@ fn append_after_reopen_continues_log() {
     let path = dir.path().join("wal.bin");
     {
         let wal = Wal::new(&path, true).unwrap();
-        wal.append(&kv_set("session1-a")).unwrap();
-        wal.append(&kv_set("session1-b")).unwrap();
+        wal.append(&insert_node("session1-a")).unwrap();
+        wal.append(&insert_node("session1-b")).unwrap();
     }
     {
         let wal = Wal::new(&path, true).unwrap();
-        wal.append(&kv_set("session2-a")).unwrap();
+        wal.append(&insert_node("session2-a")).unwrap();
     }
-    let recovered = kv_keys(&Wal::new(&path, false).unwrap().iter().unwrap());
+    let recovered = node_labels(&Wal::new(&path, false).unwrap().iter().unwrap());
     assert_eq!(
         recovered,
         vec![
@@ -282,12 +278,12 @@ fn append_does_not_rewrite_existing_header_on_reopen() {
     let path = dir.path().join("wal.bin");
     {
         let wal = Wal::new(&path, true).unwrap();
-        wal.append(&kv_set("x")).unwrap();
+        wal.append(&insert_node("x")).unwrap();
     }
     let len_after_one = fs::metadata(&path).unwrap().len();
     {
         let wal = Wal::new(&path, true).unwrap();
-        wal.append(&kv_set("y")).unwrap();
+        wal.append(&insert_node("y")).unwrap();
     }
     let len_after_two = fs::metadata(&path).unwrap().len();
     assert!(
@@ -305,11 +301,11 @@ fn flush_every_durably_persists_each_append() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
     let wal = Wal::new(&path, true).unwrap(); // flush_every = true => no worker thread
-    wal.append(&kv_set("one")).unwrap();
+    wal.append(&insert_node("one")).unwrap();
     // Without dropping the writer, the data must already be on disk and
     // re-readable by an independent reader.
     let recovered = wal.iter().unwrap();
-    assert_eq!(kv_keys(&recovered), vec!["one".to_string()]);
+    assert_eq!(node_labels(&recovered), vec!["one".to_string()]);
 }
 
 #[test]
@@ -320,7 +316,7 @@ fn explicit_flush_is_idempotent_and_safe_when_empty() {
     // Flushing with nothing pending must be a no-op success.
     assert!(wal.flush().is_ok());
     assert!(wal.flush().is_ok());
-    wal.append(&kv_set("z")).unwrap();
+    wal.append(&insert_node("z")).unwrap();
     assert!(wal.flush().is_ok());
     assert!(wal.flush().is_ok());
 }
@@ -334,7 +330,7 @@ fn group_commit_acknowledges_concurrent_writers() {
     let handles: Vec<_> = (0..8)
         .map(|i| {
             let wal = Arc::clone(&wal);
-            thread::spawn(move || wal.append(&kv_set(&format!("k{i}"))).unwrap())
+            thread::spawn(move || wal.append(&insert_node(&format!("k{i}"))).unwrap())
         })
         .collect();
     for h in handles {
@@ -353,10 +349,10 @@ fn group_commit_batches_below_batch_size_still_flush_on_drop() {
         // the worker must still flush them, and append() blocks until durable.
         let wal =
             Wal::with_group_commit(&path, false, Duration::from_millis(5), 1000).unwrap();
-        wal.append(&kv_set("a")).unwrap();
-        wal.append(&kv_set("b")).unwrap();
+        wal.append(&insert_node("a")).unwrap();
+        wal.append(&insert_node("b")).unwrap();
     }
-    let recovered = kv_keys(&Wal::new(&path, false).unwrap().iter().unwrap());
+    let recovered = node_labels(&Wal::new(&path, false).unwrap().iter().unwrap());
     assert_eq!(recovered, vec!["a".to_string(), "b".to_string()]);
 }
 
@@ -366,8 +362,8 @@ fn batch_size_zero_is_clamped_to_one() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
     let wal = Wal::with_group_commit(&path, false, Duration::from_millis(5), 0).unwrap();
-    wal.append(&kv_set("clamped")).unwrap();
-    assert_eq!(kv_keys(&wal.iter().unwrap()), vec!["clamped".to_string()]);
+    wal.append(&insert_node("clamped")).unwrap();
+    assert_eq!(node_labels(&wal.iter().unwrap()), vec!["clamped".to_string()]);
 }
 
 #[test]
@@ -377,9 +373,9 @@ fn append_returns_only_after_durable_in_group_mode() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
     let wal = Wal::with_group_commit(&path, false, Duration::from_millis(1), 2).unwrap();
-    wal.append(&kv_set("durable")).unwrap();
+    wal.append(&insert_node("durable")).unwrap();
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
-    assert_eq!(kv_keys(&recovered), vec!["durable".to_string()]);
+    assert_eq!(node_labels(&recovered), vec!["durable".to_string()]);
 }
 
 // ===========================================================================
@@ -391,7 +387,7 @@ fn each_entry_has_a_valid_crc_on_disk() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
     let wal = Wal::new(&path, true).unwrap();
-    let op = kv_set("crc-check");
+    let op = insert_node("crc-check");
     wal.append(&op).unwrap();
     drop(wal);
 
@@ -418,7 +414,7 @@ fn bitflip_in_payload_of_only_entry_truncates_corrupt_tail() {
     // acked beyond it, so nothing is lost.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_v2_wal(&path, &[kv_set("solo")]);
+    handcraft_v2_wal(&path, &[insert_node("solo")]);
 
     // Flip a byte inside the payload (after header + 12-byte entry header).
     let mut bytes = fs::read(&path).unwrap();
@@ -446,10 +442,10 @@ fn wrong_magic_is_treated_as_legacy_and_migrated() {
     // migration path which reframes [len][payload] entries.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_legacy_wal(&path, &[kv_set("legacy-1"), kv_set("legacy-2")]);
+    handcraft_legacy_wal(&path, &[insert_node("legacy-1"), insert_node("legacy-2")]);
 
     let wal = Wal::new(&path, true).unwrap();
-    let recovered = kv_keys(&wal.iter().unwrap());
+    let recovered = node_labels(&wal.iter().unwrap());
     assert_eq!(recovered, vec!["legacy-1".to_string(), "legacy-2".to_string()]);
 
     // After migration the file must carry the v2 header.
@@ -473,13 +469,13 @@ fn empty_legacy_file_migrates_to_header_only() {
 fn migrated_wal_accepts_new_appends() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_legacy_wal(&path, &[kv_set("old")]);
+    handcraft_legacy_wal(&path, &[insert_node("old")]);
 
     let wal = Wal::new(&path, true).unwrap();
-    wal.append(&kv_set("new")).unwrap();
+    wal.append(&insert_node("new")).unwrap();
     drop(wal);
 
-    let recovered = kv_keys(&Wal::new(&path, false).unwrap().iter().unwrap());
+    let recovered = node_labels(&Wal::new(&path, false).unwrap().iter().unwrap());
     assert_eq!(recovered, vec!["old".to_string(), "new".to_string()]);
 }
 
@@ -491,7 +487,7 @@ fn legacy_with_torn_trailing_entry_migrates_only_complete_entries() {
     let path = dir.path().join("wal.bin");
     {
         let mut file = File::create(&path).unwrap();
-        let p1 = payload_of(&kv_set("good"));
+        let p1 = payload_of(&insert_node("good"));
         file.write_all(&(p1.len() as u64).to_le_bytes()).unwrap();
         file.write_all(&p1).unwrap();
         // Declare a large length but write only a few bytes (torn).
@@ -501,7 +497,7 @@ fn legacy_with_torn_trailing_entry_migrates_only_complete_entries() {
     }
 
     let wal = Wal::new(&path, true).unwrap();
-    let recovered = kv_keys(&wal.iter().unwrap());
+    let recovered = node_labels(&wal.iter().unwrap());
     assert_eq!(recovered, vec!["good".to_string()], "torn legacy tail is dropped");
 }
 
@@ -562,7 +558,7 @@ fn iter_rejects_file_whose_header_was_clobbered_after_open() {
     // independently validates the header and must return Corruption@0.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_v2_wal(&path, &[kv_set("a")]);
+    handcraft_v2_wal(&path, &[insert_node("a")]);
     let wal = Wal::with_group_commit(&path, true, Duration::from_millis(5), 64).unwrap();
 
     // Clobber the magic on disk behind the open handle.
@@ -589,16 +585,16 @@ fn torn_entry_header_at_tail_is_truncated() {
     // write; iter() truncates it and keeps preceding valid entries.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_v2_wal(&path, &[kv_set("kept")]);
+    handcraft_v2_wal(&path, &[insert_node("kept")]);
     {
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(&[0x01, 0x02, 0x03]).unwrap(); // 3 bytes < 12
         file.sync_all().unwrap();
     }
-    let valid_after_trunc = WAL_FILE_HEADER_LEN + ENTRY_HEADER_LEN + payload_of(&kv_set("kept")).len() as u64;
+    let valid_after_trunc = WAL_FILE_HEADER_LEN + ENTRY_HEADER_LEN + payload_of(&insert_node("kept")).len() as u64;
 
     let wal = Wal::new(&path, false).unwrap();
-    assert_eq!(kv_keys(&wal.iter().unwrap()), vec!["kept".to_string()]);
+    assert_eq!(node_labels(&wal.iter().unwrap()), vec!["kept".to_string()]);
     assert_eq!(
         fs::metadata(&path).unwrap().len(),
         valid_after_trunc,
@@ -612,7 +608,7 @@ fn entry_with_length_running_past_eof_is_truncated() {
     // remaining file (torn payload). iter() truncates to the last valid entry.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_v2_wal(&path, &[kv_set("alpha")]);
+    handcraft_v2_wal(&path, &[insert_node("alpha")]);
     let valid_len = fs::metadata(&path).unwrap().len();
     {
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
@@ -622,7 +618,7 @@ fn entry_with_length_running_past_eof_is_truncated() {
         file.sync_all().unwrap();
     }
     let wal = Wal::new(&path, false).unwrap();
-    assert_eq!(kv_keys(&wal.iter().unwrap()), vec!["alpha".to_string()]);
+    assert_eq!(node_labels(&wal.iter().unwrap()), vec!["alpha".to_string()]);
     assert_eq!(fs::metadata(&path).unwrap().len(), valid_len, "tail trimmed to valid end");
 }
 
@@ -632,12 +628,12 @@ fn multiple_valid_entries_then_torn_tail_keeps_all_valid() {
     // preceding acknowledged write.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    let good = [kv_set("e0"), kv_set("e1"), kv_set("e2"), kv_set("e3")];
+    let good = [insert_node("e0"), insert_node("e1"), insert_node("e2"), insert_node("e3")];
     handcraft_v2_wal(&path, &good);
     {
         // Append a torn entry: valid 12-byte header but payload cut short.
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        let p = payload_of(&kv_set("torn"));
+        let p = payload_of(&insert_node("torn"));
         file.write_all(&(p.len() as u64).to_le_bytes()).unwrap();
         file.write_all(&crc32fast::hash(&p).to_le_bytes()).unwrap();
         file.write_all(&p[..p.len() / 2]).unwrap(); // half the payload
@@ -645,7 +641,7 @@ fn multiple_valid_entries_then_torn_tail_keeps_all_valid() {
     }
     let wal = Wal::new(&path, false).unwrap();
     assert_eq!(
-        kv_keys(&wal.iter().unwrap()),
+        node_labels(&wal.iter().unwrap()),
         vec!["e0".to_string(), "e1".to_string(), "e2".to_string(), "e3".to_string()]
     );
 }
@@ -656,7 +652,7 @@ fn corrupt_trailing_crc_is_truncated_preceding_kept() {
     // final entry => treated as a torn tail and dropped; earlier entries stay.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_v2_wal(&path, &[kv_set("keep"), kv_set("rot")]);
+    handcraft_v2_wal(&path, &[insert_node("keep"), insert_node("rot")]);
 
     // Corrupt the last payload byte.
     let mut bytes = fs::read(&path).unwrap();
@@ -664,7 +660,7 @@ fn corrupt_trailing_crc_is_truncated_preceding_kept() {
     fs::write(&path, &bytes).unwrap();
 
     let wal = Wal::new(&path, false).unwrap();
-    assert_eq!(kv_keys(&wal.iter().unwrap()), vec!["keep".to_string()]);
+    assert_eq!(node_labels(&wal.iter().unwrap()), vec!["keep".to_string()]);
 }
 
 #[test]
@@ -673,7 +669,7 @@ fn append_after_torn_tail_recovery_lands_at_valid_end() {
     // contiguously after the last valid entry (file handle seeks to End).
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_v2_wal(&path, &[kv_set("solid")]);
+    handcraft_v2_wal(&path, &[insert_node("solid")]);
     {
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(&500u64.to_le_bytes()).unwrap();
@@ -683,10 +679,10 @@ fn append_after_torn_tail_recovery_lands_at_valid_end() {
     }
     // Open via group-commit so iter() truncates, then append a fresh entry.
     let wal = Wal::new(&path, true).unwrap();
-    assert_eq!(kv_keys(&wal.iter().unwrap()), vec!["solid".to_string()]);
-    wal.append(&kv_set("recovered")).unwrap();
+    assert_eq!(node_labels(&wal.iter().unwrap()), vec!["solid".to_string()]);
+    wal.append(&insert_node("recovered")).unwrap();
     assert_eq!(
-        kv_keys(&wal.iter().unwrap()),
+        node_labels(&wal.iter().unwrap()),
         vec!["solid".to_string(), "recovered".to_string()]
     );
 }
@@ -701,7 +697,7 @@ fn corrupt_middle_entry_crc_is_a_hard_corruption_error() {
     // it would silently skip an acked write, so iter() must return Corruption.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_v2_wal(&path, &[kv_set("first"), kv_set("second"), kv_set("third")]);
+    handcraft_v2_wal(&path, &[insert_node("first"), insert_node("second"), insert_node("third")]);
 
     // Corrupt a byte inside the FIRST entry's payload.
     let mut bytes = fs::read(&path).unwrap();
@@ -724,7 +720,7 @@ fn corrupt_middle_entry_does_not_truncate_the_file() {
     // truncation) so an operator can inspect/repair it.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_v2_wal(&path, &[kv_set("a"), kv_set("b"), kv_set("c")]);
+    handcraft_v2_wal(&path, &[insert_node("a"), insert_node("b"), insert_node("c")]);
     let len_before = fs::metadata(&path).unwrap().len();
 
     let mut bytes = fs::read(&path).unwrap();
@@ -749,12 +745,12 @@ fn undeserializable_payload_with_valid_crc_is_corruption() {
         let mut file = File::create(&path).unwrap();
         file.write_all(WAL_FILE_HEADER).unwrap();
         // First, a valid entry so this is NOT the tail.
-        write_framed_entry(&mut file, &payload_of(&kv_set("ok")));
+        write_framed_entry(&mut file, &payload_of(&insert_node("ok")));
         // Then garbage with a correct CRC, followed by another valid entry so
         // it is not the final entry (forces the hard-error branch).
         let garbage = vec![0xFEu8, 0xFE, 0xFE, 0xFE, 0xFE, 0xFE, 0xFE, 0xFE];
         write_framed_entry(&mut file, &garbage);
-        write_framed_entry(&mut file, &payload_of(&kv_set("tail")));
+        write_framed_entry(&mut file, &payload_of(&insert_node("tail")));
         file.sync_all().unwrap();
     }
     match Wal::new(&path, false).unwrap().iter() {
@@ -783,7 +779,7 @@ fn bincode_garbage_as_final_entry_is_truncated_as_torn_tail() {
     {
         let mut file = File::create(&path).unwrap();
         file.write_all(WAL_FILE_HEADER).unwrap();
-        write_framed_entry(&mut file, &payload_of(&kv_set("survivor")));
+        write_framed_entry(&mut file, &payload_of(&insert_node("survivor")));
         // A non-deserializable final entry with a correct CRC.
         write_framed_entry(&mut file, &[0xFFu8; 4]);
         file.sync_all().unwrap();
@@ -797,7 +793,7 @@ fn bincode_garbage_as_final_entry_is_truncated_as_torn_tail() {
         Ok(ops) => {
             // If a future version chose to drop the tail instead, it must at
             // least preserve the survivor and never resurrect garbage.
-            assert_eq!(kv_keys(&ops), vec!["survivor".to_string()]);
+            assert_eq!(node_labels(&ops), vec!["survivor".to_string()]);
         }
     }
 }
@@ -847,19 +843,17 @@ fn large_single_entry_roundtrips() {
     let wal = Wal::new(&path, true).unwrap();
 
     let big = "x".repeat(1_000_000); // ~1 MiB string property
-    let op = Operation::KvSet {
-        key: "big".to_string(),
-        value: Value::String(big.clone()),
-        ttl: None,
-    };
+    let op = update_property("big", Value::String(big.clone()));
     wal.append(&op).unwrap();
     drop(wal);
 
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
     assert_eq!(recovered.len(), 1);
     match &recovered[0] {
-        Operation::KvSet { value: Value::String(s), .. } => assert_eq!(s.len(), big.len()),
-        other => panic!("expected large KvSet, got {other:?}"),
+        Operation::UpdateNode { props, .. } => {
+            assert_eq!(props.get("big").and_then(Value::as_string).unwrap().len(), big.len());
+        }
+        other => panic!("expected large UpdateNode, got {other:?}"),
     }
 }
 
@@ -870,11 +864,11 @@ fn many_entries_roundtrip_in_order() {
     let wal = Wal::new(&path, true).unwrap();
     let n = 5000usize;
     for i in 0..n {
-        wal.append(&kv_set(&format!("k{i:05}"))).unwrap();
+        wal.append(&insert_node(&format!("k{i:05}"))).unwrap();
     }
     drop(wal);
 
-    let recovered = kv_keys(&Wal::new(&path, false).unwrap().iter().unwrap());
+    let recovered = node_labels(&Wal::new(&path, false).unwrap().iter().unwrap());
     assert_eq!(recovered.len(), n);
     assert_eq!(recovered[0], "k00000");
     assert_eq!(recovered[n - 1], format!("k{:05}", n - 1));
@@ -925,21 +919,16 @@ fn unicode_and_control_characters_roundtrip() {
     let wal = Wal::new(&path, true).unwrap();
 
     let weird = "héllo 世界 🚀 \u{0}\u{1}\u{7f} \t\n quote\" backslash\\";
-    let op = Operation::KvSet {
-        key: weird.to_string(),
-        value: Value::String(weird.to_string()),
-        ttl: None,
-    };
+    let op = update_property(weird, Value::String(weird.to_string()));
     wal.append(&op).unwrap();
     drop(wal);
 
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
     match &recovered[0] {
-        Operation::KvSet { key, value: Value::String(v), .. } => {
-            assert_eq!(key, weird);
-            assert_eq!(v, weird);
+        Operation::UpdateNode { props, .. } => {
+            assert_eq!(props.get(weird), Some(&Value::String(weird.to_string())));
         }
-        other => panic!("expected KvSet, got {other:?}"),
+        other => panic!("expected InsertNode, got {other:?}"),
     }
 }
 
@@ -950,21 +939,13 @@ fn empty_string_and_empty_collections_roundtrip() {
     let wal = Wal::new(&path, true).unwrap();
 
     let ops = vec![
-        Operation::KvSet {
-            key: String::new(),
-            value: Value::String(String::new()),
-            ttl: None,
-        },
+        update_property("", Value::String(String::new())),
         Operation::InsertNode {
             id: 0,
             labels: vec![],
             props: HashMap::new(),
         },
-        Operation::KvSet {
-            key: "list".to_string(),
-            value: Value::List(vec![]),
-            ttl: None,
-        },
+        update_property("list", Value::List(vec![])),
     ];
     for op in &ops {
         wal.append(op).unwrap();
@@ -974,11 +955,10 @@ fn empty_string_and_empty_collections_roundtrip() {
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
     assert_eq!(recovered.len(), 3);
     match &recovered[0] {
-        Operation::KvSet { key, value: Value::String(v), .. } => {
-            assert!(key.is_empty());
-            assert!(v.is_empty());
+        Operation::UpdateNode { props, .. } => {
+            assert_eq!(props.get(""), Some(&Value::String(String::new())));
         }
-        other => panic!("expected empty-string KvSet, got {other:?}"),
+        other => panic!("expected empty-string UpdateNode, got {other:?}"),
     }
 }
 
@@ -993,16 +973,8 @@ fn boundary_numeric_values_roundtrip() {
     let wal = Wal::new(&path, true).unwrap();
 
     let ops = vec![
-        Operation::KvSet {
-            key: "imax".to_string(),
-            value: Value::Int(i64::MAX),
-            ttl: Some(u64::MAX),
-        },
-        Operation::KvSet {
-            key: "imin".to_string(),
-            value: Value::Int(i64::MIN),
-            ttl: Some(0),
-        },
+        update_property("imax", Value::Int(i64::MAX)),
+        update_property("imin", Value::Int(i64::MIN)),
         Operation::InsertNode {
             id: u64::MAX,
             labels: vec!["Edge".to_string()],
@@ -1024,11 +996,10 @@ fn boundary_numeric_values_roundtrip() {
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
     assert_eq!(recovered.len(), 4);
     match &recovered[0] {
-        Operation::KvSet { value: Value::Int(n), ttl, .. } => {
-            assert_eq!(*n, i64::MAX);
-            assert_eq!(*ttl, Some(u64::MAX));
+        Operation::UpdateNode { props, .. } => {
+            assert_eq!(props.get("imax"), Some(&Value::Int(i64::MAX)));
         }
-        other => panic!("expected imax KvSet, got {other:?}"),
+        other => panic!("expected imax UpdateNode, got {other:?}"),
     }
     match &recovered[2] {
         Operation::InsertNode { id, .. } => assert_eq!(*id, u64::MAX),
@@ -1047,17 +1018,19 @@ fn nested_and_float_values_roundtrip() {
     inner.insert("nan".to_string(), Value::from_f64(f64::NAN));
     inner.insert("inf".to_string(), Value::from_f64(f64::INFINITY));
     let nested = Value::Map(inner);
-    let op = Operation::KvSet {
-        key: "nested".to_string(),
-        value: Value::List(vec![nested.clone(), Value::Bool(true), Value::Null]),
-        ttl: None,
-    };
+    let op = update_property(
+        "nested",
+        Value::List(vec![nested.clone(), Value::Bool(true), Value::Null]),
+    );
     wal.append(&op).unwrap();
     drop(wal);
 
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
     match &recovered[0] {
-        Operation::KvSet { value: Value::List(items), .. } => {
+        Operation::UpdateNode { props, .. } => {
+            let Value::List(items) = &props["nested"] else {
+                panic!("expected list property")
+            };
             assert_eq!(items.len(), 3);
             match &items[0] {
                 Value::Map(m) => {
@@ -1073,7 +1046,7 @@ fn nested_and_float_values_roundtrip() {
             }
             assert_eq!(items[2], Value::Null);
         }
-        other => panic!("expected List KvSet, got {other:?}"),
+        other => panic!("expected List UpdateNode, got {other:?}"),
     }
 }
 
@@ -1082,28 +1055,24 @@ fn nested_and_float_values_roundtrip() {
 // ===========================================================================
 
 #[test]
-fn snapshot_restore_roundtrips_graph_and_kv() {
+fn snapshot_restore_roundtrips_graph() {
     let dir = tempdir().unwrap();
     let snap = dir.path().join("snap.bin");
 
     let mut graph = Graph::new();
-    let kv = KvStore::new();
     let mut props = HashMap::new();
     props.insert("name".to_string(), Value::String("Alice".to_string()));
     let nid = graph.create_node(vec!["Person".to_string()], props);
     let a = graph.create_node(vec!["A".to_string()], HashMap::new());
     let b = graph.create_node(vec!["B".to_string()], HashMap::new());
     let rid = graph.create_relationship("KNOWS".to_string(), a, b, HashMap::new());
-    kv.set("foo".to_string(), Value::String("bar".to_string()), None);
-    kv.set("count".to_string(), Value::Int(99), None);
 
-    snapshot(&graph, &kv, &snap).unwrap();
+    snapshot(&graph, &snap).unwrap();
     // The temp file must be cleaned up by the atomic rename.
     assert!(!snap.with_extension("bin.tmp").exists());
 
     let mut g2 = Graph::new();
-    let kv2 = KvStore::new();
-    assert!(restore(&mut g2, &kv2, &snap).unwrap());
+    assert!(restore(&mut g2, &snap).unwrap());
 
     assert_eq!(g2.all_nodes().len(), 3);
     assert_eq!(g2.all_relationships().len(), 1);
@@ -1112,8 +1081,6 @@ fn snapshot_restore_roundtrips_graph_and_kv() {
         Some(vec!["Person".to_string()])
     );
     assert_eq!(g2.get_relationship(rid).map(|r| r.kind.clone()), Some("KNOWS".to_string()));
-    assert_eq!(kv2.get("foo"), Some(Value::String("bar".to_string())));
-    assert_eq!(kv2.get("count"), Some(Value::Int(99)));
 }
 
 #[test]
@@ -1121,8 +1088,7 @@ fn restore_missing_file_returns_false() {
     let dir = tempdir().unwrap();
     let missing = dir.path().join("nope.bin");
     let mut g = Graph::new();
-    let kv = KvStore::new();
-    assert!(!restore(&mut g, &kv, &missing).unwrap());
+    assert!(!restore(&mut g, &missing).unwrap());
     assert!(g.all_nodes().is_empty());
 }
 
@@ -1132,24 +1098,18 @@ fn restore_overwrites_existing_state() {
     let snap = dir.path().join("snap.bin");
 
     let mut graph = Graph::new();
-    let kv = KvStore::new();
     graph.create_node(vec!["Saved".to_string()], HashMap::new());
-    kv.set("saved".to_string(), Value::Int(1), None);
-    snapshot(&graph, &kv, &snap).unwrap();
+    snapshot(&graph, &snap).unwrap();
 
     // Destination starts non-empty; restore must clear and replace it.
     let mut g2 = Graph::new();
-    let kv2 = KvStore::new();
     g2.create_node(vec!["Stale".to_string()], HashMap::new());
     g2.create_node(vec!["Stale".to_string()], HashMap::new());
-    kv2.set("stale".to_string(), Value::Int(2), None);
 
-    assert!(restore(&mut g2, &kv2, &snap).unwrap());
+    assert!(restore(&mut g2, &snap).unwrap());
     assert_eq!(g2.all_nodes().len(), 1, "stale nodes replaced");
     assert!(g2.nodes_by_label("Saved").is_some());
     assert!(g2.nodes_by_label("Stale").is_none());
-    assert_eq!(kv2.get("saved"), Some(Value::Int(1)));
-    assert_eq!(kv2.get("stale"), None, "stale kv replaced");
 }
 
 #[test]
@@ -1157,13 +1117,11 @@ fn snapshot_of_empty_db_restores_empty() {
     let dir = tempdir().unwrap();
     let snap = dir.path().join("snap.bin");
     let graph = Graph::new();
-    let kv = KvStore::new();
-    snapshot(&graph, &kv, &snap).unwrap();
+    snapshot(&graph, &snap).unwrap();
 
     let mut g2 = Graph::new();
-    let kv2 = KvStore::new();
     g2.create_node(vec!["Will".to_string()], HashMap::new());
-    assert!(restore(&mut g2, &kv2, &snap).unwrap());
+    assert!(restore(&mut g2, &snap).unwrap());
     assert!(g2.all_nodes().is_empty());
 }
 
@@ -1195,11 +1153,10 @@ fn restore_from_truncated_mid_record_snapshot_is_corruption() {
 
     // Produce a valid snapshot, then truncate it mid-stream.
     let mut graph = Graph::new();
-    let kv = KvStore::new();
     for i in 0..100 {
         graph.create_node(vec![format!("L{i}")], HashMap::new());
     }
-    snapshot(&graph, &kv, &snap).unwrap();
+    snapshot(&graph, &snap).unwrap();
     let bytes = fs::read(&snap).unwrap();
     fs::write(&snap, &bytes[..bytes.len() / 2]).unwrap();
 
@@ -1207,28 +1164,23 @@ fn restore_from_truncated_mid_record_snapshot_is_corruption() {
 }
 
 #[test]
-fn snapshot_preserves_node_properties_and_ttl_kv() {
+fn snapshot_preserves_node_properties() {
     let dir = tempdir().unwrap();
     let snap = dir.path().join("snap.bin");
 
     let mut graph = Graph::new();
-    let kv = KvStore::new();
     let mut props = HashMap::new();
     props.insert("active".to_string(), Value::Bool(true));
     props.insert("score".to_string(), Value::from_f64(9.5));
     let id = graph.create_node(vec!["User".to_string()], props);
-    kv.set("ttl-key".to_string(), Value::Int(7), Some(86_400));
 
-    snapshot(&graph, &kv, &snap).unwrap();
+    snapshot(&graph, &snap).unwrap();
 
     let mut g2 = Graph::new();
-    let kv2 = KvStore::new();
-    restore(&mut g2, &kv2, &snap).unwrap();
+    restore(&mut g2, &snap).unwrap();
     let node = g2.get_node(id).unwrap();
     assert_eq!(node.props.get("active"), Some(&Value::Bool(true)));
     assert_eq!(node.props.get("score").and_then(Value::to_f64), Some(9.5));
-    // A long TTL key must still be readable immediately after restore.
-    assert_eq!(kv2.get("ttl-key"), Some(Value::Int(7)));
 }
 
 // ===========================================================================
@@ -1244,10 +1196,10 @@ fn replay_after_crash_at_every_byte_offset_never_panics_or_resurrects() {
     //     reordered entries).
     let dir = tempdir().unwrap();
     let golden = dir.path().join("golden.bin");
-    let ops: Vec<Operation> = (0..12).map(|i| kv_set(&format!("op{i:02}"))).collect();
+    let ops: Vec<Operation> = (0..12).map(|i| insert_node(&format!("op{i:02}"))).collect();
     handcraft_v2_wal(&golden, &ops);
     let full = fs::read(&golden).unwrap();
-    let expected_keys = kv_keys(&ops);
+    let expected_keys = node_labels(&ops);
 
     for cut in 0..=full.len() {
         let path = dir.path().join(format!("crash_{cut}.bin"));
@@ -1262,7 +1214,7 @@ fn replay_after_crash_at_every_byte_offset_never_panics_or_resurrects() {
         };
         match wal.iter() {
             Ok(recovered) => {
-                let keys = kv_keys(&recovered);
+                let keys = node_labels(&recovered);
                 // Whatever survived must be an exact ordered prefix of the
                 // original sequence — never garbage, never reordered.
                 assert!(
@@ -1289,13 +1241,13 @@ fn acked_prefix_survives_when_tail_entry_is_chopped_at_each_offset() {
     // where a final (N+1)-th entry was torn, all N acked entries survive.
     let dir = tempdir().unwrap();
     let base = dir.path().join("base.bin");
-    let acked: Vec<Operation> = (0..6).map(|i| kv_set(&format!("acked{i}"))).collect();
+    let acked: Vec<Operation> = (0..6).map(|i| insert_node(&format!("acked{i}"))).collect();
     handcraft_v2_wal(&base, &acked);
     let base_bytes = fs::read(&base).unwrap();
-    let acked_keys = kv_keys(&acked);
+    let acked_keys = node_labels(&acked);
 
     // The extra torn entry's full framed bytes.
-    let extra_payload = payload_of(&kv_set("torn"));
+    let extra_payload = payload_of(&insert_node("torn"));
     let mut framed = Vec::new();
     framed.extend_from_slice(&(extra_payload.len() as u64).to_le_bytes());
     framed.extend_from_slice(&crc32fast::hash(&extra_payload).to_le_bytes());
@@ -1312,7 +1264,7 @@ fn acked_prefix_survives_when_tail_entry_is_chopped_at_each_offset() {
         let wal = Wal::new(&path, false).unwrap();
         match wal.iter() {
             Ok(recovered) => {
-                let keys = kv_keys(&recovered);
+                let keys = node_labels(&recovered);
                 assert_eq!(
                     keys, acked_keys,
                     "partial {partial}: all acked entries must survive a torn tail"
@@ -1340,12 +1292,12 @@ fn data_survives_drop_and_reopen_cycle_repeatedly() {
         let wal = Wal::new(&path, true).unwrap();
         for i in 0..10 {
             let key = format!("r{round}-e{i}");
-            wal.append(&kv_set(&key)).unwrap();
+            wal.append(&insert_node(&key)).unwrap();
             expected.push(key);
         }
         drop(wal); // simulate clean process exit
     }
-    let recovered = kv_keys(&Wal::new(&path, false).unwrap().iter().unwrap());
+    let recovered = node_labels(&Wal::new(&path, false).unwrap().iter().unwrap());
     assert_eq!(recovered, expected, "all entries across 5 restarts must survive in order");
 }
 
@@ -1358,7 +1310,7 @@ fn flush_then_drop_in_group_mode_loses_nothing() {
         // Every append is a blocking durability barrier; flush and drop after
         // the writes must preserve the complete sequence.
         for i in 0..20 {
-            wal.append(&kv_set(&format!("e{i}"))).unwrap();
+            wal.append(&insert_node(&format!("e{i}"))).unwrap();
         }
         wal.flush().unwrap();
     }
@@ -1367,10 +1319,10 @@ fn flush_then_drop_in_group_mode_loses_nothing() {
 }
 
 // ===========================================================================
-// SECTION 16 — Deep structural fidelity of every non-Kv operation variant
+// SECTION 16 — Deep structural fidelity of every graph operation variant
 //
 // The author's `all_operation_variants_roundtrip` only spot-checks the first
-// (InsertNode) and last (KvDel) entries. The remaining five variants survive
+// (InsertNode) and last (DeleteNode) entries. The remaining variants survive
 // the round-trip in count but their *fields* were never asserted. A bincode
 // field-ordering or schema drift could silently corrupt `from`/`to`/`kind`
 // without these tests noticing. Assert every field of every variant.
@@ -1480,40 +1432,6 @@ fn delete_rel_field_survives_roundtrip() {
     }
 }
 
-#[test]
-fn kvset_with_no_ttl_distinguishes_from_zero_ttl() {
-    // `ttl: None` and `ttl: Some(0)` are semantically different and must NOT
-    // collapse into the same on-disk encoding.
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("wal.bin");
-    let wal = Wal::new(&path, true).unwrap();
-    wal.append(&Operation::KvSet {
-        key: "none".to_string(),
-        value: Value::Int(1),
-        ttl: None,
-    })
-    .unwrap();
-    wal.append(&Operation::KvSet {
-        key: "zero".to_string(),
-        value: Value::Int(2),
-        ttl: Some(0),
-    })
-    .unwrap();
-    drop(wal);
-
-    let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
-    match (&recovered[0], &recovered[1]) {
-        (
-            Operation::KvSet { ttl: t_none, .. },
-            Operation::KvSet { ttl: t_zero, .. },
-        ) => {
-            assert_eq!(*t_none, None, "None ttl must round-trip as None");
-            assert_eq!(*t_zero, Some(0), "Some(0) ttl must round-trip as Some(0)");
-        }
-        other => panic!("expected two KvSet, got {other:?}"),
-    }
-}
-
 // ===========================================================================
 // SECTION 17 — Legacy (v1) migration: undeserializable / overflow / empty
 //
@@ -1536,7 +1454,7 @@ fn legacy_entry_with_undeserializable_payload_is_corruption() {
     {
         let mut file = File::create(&path).unwrap();
         // One good legacy entry first.
-        let good = payload_of(&kv_set("good"));
+        let good = payload_of(&insert_node("good"));
         file.write_all(&(good.len() as u64).to_le_bytes()).unwrap();
         file.write_all(&good).unwrap();
         // Then a complete-but-garbage legacy entry.
@@ -1563,9 +1481,10 @@ fn legacy_length_prefix_overflowing_past_eof_is_corruption() {
     // ordinary torn tail and is reported as hard corruption.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
+    let good = payload_of(&insert_node("kept"));
+    let corrupt_offset = 8 + good.len() as u64;
     {
         let mut file = File::create(&path).unwrap();
-        let good = payload_of(&kv_set("kept"));
         file.write_all(&(good.len() as u64).to_le_bytes()).unwrap();
         file.write_all(&good).unwrap();
         // Declare a giant length but provide almost no payload.
@@ -1575,7 +1494,7 @@ fn legacy_length_prefix_overflowing_past_eof_is_corruption() {
     }
     match Wal::new(&path, true) {
         Err(WalError::Corruption { offset, reason }) => {
-            assert_eq!(offset, 41);
+            assert_eq!(offset, corrupt_offset);
             assert!(reason.contains("legacy entry length overflow"));
         }
         Ok(_) => panic!("overflowing legacy length must not migrate"),
@@ -1595,14 +1514,14 @@ fn legacy_with_sub_eight_byte_remainder_migrates_complete_prefix() {
     let path = dir.path().join("wal.bin");
     {
         let mut file = File::create(&path).unwrap();
-        let good = payload_of(&kv_set("solo"));
+        let good = payload_of(&insert_node("solo"));
         file.write_all(&(good.len() as u64).to_le_bytes()).unwrap();
         file.write_all(&good).unwrap();
         file.write_all(&[0xAA, 0xBB, 0xCC]).unwrap(); // 3 trailing bytes
         file.sync_all().unwrap();
     }
     let wal = Wal::new(&path, true).unwrap();
-    assert_eq!(kv_keys(&wal.iter().unwrap()), vec!["solo".to_string()]);
+    assert_eq!(node_labels(&wal.iter().unwrap()), vec!["solo".to_string()]);
 }
 
 #[test]
@@ -1611,7 +1530,7 @@ fn migration_leaves_no_scratch_tmp_file() {
     // a successful migration that scratch file must not exist.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    handcraft_legacy_wal(&path, &[kv_set("a"), kv_set("b"), kv_set("c")]);
+    handcraft_legacy_wal(&path, &[insert_node("a"), insert_node("b"), insert_node("c")]);
 
     let _wal = Wal::new(&path, true).unwrap();
     let tmp = path.with_extension("wal.migrate.tmp");
@@ -1624,11 +1543,11 @@ fn large_legacy_log_migrates_in_order() {
     // that every entry gets a fresh CRC in the v2 framing.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
-    let ops: Vec<Operation> = (0..500).map(|i| kv_set(&format!("L{i:04}"))).collect();
+    let ops: Vec<Operation> = (0..500).map(|i| insert_node(&format!("L{i:04}"))).collect();
     handcraft_legacy_wal(&path, &ops);
 
     let wal = Wal::new(&path, true).unwrap();
-    let recovered = kv_keys(&wal.iter().unwrap());
+    let recovered = node_labels(&wal.iter().unwrap());
     assert_eq!(recovered.len(), 500);
     for (i, key) in recovered.iter().enumerate() {
         assert_eq!(key, &format!("L{i:04}"));
@@ -1650,8 +1569,8 @@ fn reopening_valid_v2_file_does_not_rewrite_body() {
     let path = dir.path().join("wal.bin");
     {
         let wal = Wal::new(&path, true).unwrap();
-        wal.append(&kv_set("p")).unwrap();
-        wal.append(&kv_set("q")).unwrap();
+        wal.append(&insert_node("p")).unwrap();
+        wal.append(&insert_node("q")).unwrap();
     }
     let before = fs::read(&path).unwrap();
     {
@@ -1676,7 +1595,7 @@ fn iter_on_deleted_file_returns_io_error_not_panic() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
     let wal = Wal::new(&path, true).unwrap();
-    wal.append(&kv_set("gone")).unwrap();
+    wal.append(&insert_node("gone")).unwrap();
     // Remove the file out from under the open WAL, then iter().
     fs::remove_file(&path).unwrap();
     match wal.iter() {
@@ -1705,7 +1624,7 @@ fn in_memory_append_then_flush_never_touches_disk() {
     // flush() is a no-op. Neither may panic or block.
     let wal = Wal::in_memory();
     for i in 0..100 {
-        wal.append(&kv_set(&format!("ghost{i}"))).unwrap();
+        wal.append(&insert_node(&format!("ghost{i}"))).unwrap();
     }
     wal.flush().unwrap();
     wal.flush().unwrap();
@@ -1727,9 +1646,9 @@ fn batch_size_one_makes_every_append_a_durability_barrier() {
     let wal = Wal::with_group_commit(&path, false, Duration::from_secs(30), 1).unwrap();
     // With batch_size 1 and a huge interval, append must still return only once
     // its own entry is durable — an independent reopen sees it immediately.
-    wal.append(&kv_set("barrier")).unwrap();
+    wal.append(&insert_node("barrier")).unwrap();
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
-    assert_eq!(kv_keys(&recovered), vec!["barrier".to_string()]);
+    assert_eq!(node_labels(&recovered), vec!["barrier".to_string()]);
 }
 
 #[test]
@@ -1744,13 +1663,13 @@ fn appends_crossing_batch_boundary_are_all_durable() {
     let handles: Vec<_> = (0..10)
         .map(|i| {
             let wal = Arc::clone(&wal);
-            thread::spawn(move || wal.append(&kv_set(&format!("c{i}"))).unwrap())
+            thread::spawn(move || wal.append(&insert_node(&format!("c{i}"))).unwrap())
         })
         .collect();
     for handle in handles {
         handle.join().unwrap();
     }
-    let recovered = kv_keys(&Wal::new(&path, false).unwrap().iter().unwrap());
+    let recovered = node_labels(&Wal::new(&path, false).unwrap().iter().unwrap());
     assert_eq!(recovered.len(), 10);
     for i in 0..10 {
         assert!(
@@ -1777,7 +1696,7 @@ fn many_concurrent_writers_high_contention_all_durable() {
             let wal = Arc::clone(&wal);
             thread::spawn(move || {
                 for e in 0..per_thread {
-                    wal.append(&kv_set(&format!("t{t}-e{e}"))).unwrap();
+                    wal.append(&insert_node(&format!("t{t}-e{e}"))).unwrap();
                 }
             })
         })
@@ -1801,17 +1720,17 @@ fn group_written_log_reopens_in_flush_every_mode() {
     {
         let wal = Wal::with_group_commit(&path, false, Duration::from_millis(2), 16).unwrap();
         for i in 0..15 {
-            wal.append(&kv_set(&format!("g{i}"))).unwrap();
+            wal.append(&insert_node(&format!("g{i}"))).unwrap();
         }
     }
     // Reopen in flush_every mode and append more, then read back all.
     {
         let wal = Wal::new(&path, true).unwrap();
         for i in 0..5 {
-            wal.append(&kv_set(&format!("f{i}"))).unwrap();
+            wal.append(&insert_node(&format!("f{i}"))).unwrap();
         }
     }
-    let recovered = kv_keys(&Wal::new(&path, false).unwrap().iter().unwrap());
+    let recovered = node_labels(&Wal::new(&path, false).unwrap().iter().unwrap());
     assert_eq!(recovered.len(), 20);
     assert_eq!(recovered[0], "g0");
     assert_eq!(recovered[14], "g14");
@@ -1836,22 +1755,19 @@ fn snapshot_overwrites_prior_snapshot_atomically() {
 
     // First snapshot: one node.
     let mut g1 = Graph::new();
-    let kv1 = KvStore::new();
     g1.create_node(vec!["First".to_string()], HashMap::new());
-    snapshot(&g1, &kv1, &snap).unwrap();
+    snapshot(&g1, &snap).unwrap();
 
     // Second snapshot to the SAME path: three nodes. Must fully replace.
     let mut g2 = Graph::new();
-    let kv2 = KvStore::new();
     for _ in 0..3 {
         g2.create_node(vec!["Second".to_string()], HashMap::new());
     }
-    snapshot(&g2, &kv2, &snap).unwrap();
+    snapshot(&g2, &snap).unwrap();
     assert!(!snap.with_extension("bin.tmp").exists(), "no tmp residue");
 
     let mut gr = Graph::new();
-    let kvr = KvStore::new();
-    restore(&mut gr, &kvr, &snap).unwrap();
+    restore(&mut gr, &snap).unwrap();
     assert_eq!(gr.all_nodes().len(), 3, "second snapshot fully replaced the first");
     assert!(gr.nodes_by_label("First").is_none());
     assert!(gr.nodes_by_label("Second").is_some());
@@ -1866,15 +1782,13 @@ fn restored_relationship_endpoints_are_queryable_via_rebuilt_index() {
     let snap = dir.path().join("snap.bin");
 
     let mut g = Graph::new();
-    let kv = KvStore::new();
     let a = g.create_node(vec!["A".to_string()], HashMap::new());
     let b = g.create_node(vec!["B".to_string()], HashMap::new());
     let rid = g.create_relationship("LINKS".to_string(), a, b, HashMap::new());
-    snapshot(&g, &kv, &snap).unwrap();
+    snapshot(&g, &snap).unwrap();
 
     let mut gr = Graph::new();
-    let kvr = KvStore::new();
-    assert!(restore(&mut gr, &kvr, &snap).unwrap());
+    assert!(restore(&mut gr, &snap).unwrap());
     assert!(
         gr.outgoing_rels(a).is_some_and(|set| set.contains(&rid)),
         "restored rel must be in the rebuilt outgoing index of its source"
@@ -1892,26 +1806,19 @@ fn snapshot_restore_snapshot_is_idempotent_in_counts() {
     let snap2 = dir.path().join("snap2.bin");
 
     let mut g = Graph::new();
-    let kv = KvStore::new();
     let a = g.create_node(vec!["N".to_string()], HashMap::new());
     let b = g.create_node(vec!["N".to_string()], HashMap::new());
     g.create_relationship("E".to_string(), a, b, HashMap::new());
-    kv.set("k1".to_string(), Value::Int(1), None);
-    kv.set("k2".to_string(), Value::Int(2), Some(3600));
-    snapshot(&g, &kv, &snap1).unwrap();
+    snapshot(&g, &snap1).unwrap();
 
     let mut g2 = Graph::new();
-    let kv2 = KvStore::new();
-    restore(&mut g2, &kv2, &snap1).unwrap();
-    snapshot(&g2, &kv2, &snap2).unwrap();
+    restore(&mut g2, &snap1).unwrap();
+    snapshot(&g2, &snap2).unwrap();
 
     let mut g3 = Graph::new();
-    let kv3 = KvStore::new();
-    restore(&mut g3, &kv3, &snap2).unwrap();
+    restore(&mut g3, &snap2).unwrap();
     assert_eq!(g3.all_nodes().len(), 2);
     assert_eq!(g3.all_relationships().len(), 1);
-    assert_eq!(kv3.get("k1"), Some(Value::Int(1)));
-    assert_eq!(kv3.get("k2"), Some(Value::Int(2)));
 }
 
 #[test]
@@ -1924,8 +1831,7 @@ fn restore_from_empty_zero_byte_snapshot_is_error_not_panic() {
     assert_eq!(fs::metadata(&snap).unwrap().len(), 0);
 
     let mut g = Graph::new();
-    let kv = KvStore::new();
-    assert!(restore(&mut g, &kv, &snap).is_err(), "empty snapshot must be an error value");
+    assert!(restore(&mut g, &snap).is_err(), "empty snapshot must be an error value");
 }
 
 #[test]
@@ -1934,39 +1840,37 @@ fn snapshot_with_unicode_and_extreme_values_roundtrips() {
     let snap = dir.path().join("snap.bin");
 
     let mut g = Graph::new();
-    let kv = KvStore::new();
     let mut props = HashMap::new();
     props.insert("名前".to_string(), Value::String("🚀\u{0}\t".to_string()));
     props.insert("min".to_string(), Value::Int(i64::MIN));
     props.insert("max".to_string(), Value::Int(i64::MAX));
+    props.insert("空".to_string(), Value::List(vec![Value::Null, Value::Bool(false)]));
     let id = g.create_node(vec!["Ünïcödé".to_string()], props);
-    kv.set("空".to_string(), Value::List(vec![Value::Null, Value::Bool(false)]), None);
 
-    snapshot(&g, &kv, &snap).unwrap();
+    snapshot(&g, &snap).unwrap();
     let mut gr = Graph::new();
-    let kvr = KvStore::new();
-    restore(&mut gr, &kvr, &snap).unwrap();
+    restore(&mut gr, &snap).unwrap();
     let node = gr.get_node(id).unwrap();
     assert_eq!(node.labels, vec!["Ünïcödé".to_string()]);
     assert_eq!(node.props.get("min"), Some(&Value::Int(i64::MIN)));
     assert_eq!(node.props.get("max"), Some(&Value::Int(i64::MAX)));
     assert_eq!(
-        kvr.get("空"),
+        node.props.get("空").cloned(),
         Some(Value::List(vec![Value::Null, Value::Bool(false)]))
     );
 }
 
 // ===========================================================================
-// SECTION 23 — WAL replay drives a graph + kv to a known state (integration).
+// SECTION 23 — WAL replay drives a graph to a known state (integration).
 //
 // Durability is meaningless unless replay reconstructs the intended state. The
 // author tested that ops survive byte-for-byte; this test closes the loop by
-// APPLYING the recovered op stream to a fresh Graph/KvStore (the way a real DB
+// APPLYING the recovered op stream to a fresh Graph (the way a real DB
 // recovers) and asserting the resulting state is exactly correct, including
-// that a later DeleteNode/KvDel in the log wins over an earlier insert/set.
+// that a later DeleteNode in the log wins over an earlier insert.
 // ===========================================================================
 
-fn apply_op(graph: &mut Graph, kv: &KvStore, op: &Operation) {
+fn apply_op(graph: &mut Graph, op: &Operation) {
     match op {
         Operation::InsertNode { id, labels, props } => {
             graph.restore_node(*id, labels.clone(), props.clone());
@@ -1988,12 +1892,6 @@ fn apply_op(graph: &mut Graph, kv: &KvStore, op: &Operation) {
         }
         Operation::DeleteRel { id } => {
             graph.delete_relationship(*id);
-        }
-        Operation::KvSet { key, value, ttl } => {
-            kv.set(key.clone(), value.clone(), *ttl);
-        }
-        Operation::KvDel { key } => {
-            kv.del(key);
         }
     }
 }
@@ -2031,30 +1929,13 @@ fn replaying_recovered_ops_reconstructs_expected_state() {
     })
     .unwrap();
     wal.append(&Operation::DeleteNode { id: 2 }).unwrap(); // also drops rel 10
-    wal.append(&Operation::KvSet {
-        key: "live".to_string(),
-        value: Value::String("yes".to_string()),
-        ttl: None,
-    })
-    .unwrap();
-    wal.append(&Operation::KvSet {
-        key: "temp".to_string(),
-        value: Value::Int(7),
-        ttl: None,
-    })
-    .unwrap();
-    wal.append(&Operation::KvDel {
-        key: "temp".to_string(),
-    })
-    .unwrap();
     drop(wal);
 
     // Recover and replay into a fresh state.
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
     let mut graph = Graph::new();
-    let kv = KvStore::new();
     for op in &recovered {
-        apply_op(&mut graph, &kv, op);
+        apply_op(&mut graph, op);
     }
 
     // Node 1 survives with its UPDATED property; node 2 (and its rel) is gone.
@@ -2065,9 +1946,6 @@ fn replaying_recovered_ops_reconstructs_expected_state() {
         graph.get_relationship(10).is_none(),
         "rel attached to a deleted node must be gone after replay"
     );
-    // KV: the deleted key is absent; the live key remains.
-    assert_eq!(kv.get("live"), Some(Value::String("yes".to_string())));
-    assert_eq!(kv.get("temp"), None, "KvDel must win over the earlier KvSet");
 }
 
 // ===========================================================================
@@ -2089,7 +1967,7 @@ fn zero_length_entry_does_not_hang_and_is_corruption() {
         file.write_all(&0u64.to_le_bytes()).unwrap();
         file.write_all(&crc32fast::hash(&[]).to_le_bytes()).unwrap();
         // (no payload bytes)
-        write_framed_entry(&mut file, &payload_of(&kv_set("after")));
+        write_framed_entry(&mut file, &payload_of(&insert_node("after")));
         file.sync_all().unwrap();
     }
     // Must terminate (no hang) and surface a Corruption value (empty payload is

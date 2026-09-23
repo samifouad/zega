@@ -17,7 +17,6 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use thiserror::Error;
 use zega_graph::{Graph, Node, NodeId, RelId, Relationship};
-use zega_kv::KvStore;
 use zega_parser::Value;
 
 const WAL_MAGIC: &[u8; 4] = b"ZWAL";
@@ -64,14 +63,6 @@ pub enum Operation {
     },
     DeleteRel {
         id: RelId,
-    },
-    KvSet {
-        key: String,
-        value: Value,
-        ttl: Option<u64>,
-    },
-    KvDel {
-        key: String,
     },
 }
 
@@ -550,15 +541,15 @@ fn group_commit_worker(group: Arc<GroupCommit>) {
     }
 }
 
-pub fn snapshot(graph: &Graph, kv: &KvStore, path: &Path) -> Result<(), WalError> {
+pub fn snapshot(graph: &Graph, path: &Path) -> Result<(), WalError> {
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (graph, kv, path);
+        let _ = (graph, path);
         Ok(())
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let bytes = encode_snapshot(graph, kv)?;
+        let bytes = encode_snapshot(graph)?;
         let tmp_path = path.with_extension("bin.tmp");
         let mut file = File::create(&tmp_path)?;
         file.write_all(&bytes)?;
@@ -573,10 +564,10 @@ pub fn snapshot(graph: &Graph, kv: &KvStore, path: &Path) -> Result<(), WalError
     }
 }
 
-pub fn restore(graph: &mut Graph, kv: &KvStore, path: &Path) -> Result<bool, WalError> {
+pub fn restore(graph: &mut Graph, path: &Path) -> Result<bool, WalError> {
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (graph, kv, path);
+        let _ = (graph, path);
         Ok(false)
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -589,29 +580,28 @@ pub fn restore(graph: &mut Graph, kv: &KvStore, path: &Path) -> Result<bool, Wal
         let mut bytes = Vec::with_capacity(file_len as usize);
         let mut reader = io::BufReader::new(file);
         io::Read::read_to_end(&mut reader, &mut bytes)?;
-        restore_bytes(graph, kv, &bytes)?;
+        restore_bytes(graph, &bytes)?;
         Ok(true)
     }
 }
 
-/// Serialize the full graph + KV state to bytes (platform-independent; the
+/// Serialize the full graph state to bytes (platform-independent; the
 /// basis for the file-based snapshot and for wasm export/import).
-pub fn encode_snapshot(graph: &Graph, kv: &KvStore) -> Result<Vec<u8>, WalError> {
+pub fn encode_snapshot(graph: &Graph) -> Result<Vec<u8>, WalError> {
     let snapshot = Snapshot {
         nodes: graph.all_nodes().clone(),
         relationships: graph.all_relationships().clone(),
-        kv_data: kv.snapshot(),
     };
     let mut bytes = Vec::new();
     serialize_into(&mut bytes, &snapshot)?;
     Ok(bytes)
 }
 
-/// Restore the full graph + KV state from [`encode_snapshot`] bytes.
-pub fn restore_bytes(graph: &mut Graph, kv: &KvStore, bytes: &[u8]) -> Result<(), WalError> {
+/// Restore the full graph state from [`encode_snapshot`] bytes.
+pub fn restore_bytes(graph: &mut Graph, bytes: &[u8]) -> Result<(), WalError> {
     let snapshot: Snapshot = bincode::DefaultOptions::new()
         .with_fixint_encoding()
-        .allow_trailing_bytes()
+        .reject_trailing_bytes()
         .with_limit(bytes.len() as u64)
         .deserialize(bytes)
         .map_err(|error| WalError::Corruption {
@@ -619,7 +609,6 @@ pub fn restore_bytes(graph: &mut Graph, kv: &KvStore, bytes: &[u8]) -> Result<()
             reason: format!("invalid snapshot: {error}"),
         })?;
     graph.set_state(snapshot.nodes, snapshot.relationships);
-    kv.restore(snapshot.kv_data);
     Ok(())
 }
 
@@ -627,7 +616,6 @@ pub fn restore_bytes(graph: &mut Graph, kv: &KvStore, bytes: &[u8]) -> Result<()
 struct Snapshot {
     nodes: HashMap<NodeId, Node>,
     relationships: HashMap<RelId, Relationship>,
-    kv_data: HashMap<String, zega_kv::KvEntry>,
 }
 
 #[cfg(test)]
@@ -638,19 +626,19 @@ mod tests {
     use std::process::{Command, Stdio};
     use tempfile::tempdir;
 
-    fn kv_set(key: &str) -> Operation {
-        Operation::KvSet {
-            key: key.to_string(),
-            value: Value::String(key.to_string()),
-            ttl: None,
+    fn insert_node(label: &str) -> Operation {
+        Operation::InsertNode {
+            id: 1,
+            labels: vec![label.to_string()],
+            props: HashMap::new(),
         }
     }
 
-    fn kv_keys(ops: &[Operation]) -> Vec<&str> {
+    fn node_labels(ops: &[Operation]) -> Vec<&str> {
         ops.iter()
             .map(|op| match op {
-                Operation::KvSet { key, .. } => key.as_str(),
-                _ => panic!("expected KvSet operation"),
+                Operation::InsertNode { labels, .. } => labels[0].as_str(),
+                _ => panic!("expected InsertNode operation"),
             })
             .collect()
     }
@@ -668,7 +656,7 @@ mod tests {
             props,
         })
         .unwrap();
-        wal.append(&kv_set("foo")).unwrap();
+        wal.append(&insert_node("foo")).unwrap();
         drop(wal);
 
         let wal2 = Wal::new(&wal_path, false).unwrap();
@@ -679,7 +667,7 @@ mod tests {
     fn legacy_wal_is_migrated_without_data_loss() {
         let dir = tempdir().unwrap();
         let wal_path = dir.path().join("wal.bin");
-        let expected = [kv_set("legacy-one"), kv_set("legacy-two")];
+        let expected = [insert_node("legacy-one"), insert_node("legacy-two")];
         let mut legacy = File::create(&wal_path).unwrap();
         for op in &expected {
             let payload = bincode::serialize(op).unwrap();
@@ -693,7 +681,7 @@ mod tests {
 
         let wal = Wal::new(&wal_path, true).unwrap();
         let recovered = wal.iter().unwrap();
-        assert_eq!(kv_keys(&recovered), ["legacy-one", "legacy-two"]);
+        assert_eq!(node_labels(&recovered), ["legacy-one", "legacy-two"]);
         assert!(std::fs::read(&wal_path)
             .unwrap()
             .starts_with(WAL_FILE_HEADER));
@@ -739,11 +727,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let wal_path = dir.path().join("wal.bin");
         let wal = Wal::new(&wal_path, true).unwrap();
-        wal.append(&kv_set("before")).unwrap();
+        wal.append(&insert_node("before")).unwrap();
         drop(wal);
         let valid_len = std::fs::metadata(&wal_path).unwrap().len();
 
-        let payload = bincode::serialize(&kv_set("partial")).unwrap();
+        let payload = bincode::serialize(&insert_node("partial")).unwrap();
         let mut target = PartialWriteTarget {
             file: OpenOptions::new().append(true).open(&wal_path).unwrap(),
             bytes_before_error: 10,
@@ -760,8 +748,8 @@ mod tests {
         drop(target);
 
         let wal = Wal::new(&wal_path, true).unwrap();
-        wal.append(&kv_set("after")).unwrap();
-        assert_eq!(kv_keys(&wal.iter().unwrap()), ["before", "after"]);
+        wal.append(&insert_node("after")).unwrap();
+        assert_eq!(node_labels(&wal.iter().unwrap()), ["before", "after"]);
     }
 
     #[test]
@@ -769,7 +757,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let wal_path = dir.path().join("wal.bin");
         let wal = Wal::new(&wal_path, true).unwrap();
-        wal.append(&kv_set("acked")).unwrap();
+        wal.append(&insert_node("acked")).unwrap();
         drop(wal);
         let valid_len = std::fs::metadata(&wal_path).unwrap().len();
         let mut file = OpenOptions::new().append(true).open(&wal_path).unwrap();
@@ -788,8 +776,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let wal_path = dir.path().join("wal.bin");
         let wal = Wal::new(&wal_path, true).unwrap();
-        wal.append(&kv_set("acked")).unwrap();
-        wal.append(&kv_set("tail")).unwrap();
+        wal.append(&insert_node("acked")).unwrap();
+        wal.append(&insert_node("tail")).unwrap();
         drop(wal);
         let mut bytes = std::fs::read(&wal_path).unwrap();
         *bytes.last_mut().unwrap() ^= 0xff;
@@ -804,8 +792,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let wal_path = dir.path().join("wal.bin");
         let wal = Wal::new(&wal_path, true).unwrap();
-        wal.append(&kv_set("first")).unwrap();
-        wal.append(&kv_set("second")).unwrap();
+        wal.append(&insert_node("first")).unwrap();
+        wal.append(&insert_node("second")).unwrap();
         drop(wal);
         let mut bytes = std::fs::read(&wal_path).unwrap();
         bytes[(WAL_FILE_HEADER_LEN + ENTRY_HEADER_LEN) as usize] ^= 0xff;
@@ -824,7 +812,7 @@ mod tests {
         let threads: Vec<_> = (0..4)
             .map(|index| {
                 let wal = Arc::clone(&wal);
-                thread::spawn(move || wal.append(&kv_set(&format!("key-{index}"))).unwrap())
+                thread::spawn(move || wal.append(&insert_node(&format!("key-{index}"))).unwrap())
             })
             .collect();
         for thread in threads {
@@ -840,7 +828,7 @@ mod tests {
         };
         let wal = Wal::new(Path::new(&path), false).unwrap();
         for index in 0..1_000 {
-            wal.append(&kv_set(&format!("acked-{index}"))).unwrap();
+            wal.append(&insert_node(&format!("acked-{index}"))).unwrap();
             println!("ACK {index}");
             std::io::stdout().flush().unwrap();
         }
@@ -885,19 +873,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let snap_path = dir.path().join("snapshot.bin");
         let mut graph = Graph::new();
-        let kv = KvStore::new();
         let mut props = HashMap::new();
         props.insert("name".to_string(), Value::String("Alice".to_string()));
         graph.create_node(vec!["Person".to_string()], props);
-        kv.set("foo".to_string(), Value::String("bar".to_string()), None);
 
-        snapshot(&graph, &kv, &snap_path).unwrap();
+        snapshot(&graph, &snap_path).unwrap();
         assert!(!snap_path.with_extension("bin.tmp").exists());
 
         let mut graph2 = Graph::new();
-        let kv2 = KvStore::new();
-        restore(&mut graph2, &kv2, &snap_path).unwrap();
+        restore(&mut graph2, &snap_path).unwrap();
         assert_eq!(graph2.all_nodes().len(), 1);
-        assert_eq!(kv2.get("foo"), Some(Value::String("bar".to_string())));
     }
 }

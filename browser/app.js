@@ -27,7 +27,7 @@ function persist() {
 // exposed for debugging / console use: window.__zega.query("MATCH (n) RETURN n", "")
 window.__zega = () => db;
 
-const MUTATION_RE = /^\s*(create|merge|set|delete|detach|del|incr)\b/i;
+const MUTATION_RE = /^\s*(create|merge|set|delete|detach)\b/i;
 const isMutation = (q) => MUTATION_RE.test(q);
 
 function runQuery(text) {

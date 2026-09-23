@@ -28,7 +28,7 @@ await cp('LICENSE', 'dist/LICENSE');
 await writeFile('dist/package.json', JSON.stringify({
   name: 'zegadb',
   version: workspace.version,
-  description: 'An in-memory graph database and KV engine with ZQL v2, for browsers and Node.js',
+  description: 'An embeddable graph database with ZQL v2, for browsers and Node.js',
   type: 'module',
   license: workspace.license,
   repository: { type: 'git', url: workspace.repository },

@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use zega_core::Value;
@@ -92,135 +92,6 @@ pub async fn cql(
     }
 }
 
-#[derive(Deserialize)]
-pub struct KvRequest {
-    op: String,
-    #[serde(default)]
-    key: String,
-    #[serde(default)]
-    value: JsonValueField,
-    ttl: Option<u64>,
-    #[serde(default)]
-    nx: bool,
-    start: Option<usize>,
-    stop: Option<usize>,
-    cursor: Option<usize>,
-    pattern: Option<String>,
-    count: Option<usize>,
-}
-
-// Unlike Option<JsonValue>, this distinguishes a missing field from `"value": null`.
-#[derive(Default)]
-struct JsonValueField(Option<JsonValue>);
-
-impl<'de> Deserialize<'de> for JsonValueField {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        JsonValue::deserialize(deserializer).map(|value| Self(Some(value)))
-    }
-}
-
-pub async fn kv(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    request: Result<Json<KvRequest>, JsonRejection>,
-) -> Response {
-    if !is_authorized(&headers, &state) {
-        return error(StatusCode::UNAUTHORIZED, "unauthorized");
-    }
-    let Json(request) = match request {
-        Ok(request) => request,
-        Err(rejection) => return error(StatusCode::BAD_REQUEST, rejection.body_text()),
-    };
-    let result = if classification::kv_is_write(&request.op) {
-        let zega = state.zega.write().await;
-        execute_kv(&zega, request)
-    } else {
-        let zega = state.zega.read().await;
-        execute_kv(&zega, request)
-    };
-    match result {
-        Ok(value) => Json(json!({"ok": true, "result": value})).into_response(),
-        Err(message) => error(StatusCode::BAD_REQUEST, message),
-    }
-}
-
-fn execute_kv(zega: &zega_core::Zega, request: KvRequest) -> Result<JsonValue, String> {
-    let value = match request.op.as_str() {
-        "get" => zega
-            .kv_get(&request.key)
-            .map_or(JsonValue::Null, value_to_raw),
-        "set" => {
-            let value = raw_to_value(required(request.value.0, "value")?)?;
-            if request.nx {
-                json!(zega
-                    .kv_set_nx(request.key, value, request.ttl)
-                    .map_err(|error| error.to_string())?)
-            } else {
-                zega.kv_set(request.key, value, request.ttl)
-                    .map_err(|error| error.to_string())?;
-                json!(true)
-            }
-        }
-        "del" => json!(zega
-            .kv_del(&request.key)
-            .map_err(|error| error.to_string())?),
-        "incr" => value_to_raw(
-            zega.kv_incr(&request.key)
-                .map_err(|error| error.to_string())?,
-        ),
-        "exists" => json!(zega.kv_exists(&request.key)),
-        "ttl" => json!(zega.kv_ttl(&request.key)),
-        "expire" => json!(zega
-            .kv_expire(&request.key, required(request.ttl, "ttl")?)
-            .map_err(|error| error.to_string())?),
-        "lpush" => json!(zega
-            .kv_lpush(
-                &request.key,
-                raw_to_value(required(request.value.0, "value")?)?
-            )
-            .map_err(|error| error.to_string())?),
-        "lrange" => zega
-            .kv_lrange(
-                &request.key,
-                required(request.start, "start")?,
-                required(request.stop, "stop")?,
-            )
-            .map_err(|error| error.to_string())?
-            .map_or(JsonValue::Null, |values| {
-                JsonValue::Array(values.into_iter().map(value_to_raw).collect())
-            }),
-        "ltrim" => json!(zega
-            .kv_ltrim(
-                &request.key,
-                required(request.start, "start")?,
-                required(request.stop, "stop")?
-            )
-            .map_err(|error| error.to_string())?),
-        "rpush" => json!(zega
-            .kv_rpush(
-                &request.key,
-                raw_to_value(required(request.value.0, "value")?)?
-            )
-            .map_err(|error| error.to_string())?),
-        "incr_with_ttl" => value_to_raw(
-            zega.kv_incr_with_ttl(&request.key, required(request.ttl, "ttl")?)
-                .map_err(|error| error.to_string())?,
-        ),
-        "scan" => {
-            let cursor = request.cursor.unwrap_or(0);
-            let pattern = request.pattern.unwrap_or_default();
-            let count = request.count.unwrap_or(10);
-            let (next_cursor, keys) = zega.kv_scan(cursor, &pattern, count);
-            json!({"cursor": next_cursor, "keys": keys})
-        }
-        _ => return Err(format!("unsupported KV operation: {}", request.op)),
-    };
-    Ok(value)
-}
-
 fn raw_to_value(value: JsonValue) -> Result<Value, String> {
     match value {
         JsonValue::Null => Ok(Value::Null),
@@ -268,8 +139,4 @@ fn value_to_raw(value: Value) -> JsonValue {
                 .collect(),
         ),
     }
-}
-
-fn required<T>(value: Option<T>, name: &str) -> Result<T, String> {
-    value.ok_or_else(|| format!("missing required field: {name}"))
 }

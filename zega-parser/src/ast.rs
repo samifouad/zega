@@ -135,20 +135,6 @@ pub enum Statement {
         order_by: Option<Vec<(Expr, OrderDirection)>>,
         limit: Option<Expr>,
     },
-    KvGet {
-        key: Expr,
-    },
-    KvSet {
-        key: Expr,
-        value: Expr,
-        ttl: Option<Expr>,
-    },
-    KvDel {
-        key: Expr,
-    },
-    KvIncr {
-        key: Expr,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

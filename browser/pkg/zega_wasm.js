@@ -97,7 +97,7 @@ export class ZegaWasm {
         }
     }
     /**
-     * Serialize the whole database (graph + KV) to a base64 string, so the
+     * Serialize the whole graph database to a base64 string, so the
      * browser build can persist it across reloads.
      * @returns {string}
      */
@@ -150,58 +150,6 @@ export class ZegaWasm {
         const ptr0 = passStringToWasm0(data, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.zegawasm_import_base64(this.__wbg_ptr, ptr0, len0);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * @param {string} key
-     * @returns {boolean}
-     */
-    kv_del(key) {
-        const ptr0 = passStringToWasm0(key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.zegawasm_kv_del(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] !== 0;
-    }
-    /**
-     * @param {string} key
-     * @returns {string}
-     */
-    kv_get(key) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passStringToWasm0(key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.zegawasm_kv_get(this.__wbg_ptr, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * @param {string} key
-     * @param {string} value_json
-     * @param {bigint | null} [ttl_secs]
-     */
-    kv_set(key, value_json, ttl_secs) {
-        const ptr0 = passStringToWasm0(key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.zegawasm_kv_set(this.__wbg_ptr, ptr0, len0, ptr1, len1, !isLikeNone(ttl_secs), isLikeNone(ttl_secs) ? BigInt(0) : ttl_secs);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }

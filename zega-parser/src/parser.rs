@@ -69,11 +69,8 @@ impl<'a> Parser<'a> {
             Token::Match => self.parse_match(),
             Token::Create => self.parse_create(),
             Token::Merge => self.parse_merge(),
-            Token::Set => self.parse_set_or_kv(),
+            Token::Set => self.parse_set(),
             Token::Delete => self.parse_delete(),
-            Token::Get => self.parse_kv_get(),
-            Token::Del => self.parse_kv_del(),
-            Token::Incr => self.parse_kv_incr(),
             _ => Err(ParseError::UnexpectedToken {
                 expected: "statement keyword".to_string(),
                 got: self.current.clone(),
@@ -321,27 +318,10 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_set_or_kv(&mut self) -> Result<Statement, ParseError> {
+    fn parse_set(&mut self) -> Result<Statement, ParseError> {
         self.advance()?; // SET
-        if self.current == Token::Key {
-            self.parse_kv_set_after_key()
-        } else {
-            let assignments = self.parse_set_clauses()?;
-            self.parse_trailing_return(Statement::Set { assignments })
-        }
-    }
-
-    fn parse_kv_set_after_key(&mut self) -> Result<Statement, ParseError> {
-        self.expect(Token::Key)?;
-        let key = self.parse_primary()?;
-        self.expect(Token::Eq)?;
-        let value = self.parse_primary()?;
-        let mut ttl = None;
-        if self.current == Token::Ttl {
-            self.advance()?;
-            ttl = Some(self.parse_primary()?);
-        }
-        Ok(Statement::KvSet { key, value, ttl })
+        let assignments = self.parse_set_clauses()?;
+        self.parse_trailing_return(Statement::Set { assignments })
     }
 
     fn parse_delete(&mut self) -> Result<Statement, ParseError> {
@@ -396,27 +376,6 @@ impl<'a> Parser<'a> {
             order_by,
             limit,
         })
-    }
-
-    fn parse_kv_get(&mut self) -> Result<Statement, ParseError> {
-        self.advance()?; // GET
-        self.expect(Token::Key)?;
-        let key = self.parse_primary()?;
-        Ok(Statement::KvGet { key })
-    }
-
-    fn parse_kv_del(&mut self) -> Result<Statement, ParseError> {
-        self.advance()?; // DEL
-        self.expect(Token::Key)?;
-        let key = self.parse_primary()?;
-        Ok(Statement::KvDel { key })
-    }
-
-    fn parse_kv_incr(&mut self) -> Result<Statement, ParseError> {
-        self.advance()?; // INCR
-        self.expect(Token::Key)?;
-        let key = self.parse_primary()?;
-        Ok(Statement::KvIncr { key })
     }
 
     /// True if the current token begins a write clause (SET / CREATE / REMOVE /
@@ -675,29 +634,9 @@ impl<'a> Parser<'a> {
                     self.advance()?;
                     k
                 }
-                Token::Key => {
-                    self.advance()?;
-                    "key".to_string()
-                }
-                Token::Get => {
-                    self.advance()?;
-                    "get".to_string()
-                }
                 Token::Set => {
                     self.advance()?;
                     "set".to_string()
-                }
-                Token::Del => {
-                    self.advance()?;
-                    "del".to_string()
-                }
-                Token::Incr => {
-                    self.advance()?;
-                    "incr".to_string()
-                }
-                Token::Ttl => {
-                    self.advance()?;
-                    "ttl".to_string()
                 }
                 Token::Match => {
                     self.advance()?;
@@ -1016,29 +955,9 @@ impl<'a> Parser<'a> {
                         self.advance()?;
                         n
                     }
-                    Token::Key => {
-                        self.advance()?;
-                        "key".to_string()
-                    }
-                    Token::Get => {
-                        self.advance()?;
-                        "get".to_string()
-                    }
                     Token::Set => {
                         self.advance()?;
                         "set".to_string()
-                    }
-                    Token::Del => {
-                        self.advance()?;
-                        "del".to_string()
-                    }
-                    Token::Incr => {
-                        self.advance()?;
-                        "incr".to_string()
-                    }
-                    Token::Ttl => {
-                        self.advance()?;
-                        "ttl".to_string()
                     }
                     Token::Match => {
                         self.advance()?;
@@ -1487,17 +1406,6 @@ mod tests {
                 assert!(where_clause.is_some());
             }
             _ => panic!("expected MATCH"),
-        }
-    }
-
-    #[test]
-    fn test_parse_kv() {
-        let mut p = Parser::new("GET KEY $key").unwrap();
-        let stmts = p.parse().unwrap();
-        assert_eq!(stmts.len(), 1);
-        match &stmts[0] {
-            Statement::KvGet { .. } => {}
-            _ => panic!("expected KvGet"),
         }
     }
 

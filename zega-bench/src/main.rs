@@ -1,4 +1,4 @@
-// zega-bench — side-by-side: zega-core (embedded) vs Redis+Neo4j (client/server).
+// zega-bench — side-by-side: zega-core (embedded) vs Neo4j (client/server).
 // Identical workloads. Reports throughput (ops/sec) and latency (p50/p99).
 // Memory (RSS) is captured by the surrounding driver script via /proc.
 
@@ -7,7 +7,6 @@ use std::time::Instant;
 use zega_core::Zega;
 use zega_parser::Value;
 
-const KV_N: usize = 100_000;
 const USERS: usize = 10_000;
 const ORDERS: usize = 50_000;
 const LOOKUPS: usize = 10_000;
@@ -34,26 +33,6 @@ fn bench_zega() {
     println!("\n=== ZEGA (embedded, in-process) ===");
     let zega = Zega::in_memory().build().expect("zega build");
 
-    // KV SET
-    let mut lats = Vec::with_capacity(KV_N);
-    let t = Instant::now();
-    for i in 0..KV_N {
-        let s = Instant::now();
-        zega.kv_set(format!("k:{i}"), Value::String(format!("v:{i}")), None).unwrap();
-        lats.push(s.elapsed().as_nanos());
-    }
-    report("zega kv_set", KV_N, t.elapsed().as_nanos(), &lats);
-
-    // KV GET
-    let mut lats = Vec::with_capacity(KV_N);
-    let t = Instant::now();
-    for i in 0..KV_N {
-        let s = Instant::now();
-        let _ = zega.kv_get(&format!("k:{i}"));
-        lats.push(s.elapsed().as_nanos());
-    }
-    report("zega kv_get", KV_N, t.elapsed().as_nanos(), &lats);
-
     // Graph load: USERS User nodes (single-node CREATE; MVP parser does not yet
     // support CREATE with relationships, so 1-hop traversal is deferred to round 2)
     let t = Instant::now();
@@ -78,32 +57,6 @@ fn bench_zega() {
         lats.push(s.elapsed().as_nanos());
     }
     report("zega node lookup", LOOKUPS, t.elapsed().as_nanos(), &lats);
-}
-
-fn bench_redis() {
-    println!("\n=== REDIS (localhost:6379, RESP over TCP) ===");
-    let client = redis::Client::open("redis://127.0.0.1:6379").expect("redis client");
-    let mut con = client.get_connection().expect("redis connect");
-
-    let mut lats = Vec::with_capacity(KV_N);
-    let t = Instant::now();
-    for i in 0..KV_N {
-        let s = Instant::now();
-        let _: () = redis::cmd("SET").arg(format!("k:{i}")).arg(format!("v:{i}"))
-            .query(&mut con).unwrap();
-        lats.push(s.elapsed().as_nanos());
-    }
-    report("redis SET", KV_N, t.elapsed().as_nanos(), &lats);
-
-    let mut lats = Vec::with_capacity(KV_N);
-    let t = Instant::now();
-    for i in 0..KV_N {
-        let s = Instant::now();
-        let _: Option<String> = redis::cmd("GET").arg(format!("k:{i}"))
-            .query(&mut con).unwrap();
-        lats.push(s.elapsed().as_nanos());
-    }
-    report("redis GET", KV_N, t.elapsed().as_nanos(), &lats);
 }
 
 async fn bench_neo4j() {
@@ -140,11 +93,10 @@ async fn bench_neo4j() {
 #[tokio::main]
 async fn main() {
     let arg = std::env::args().nth(1).unwrap_or_default();
-    println!("zega-bench  KV_N={KV_N} USERS={USERS} ORDERS={ORDERS} LOOKUPS={LOOKUPS}");
+    println!("zega-bench USERS={USERS} ORDERS={ORDERS} LOOKUPS={LOOKUPS}");
     match arg.as_str() {
         "zega" => bench_zega(),
-        "redis" => bench_redis(),
         "neo4j" => bench_neo4j().await,
-        _ => { bench_zega(); bench_redis(); bench_neo4j().await; }
+        _ => { bench_zega(); bench_neo4j().await; }
     }
 }

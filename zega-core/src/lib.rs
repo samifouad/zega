@@ -6,7 +6,6 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use thiserror::Error;
 use zega_graph::{Graph, NodeId, RelId};
-use zega_kv::KvStore;
 pub use zega_parser::Value;
 use zega_parser::{ast::*, BinaryOperator, Expr, OrderDirection, Parser, Statement};
 #[cfg(not(target_arch = "wasm32"))]
@@ -113,7 +112,6 @@ fn bound_node(bindings: &Bindings, variable: &str) -> Option<NodeId> {
 
 pub struct Zega {
     graph: Mutex<Graph>,
-    kv: KvStore,
     wal: Wal,
     #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
@@ -241,7 +239,6 @@ impl Zega {
         let mut graph = Graph::new();
         #[cfg(target_arch = "wasm32")]
         let graph = Graph::new();
-        let kv = KvStore::new();
 
         #[cfg(not(target_arch = "wasm32"))]
         let snapshot_path = path.join("snapshot.bin");
@@ -250,7 +247,7 @@ impl Zega {
         // Restore from snapshot if exists
         #[cfg(not(target_arch = "wasm32"))]
         if !builder.in_memory && snapshot_path.exists() {
-            restore(&mut graph, &kv, &snapshot_path)?;
+            restore(&mut graph, &snapshot_path)?;
         }
 
         // Replay WAL
@@ -271,7 +268,7 @@ impl Zega {
         if !builder.in_memory && wal_path.exists() {
             let ops = wal.iter()?;
             for op in ops {
-                apply_op_to_memory(&mut graph, &kv, &op);
+                apply_op_to_memory(&mut graph, &op);
             }
         }
 
@@ -280,7 +277,6 @@ impl Zega {
 
         Ok(Zega {
             graph: Mutex::new(graph),
-            kv,
             wal,
             #[cfg(not(target_arch = "wasm32"))]
             path,
@@ -351,12 +347,7 @@ impl Zega {
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
         let planner = planner::Planner::new(&self.policies);
-        match planner.plan_statement(stmt, params, ctx)? {
-            planner::Plan::FilteredKvGet => {
-                let mut fields = HashMap::new();
-                fields.insert("value".to_string(), Value::Null);
-                Ok(vec![Row { fields }])
-            }
+        match planner.plan_statement(stmt, ctx)? {
             planner::Plan::Execute(stmt) => {
                 self.execute_planned_statement(&stmt, params, traversal_budget)
             }
@@ -464,12 +455,6 @@ impl Zega {
                 params,
                 traversal_budget,
             ),
-            Statement::KvGet { key } => self.exec_kv_get(key, params),
-            Statement::KvSet { key, value, ttl } => {
-                self.exec_kv_set(key, value, ttl.as_ref(), params)
-            }
-            Statement::KvDel { key } => self.exec_kv_del(key, params),
-            Statement::KvIncr { key } => self.exec_kv_incr(key, params),
         }
     }
 
@@ -836,219 +821,6 @@ impl Zega {
         project_bound_rows(&graph, &bindings, return_clause, None, None, None, params)
     }
 
-    fn exec_kv_get(&self, key_expr: &Expr, params: &HashMap<String, Value>) -> Result<Vec<Row>> {
-        let key = match eval_expr(
-            key_expr,
-            params,
-            &Bindings::new(),
-            &self.graph.lock().unwrap(),
-        )? {
-            Value::String(s) => s,
-            other => other.to_string(),
-        };
-        let val = self.kv.get(&key).unwrap_or(Value::Null);
-        let mut fields = HashMap::new();
-        fields.insert("value".to_string(), val);
-        Ok(vec![Row { fields }])
-    }
-
-    fn exec_kv_set(
-        &self,
-        key_expr: &Expr,
-        value_expr: &Expr,
-        ttl: Option<&Expr>,
-        params: &HashMap<String, Value>,
-    ) -> Result<Vec<Row>> {
-        let graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let key = match eval_expr(key_expr, params, &Bindings::new(), &graph)? {
-            Value::String(s) => s,
-            other => other.to_string(),
-        };
-        let value = eval_expr(value_expr, params, &Bindings::new(), &graph)?;
-        let ttl_secs = ttl.and_then(|expr| {
-            if let Ok(Value::Int(n)) = eval_expr(expr, params, &Bindings::new(), &graph) {
-                Some(n as u64)
-            } else {
-                None
-            }
-        });
-        self.kv.set(key.clone(), value.clone(), ttl_secs);
-        self.wal.append(&Operation::KvSet {
-            key,
-            value,
-            ttl: ttl_secs,
-        })?;
-        Ok(vec![])
-    }
-
-    fn exec_kv_del(&self, key_expr: &Expr, params: &HashMap<String, Value>) -> Result<Vec<Row>> {
-        let graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let key = match eval_expr(key_expr, params, &Bindings::new(), &graph)? {
-            Value::String(s) => s,
-            other => other.to_string(),
-        };
-        self.kv.del(&key);
-        self.wal.append(&Operation::KvDel { key })?;
-        Ok(vec![])
-    }
-
-    fn exec_kv_incr(&self, key_expr: &Expr, params: &HashMap<String, Value>) -> Result<Vec<Row>> {
-        let graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let key = match eval_expr(key_expr, params, &Bindings::new(), &graph)? {
-            Value::String(s) => s,
-            other => other.to_string(),
-        };
-        let val = self.kv.incr(&key).unwrap_or(Value::Null);
-        self.wal.append(&Operation::KvSet {
-            key,
-            value: val.clone(),
-            ttl: None,
-        })?;
-        let mut fields = HashMap::new();
-        fields.insert("value".to_string(), val);
-        Ok(vec![Row { fields }])
-    }
-
-    pub fn kv_get(&self, key: &str) -> Option<Value> {
-        self.kv.get(key)
-    }
-
-    pub fn kv_set(&self, key: String, value: Value, ttl_secs: Option<u64>) -> Result<()> {
-        self.kv.set(key.clone(), value.clone(), ttl_secs);
-        self.wal.append(&Operation::KvSet {
-            key,
-            value,
-            ttl: ttl_secs,
-        })?;
-        Ok(())
-    }
-
-    pub fn kv_set_nx(&self, key: String, value: Value, ttl_secs: Option<u64>) -> Result<bool> {
-        if !self.kv.set_nx(key.clone(), value.clone(), ttl_secs) {
-            return Ok(false);
-        }
-        self.wal.append(&Operation::KvSet {
-            key,
-            value,
-            ttl: ttl_secs,
-        })?;
-        Ok(true)
-    }
-
-    pub fn kv_del(&self, key: &str) -> Result<bool> {
-        let deleted = self.kv.del(key);
-        self.wal.append(&Operation::KvDel {
-            key: key.to_string(),
-        })?;
-        Ok(deleted)
-    }
-
-    pub fn kv_incr(&self, key: &str) -> Result<Value> {
-        let value = self.kv.incr(key).unwrap_or(Value::Null);
-        self.wal.append(&Operation::KvSet {
-            key: key.to_string(),
-            value: value.clone(),
-            ttl: self.kv.ttl(key),
-        })?;
-        Ok(value)
-    }
-
-    pub fn kv_exists(&self, key: &str) -> bool {
-        self.kv.exists(key)
-    }
-
-    pub fn kv_ttl(&self, key: &str) -> Option<u64> {
-        self.kv.ttl(key)
-    }
-
-    pub fn kv_expire(&self, key: &str, ttl_secs: u64) -> Result<bool> {
-        let updated = self.kv.expire(key, ttl_secs);
-        if updated {
-            let value = self.kv.get(key).unwrap_or(Value::Null);
-            self.wal.append(&Operation::KvSet {
-                key: key.to_string(),
-                value,
-                ttl: Some(ttl_secs),
-            })?;
-        }
-        Ok(updated)
-    }
-
-    pub fn kv_lpush(&self, key: &str, value: Value) -> Result<usize> {
-        self.kv.lpush(key, value);
-        let value = self.kv.get(key).unwrap_or(Value::List(Vec::new()));
-        let len = match &value {
-            Value::List(items) => items.len(),
-            _ => 0,
-        };
-        self.wal.append(&Operation::KvSet {
-            key: key.to_string(),
-            value,
-            ttl: self.kv.ttl(key),
-        })?;
-        Ok(len)
-    }
-
-    pub fn kv_lrange(&self, key: &str, start: usize, stop: usize) -> Result<Option<Vec<Value>>> {
-        self.kv
-            .lrange(key, start, stop)
-            .map_err(ZegaError::Execution)
-    }
-
-    pub fn kv_ltrim(&self, key: &str, start: usize, stop: usize) -> Result<bool> {
-        let updated = self
-            .kv
-            .ltrim(key, start, stop)
-            .map_err(ZegaError::Execution)?;
-        if updated {
-            let value = self.kv.get(key).unwrap_or(Value::List(Vec::new()));
-            self.wal.append(&Operation::KvSet {
-                key: key.to_string(),
-                value,
-                ttl: self.kv.ttl(key),
-            })?;
-        }
-        Ok(updated)
-    }
-
-    pub fn kv_rpush(&self, key: &str, value: Value) -> Result<usize> {
-        self.kv.rpush(key, value);
-        let value = self.kv.get(key).unwrap_or(Value::List(Vec::new()));
-        let len = match &value {
-            Value::List(items) => items.len(),
-            _ => 0,
-        };
-        self.wal.append(&Operation::KvSet {
-            key: key.to_string(),
-            value,
-            ttl: self.kv.ttl(key),
-        })?;
-        Ok(len)
-    }
-
-    pub fn kv_incr_with_ttl(&self, key: &str, ttl_secs: u64) -> Result<Value> {
-        let value = self.kv.incr_with_ttl(key, ttl_secs).unwrap_or(Value::Null);
-        self.wal.append(&Operation::KvSet {
-            key: key.to_string(),
-            value: value.clone(),
-            ttl: self.kv.ttl(key),
-        })?;
-        Ok(value)
-    }
-
-    pub fn kv_scan(&self, cursor: usize, pattern: &str, count: usize) -> (usize, Vec<String>) {
-        self.kv.scan(cursor, pattern, count)
-    }
-
     pub fn snapshot(&self) -> Result<()> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -1065,29 +837,29 @@ impl Zega {
                 .lock()
                 .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
             let snapshot_path = self.path.join("snapshot.bin");
-            snapshot(&graph, &self.kv, &snapshot_path)?;
+            snapshot(&graph, &snapshot_path)?;
             Ok(())
         }
     }
 
-    /// Serialize the full graph + KV state to bytes. Platform-independent —
+    /// Serialize the full graph state to bytes. Platform-independent —
     /// this is how the wasm build persists an in-memory database.
     pub fn snapshot_bytes(&self) -> Result<Vec<u8>> {
         let graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        Ok(zega_wal::encode_snapshot(&graph, &self.kv)?)
+        Ok(zega_wal::encode_snapshot(&graph)?)
     }
 
-    /// Restore the full graph + KV state from [`snapshot_bytes`] output,
+    /// Restore the full graph state from [`snapshot_bytes`] output,
     /// replacing current state.
     pub fn restore_bytes(&self, bytes: &[u8]) -> Result<()> {
         let mut graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        zega_wal::restore_bytes(&mut graph, &self.kv, bytes)?;
+        zega_wal::restore_bytes(&mut graph, bytes)?;
         Ok(())
     }
 }
@@ -3186,7 +2958,7 @@ fn extreme_value(values: &[Value], desired: std::cmp::Ordering) -> Value {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn apply_op_to_memory(graph: &mut Graph, kv: &KvStore, op: &Operation) {
+fn apply_op_to_memory(graph: &mut Graph, op: &Operation) {
     match op {
         Operation::InsertNode { id, labels, props } => {
             graph.restore_node(*id, labels.clone(), props.clone());
@@ -3208,12 +2980,6 @@ fn apply_op_to_memory(graph: &mut Graph, kv: &KvStore, op: &Operation) {
         }
         Operation::DeleteRel { id } => {
             graph.delete_relationship(*id);
-        }
-        Operation::KvSet { key, value, ttl } => {
-            kv.set(key.clone(), value.clone(), *ttl);
-        }
-        Operation::KvDel { key } => {
-            kv.del(key);
         }
     }
 }
@@ -4872,34 +4638,17 @@ mod tests {
     }
 
     #[test]
-    fn test_kv_ttl() {
-        let dir = tempdir().unwrap();
-        let zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
-        let mut params = HashMap::new();
-        params.insert("key".to_string(), Value::String("session".to_string()));
-        params.insert("val".to_string(), Value::String("abc".to_string()));
-        zega.query("SET KEY $key = $val TTL 1", params.clone())
-            .unwrap();
-        let rows = zega.query("GET KEY $key", params.clone()).unwrap();
-        assert_eq!(
-            rows[0].fields.get("value"),
-            Some(&Value::String("abc".to_string()))
-        );
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        let rows2 = zega.query("GET KEY $key", params).unwrap();
-        assert_eq!(rows2[0].fields.get("value"), Some(&Value::Null));
-    }
-
-    #[test]
     fn test_open_many_instances_without_runtime_leak() {
         let mut instances = Vec::with_capacity(1_000);
 
         for i in 0..1_000 {
             let zega = Zega::in_memory().build().unwrap();
-            let key = format!("key-{i}");
-            let value = Value::Int(i);
-            zega.kv_set(key.clone(), value.clone(), None).unwrap();
-            assert_eq!(zega.kv_get(&key), Some(value));
+            let params = HashMap::from([("value".to_string(), Value::Int(i))]);
+            zega.query("CREATE (n:Instance {value: $value})", params).unwrap();
+            let rows = zega
+                .query("MATCH (n:Instance) RETURN n.value AS value", HashMap::new())
+                .unwrap();
+            assert_eq!(rows[0].fields.get("value"), Some(&Value::Int(i)));
             instances.push(zega);
         }
 
@@ -4916,7 +4665,6 @@ mod tests {
             params.insert("name".to_string(), Value::String("Alice".to_string()));
             zega.query("CREATE (n:Person {name: $name})", params)
                 .unwrap();
-            zega.query("SET KEY foo = 'bar'", HashMap::new()).unwrap();
             // WAL is flushed on every write
         }
         {
@@ -4925,11 +4673,6 @@ mod tests {
                 .query("MATCH (n:Person) RETURN n", HashMap::new())
                 .unwrap();
             assert_eq!(rows.len(), 1);
-            let kv_rows = zega.query("GET KEY foo", HashMap::new()).unwrap();
-            assert_eq!(
-                kv_rows[0].fields.get("value"),
-                Some(&Value::String("bar".to_string()))
-            );
         }
     }
 
@@ -5085,7 +4828,7 @@ mod tests {
         };
 
         let plan = planner::Planner::new(&[])
-            .plan_statement(&stmt, &HashMap::new(), &ctx)
+            .plan_statement(&stmt, &ctx)
             .unwrap();
 
         assert_eq!(plan, planner::Plan::Execute(stmt));
@@ -5285,47 +5028,6 @@ mod tests {
             row_map_field(&rows[0], "p", "name"),
             Some(Value::String("proj_1".to_string()))
         );
-    }
-
-    #[test]
-    fn test_policy_kv_get_key_prefix_filtered() {
-        let dir = tempdir().unwrap();
-        let zega = Zega::open(dir.path().to_str().unwrap())
-            .policy(
-                "kv_tenant_prefix",
-                PolicyTargets::Kv,
-                PolicyCondition::AllowWhen(PolicyExpr::Eq(
-                    ExprValue::NodeField("key_prefix".to_string()),
-                    ExprValue::ContextField(".org_id".to_string()),
-                )),
-            )
-            .build()
-            .unwrap();
-        zega.query("SET KEY 'org_1:file' = 'allowed'", HashMap::new())
-            .unwrap();
-        zega.query("SET KEY 'org_2:file' = 'denied'", HashMap::new())
-            .unwrap();
-
-        let allowed = zega
-            .query_with_context(
-                "GET KEY 'org_1:file'",
-                HashMap::new(),
-                ZegaContext::claims(claims(&[("org_id", "org_1")])),
-            )
-            .unwrap();
-        let denied = zega
-            .query_with_context(
-                "GET KEY 'org_2:file'",
-                HashMap::new(),
-                ZegaContext::claims(claims(&[("org_id", "org_1")])),
-            )
-            .unwrap();
-
-        assert_eq!(
-            allowed[0].fields.get("value"),
-            Some(&Value::String("allowed".to_string()))
-        );
-        assert_eq!(denied[0].fields.get("value"), Some(&Value::Null));
     }
 
     fn hs256_token(secret: &[u8], payload: serde_json::Value) -> String {
