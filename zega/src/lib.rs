@@ -32,7 +32,7 @@ pub use context::{ResolvedContext, ZegaContext};
 pub use parser::grammar::ParseError;
 pub use policy::{Expr as PolicyExpr, ExprValue, Policy, PolicyCondition, PolicyTargets};
 pub use v2::{check_zql, parse_import, zql_load_locations, ZqlEntryPoint};
-pub use lang::LoadFormat;
+pub use lang::{Direction as SchemaDirection, DisplayConfig, DisplayView, EdgeField, Field, LoadFormat, Schema, Span, TypeDef, ViewKind};
 
 #[derive(Error, Debug)]
 pub enum ZegaError {

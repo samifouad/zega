@@ -48,6 +48,11 @@ pub fn check_zql(entry_point: ZqlEntryPoint, source: &str) -> std::result::Resul
 }
 
 impl Zega {
+    /// Parse and check the schema, including the explicit display contract.
+    pub fn schema(&self, source: &str) -> Result<Schema, ZegaError> {
+        crate::lang::parse_schema(source).map_err(|error| explain(error, "schema", source))
+    }
+
     /// Execute ZQL. Native loads resolve relative paths against the process cwd.
     /// HTTP(S) loads require the default `http` feature. Wasm hosts must supply
     /// raw UTF-8 sources with [`Self::run_lang_with_sources`].

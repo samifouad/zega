@@ -1,6 +1,7 @@
 //! The v2 schema and query language. Users write this. The engine walks the
 //! graph it already stores; this crate does not parse ZQL.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use thiserror::Error;
 use crate::validation::{closest, render};
@@ -9,7 +10,7 @@ pub use crate::validation::{Diagnostic, Pane, Report};
 
 /// A source range. Columns are 1-based and count UTF-16 code units, which is
 /// what the editor uses. `end_column` is exclusive.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Span {
     pub line: u32,
     pub column: u32,
@@ -65,19 +66,123 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Schema {
     pub types: Vec<TypeDef>,
+    pub display: DisplayConfig,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// The ordered, explicit view contract. Absence of a block means graph only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayConfig {
+    pub views: Vec<DisplayView>,
+    pub default: ViewKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayView {
+    pub kind: ViewKind,
+    /// None means all types; a declared list is always nonempty.
+    pub types: Option<Vec<String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewKind {
+    Graph,
+    Table,
+    Map,
+    Timeline,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self { views: vec![DisplayView { kind: ViewKind::Graph, types: None }], default: ViewKind::Graph }
+    }
+}
+
+struct DisplayEntry {
+    view: DisplayView,
+    span: Span,
+    type_spans: Vec<Span>,
+    default_span: Option<Span>,
+}
+
+struct DisplayBlock {
+    entries: Vec<DisplayEntry>,
+    span: Span,
+}
+
+fn check_display(schema: &Schema, block: DisplayBlock) -> Result<DisplayConfig> {
+    if block.entries.is_empty() {
+        return Err(Error::at(block.span, "display block is empty")
+            .with_help("list at least one view, e.g. `display { graph }`"));
+    }
+    let mut default = None;
+    let mut views: Vec<DisplayView> = Vec::new();
+    for entry in block.entries {
+        let kind = entry.view.kind;
+        if views.iter().any(|view| view.kind == kind) {
+            return Err(Error::at(entry.span, "duplicate display view")
+                .with_help("list each view once"));
+        }
+        if let Some(span) = entry.default_span {
+            if default.is_some() {
+                return Err(Error::at(span, "display has more than one Default")
+                    .with_help("mark only one view `: Default`, or omit it to start on the first view"));
+            }
+            default = Some(kind);
+        }
+        let requirement = match kind {
+            ViewKind::Map => Some(("map", "coordinates", "`lat: Float` and `lon: Float`")),
+            ViewKind::Timeline => Some(("timeline", "a year/date field", "`year: Int` or `date: String`")),
+            ViewKind::Graph | ViewKind::Table => None,
+        };
+        let eligible = |ty: &TypeDef| match kind {
+            ViewKind::Map => ["lat", "lon"].iter().all(|coordinate| ty.fields.iter().any(|field|
+                matches!(field, Field::Prop { name, ty, .. } if name == coordinate && ty == "Float"))),
+            ViewKind::Timeline => ty.timeline_field.is_some(),
+            ViewKind::Graph | ViewKind::Table => true,
+        };
+        if let Some(names) = &entry.view.types {
+            for (name, span) in names.iter().zip(&entry.type_spans) {
+                let ty = schema.types.iter().find(|ty| ty.name == *name).ok_or_else(||
+                    Error::at(*span, format!("display refers to unknown type {name}"))
+                        .with_help(type_help(schema, name)))?;
+                if !eligible(ty) {
+                    let (view, needs, fields) = requirement.unwrap();
+                    return Err(Error::at(*span, format!("display `{view}` needs {needs} on type {name}"))
+                        .with_help(format!("add {fields} to {name}, or remove {name} from this view")));
+                }
+            }
+        } else if !schema.types.iter().any(eligible) {
+            let (view, needs, fields) = requirement.unwrap();
+            return Err(Error::at(entry.span, format!("display `{view}` needs {needs}, and no type has them"))
+                .with_help(format!("add {fields} to a type, e.g. {}", schema.types[0].name)));
+        }
+        views.push(entry.view);
+    }
+    Ok(DisplayConfig { default: default.unwrap_or(views[0].kind), views })
+}
+
+/// Timeline conventions use existing scalar types; dates are ISO date strings.
+fn timeline_field(fields: &[Field]) -> Option<&str> {
+    fields.iter().find_map(|field| match field {
+        Field::Prop { name, ty, .. } if (name == "year" && ty == "Int") || (name == "date" && ty == "String") => Some(name.as_str()),
+        _ => None,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TypeDef {
     pub name: String,
     pub span: Span,
     pub fields: Vec<Field>,
+    pub timeline_field: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Field {
     Prop {
         name: String,
@@ -101,7 +206,7 @@ pub enum Field {
 }
 
 /// A field stored on the relationship, not on either node.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct EdgeField {
     pub name: String,
     pub ty: String,
@@ -109,7 +214,8 @@ pub struct EdgeField {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Direction {
     Out,
     In,
@@ -287,6 +393,7 @@ pub fn parse_schema(source: &str) -> Result<Schema> {
 fn parse_schema_at(source: &str) -> Result<(Schema, usize)> {
     let mut p = Parser::new(source);
     let mut types = Vec::new();
+    let mut display = None;
     p.skip();
     let wrapped = p.eat_word("schema");
     if wrapped {
@@ -305,6 +412,13 @@ fn parse_schema_at(source: &str) -> Result<(Schema, usize)> {
         {
             break;
         }
+        if p.starts_word("display") {
+            if display.is_some() {
+                return Err(p.err("duplicate display block").with_help("a schema has one display block"));
+            }
+            display = Some(p.parse_display()?);
+            continue;
+        }
         p.expect_word("type")?;
         let (name, span) = p.ident()?;
         p.expect("{")?;
@@ -318,14 +432,15 @@ fn parse_schema_at(source: &str) -> Result<(Schema, usize)> {
                 .err_at(span, format!("duplicate type {name}"))
                 .with_help("a schema names each type once"));
         }
-        types.push(TypeDef { name, span, fields });
+        let timeline_field = timeline_field(&fields).map(str::to_owned);
+        types.push(TypeDef { name, span, fields, timeline_field });
     }
     if types.is_empty() {
         return Err(p
             .err("schema has no types")
             .with_help("start with `type Name { }`"));
     }
-    let mut schema = Schema { types };
+    let mut schema = Schema { types, display: DisplayConfig::default() };
     for ty in &schema.types {
         for field in &ty.fields {
             let Field::Edge {
@@ -349,6 +464,9 @@ fn parse_schema_at(source: &str) -> Result<(Schema, usize)> {
         }
     }
     unify_edge_props(&mut schema.types)?;
+    if let Some(block) = display {
+        schema.display = check_display(&schema, block)?;
+    }
     Ok((schema, p.i))
 }
 
@@ -778,7 +896,7 @@ impl<'a> Parser<'a> {
             }
             if bytes.starts_with(b"//") {
                 self.i += 2;
-                while self.i < self.src.len() && !self.src[self.i..].starts_with('\n') {
+                while self.i < self.src.len() && self.src.as_bytes()[self.i] != b'\n' {
                     self.i += 1;
                 }
                 continue;
@@ -839,6 +957,48 @@ impl<'a> Parser<'a> {
         }
         let span = self.span_bytes(start, self.i);
         Ok((self.src[start..self.i].to_string(), span))
+    }
+
+    fn parse_display(&mut self) -> Result<DisplayBlock> {
+        let (_, span) = self.ident()?;
+        self.expect("{")?;
+        let mut entries = Vec::new();
+        while !self.eat("}") {
+            let (name, view_span) = self.ident()?;
+            let kind = match name.as_str() {
+                "graph" => ViewKind::Graph,
+                "table" => ViewKind::Table,
+                "map" => ViewKind::Map,
+                "timeline" => ViewKind::Timeline,
+                _ => return Err(Error::at(view_span, format!("unknown display view {name}"))
+                    .with_help("use `graph`, `table`, `map`, or `timeline`")),
+            };
+            let mut type_spans = Vec::new();
+            let types = if self.eat("{") {
+                if self.eat("}") {
+                    return Err(Error::at(view_span, "display type list is empty")
+                        .with_help("name at least one type, or omit braces to show all types"));
+                }
+                let mut names = Vec::new();
+                loop {
+                    let (name, span) = self.ident()?;
+                    names.push(name);
+                    type_spans.push(span);
+                    if self.eat("}") { break; }
+                    self.expect(",")?;
+                }
+                Some(names)
+            } else { None };
+            let default_span = if self.eat(":") {
+                let (marker, span) = self.ident()?;
+                if marker != "Default" {
+                    return Err(Error::at(span, "expected Default").with_help("write `: Default` after the view and its type list"));
+                }
+                Some(span)
+            } else { None };
+            entries.push(DisplayEntry { view: DisplayView { kind, types }, span: view_span, type_spans, default_span });
+        }
+        Ok(DisplayBlock { entries, span })
     }
 
     fn parse_field(&mut self) -> Result<Field> {
@@ -2425,3 +2585,6 @@ mod tests {
         assert!(report.text.contains("\n\n"));
     }
 }
+
+#[cfg(test)]
+mod display_tests;

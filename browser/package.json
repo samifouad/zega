@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
@@ -13,7 +15,13 @@
     "wasm:rebuild": "node scripts/rebuild-wasm.mjs"
   },
   "devDependencies": {
+    "@mapbox/vector-tile": "3.0.0",
     "@playwright/test": "1.63.0",
+    "@protomaps/basemaps": "5.7.2",
+    "maplibre-gl": "6.11.1",
+    "monaco-editor": "0.52.2",
+    "pbf": "5.1.2",
+    "pmtiles": "4.5.0",
     "wrangler": "4.136.3"
   }
 }

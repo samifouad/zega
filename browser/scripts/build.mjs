@@ -6,7 +6,7 @@ process.chdir(fileURLToPath(new URL('..', import.meta.url)));
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist');
 // Explicit deploy inputs keep repository metadata, tooling and local files out.
-for (const path of ['index.html', 'style.css', 'repl.js', 'editor.js', 'graph.js', 'csv.js', 'fonts', 'pkg', 'vendor']) {
+for (const path of ['index.html', 'style.css', 'repl.js', 'editor.js', 'graph.js', 'csv.js', 'map.js', 'map-style.js', 'table.js', 'theme.js', 'samples', 'fonts', 'pkg', 'vendor']) {
   await cp(path, `dist/${path}`, { recursive: true });
 }
 await cp('../LICENSE', 'dist/LICENSE');

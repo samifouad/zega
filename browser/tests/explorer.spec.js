@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './offline.js';
 
 test('explorer header links the zega wordmark and back button to zega.dev', async ({ page }) => {
   await page.goto('/');
