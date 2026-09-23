@@ -4,6 +4,11 @@ use crate::graph::NodeId;
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+#[cfg(test)]
+static DISTANCE_COMPUTATIONS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -93,6 +98,8 @@ impl Vector {
         serde_json::json!(self.values().collect::<Vec<_>>())
     }
     pub fn score(&self, other: &Self) -> Option<f64> {
+        #[cfg(test)]
+        DISTANCE_COMPUTATIONS.fetch_add(1, AtomicOrdering::Relaxed);
         if self.dimensions() != other.dimensions() {
             return None;
         }
@@ -114,6 +121,118 @@ impl Vector {
             Metric::Dot => dot,
             Metric::L2 => -l2.sqrt(),
         })
+    }
+}
+
+#[cfg(test)]
+mod vector_benchmarks {
+    use super::{Hnsw, Metric, Vector, DISTANCE_COMPUTATIONS};
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    fn cosine(a: &[f32], b: &[f32]) -> f64 {
+        let (mut dot, mut aa, mut bb) = (0.0, 0.0, 0.0);
+        for (&x, &y) in a.iter().zip(b) {
+            dot += f64::from(x) * f64::from(y);
+            aa += f64::from(x).powi(2);
+            bb += f64::from(y).powi(2);
+        }
+        (dot / (aa * bb).sqrt()).clamp(-1.0, 1.0)
+    }
+
+    fn rng(seed: &mut u64) -> f32 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        ((*seed >> 40) as f32 / 16777216.0) * 2.0 - 1.0
+    }
+
+    #[test]
+    #[ignore = "local HNSW quality and distance-count benchmark"]
+    fn vector_hnsw_benchmark_20000_by_128() {
+        const N: usize = 20_000;
+        const D: usize = 128;
+        const Q: usize = 100;
+        let mut seed = 0x123456789abcdefu64;
+        let uniform: Vec<Vec<f32>> = (0..N)
+            .map(|_| (0..D).map(|_| rng(&mut seed)).collect())
+            .collect();
+        let centers: Vec<Vec<f32>> = (0..40)
+            .map(|_| (0..D).map(|_| rng(&mut seed)).collect())
+            .collect();
+        let clustered: Vec<Vec<f32>> = (0..N)
+            .map(|i| {
+                let center = &centers[i % centers.len()];
+                center.iter().map(|&x| x + rng(&mut seed) * 0.08).collect()
+            })
+            .collect();
+        let uniform_queries: Vec<Vec<f32>> = (0..Q)
+            .map(|_| (0..D).map(|_| rng(&mut seed)).collect())
+            .collect();
+        let clustered_queries: Vec<Vec<f32>> = (0..Q)
+            .map(|i| {
+                let center = &centers[i % centers.len()];
+                center.iter().map(|&x| x + rng(&mut seed) * 0.08).collect()
+            })
+            .collect();
+
+        for (name, data, queries) in [
+            ("uniform", &uniform, &uniform_queries),
+            ("40-cluster", &clustered, &clustered_queries),
+        ] {
+            let mut index = Hnsw::new(0x5e6a);
+            for (id, row) in data.iter().enumerate() {
+                index.insert(id as u64, Vector::new(row, Metric::Cosine).unwrap());
+            }
+            let exact_start = Instant::now();
+            let expected: Vec<Vec<u64>> = queries
+                .iter()
+                .map(|query| {
+                    let mut ranked: Vec<_> = data
+                        .iter()
+                        .enumerate()
+                        .map(|(id, row)| (id as u64, cosine(row, query)))
+                        .collect();
+                    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                    ranked.into_iter().take(10).map(|(id, _)| id).collect()
+                })
+                .collect();
+            let exact_elapsed = exact_start.elapsed();
+
+            DISTANCE_COMPUTATIONS.store(0, Ordering::Relaxed);
+            let hnsw_start = Instant::now();
+            let actual: Vec<Vec<u64>> = queries
+                .iter()
+                .map(|query| {
+                    index
+                        .nearest(
+                            &Vector::new(query, Metric::Cosine).unwrap(),
+                            10,
+                            false,
+                            &|_| true,
+                        )
+                        .into_iter()
+                        .map(|(id, _)| id)
+                        .collect()
+                })
+                .collect();
+            let hnsw_elapsed = hnsw_start.elapsed();
+            let computations = DISTANCE_COMPUTATIONS.load(Ordering::Relaxed);
+            let hits: usize = actual
+                .iter()
+                .zip(&expected)
+                .map(|(got, want)| got.iter().filter(|id| want.contains(id)).count())
+                .sum();
+            let recall = hits as f64 / (Q * 10) as f64;
+            eprintln!(
+                "{name}: recall@10={recall:.4}; distance computations/query={:.1} ({:.4} x N); HNSW={:.3} ms/query; exact brute-force={:.3} ms/query",
+                computations as f64 / Q as f64,
+                computations as f64 / (Q * N) as f64,
+                hnsw_elapsed.as_secs_f64() * 1000.0 / Q as f64,
+                exact_elapsed.as_secs_f64() * 1000.0 / Q as f64,
+            );
+            assert!(recall >= 0.90, "{name} recall@10={recall}");
+        }
     }
 }
 

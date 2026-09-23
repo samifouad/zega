@@ -288,3 +288,162 @@ fn vector_projection_and_explanations_use_selected_full_vectors() {
     ];
     assert_eq!(pca(&line), vec![[-2.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
 }
+
+#[test]
+fn optional_vectors_are_skipped_by_near_and_survive_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = "type Ticket { n: Int embedding?: Vector<3> }";
+    let all = "{ Ticket { n } }";
+    let near = "{ Ticket near(embedding, vector[1,0,0], 10) { n } }";
+    {
+        let db = Zega::open(dir.path().to_str().unwrap())
+            .wal_flush_every_write()
+            .build()
+            .unwrap();
+        db.run_lang(schema, "mutation { Ticket(n: 0) { n } }")
+            .unwrap();
+        db.run_lang(
+            schema,
+            "mutation { Ticket(n: 1 && embedding: vector[1,0,0]) { n } }",
+        )
+        .unwrap();
+        db.run_lang(
+            schema,
+            "mutation { Ticket(n: 2 && embedding: vector[0,1,0]) { n } }",
+        )
+        .unwrap();
+        assert_eq!(ids(&db.run_lang(schema, all).unwrap()), vec![0, 1, 2]);
+        assert_eq!(ids(&db.run_lang(schema, near).unwrap()), vec![1, 2]);
+    }
+    let reopened = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
+    assert_eq!(ids(&reopened.run_lang(schema, all).unwrap()), vec![0, 1, 2]);
+    assert_eq!(ids(&reopened.run_lang(schema, near).unwrap()), vec![1, 2]);
+}
+
+#[test]
+fn near_and_order_diagnostic_has_selection_span() {
+    let schema = "type Ticket { n: Int at: Point embedding: Vector<3> }";
+    let query =
+        "{ Ticket near(embedding, vector[1,0,0], 2) order by distance(at, point(0,0)) { n } }";
+    let report = zega::diagnose(schema, query);
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message == "near already orders by similarity")
+        .expect("near/order conflict diagnostic");
+    let ticket_column = query.find("Ticket").unwrap() as u32 + 1;
+    assert_eq!((diagnostic.line, diagnostic.column), (1, ticket_column));
+    assert_eq!(diagnostic.end_column, ticket_column + "Ticket".len() as u32);
+    assert!(report.text.contains("near already orders by similarity"));
+}
+
+#[test]
+fn near_limit_is_the_brute_force_top_limit() {
+    let db = Zega::in_memory().build().unwrap();
+    let rows = [
+        "vector[1,0,0]",
+        "vector[0.9,0.1,0]",
+        "vector[0.8,0.2,0]",
+        "vector[0.7,0.3,0]",
+        "vector[0.6,0.4,0]",
+        "vector[0,1,0]",
+        "vector[-1,0,0]",
+        "vector[0,0,1]",
+    ];
+    for (n, vector) in rows.iter().enumerate() {
+        db.run_lang(
+            SCHEMA,
+            &format!("mutation {{ Ticket(n: {n} && embedding: {vector}) {{ n }} }}"),
+        )
+        .unwrap();
+    }
+    let query = "{ Ticket near(embedding, vector[1,0,0], 8) limit 3 { n score } }";
+    let exact_query = query.replace(", 8)", ", 8, exact)");
+    let actual = db.run_lang(SCHEMA, query).unwrap();
+    let exact = db.run_lang(SCHEMA, &exact_query).unwrap();
+    assert_eq!(actual.as_array().unwrap(), &exact.as_array().unwrap()[..3]);
+    assert_eq!(ids(&actual), vec![0, 1, 2]);
+}
+
+#[test]
+fn vector_view_projects_in_independent_dimension_and_metric_groups() {
+    let schema = "type A { v: Vector<2> } type B { v: Vector<3,dot> } type C { v: Vector<2,dot> } display { vector2d { A, B, C }: Default }";
+    let db = Zega::in_memory().build().unwrap();
+    for (ty, vector) in [
+        ("A", "vector[1,0]"),
+        ("A", "vector[0,1]"),
+        ("B", "vector[1,0,0]"),
+        ("C", "vector[0,1]"),
+    ] {
+        db.run_lang(
+            schema,
+            &format!("mutation {{ {ty}(v: {vector}) {{ id }} }}"),
+        )
+        .unwrap();
+    }
+    let a = db.run_lang(schema, "{ A { id } }").unwrap();
+    let b = db.run_lang(schema, "{ B { id } }").unwrap();
+    let c = db.run_lang(schema, "{ C { id } }").unwrap();
+    let result = json!([
+        a.as_array().unwrap()[0],
+        a.as_array().unwrap()[1],
+        b.as_array().unwrap()[0],
+        c.as_array().unwrap()[0],
+    ]);
+    let view = db
+        .vector_view(schema, &result, ViewKind::Vector2d, None, 10, 0.8)
+        .unwrap();
+    let points = view["points"].as_array().unwrap();
+    assert_eq!(points.len(), 4);
+    let cosine = points
+        .iter()
+        .filter(|point| point["dimensions"] == 2 && point["metric"] == "cosine")
+        .collect::<Vec<_>>();
+    let dot3 = points
+        .iter()
+        .find(|point| point["dimensions"] == 3 && point["metric"] == "dot")
+        .unwrap();
+    let dot2 = points
+        .iter()
+        .find(|point| point["dimensions"] == 2 && point["metric"] == "dot")
+        .unwrap();
+    let distinct: std::collections::HashSet<_> = points
+        .iter()
+        .map(|point| point["group"].as_u64().unwrap())
+        .collect();
+    assert_eq!(distinct.len(), 3);
+    assert_eq!(cosine.len(), 2);
+    assert_eq!(cosine[0]["group"], cosine[1]["group"]);
+    assert_ne!(cosine[0]["group"], dot3["group"]);
+    assert_ne!(cosine[0]["group"], dot2["group"]);
+    assert_ne!(dot2["group"], dot3["group"]);
+    assert!(points
+        .iter()
+        .all(|point| point["position"].as_array().unwrap().len() == 3));
+}
+
+#[test]
+fn vector_dimensions_one_and_4096_round_trip() {
+    let db = Zega::in_memory().build().unwrap();
+    let schema = "type Edge { n: Int v: Vector<1> } type Wide { n: Int v: Vector<4096> }";
+    let wide = format!("vector[{}]", vec!["0.25"; 4096].join(","));
+    db.run_lang(schema, "mutation { Edge(n: 1 && v: vector[0.5]) { id } }")
+        .unwrap();
+    db.run_lang(
+        schema,
+        &format!("mutation {{ Wide(n: 4096 && v: {wide}) {{ id }} }}"),
+    )
+    .unwrap();
+    let bytes = db.snapshot_bytes().unwrap();
+    let restored = Zega::in_memory().build().unwrap();
+    restored.restore_bytes(&bytes).unwrap();
+    let edge = restored.run_lang(schema, "{ Edge { v } }").unwrap();
+    let wide_result = restored.run_lang(schema, "{ Wide { v } }").unwrap();
+    assert_eq!(edge[0]["v"], json!([0.5]));
+    assert_eq!(wide_result[0]["v"].as_array().unwrap().len(), 4096);
+    assert!(wide_result[0]["v"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|value| value == 0.25));
+}
