@@ -14,5 +14,5 @@
   "dev": { "port": 8080 },
   // Ava adds explorer.zega.dev as a Custom Domain when ready to deploy.
   // The zega.dev zone ID is not a Cloudflare account ID.
-  "routes": []
+  "routes": [{ "pattern": "explorer.zega.dev", "custom_domain": true }]
 }
