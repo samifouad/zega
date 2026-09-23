@@ -90,6 +90,9 @@ impl HttpFixture {
             while !stopped.load(Ordering::Relaxed) {
                 if let Ok((mut stream, _)) = listener.accept() {
                     stream
+                        .set_nonblocking(false)
+                        .expect("accepted HTTP fixture sockets must block while reading requests");
+                    stream
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
                     // TCP reads may end anywhere in the headers. Closing with
