@@ -2,6 +2,7 @@
 //! graph it already stores; this crate does not parse ZQL.
 
 use crate::location::{Bounds, Point};
+use crate::vector::{Vector, VectorSpec, Metric};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use thiserror::Error;
@@ -94,6 +95,8 @@ pub enum ViewKind {
     Table,
     Map,
     Timeline,
+    Vector2d,
+    Vector3d,
 }
 
 impl Default for DisplayConfig {
@@ -137,6 +140,8 @@ fn check_display(schema: &Schema, block: DisplayBlock) -> Result<DisplayConfig> 
         let requirement = match kind {
             ViewKind::Map => Some(("map", "coordinates", "`lat: Float` and `lon: Float`")),
             ViewKind::Timeline => Some(("timeline", "a year/date field", "`year: Int` or `date: String`")),
+            ViewKind::Vector2d => Some(("vector2d", "a Vector field", "`embedding: Vector<384>`")),
+            ViewKind::Vector3d => Some(("vector3d", "a Vector field", "`embedding: Vector<384>`")),
             ViewKind::Graph | ViewKind::Table => None,
         };
         let eligible = |ty: &TypeDef| match kind {
@@ -148,6 +153,7 @@ fn check_display(schema: &Schema, block: DisplayBlock) -> Result<DisplayConfig> 
                 })
             }),
             ViewKind::Timeline => ty.timeline_field.is_some(),
+            ViewKind::Vector2d | ViewKind::Vector3d => ty.fields.iter().any(|f| matches!(f, Field::Prop { ty, .. } if VectorSpec::parse(ty).is_some())),
             ViewKind::Graph | ViewKind::Table => true,
         };
         if let Some(names) = &entry.view.types {
@@ -160,6 +166,12 @@ fn check_display(schema: &Schema, block: DisplayBlock) -> Result<DisplayConfig> 
                     return Err(Error::at(*span, format!("display `{view}` needs {needs} on type {name}"))
                         .with_help(format!("add {fields} to {name}, or remove {name} from this view")));
                 }
+            }
+        } else if matches!(kind, ViewKind::Vector2d | ViewKind::Vector3d) {
+            if let Some(ty) = schema.types.iter().find(|ty| !eligible(ty)) {
+                let (view, needs, fields) = requirement.unwrap();
+                return Err(Error::at(ty.span, format!("display `{view}` needs {needs} on type {}", ty.name))
+                    .with_help(format!("add {fields} to {}, or list only vector types in this view", ty.name)));
             }
         } else if !schema.types.iter().any(eligible) {
             let (view, needs, fields) = requirement.unwrap();
@@ -195,7 +207,7 @@ pub enum Field {
         ty: String,
         optional: bool,
         /// Explicit source column names, latitude then longitude, for loads.
-        from: Option<[String; 2]>,
+        from: Option<Vec<String>>,
     },
     Edge {
         /// Name used in a query.
@@ -246,10 +258,16 @@ pub struct Selection {
     /// The condition in parentheses. `&&` is and, `||` is or, `!=` is not equal.
     pub condition: Option<BoolExpr>,
     pub sets: Vec<(String, Json, Span)>,
+    pub near: Option<Near>,
     pub order: Option<Distance>,
     pub limit: Option<usize>,
     pub items: Vec<Item>,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Similarity { pub field: String, pub query: Vector, pub span: Span }
+#[derive(Clone, Debug, PartialEq)]
+pub struct Near { pub similarity: Similarity, pub k: usize, pub exact: bool }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Distance {
@@ -260,6 +278,8 @@ pub struct Distance {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
+    Score(String, Span),
+    Similarity(String, Similarity),
     Distance(String, Distance),
     Prop(String, Span),
     Hops,
@@ -278,6 +298,7 @@ pub enum Item {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pred {
+    Similarity(Similarity, Cmp, f64),
     Distance(Distance, Cmp, f64),
     Box(String, Bounds, Span),
     Eq(String, Json, Span),
@@ -334,6 +355,7 @@ impl BoolExpr {
 impl Pred {
     pub fn field(&self) -> &str {
         match self {
+            Pred::Similarity(sim, ..) => &sim.field,
             Pred::Distance(distance, ..) => &distance.field,
             Pred::Box(field, ..) => field,
             Pred::Eq(field, _, _)
@@ -347,6 +369,7 @@ impl Pred {
 
     pub fn span(&self) -> Span {
         match self {
+            Pred::Similarity(sim, ..) => sim.span,
             Pred::Distance(distance, ..) => distance.span,
             Pred::Box(_, _, span) => *span,
             Pred::Eq(_, _, span)
@@ -569,7 +592,7 @@ fn json_matches(ty: &str, value: &Json) -> bool {
         "Float" => value.is_number(),
         "Bool" => value.is_boolean(),
         "Point" => Point::from_json(value).is_ok(),
-        _ => true,
+        _ => VectorSpec::parse(ty).is_none_or(|spec| spec.value(value).is_ok()),
     }
 }
 
@@ -995,8 +1018,10 @@ impl<'a> Parser<'a> {
                 "table" => ViewKind::Table,
                 "map" => ViewKind::Map,
                 "timeline" => ViewKind::Timeline,
+                "vector2d" => ViewKind::Vector2d,
+                "vector3d" => ViewKind::Vector3d,
                 _ => return Err(Error::at(view_span, format!("unknown display view {name}"))
-                    .with_help("use `graph`, `table`, `map`, or `timeline`")),
+                    .with_help("use `graph`, `table`, `map`, `timeline`, `vector2d`, or `vector3d`")),
             };
             let mut type_spans = Vec::new();
             let types = if self.eat("{") {
@@ -1044,17 +1069,31 @@ impl<'a> Parser<'a> {
                 }
                 return self.finish_edge(name, rel, direction, targets, target_spans, many);
             }
-            let (ty, _) = self.ident()?;
+            let (mut ty, ty_span) = self.ident()?;
+            if ty == "Vector" {
+                self.expect("<")?;
+                self.skip(); let start = self.i;
+                let n = self.integer()?;
+                if !(1..=4096).contains(&n) { return Err(self.err_at(self.span_bytes(start,self.i), "Vector dimension must be in 1..=4096")); }
+                let metric = if self.eat(",") {
+                    let (metric, span) = self.ident()?;
+                    if !matches!(metric.as_str(), "cosine" | "dot" | "l2") { return Err(self.err_at(span, "Vector metric must be cosine, dot, or l2")); }
+                    metric
+                } else { "cosine".into() };
+                self.expect(">")?;
+                ty = format!("Vector<{n},{metric}>");
+            }
             let from = if self.eat_word("from") {
-                if ty != "Point" {
-                    return Err(self.err_at(name_span, "from (...) is only valid on a Point field"));
+                if ty != "Point" && VectorSpec::parse(&ty).is_none() {
+                    return Err(self.err_at(name_span, "from (...) is only valid on a Point or Vector field"));
                 }
                 self.expect("(")?;
-                let (lat, _) = self.ident()?;
-                self.expect(",")?;
-                let (lon, _) = self.ident()?;
+                let mut columns = vec![self.ident()?.0];
+                while self.eat(",") { columns.push(self.ident()?.0); }
                 self.expect(")")?;
-                Some([lat, lon])
+                let count = VectorSpec::parse(&ty).map_or(2, |s| s.dimensions);
+                if columns.len() != count { return Err(self.err_at(ty_span, format!("{ty} from mapping needs {count} columns"))); }
+                Some(columns)
             } else {
                 None
             };
@@ -1210,6 +1249,16 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let near = if self.eat_word("near") {
+            self.expect("(")?;
+            let (field, span) = self.ident()?; self.expect(",")?;
+            let query = self.vector()?; self.expect(",")?;
+            let k = self.integer()?;
+            let k = usize::try_from(k).map_err(|_| self.err_at(span, "near k must be non-negative"))?;
+            let exact = if self.eat(",") { self.expect_word("exact")?; true } else { false };
+            self.expect(")")?;
+            Some(Near { similarity: Similarity { field, query, span }, k, exact })
+        } else { None };
         let order = if self.eat_word("order") {
             self.expect_word("by")?;
             Some(self.distance()?)
@@ -1244,7 +1293,11 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         if self.eat("{") {
             while !self.eat("}") {
-                items.push(self.parse_item()?);
+                let item = self.parse_item()?;
+                items.push(match item {
+                    Item::Score(name, span) if near.is_none() && name == "score" => Item::Prop(name, span),
+                    other => other,
+                });
                 self.skip();
             }
         }
@@ -1255,6 +1308,7 @@ impl<'a> Parser<'a> {
             also_spans,
             condition,
             sets,
+            near,
             order,
             limit,
             items,
@@ -1281,6 +1335,9 @@ impl<'a> Parser<'a> {
                 Item::EdgeProp(name, span)
             });
         }
+        if self.starts_word("similarity") && self.src[self.i..].strip_prefix("similarity").is_some_and(|r| r.trim_start().starts_with('(')) {
+            return Ok(Item::Similarity("similarity".into(), self.similarity()?));
+        }
         if self.starts_word("distance")
             && self.src[self.i..]
                 .trim_start()
@@ -1291,8 +1348,11 @@ impl<'a> Parser<'a> {
         }
         let (field, mut span) = self.ident()?;
         if self.eat(":") {
+            if self.eat_word("score") { return Ok(Item::Score(field, span)); }
+            if self.starts_word("similarity") { return Ok(Item::Similarity(field, self.similarity()?)); }
             return Ok(Item::Distance(field, self.distance()?));
         }
+        if field == "score" { return Ok(Item::Score(field, span)); }
         let range = if self.eat("*") {
             let min = self.integer()? as usize;
             self.expect("..")?;
@@ -1390,6 +1450,12 @@ impl<'a> Parser<'a> {
 
     fn parse_pred(&mut self) -> Result<Pred> {
         self.skip();
+        if self.starts_word("similarity") {
+            let sim = self.similarity()?;
+            let op = if self.eat(">=") { Cmp::Gte } else if self.eat("<=") { Cmp::Lte } else if self.eat(">") { Cmp::Gt } else if self.eat("<") { Cmp::Lt } else { return Err(self.err("similarity needs <, <=, >, or >= and a score")); };
+            let value = self.parse_value()?.as_f64().filter(|v| v.is_finite()).ok_or_else(|| self.err("similarity threshold must be finite"))?;
+            return Ok(Pred::Similarity(sim, op, value));
+        }
         if self.starts_word("distance")
             && self.src[self.i..]
                 .trim_start()
@@ -1545,8 +1611,29 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn vector(&mut self) -> Result<Vector> {
+        self.expect_word("vector")?; self.expect("[")?;
+        let mut values = Vec::new();
+        if !self.eat("]") { loop {
+            self.skip(); let start = self.i;
+            let value = self.parse_value()?;
+            let number = value.as_f64().filter(|v| v.is_finite() && (*v as f32).is_finite())
+                .ok_or_else(|| self.err_at(self.span_bytes(start,self.i), "Vector components must be finite float32 numbers"))?;
+            values.push(number as f32);
+            if self.eat("]") { break; } self.expect(",")?;
+        } }
+        Vector::new(&values, Metric::Cosine).map_err(|m| self.err(m))
+    }
+    fn similarity(&mut self) -> Result<Similarity> {
+        self.expect_word("similarity")?; self.expect("(")?;
+        let (field, span) = self.ident()?; self.expect(",")?;
+        let query = self.vector()?; self.expect(")")?;
+        Ok(Similarity { field, query, span })
+    }
+
     fn parse_value(&mut self) -> Result<Json> {
         self.skip();
+        if self.starts_word("vector") { return Ok(self.vector()?.to_json()); }
         if self.starts_word("point") {
             return Ok(self.point()?.to_json());
         }
@@ -1652,6 +1739,12 @@ impl<'a> Parser<'a> {
             while self.peek_digit() {
                 self.i += 1;
             }
+        }
+        if self.src[self.i..].starts_with(['e', 'E']) {
+            float = true; self.i += 1;
+            if self.src[self.i..].starts_with(['+', '-']) { self.i += 1; }
+            if !self.peek_digit() { return Err(self.err("exponent needs digits")); }
+            while self.peek_digit() { self.i += 1; }
         }
         let text = &self.src[start..self.i];
         if float {
@@ -1782,6 +1875,7 @@ fn bind_selection(
         also_spans: sel.also_spans.clone(),
         condition,
         sets,
+        near: sel.near.clone(),
         order: sel.order.clone(),
         limit: sel.limit,
         items,
@@ -1970,7 +2064,7 @@ fn bind_points(
         else {
             continue;
         };
-        if ty != "Point" || lookup {
+        if (ty != "Point" && VectorSpec::parse(ty).is_none()) || lookup {
             continue;
         }
         if sel.sets.iter().any(|(key, ..)| key == name)
@@ -1983,7 +2077,9 @@ fn bind_points(
         }
         let value = if let Some(value) = row.get(name) {
             value.clone()
-        } else if let Some([lat, lon]) = from {
+        } else if let Some(columns) = from {
+            let lat = &columns[0];
+            let lon = columns.get(1).unwrap_or(lat);
             let coordinate = |column: &str| {
                 row.get(column)
                     .filter(|value| value.is_number())
@@ -1998,14 +2094,17 @@ fn bind_points(
                         )
                     })
             };
-            serde_json::json!({"lat": coordinate(lat)?, "lon": coordinate(lon)?})
+            if VectorSpec::parse(ty).is_some() {
+                Json::Array(columns.iter().map(|c| coordinate(c).cloned()).collect::<Result<Vec<_>>>()?)
+            } else { serde_json::json!({"lat": coordinate(lat)?, "lon": coordinate(lon)?}) }
         } else if *optional {
             continue;
         } else {
-            return Err(Error::at(sel.type_span, format!("{name} requires a Point object or an explicit from (latitude, longitude) mapping")));
+            return Err(Error::at(sel.type_span, format!("{name} requires a {ty} value or an explicit from (...) mapping")));
         };
         if !(value.is_null() && *optional) {
-            Point::from_json(&value).map_err(|message| Error::at(sel.type_span, message))?;
+            if let Some(spec) = VectorSpec::parse(ty) { spec.value(&value).map_err(|m| Error::at(sel.type_span, m))?; }
+            else { Point::from_json(&value).map_err(|message| Error::at(sel.type_span, message))?; }
         }
         let pred = BoolExpr::Test(Pred::Eq(name.clone(), value, sel.type_span));
         sel.condition = Some(match sel.condition.take() {
@@ -2221,6 +2320,7 @@ impl Check<'_> {
                     self.ensure_prop(sel, pred.field(), pred.span());
                 }
                 match pred {
+                    Pred::Similarity(sim, ..) => self.ensure_vector(sel, sim),
                     Pred::Distance(distance, ..) => {
                         self.ensure_point(sel, &distance.field, distance.span)
                     }
@@ -2234,10 +2334,14 @@ impl Check<'_> {
                 }
             }
         }
+        if let Some(near) = &sel.near {
+            self.ensure_vector(sel, &near.similarity);
+            if sel.order.is_some() { self.push(sel.type_span, "near already orders by similarity", None); }
+        }
         if let Some(order) = &sel.order {
             self.ensure_point(sel, &order.field, order.span);
         }
-        if self.mutation && (sel.order.is_some() || sel.limit.is_some()) {
+        if self.mutation && (sel.near.is_some() || sel.order.is_some() || sel.limit.is_some()) {
             self.push(
                 sel.type_span,
                 "order and limit are only valid in queries",
@@ -2258,6 +2362,8 @@ impl Check<'_> {
         }
         for item in &sel.items {
             match item {
+                Item::Score(_, span) => { if sel.near.is_none() { self.push(*span, "score requires a near(...) selection", None); } }
+                Item::Similarity(_, sim) => self.ensure_vector(sel, sim),
                 Item::Prop(name, span) => self.ensure_prop(sel, name, *span),
                 Item::Distance(_, distance) => {
                     self.ensure_point(sel, &distance.field, distance.span)
@@ -2442,6 +2548,17 @@ impl Check<'_> {
         }
     }
 
+    fn ensure_vector(&mut self, sel: &Selection, sim: &Similarity) {
+        for name in selection_types(sel) {
+            let spec = self.schema.prop(name, &sim.field).ok().and_then(|f| match f { Field::Prop {ty,..} => VectorSpec::parse(ty), _ => None });
+            match spec {
+                Some(spec) if spec.dimensions == sim.query.dimensions() => {},
+                Some(spec) => self.push(sim.span, format!("Vector<{}> query needs exactly {} numbers, got {}", spec.dimensions, spec.dimensions, sim.query.dimensions()), None),
+                None => self.push(sim.span, format!("{name}.{} must be Vector for a similarity query", sim.field), None),
+            }
+        }
+    }
+
     fn ensure_point(&mut self, sel: &Selection, name: &str, span: Span) {
         if !selection_types(sel).iter().any(
             |ty| matches!(self.schema.prop(ty, name), Ok(Field::Prop { ty, .. }) if ty == "Point"),
@@ -2463,7 +2580,10 @@ impl Check<'_> {
         }
         for type_name in selection_types(sel) {
             if let Ok(Field::Prop { ty, optional, .. }) = self.schema.prop(type_name, name) {
-                if ty == "Point" && !(value.is_null() && *optional) {
+                if let Some(spec) = VectorSpec::parse(ty) {
+                    if !(value.is_null() && *optional) { if let Err(m) = spec.value(value) { self.push(span, m, Some("write `vector[0.1, 0.2, ...]` with the declared dimension".into())); } }
+                } else if value.is_array() { self.push(span, format!("{type_name}.{name} is {ty}, not Vector"), None);
+                } else if ty == "Point" && !(value.is_null() && *optional) {
                     if let Err(message) = Point::from_json(value) {
                         self.push(
                             span,

@@ -125,7 +125,7 @@ impl Bounds {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SpatialIndex {
     fields: HashMap<String, BTreeMap<u32, HashSet<NodeId>>>,
 }

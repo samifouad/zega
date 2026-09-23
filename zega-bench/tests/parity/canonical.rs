@@ -24,6 +24,7 @@ pub fn zega_value(value: &Value) -> Json {
             typed("map", Json::Object(mapped))
         }
         Value::Point(point) => typed("point", point.to_json()),
+        Value::Vector(v) => typed("vector", v.to_json()),
         Value::Null => typed("null", Json::Null),
     }
 }

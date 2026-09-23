@@ -1,4 +1,6 @@
 pub mod location;
+pub mod vector;
+mod vector_view;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -2545,6 +2547,7 @@ fn order_type_rank(value: &Value) -> u8 {
     match value {
         Value::Map(_) => 0,
         Value::Point(_) => 8,
+        Value::Vector(_) => 9,
         Value::List(_) => 1,
         Value::String(_) => 2,
         Value::Bool(_) => 3,

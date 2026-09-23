@@ -13,6 +13,7 @@ pub enum Value {
     Null,
     // Append variants: the existing discriminants are part of the WAL format.
     Point(crate::location::Point),
+    Vector(crate::vector::Vector),
 }
 
 impl Value {
@@ -60,6 +61,7 @@ impl std::hash::Hash for Value {
             Value::List(l) => l.len().hash(state),
             Value::Map(m) => m.len().hash(state),
             Value::Point(p) => p.hash(state),
+            Value::Vector(v) => v.hash(state),
             Value::Null => {}
         }
     }
@@ -78,6 +80,7 @@ impl fmt::Display for Value {
             }
             Value::Map(m) => write!(f, "{{...{} keys}}", m.len()),
             Value::Point(p) => write!(f, "point({}, {})", p.lat(), p.lon()),
+            Value::Vector(v) => write!(f, "vector{}", v.to_json()),
             Value::Null => write!(f, "null"),
         }
     }

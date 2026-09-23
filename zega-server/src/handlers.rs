@@ -133,6 +133,7 @@ fn value_to_raw(value: Value) -> JsonValue {
         Value::String(value) => JsonValue::String(value),
         Value::List(values) => JsonValue::Array(values.into_iter().map(value_to_raw).collect()),
         Value::Point(point) => point.to_json(),
+        Value::Vector(v) => v.to_json(),
         Value::Map(values) => JsonValue::Object(
             values
                 .into_iter()
