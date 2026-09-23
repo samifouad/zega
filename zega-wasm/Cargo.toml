@@ -3,7 +3,7 @@ name = "zega-wasm"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/samifouad/zega"
+repository = "https://github.com/zegadb/zega"
 
 # Standalone workspace: excluded from the root workspace so the wasm build
 # never tries to compile the server crates for wasm32.

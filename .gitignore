@@ -7,3 +7,8 @@ Cargo.lock
 /.target
 /:memory:
 /.tmp
+/node_modules/
+/dist/
+/artifacts/
+/npm/consumers/*/node_modules/
+/npm/consumers/*/dist/
