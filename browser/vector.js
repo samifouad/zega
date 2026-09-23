@@ -45,10 +45,15 @@ export function renderVector(container, graph, kind, theme, analyze, onNode) {
   const caption = (id) => label(byId.get(id) || {id});
   function choose(id) {
     selected=id; picker.value=String(id); hint.textContent=caption(id);
-    update(); onNode(byId.get(id));
+    void update(); onNode(byId.get(id));
   }
-  function update() {
-    data=analyze(selected,Math.max(1,Math.min(100,Number(kInput.value)||10)),Number(threshold.value)||0);
+  let updateGeneration=0, disposed=false;
+  async function update() {
+    const generation=++updateGeneration;
+    try {
+    const next=await analyze(selected,Math.max(1,Math.min(100,Number(kInput.value)||10)),Number(threshold.value)||0);
+    if(disposed||generation!==updateGeneration)return;
+    data=next;
     // Expose engine metadata with the canvas for inspection and accessibility tooling.
     root.vectorData=data;
     count.textContent=`${data.points.length} points`;
@@ -66,7 +71,10 @@ export function renderVector(container, graph, kind, theme, analyze, onNode) {
       li.textContent=`${caption(flag.from)} ↔ ${caption(flag.to)} · ${flag.kind} (${flag.score.toFixed(4)})`; flags.append(li);
     }
     if (linksToggle.checked && data.flags.length>100) { const li=document.createElement('li');li.textContent=`Showing 100 of ${data.flags.length} pairs; all pairs are highlighted on the canvas.`;flags.append(li); }
+    if(!picker.dataset.populated){for(const p of data.points)picker.add(new Option(caption(p.id),String(p.id)));picker.dataset.populated='true';}
     draw();
+    if(!data.points.length)hint.textContent='Select id in your query to plot its result nodes.';
+    } catch(error) { if(!disposed&&generation===updateGeneration)hint.textContent=error.message; }
   }
   function draw() {
     if (!data) return;
@@ -117,11 +125,9 @@ export function renderVector(container, graph, kind, theme, analyze, onNode) {
   canvas.onwheel=e=>{e.preventDefault();scale=Math.max(0.15,Math.min(15,scale*Math.exp(-e.deltaY/600)));draw();};
   canvas.onkeydown=e=>{if(['+','=','-'].includes(e.key)){scale*=e.key==='-'?0.9:1.1;draw();}};
   reset.onclick=()=>{scale=1;pan=[0,0];rotation=[0.45,-0.2];draw();};
-  colour.onchange=draw;search.oninput=draw;linksToggle.onchange=update;kInput.onchange=update;threshold.onchange=update;
+  colour.onchange=draw;search.oninput=draw;linksToggle.onchange=()=>void update();kInput.onchange=()=>void update();threshold.onchange=()=>void update();
   picker.onchange=()=>{if(picker.value)choose(Number(picker.value));};
-  update();
-  for(const p of data.points)picker.add(new Option(caption(p.id),String(p.id)));
-  if(!data.points.length)hint.textContent='Select id in your query to plot its result nodes.';
+  void update();
   const resize=new ResizeObserver(()=>{const rect=canvas.getBoundingClientRect();width=rect.width;height=rect.height;const ratio=devicePixelRatio||1;canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);ctx.setTransform(ratio,0,0,ratio,0,0);draw();});resize.observe(canvas);
-  return ()=>{resize.disconnect();root.remove();};
+  return ()=>{disposed=true;updateGeneration++;resize.disconnect();root.remove();};
 }

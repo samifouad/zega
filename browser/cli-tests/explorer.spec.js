@@ -120,3 +120,27 @@ test('embedded Calgary Point map uses native storage and survives reload and res
     expect(errors).toEqual([]);
   } finally { await server.stop(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test('embedded explorer serves the tickets sample in both vector views', async ({ page }) => {
+  await mkdir('.tmp', { recursive: true, mode: 0o700 });
+  const directory = await mkdtemp(resolve('.tmp/cli-vectors-'));
+  const server = await start(directory);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  try {
+    await page.goto(server.url);
+    await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45000 });
+    await expect(page.locator('.conn')).toContainText('native');
+    await page.locator('#btn-tickets').click();
+    await expect(page.locator('#raw-count')).toContainText('200 nodes', { timeout: 45000 });
+    await expect(page.locator('.vector-count')).toHaveText('200 points');
+    for (const kind of ['vector2d', 'vector3d']) {
+      const tab = page.locator(`[data-view=${kind}]`);
+      await tab.click();
+      await expect(tab).toHaveAttribute('aria-selected', 'true');
+      await expect(page.locator('.vector-stage canvas')).toHaveAttribute('data-points', '200');
+      await expect(page.locator('.vector-count')).toHaveText('200 points');
+    }
+    expect(errors).toEqual([]);
+  } finally { await server.stop(); await rm(directory, { recursive: true, force: true }); }
+});

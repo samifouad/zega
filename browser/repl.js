@@ -706,7 +706,10 @@ function drawGraph() {
     disposeView = renderMap(graphEl, mapResults(lastValue, nodes, types), theme, inspectNode);
   } else if (activeView === 'vector2d' || activeView === 'vector3d') {
     disposeView?.();
-    const analyze = (selected, k, threshold) => JSON.parse(db.vector_view(schemaText(), JSON.stringify(lastValue), activeView, selected ?? undefined, k, threshold));
+    const analyze = async (selected, k, threshold) => {
+      const value = db.vector_view(schemaText(), JSON.stringify(lastValue), activeView, selected ?? undefined, k, threshold);
+      return typeof value === 'string' ? JSON.parse(value) : await value;
+    };
     disposeView = renderVector(graphEl, { nodes, rels: graph.rels }, activeView, theme, analyze, inspectNode);
   } else if (activeView === 'timeline') {
     const list = document.createElement('ol');

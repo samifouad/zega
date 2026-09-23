@@ -83,6 +83,47 @@ pub async fn zql(
     .await
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VectorViewRequest {
+    schema: String,
+    result: Value,
+    kind: String,
+    selected: Option<u64>,
+    k: usize,
+    threshold: f64,
+}
+
+pub async fn vector_view(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Result<Json<VectorViewRequest>, JsonRejection>,
+) -> Response {
+    if !authorized(&headers, &state) {
+        return error(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    let Json(request) = match request {
+        Ok(request) => request,
+        Err(rejection) => return error(StatusCode::BAD_REQUEST, rejection.body_text()),
+    };
+    let kind = match request.kind.as_str() {
+        "vector2d" => zega::ViewKind::Vector2d,
+        "vector3d" => zega::ViewKind::Vector3d,
+        _ => return error(StatusCode::BAD_REQUEST, "expected vector2d or vector3d"),
+    };
+    execute(state, move |db| {
+        db.vector_view(
+            &request.schema,
+            &request.result,
+            kind,
+            request.selected,
+            request.k,
+            request.threshold,
+        )
+    })
+    .await
+}
+
 pub async fn graph(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &state) {
         return error(StatusCode::UNAUTHORIZED, "unauthorized");
