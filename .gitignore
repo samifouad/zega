@@ -22,3 +22,5 @@ browser/playwright-report/
 __pycache__/
 
 browser/.wrangler/
+
+browser/.tmp/
