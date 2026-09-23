@@ -1618,28 +1618,21 @@ pub fn json_rows(
 pub fn csv_rows(
     text: &str,
 ) -> std::result::Result<Vec<std::collections::HashMap<String, Json>>, String> {
-    let table = parse_csv_table(text)?;
-    let Some((headers, body)) = table.split_first() else {
+    let mut reader = csv::ReaderBuilder::new().trim(csv::Trim::All).from_reader(text.as_bytes());
+    let headers = reader.headers().map_err(|error| format!("invalid csv: {error}"))?.clone();
+    if headers.is_empty() {
         return Err("csv has no header".into());
-    };
-    let headers: Vec<String> = headers
-        .iter()
-        .map(|header| header.trim().to_string())
-        .collect();
-    let mut rows = Vec::new();
-    for record in body {
-        let mut row = std::collections::HashMap::new();
-        for (index, header) in headers.iter().enumerate() {
-            let cell = record.get(index).map(|value| value.trim()).unwrap_or("");
-            if cell.is_empty() {
-                row.insert(header.clone(), Json::Null);
-            } else {
-                row.insert(header.clone(), csv_cell(cell));
-            }
-        }
-        rows.push(row);
     }
-    Ok(rows)
+    let mut seen = std::collections::HashSet::new();
+    if headers.iter().any(|header| header.is_empty() || !seen.insert(header)) {
+        return Err("csv headers must be nonempty and unique".into());
+    }
+    reader.records().map(|record| {
+        let record = record.map_err(|error| format!("invalid csv: {error}"))?;
+        Ok(headers.iter().zip(record.iter()).map(|(header, cell)| {
+            (header.to_string(), if cell.is_empty() { Json::Null } else { csv_cell(cell) })
+        }).collect())
+    }).collect()
 }
 
 fn csv_cell(cell: &str) -> Json {
@@ -1655,54 +1648,6 @@ fn csv_cell(cell: &str) -> Json {
         }
     }
     Json::String(cell.to_string())
-}
-
-fn parse_csv_table(text: &str) -> std::result::Result<Vec<Vec<String>>, String> {
-    let mut rows = Vec::new();
-    let mut row = Vec::new();
-    let mut cell = String::new();
-    let mut quoted = false;
-    let chars: Vec<char> = text.chars().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        let ch = chars[index];
-        if quoted {
-            if ch == '"' {
-                if chars.get(index + 1) == Some(&'"') {
-                    cell.push('"');
-                    index += 2;
-                    continue;
-                }
-                quoted = false;
-            } else {
-                cell.push(ch);
-            }
-        } else if ch == '"' {
-            quoted = true;
-        } else if ch == ',' {
-            row.push(std::mem::take(&mut cell));
-        } else if ch == '\n' {
-            row.push(std::mem::take(&mut cell));
-            if row.iter().any(|value| !value.trim().is_empty()) {
-                rows.push(std::mem::take(&mut row));
-            } else {
-                row.clear();
-            }
-        } else if ch != '\r' {
-            cell.push(ch);
-        }
-        index += 1;
-    }
-    if !cell.is_empty() || !row.is_empty() {
-        row.push(cell);
-        if row.iter().any(|value| !value.trim().is_empty()) {
-            rows.push(row);
-        }
-    }
-    if rows.is_empty() {
-        return Err("csv has no header".into());
-    }
-    Ok(rows)
 }
 
 fn note_statement(schema: &Schema, statement: &Statement, pane: Pane, out: &mut Vec<Diagnostic>) {
