@@ -1,0 +1,26 @@
+[package]
+name = "zega-cli"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "zega"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.7"
+clap = { version = "4.6", features = ["derive"] }
+include_dir = "0.7"
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "signal"] }
+zega = { workspace = true }
+zega-server = { path = "../zega-server" }
+
+[build-dependencies]
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = "3"
+ureq = { version = "~3.4.2", default-features = false, features = ["json"] }

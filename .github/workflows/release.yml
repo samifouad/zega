@@ -132,14 +132,28 @@ jobs:
         run: |
           cargo check --locked --workspace --all-targets
           cargo clippy --locked --workspace --all-targets --all-features
-      - name: Build server
-        run: cargo build --locked --release -p zega-server
-      - name: Smoke test the built server
-        run: python scripts/smoke-server.py ".target/release/zega-server${EXTENSION}"
+          cargo test --locked --workspace
+      - uses: actions/setup-node@v4
+        if: needs.resolve.outputs.tag == '' && matrix.platform == 'linux-x64'
+        with:
+          node-version: '24'
+      - name: Test the embedded explorer against its native database
+        if: needs.resolve.outputs.tag == '' && matrix.platform == 'linux-x64'
+        run: |
+          cargo build --locked -p zega-cli
+          cd browser
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run test:cli
+      - name: Build CLI with embedded explorer
+        run: cargo build --locked --release -p zega-cli
+      - name: Smoke test the built CLI
+        run: python scripts/smoke-cli.py ".target/release/zega${EXTENSION}"
       - name: Prepare native artifact
         run: |
           mkdir -p artifacts/native
-          cp ".target/release/zega-server${EXTENSION}" "artifacts/native/zega-server-${PLATFORM}${EXTENSION}"
+          artifact_name=$(python scripts/channels.py artifact-name "$PLATFORM")
+          cp ".target/release/zega${EXTENSION}" "artifacts/native/${artifact_name}"
       - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.platform }}
