@@ -67,8 +67,8 @@ copy/upload jobs. No PR job references full release credentials.
 
 | Environment | Secret names |
 | --- | --- |
-| release | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` |
-| public-ci | `R2_ACCOUNT_ID`, `R2_SCCACHE_ACCESS_KEY_ID`, `R2_SCCACHE_SECRET_ACCESS_KEY` |
+| release | `R2_ACCOUNT_ID`, `R2_SCCACHE_ACCESS_KEY_ID`, `R2_SCCACHE_SECRET_ACCESS_KEY` (the all-buckets token) |
+| public-ci | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (the sccache-only token) |
 
 The endpoint is always composed from the account ID:
 `https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com`.

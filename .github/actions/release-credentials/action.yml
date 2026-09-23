@@ -7,7 +7,7 @@ runs:
       run: |
         set -euo pipefail
         if [ -z "$R2_ACCOUNT_ID" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
-          echo '::error::Needs Sami: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY on zegadb/zega/release'
+          echo '::error::Needs Sami: R2_ACCOUNT_ID, R2_SCCACHE_ACCESS_KEY_ID, R2_SCCACHE_SECRET_ACCESS_KEY on zegadb/zega/release'
           exit 1
         fi
         command -v aws >/dev/null
