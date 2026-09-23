@@ -69,6 +69,7 @@ test('Calgary map draws query markers, attribution, theme, and the shared inspec
   await page.locator('#btn-calgary').click();
   await expect(page.getByRole('tab')).toHaveText(['Map', 'Table', 'Graph']);
   await expect(page.getByRole('tab', { name: 'Map', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await setEditor(page, 'query', '{ Place { id name kind at } }');
   await expect(page.locator('.map-count')).toHaveText('30 places');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('© OpenStreetMap contributors');
   await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).length || 0)).toBe(30);
@@ -84,7 +85,7 @@ test('Calgary map draws query markers, attribution, theme, and the shared inspec
   await page.locator('#btn-theme').click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).length || 0)).toBe(30);
-  await setEditor(page, 'query', '{ Place(kind CONTAINS "cafe") { id name kind lat lon } }');
+  await setEditor(page, 'query', '{ Place(kind CONTAINS "cafe") { id name kind at } }');
   await expect(page.locator('.map-count')).toHaveText('4 places');
   await page.reload();
   await expect(page.locator('.map-count')).toHaveText('4 places');
@@ -95,6 +96,9 @@ test('failed tiles keep the GeoJSON markers and permanent attribution on plain g
   await page.route('https://tiles.zega.dev/**', (route) => route.abort());
   await ready(page);
   await page.locator('#btn-calgary').click();
+  await expect(page.locator('.map-count')).toBeVisible();
+  await setEditor(page, 'query', '{ Place { id name kind at } }');
+  await expect(page.locator('.map-count')).toHaveText('30 places');
   await expect(page.locator('.map-notice')).toHaveText('Base map unavailable. Your places are still shown.');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('© OpenStreetMap contributors');
   await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).length || 0)).toBe(30);
@@ -126,4 +130,50 @@ test('timeline uses the checked year field and shares the node inspector', async
   await expect(page.locator('.timeline-view button')).toHaveText(['1988 · Earlier', '2024 · Later']);
   await page.locator('.timeline-view button').first().click();
   await expect(page.locator('#node-inspector')).toContainText('Earlier');
+});
+
+
+test('Calgary Point radius query matches an independent scan and plots exactly those places', async ({ page }) => {
+  const rows = (await readFile('samples/calgary.csv', 'utf8')).trim().split(/\r?\n/).slice(1).map((line) => {
+    const [name, kind, lat, lon] = line.split(',');
+    return { name, kind, lat: Number(lat), lon: Number(lon) };
+  });
+  const tower = rows.find((row) => row.name === 'Calgary Tower');
+  const radians = (x) => x * Math.PI / 180;
+  const distance = (row) => {
+    const h = Math.sin(radians(row.lat - tower.lat) / 2) ** 2 + Math.cos(radians(row.lat)) * Math.cos(radians(tower.lat)) * Math.sin(radians(row.lon - tower.lon) / 2) ** 2;
+    return 2 * 6371008.8 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  };
+  const expected = rows.filter((row) => distance(row) <= 1500).sort((a, b) => distance(a) - distance(b));
+  expect(expected.length).toBeGreaterThan(1);
+  expect(expected.length).toBeLessThan(rows.length);
+  await tileFixture(page);
+  await ready(page);
+  await page.locator('#btn-calgary').click();
+  await expect(page.getByRole('tab', { name: 'Map', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.map-count')).toHaveText(`${expected.length} places`);
+  await expect.poll(async () => JSON.parse(await editorValue(page, 'output')).map((row) => row.name)).toEqual(expected.map((row) => row.name));
+  expect(await editorValue(page, 'raw')).toContain('\"at\":{\"lat\":');
+  const output = JSON.parse(await editorValue(page, 'output'));
+  output.forEach((row, i) => {
+    expect(row.at).toEqual({ lat: expected[i].lat, lon: expected[i].lon });
+    expect(row.distance).toBeCloseTo(distance(expected[i]), 5);
+  });
+  await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).map((feature) => feature.properties.name).sort() || [])).toEqual(expected.map((row) => row.name).sort());
+  await page.screenshot({ path: '../.tmp/location-map.png', fullPage: true });
+  // A snapshot persisted by the explorer keeps Points and their index on reload.
+  await page.reload();
+  await expect(page.locator('.map-count')).toHaveText(`${expected.length} places`);
+});
+
+test('map still plots the legacy Float coordinate pair', async ({ page }) => {
+  await tileFixture(page);
+  await ready(page);
+  await page.locator('#btn-clear').click();
+  await setEditor(page, 'schema', `schema { type Place { name: String lat: Float lon: Float } display { map: Default } }
+    mutation { Place(name: "Legacy" && lat: 51.04 && lon: -114.06) { name } }`);
+  await setEditor(page, 'query', '{ Place { id name lat lon } }');
+  await page.locator('#btn-run').click();
+  await expect(page.locator('.map-count')).toHaveText('1 places');
+  await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).map((feature) => feature.properties.name) || [])).toEqual(['Legacy']);
 });

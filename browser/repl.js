@@ -412,7 +412,7 @@ $('#btn-calgary').onclick = async () => {
     hideTour();
     clearDatabase();
     setQuiet(schemaEditor, source);
-    setQuiet(queryEditor, '{ Place { id name kind lat lon } }');
+    setQuiet(queryEditor, source.slice(source.lastIndexOf('query {')).trim());
     await run(queryText(), { apply: true });
     persist();
   } catch (error) { showThrown(error); }
@@ -547,10 +547,11 @@ function formatRaw(graph) {
     const name = node.name ?? node.title;
     return name == null ? '' : String(name);
   };
+  const sortedJson = (props) => JSON.stringify(Object.fromEntries(Object.entries(props).sort(([a], [b]) => a.localeCompare(b))));
   const propsOf = (node) => {
     const skip = new Set(['id', 'labels']);
     const props = Object.fromEntries(Object.entries(node).filter(([key]) => !skip.has(key)));
-    return JSON.stringify(props, Object.keys(props).sort());
+    return sortedJson(props);
   };
   const lines = [];
   for (const node of nodes) {
@@ -565,7 +566,7 @@ function formatRaw(graph) {
     lines.push(`  kind:  ${rel.type}`);
     lines.push(`  from:  ${rel.from}  ${nameOf(rel.from)}`.trimEnd());
     lines.push(`  to:    ${rel.to}  ${nameOf(rel.to)}`.trimEnd());
-    lines.push(`  props: ${JSON.stringify(props, Object.keys(props).sort())}`);
+    lines.push(`  props: ${sortedJson(props)}`);
     lines.push('');
   }
   return lines.join('\n').replace(/\n$/, '');
@@ -618,15 +619,23 @@ function inspectNode(node) {
 
 // Projection values carry coordinates. Resolve their stored identity for the
 // shared inspector; an explicit `id` also distinguishes equal-valued nodes.
-function mapResults(value, nodes, into = new Map()) {
-  if (Array.isArray(value)) value.forEach((item) => mapResults(item, nodes, into));
+function mapResults(value, nodes, types, into = new Map()) {
+  if (Array.isArray(value)) value.forEach((item) => mapResults(item, nodes, types, into));
   else if (value && typeof value === 'object') {
-    if (typeof value.lat === 'number' && typeof value.lon === 'number') {
-      const matches = nodes.filter((node) => value.id != null ? node.id === value.id :
-        Object.entries(value).filter(([, v]) => v == null || typeof v !== 'object').every(([key, v]) => node[key] === v));
-      for (const node of matches) into.set(node.id, { ...node, lat: value.lat, lon: value.lon });
+    for (const node of nodes) {
+      const type = types.find((type) => node.labels.includes(type.name));
+      const fields = type?.fields.filter((field) => field.kind === 'prop') || [];
+      const point = fields.find((field) => field.ty === 'Point' && value[field.name] != null);
+      const coordinates = point ? value[point.name] : value;
+      if (!Number.isFinite(coordinates.lat) || !Number.isFinite(coordinates.lon)) continue;
+      const matches = value.id != null ? value.id === node.id : fields
+        .filter((field) => field.name in value)
+        .every((field) => JSON.stringify(node[field.name]) === JSON.stringify(value[field.name]));
+      if (matches && (value.id != null || fields.some((field) => field.name in value))) {
+        into.set(node.id, { ...node, lat: coordinates.lat, lon: coordinates.lon });
+      }
     }
-    Object.values(value).forEach((child) => mapResults(child, nodes, into));
+    Object.values(value).forEach((child) => mapResults(child, nodes, types, into));
   }
   return [...into.values()];
 }
@@ -673,7 +682,7 @@ function drawGraph() {
     renderTable(graphEl, graph, types, inspectNode);
   } else if (activeView === 'map') {
     disposeView?.();
-    disposeView = renderMap(graphEl, mapResults(lastValue, nodes), theme, inspectNode);
+    disposeView = renderMap(graphEl, mapResults(lastValue, nodes, types), theme, inspectNode);
   } else if (activeView === 'timeline') {
     const list = document.createElement('ol');
     list.className = 'timeline-view';

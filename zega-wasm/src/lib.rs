@@ -194,6 +194,7 @@ fn value_to_json(value: Value) -> serde_json::Value {
         Value::List(values) => {
             serde_json::Value::Array(values.into_iter().map(value_to_json).collect())
         }
+        Value::Point(point) => point.to_json(),
         Value::Map(values) => serde_json::Value::Object(
             values
                 .into_iter()

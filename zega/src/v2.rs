@@ -5,6 +5,7 @@
 //! or `set`. Writes go through the same node, relationship, and WAL operations
 //! as the existing executor.
 
+use crate::location::{Bounds, Point, EARTH_RADIUS};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::{json, Value as Json};
@@ -284,11 +285,12 @@ fn run_statement(
             {
                 return Err(error);
             }
+            let bound = rows
+                .iter()
+                .map(|row| crate::lang::bind_location_row(schema, template, row))
+                .collect::<Result<Vec<_>, _>>()?;
             let mut out = Vec::new();
-            for row in rows {
-                let Some(query) = crate::lang::bind_row(template, row)? else {
-                    continue;
-                };
+            for query in bound.into_iter().flatten() {
                 let Some(root) = &query.root else {
                     continue;
                 };
@@ -520,7 +522,7 @@ fn read(
 ) -> Result<Json, LangError> {
     let mut ids = candidates(graph, root);
     ids.retain(|id| node_matches(graph, *id, root.condition.as_ref()));
-    ids.sort_unstable();
+    order_limit(graph, root, &mut ids, |id| *id);
     if equality_lookup(root) {
         return match ids.len() {
             0 => Ok(Json::Null),
@@ -562,6 +564,7 @@ fn apply_node(
     let id = if lookup {
         lookup_one(graph, sel)?
     } else {
+        require_points(schema, sel)?;
         insert_node(graph, wal, sel, uniques)?
     };
     if !sel.sets.is_empty() {
@@ -610,6 +613,14 @@ fn apply_node(
         match item {
             Item::Prop(name, _) => {
                 object.insert(name.clone(), prop_json(&node, name));
+            }
+            Item::Distance(alias, distance) => {
+                object.insert(
+                    alias.clone(),
+                    point_prop(&node, &distance.field)
+                        .map(|point| json!(point.distance(distance.origin)))
+                        .unwrap_or(Json::Null),
+                );
             }
             Item::Hops => {
                 object.insert("hops".into(), json!(0));
@@ -663,6 +674,14 @@ fn apply_node(
                         match child_item {
                             Item::Prop(name, _) => {
                                 child_object.insert(name.clone(), prop_json(&saved, name));
+                            }
+                            Item::Distance(alias, distance) => {
+                                child_object.insert(
+                                    alias.clone(),
+                                    point_prop(&saved, &distance.field)
+                                        .map(|point| json!(point.distance(distance.origin)))
+                                        .unwrap_or(Json::Null),
+                                );
                             }
                             Item::EdgeSet(name, value, _) => {
                                 child_object.insert(name.clone(), value.clone());
@@ -899,6 +918,14 @@ fn project(
                 ensure_prop(schema, sel, name)?;
                 object.insert(name.clone(), prop_json(node, name));
             }
+            Item::Distance(alias, distance) => {
+                object.insert(
+                    alias.clone(),
+                    point_prop(node, &distance.field)
+                        .map(|point| json!(point.distance(distance.origin)))
+                        .unwrap_or(Json::Null),
+                );
+            }
             Item::Hops => {
                 object.insert("hops".into(), json!(hops));
             }
@@ -955,11 +982,11 @@ fn project(
                         .map(|(next, rel_id)| (next, 1usize, rel_id))
                         .collect()
                 };
+                let mut reached = reached;
+                reached.retain(|(next, ..)| node_matches(graph, *next, target.condition.as_ref()));
+                order_limit(graph, target, &mut reached, |(id, ..)| *id);
                 let mut rows = Vec::new();
                 for (next, depth, rel_id) in reached {
-                    if !node_matches(graph, next, target.condition.as_ref()) {
-                        continue;
-                    }
                     rows.push(project(
                         graph,
                         schema,
@@ -1075,18 +1102,136 @@ fn neighbors(
     out
 }
 
+fn spatial_filter(graph: &Graph, expr: &BoolExpr) -> Option<HashSet<NodeId>> {
+    match expr {
+        BoolExpr::Test(Pred::Box(field, bounds, _)) => {
+            Some(graph.spatial_candidates(field, *bounds))
+        }
+        BoolExpr::Test(Pred::Distance(distance, Cmp::Lt | Cmp::Lte, metres)) => Some(
+            graph.spatial_candidates(&distance.field, Bounds::radius(distance.origin, *metres)),
+        ),
+        BoolExpr::And(left, right) => {
+            match (spatial_filter(graph, left), spatial_filter(graph, right)) {
+                (Some(mut a), Some(b)) => {
+                    a.retain(|id| b.contains(id));
+                    Some(a)
+                }
+                (a, b) => a.or(b),
+            }
+        }
+        BoolExpr::Or(left, right) => {
+            match (spatial_filter(graph, left), spatial_filter(graph, right)) {
+                (Some(mut a), Some(b)) => {
+                    a.extend(b);
+                    Some(a)
+                }
+                _ => None, // A non-spatial branch may match anywhere.
+            }
+        }
+        _ => None,
+    }
+}
 fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
-    let mut labels = vec![sel.type_name.as_str()];
-    labels.extend(sel.also.iter().map(String::as_str));
-    let mut ids = Vec::new();
-    for label in labels {
-        if let Some(set) = graph.nodes_by_label(label) {
-            ids.extend(set.iter().copied());
+    let has_label = |id: &NodeId| {
+        graph.get_node(*id).is_some_and(|node| {
+            node.labels
+                .iter()
+                .any(|label| label == &sel.type_name || sel.also.contains(label))
+        })
+    };
+    let indexed = sel
+        .condition
+        .as_ref()
+        .and_then(|expr| spatial_filter(graph, expr));
+    // Expand a geodesic circle until k qualifying points are inside. Every
+    // point outside is farther than the kth match, so early stopping is exact.
+    if let Some(order) = &sel.order {
+        if sel.limit == Some(0) {
+            return Vec::new();
+        }
+        let maximum = std::f64::consts::PI * EARTH_RADIUS;
+        let mut radius = if sel.limit.is_some() { 1000.0 } else { maximum };
+        loop {
+            let mut ids: Vec<_> = graph
+                .spatial_candidates(&order.field, Bounds::radius(order.origin, radius))
+                .into_iter()
+                .filter(has_label)
+                .filter(|id| indexed.as_ref().is_none_or(|set| set.contains(id)))
+                .filter(|id| node_matches(graph, *id, sel.condition.as_ref()))
+                .filter(|id| node_distance(graph, *id, order).is_some_and(|d| d <= radius))
+                .collect();
+            if radius >= maximum || sel.limit.is_some_and(|k| ids.len() >= k) {
+                ids.sort_unstable();
+                return ids;
+            }
+            radius = (radius * 2.0).min(maximum);
         }
     }
+    let mut ids: Vec<_> = if let Some(indexed) = indexed {
+        indexed.into_iter().filter(has_label).collect()
+    } else {
+        std::iter::once(&sel.type_name)
+            .chain(&sel.also)
+            .filter_map(|label| graph.nodes_by_label(label))
+            .flat_map(|set| set.iter().copied())
+            .collect()
+    };
     ids.sort_unstable();
     ids.dedup();
     ids
+}
+fn point_prop(node: &Node, field: &str) -> Option<Point> {
+    match node.props.get(field) {
+        Some(Value::Point(point)) => Some(*point),
+        _ => None,
+    }
+}
+fn node_distance(graph: &Graph, id: NodeId, distance: &crate::lang::Distance) -> Option<f64> {
+    Some(point_prop(graph.get_node(id)?, &distance.field)?.distance(distance.origin))
+}
+fn order_limit<T>(graph: &Graph, sel: &Selection, ids: &mut Vec<T>, id: impl Fn(&T) -> NodeId) {
+    if let Some(order) = &sel.order {
+        ids.retain(|row| node_distance(graph, id(row), order).is_some());
+        ids.sort_by(|a, b| {
+            node_distance(graph, id(a), order)
+                .unwrap()
+                .total_cmp(&node_distance(graph, id(b), order).unwrap())
+                .then(id(a).cmp(&id(b)))
+        });
+    }
+    if let Some(limit) = sel.limit {
+        ids.truncate(limit);
+    }
+}
+fn require_points(schema: &Schema, sel: &Selection) -> Result<(), LangError> {
+    let tests = sel
+        .condition
+        .as_ref()
+        .map(BoolExpr::tests)
+        .unwrap_or_default();
+    for name in std::iter::once(&sel.type_name).chain(&sel.also) {
+        for field in &schema.get(name)?.fields {
+            if let crate::lang::Field::Prop {
+                name,
+                ty,
+                optional: false,
+                ..
+            } = field
+            {
+                if ty == "Point"
+                    && !tests
+                        .iter()
+                        .any(|pred| matches!(pred, Pred::Eq(field, _, _) if field == name))
+                {
+                    return Err(LangError::at(
+                        sel.type_span,
+                        format!("{} requires Point field {name}", sel.type_name),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn node_has_any_label(graph: &Graph, id: NodeId, labels: &[String]) -> bool {
@@ -1140,6 +1285,14 @@ fn pred_matches(graph: &Graph, id: NodeId, pred: &Pred) -> bool {
         return false;
     };
     match pred {
+        Pred::Distance(distance, op, metres) => {
+            point_prop(node, &distance.field).is_some_and(|point| {
+                cmp_json(&json!(point.distance(distance.origin)), *op, &json!(metres))
+            })
+        }
+        Pred::Box(field, bounds, _) => {
+            point_prop(node, field).is_some_and(|point| bounds.contains(point))
+        }
         Pred::Eq(field, value, _) => prop_json(node, field) == *value,
         Pred::Ne(field, value, _) => prop_json(node, field) != *value,
         Pred::Cmp(field, op, value, _) => cmp_json(&prop_json(node, field), *op, value),
@@ -1181,9 +1334,12 @@ fn cmp_value(left: &Json, right: &Json) -> Option<std::cmp::Ordering> {
 }
 
 fn equality_lookup(sel: &Selection) -> bool {
-    sel.condition
-        .as_ref()
-        .is_some_and(|expr| expr.is_equality_and())
+    sel.order.is_none()
+        && sel.limit.is_none()
+        && sel
+            .condition
+            .as_ref()
+            .is_some_and(|expr| expr.is_equality_and())
 }
 
 fn prop_json(node: &Node, name: &str) -> Json {
@@ -1217,6 +1373,7 @@ fn value_to_json(value: &Value) -> Json {
         Value::Bool(value) => Json::Bool(*value),
         Value::Null => Json::Null,
         Value::List(values) => Json::Array(values.iter().map(value_to_json).collect()),
+        Value::Point(point) => point.to_json(),
         Value::Map(values) => {
             let mut object = serde_json::Map::new();
             for (key, value) in values {
@@ -1241,7 +1398,12 @@ fn json_to_value(value: &Json) -> Result<Value, LangError> {
         }
         Json::Bool(value) => Ok(Value::Bool(*value)),
         Json::Null => Ok(Value::Null),
-        _ => Err(LangError::bare("only scalar values can be stored")),
+        Json::Object(_) => Point::from_json(value)
+            .map(Value::Point)
+            .map_err(LangError::bare),
+        _ => Err(LangError::bare(
+            "only scalar values and Points can be stored",
+        )),
     }
 }
 
