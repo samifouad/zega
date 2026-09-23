@@ -125,7 +125,7 @@ missing values have no point. Select `id` in the query: the engine projects
 exactly the result IDs, including nested relationship results, and fetches
 their stored vectors. Unselected nodes do not participate.
 
-The engine's `vector_view` API attaches PCA metadata to the query result.
+The engine's `vector_view` API returns the query result alongside PCA metadata.
 Centered PCA computes up to three axes using deterministic power iteration,
 orthogonal deflation and stable signs. Both views use the same three-axis
 projection; 2D shows its first two axes. Incompatible dimensions or metrics

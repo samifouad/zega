@@ -147,7 +147,7 @@ impl Zega {
             nearest.truncate(k);
         }
         Ok(
-            json!({"points":points,"links":links,"flags":flags,"nearest":nearest.into_iter().map(|(id,score)| json!({"id":id,"score":score})).collect::<Vec<_>>(),"threshold":threshold,"projection":"PCA","approximate_positions":true}),
+            json!({"results":result,"points":points,"links":links,"flags":flags,"nearest":nearest.into_iter().map(|(id,score)| json!({"id":id,"score":score})).collect::<Vec<_>>(),"threshold":threshold,"projection":"PCA","approximate_positions":true}),
         )
     }
 }

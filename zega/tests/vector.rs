@@ -263,6 +263,7 @@ fn vector_projection_and_explanations_use_selected_full_vectors() {
     let view = db
         .vector_view(&schema, &result, ViewKind::Vector2d, Some(2), 10, 0.8)
         .unwrap();
+    assert_eq!(view["results"], result);
     assert_eq!(view["points"].as_array().unwrap().len(), 3);
     assert_eq!(view["nearest"][0]["id"], json!(3));
     assert_eq!(view["flags"].as_array().unwrap().len(), 1);

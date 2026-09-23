@@ -82,7 +82,8 @@ export function renderVector(container, graph, kind, theme, analyze, onNode) {
     projected=data.points.map(p=>{
       let [x,y,z]=p.position;
       if(kind==='vector3d') { const a=rotation[0],b=rotation[1]; [x,z]=[x*Math.cos(a)+z*Math.sin(a),z*Math.cos(a)-x*Math.sin(a)];[y,z]=[y*Math.cos(b)-z*Math.sin(b),y*Math.sin(b)+z*Math.cos(b)]; }
-      return {...p,x:width/2+x*factor+pan[0],y:height/2-y*factor+pan[1],z};
+      const perspective=kind==='vector3d'?1/(1+z/(extent*4)):1;
+      return {...p,x:width/2+x*factor*perspective+pan[0],y:height/2-y*factor*perspective+pan[1],z,perspective};
     }).sort((a,b)=>a.z-b.z||a.id-b.id);
     const positions=new Map(projected.map(p=>[p.id,p]));
     const edge=(from,to,color,dashed=false)=>{const a=positions.get(from),b=positions.get(to);if(!a||!b)return;ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=1;ctx.setLineDash(dashed?[3,5]:[]);ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.setLineDash([]);};
@@ -96,12 +97,17 @@ export function renderVector(container, graph, kind, theme, analyze, onNode) {
       const node=byId.get(p.id),isSelected=p.id===selected,isNear=nearestIds.has(p.id);
       const match=!query || Object.values(node).filter(v=>typeof v==='string').join(' ').toLowerCase().includes(query);
       ctx.globalAlpha=match?1:0.12;
-      const r=isSelected?8:isNear?6:4.5;
+      const r=(isSelected?8:isNear?6:4.5)*p.perspective;
       ctx.fillStyle=colours.get(String(node[colour.value]??'—'));ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);ctx.fill();
       if(isSelected||isNear||query&&match){ctx.beginPath();ctx.arc(p.x,p.y,r+4,0,Math.PI*2);ctx.strokeStyle=isSelected?'#ffffff':ctx.fillStyle;ctx.lineWidth=1.5;ctx.stroke();}
-      if(isSelected||isNear){ctx.fillStyle=dark?'#e0ede7':'#243c30';ctx.font='11px system-ui';ctx.fillText(caption(p.id).slice(0,34),p.x+11,p.y+3);}
+      if(isSelected){ctx.fillStyle=dark?'#e0ede7':'#243c30';ctx.font='11px system-ui';ctx.fillText(caption(p.id).slice(0,34),p.x+13,p.y-12);}
     }
     ctx.globalAlpha=1;
+    if(kind==='vector3d'){
+      const [a,b]=rotation;
+      const axes=[[Math.cos(a),Math.sin(a)*Math.sin(b),'PC1','#b57360'],[0,Math.cos(b),'PC2','#639681'],[Math.sin(a),-Math.cos(a)*Math.sin(b),'PC3','#7389b8']];
+      for(const [x,y,text,color] of axes){ctx.beginPath();ctx.strokeStyle=color;ctx.moveTo(45,height-40);ctx.lineTo(45+x*25,height-40-y*25);ctx.stroke();ctx.fillStyle=color;ctx.font='9px system-ui';ctx.fillText(text,45+x*34,height-40-y*34);}
+    }
     canvas.dataset.points=String(projected.length);
     canvas.projectedPoints=projected.map(({id,x,y})=>({id,x,y}));
   }

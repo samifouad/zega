@@ -675,3 +675,6 @@ pre.result-json {
 .vector-flags { padding-left: 12px; line-height: 1.6; }
 .vector-note { margin: 0; padding: 8px 14px; font-size: 10px; opacity: .7; }
 .vector-legend { display: flex; flex-wrap: wrap; gap: 14px; padding: 5px 14px 8px; font-size: 10px; }
+.vector-nearest li { display: list-item; padding: 5px 0; border-bottom: 1px solid #81918a20; }
+.vector-nearest button { width: calc(100% - 42px); vertical-align: top; line-height: 1.45; }
+.vector-nearest span { width: 40px; text-align: right; line-height: 1.45; }

@@ -1751,6 +1751,7 @@ impl<'a> Parser<'a> {
             let n: f64 = text.parse().map_err(|_| {
                 self.err_at(self.span_bytes(start, self.i), format!("bad number {text}"))
             })?;
+            if !n.is_finite() { return Err(self.err_at(self.span_bytes(start, self.i), "number must be finite")); }
             Ok(Json::from(n))
         } else {
             let n: i64 = text.parse().map_err(|_| {

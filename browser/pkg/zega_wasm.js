@@ -350,6 +350,40 @@ export class ZegaWasm {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
     }
+    /**
+     * PCA and full-vector explanations, attached to a query result by the host.
+     * @param {string} schema
+     * @param {string} result
+     * @param {string} kind
+     * @param {number | null | undefined} selected
+     * @param {number} k
+     * @param {number} threshold
+     * @returns {string}
+     */
+    vector_view(schema, result, kind, selected, k, threshold) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(schema, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(result, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.zegawasm_vector_view(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, isLikeNone(selected) ? Number.MAX_SAFE_INTEGER : (selected) >>> 0, k, threshold);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
 }
 if (Symbol.dispose) ZegaWasm.prototype[Symbol.dispose] = ZegaWasm.prototype.free;
 function __wbg_get_imports() {
@@ -397,6 +431,10 @@ function getUint8ArrayMemory0() {
         cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
     }
     return cachedUint8ArrayMemory0;
+}
+
+function isLikeNone(x) {
+    return x === undefined || x === null;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {
