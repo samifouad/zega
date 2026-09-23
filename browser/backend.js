@@ -38,6 +38,7 @@ class NativeDatabase {
   run_with_sources(schema, query, sources) { return this.execute(query, schema, sources, false); }
   apply_with_sources(query, sources) { return this.execute(query, '', sources, true); }
   schema(source) { return this.parser.schema(source); }
+  load_locations(source, document) { return this.parser.load_locations(source, document); }
   check(schema, source) { return this.parser.check(schema, source); }
   preview_import(text) { return this.parser.preview_import(text); }
   graph() { return JSON.stringify(this.snapshot); }

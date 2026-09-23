@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../tests/offline.js';
+import { tileFixture } from '../tests/map-fixture.js';
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -59,6 +60,60 @@ test('embedded explorer writes through native ZQL and preserves data across relo
     await page.goto(server.url);
     await expect(page.locator('#raw-count')).toContainText('2 nodes');
     expect(await read()).toEqual(expected);
+    expect(errors).toEqual([]);
+  } finally { await server.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test('embedded Calgary Point map uses native storage and survives reload and restart', async ({ page, request }) => {
+  await mkdir('.tmp', { recursive: true, mode: 0o700 });
+  const directory = await mkdtemp(resolve('.tmp/cli-map-'));
+  let server = await start(directory);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const editorValue = (pane) => page.evaluate((pane) => window.monaco.editor.getEditors()
+    .find((editor) => editor.getDomNode()?.closest(`#${pane}`)).getValue(), pane);
+  const markers = () => page.evaluate(() => document.querySelector('#graph')._map
+    ?.queryRenderedFeatures({ layers: ['zega-nodes'] }).map((feature) => feature.properties.name).sort() || []);
+  try {
+    await tileFixture(page);
+    await page.goto(server.url);
+    await expect(page.locator('#query .monaco-editor')).toBeVisible();
+    await expect(page.locator('.conn')).toContainText('native');
+    await page.locator('#btn-calgary').click();
+    await expect(page.getByRole('tab')).toHaveText(['Map', 'Table', 'Graph']);
+    await expect(page.getByRole('tab', { name: 'Map', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#raw-count')).toContainText('30 nodes');
+    const schema = await editorValue('schema');
+    const query = await editorValue('query');
+    const read = async () => {
+      const response = await request.post(`${server.url}/zql`, { data: { schema, query } });
+      expect(response.ok()).toBe(true);
+      return (await response.json()).result;
+    };
+    const expected = await read();
+    expect(expected.length).toBeGreaterThan(1);
+    expect(expected.length).toBeLessThan(30);
+    expect(expected[0].name).toBe('Calgary Tower');
+    expect(expected[0].distance).toBe(0);
+    for (const row of expected) {
+      expect(row.at.lat).toBeGreaterThan(51);
+      expect(row.at.lon).toBeLessThan(-114);
+      expect(row.distance).toBeLessThanOrEqual(1500);
+    }
+    const names = expected.map((row) => row.name).sort();
+    await expect.poll(markers).toEqual(names);
+    await expect(page.locator('.map-notice')).toBeHidden();
+    await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('© OpenStreetMap contributors');
+    await page.screenshot({ path: '../.tmp/cli-calgary-map.png', fullPage: true });
+    await page.reload();
+    await expect.poll(markers).toEqual(names);
+    expect(await read()).toEqual(expected);
+    await server.stop();
+    server = await start(directory);
+    expect(await read()).toEqual(expected);
+    await page.goto(server.url);
+    await expect(page.locator('#raw-count')).toContainText('30 nodes');
     expect(errors).toEqual([]);
   } finally { await server.stop(); await rm(directory, { recursive: true, force: true }); }
 });

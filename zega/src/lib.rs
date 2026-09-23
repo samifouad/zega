@@ -1,3 +1,4 @@
+pub mod location;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -2543,6 +2544,7 @@ fn compare_order_int_float(integer: i64, float: f64) -> std::cmp::Ordering {
 fn order_type_rank(value: &Value) -> u8 {
     match value {
         Value::Map(_) => 0,
+        Value::Point(_) => 8,
         Value::List(_) => 1,
         Value::String(_) => 2,
         Value::Bool(_) => 3,

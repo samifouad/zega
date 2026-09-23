@@ -5,9 +5,9 @@
 //! or `set`. Writes go through the same node, relationship, and WAL operations
 //! as the existing executor.
 
+use crate::location::{Bounds, Point, EARTH_RADIUS};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use serde_json::{json, Value as Json};
 use crate::graph::{Graph, Node, NodeId, RelId};
 use crate::lang::{
     BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, Pred, Schema, Selection, Span,
@@ -15,6 +15,7 @@ use crate::lang::{
 };
 use crate::parser::Value;
 use crate::wal::Operation;
+use serde_json::{json, Value as Json};
 
 use crate::{Zega, ZegaError};
 
@@ -57,22 +58,36 @@ impl Zega {
     /// HTTP(S) loads require the default `http` feature. Wasm hosts must supply
     /// raw UTF-8 sources with [`Self::run_lang_with_sources`].
     pub fn run_lang(&self, schema_src: &str, source: &str) -> Result<Json, ZegaError> {
-        self.run_lang_with_loader(schema_src, source, &|location| read_location(location, self.allow_private_imports))
+        self.run_lang_with_loader(schema_src, source, &|location| {
+            read_location(location, self.allow_private_imports)
+        })
     }
 
     /// Execute with host-provided raw text, using the same Rust parsers and WAL
     /// write path. Every named source must be present; there is no I/O fallback.
-    pub fn run_lang_with_sources(&self, schema_src: &str, source: &str, sources: &HashMap<String, String>) -> Result<Json, ZegaError> {
-        self.run_lang_with_loader(schema_src, source, &|location| supplied_source(location, sources))
+    pub fn run_lang_with_sources(
+        &self,
+        schema_src: &str,
+        source: &str,
+        sources: &HashMap<String, String>,
+    ) -> Result<Json, ZegaError> {
+        self.run_lang_with_loader(schema_src, source, &|location| {
+            supplied_source(location, sources)
+        })
     }
 
-    fn run_lang_with_loader(&self, schema_src: &str, source: &str, loader: &dyn Fn(&str) -> Result<String, LangError>) -> Result<Json, ZegaError> {
+    fn run_lang_with_loader(
+        &self,
+        schema_src: &str,
+        source: &str,
+        loader: &dyn Fn(&str) -> Result<String, LangError>,
+    ) -> Result<Json, ZegaError> {
         let schema = crate::lang::parse_schema(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
         let uniques = crate::lang::parse_uniques(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
-        let statement =
-            crate::lang::parse_statement(source).map_err(|error| explain(error, "query", source))?;
+        let statement = crate::lang::parse_statement(source)
+            .map_err(|error| explain(error, "query", source))?;
         self.execute(&schema, &uniques, &statement, "query", source, loader)
     }
 
@@ -135,7 +150,7 @@ impl Zega {
         let edge = schema.edge(&label, field).map_err(|error| {
             ZegaError::Execution(format!("{label} has no relationship {field}: {}", error))
         })?;
-        let (_, rel, direction, targets, _) = edge.as_edge().unwrap();
+        let (_, rel, direction, targets, many) = edge.as_edge().unwrap();
         let target_label = to.labels.first().map(String::as_str).unwrap_or("");
         if !targets.iter().any(|target| target == target_label) {
             return Err(ZegaError::Execution(format!(
@@ -155,27 +170,62 @@ impl Zega {
             },
         )
         .map_err(|error| explain(error, "schema", schema_src))?;
-        connect(&mut graph, &self.wal, from_id, to_id, direction, rel, props)
+        connect(
+            &mut graph,
+            &self.wal,
+            from_id,
+            to_id,
+            direction,
+            RelationshipSpec {
+                field,
+                kind: rel,
+                many,
+                span: Span {
+                    line: 0,
+                    column: 0,
+                    end_line: 0,
+                    end_column: 0,
+                },
+            },
+            props,
+        )
             .map_err(|error| explain(error, "schema", schema_src))?;
         Ok(())
     }
 
     /// Run a `.zql` file: schema, unique, mutations, then an optional query.
     pub fn apply_zql(&self, source: &str) -> Result<Json, ZegaError> {
-        self.apply_zql_with_loader(source, &|location| read_location(location, self.allow_private_imports))
+        self.apply_zql_with_loader(source, &|location| {
+            read_location(location, self.allow_private_imports)
+        })
     }
 
     /// Apply a document using raw text supplied by its host (for example JS fetch).
-    pub fn apply_zql_with_sources(&self, source: &str, sources: &HashMap<String, String>) -> Result<Json, ZegaError> {
+    pub fn apply_zql_with_sources(
+        &self,
+        source: &str,
+        sources: &HashMap<String, String>,
+    ) -> Result<Json, ZegaError> {
         self.apply_zql_with_loader(source, &|location| supplied_source(location, sources))
     }
 
-    fn apply_zql_with_loader(&self, source: &str, loader: &dyn Fn(&str) -> Result<String, LangError>) -> Result<Json, ZegaError> {
+    fn apply_zql_with_loader(
+        &self,
+        source: &str,
+        loader: &dyn Fn(&str) -> Result<String, LangError>,
+    ) -> Result<Json, ZegaError> {
         let file =
             crate::lang::parse_zql(source).map_err(|error| explain(error, "schema", source))?;
         let mut last = Json::Null;
         for statement in &file.statements {
-            last = self.execute(&file.schema, &file.uniques, statement, "schema", source, loader)?;
+            last = self.execute(
+                &file.schema,
+                &file.uniques,
+                statement,
+                "schema",
+                source,
+                loader,
+            )?;
         }
         Ok(last)
     }
@@ -197,15 +247,24 @@ impl Zega {
         prepare(schema, statement).map_err(|error| explain(error, source_name, source))?;
         // I/O and parsing happen before the graph lock. Each complete load is
         // inserted under the same lock as ordinary mutations.
-        let rows = if let Statement::Load { format, locations, .. } = statement {
-            load_rows(*format, locations, loader).map_err(|error| explain(error, source_name, source))?
-        } else { Vec::new() };
+        let rows = if let Statement::Load {
+            format, locations, ..
+        } = statement
+        {
+            load_rows(*format, locations, loader)
+                .map_err(|error| explain(error, source_name, source))?
+        } else {
+            Vec::new()
+        };
         let mut graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let mut budget = self.traversal_work_budget;
-        run_statement(
+        let is_mutation = matches!(statement, Statement::Load { .. })
+            || matches!(statement, Statement::Run(query) if query.mutation);
+        if !is_mutation {
+            return run_statement(
             &mut graph,
             &self.wal,
             schema,
@@ -214,7 +273,31 @@ impl Zega {
             &mut budget,
             &rows,
         )
-        .map_err(|error| explain(error, source_name, source))
+            .map_err(|error| explain(error, source_name, source));
+        }
+
+        // Run writes against an isolated graph first. A validation failure in
+        // any nested selection or imported row must leave the live graph and
+        // its WAL untouched.
+        let mut staged = graph.clone();
+        let result = run_statement(
+            &mut staged,
+            &crate::Wal::in_memory(),
+            schema,
+            uniques,
+            statement,
+            &mut budget,
+            &rows,
+        )
+        .map_err(|error| explain(error, source_name, source))?;
+        let operations = graph_operations(&graph, &staged);
+        for operation in &operations {
+            self.wal
+                .append(operation)
+                .map_err(|error| ZegaError::Execution(error.to_string()))?;
+        }
+        *graph = staged;
+        Ok(result)
     }
 
     pub fn graph_json(&self) -> Result<Json, ZegaError> {
@@ -257,6 +340,49 @@ fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
     Ok(())
 }
 
+fn graph_operations(before: &Graph, after: &Graph) -> Vec<Operation> {
+    let mut operations = Vec::new();
+    let mut nodes: Vec<_> = after.all_nodes().values().collect();
+    nodes.sort_by_key(|node| node.id);
+    for node in nodes {
+        match before.get_node(node.id) {
+            None => operations.push(Operation::InsertNode {
+                id: node.id,
+                labels: node.labels.clone(),
+                props: node.props.clone(),
+            }),
+            Some(previous) => {
+                let changed: HashMap<_, _> = node
+                    .props
+                    .iter()
+                    .filter(|(key, value)| previous.props.get(*key) != Some(*value))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
+                if !changed.is_empty() {
+                    operations.push(Operation::UpdateNode {
+                        id: node.id,
+                        props: changed,
+                    });
+                }
+            }
+        }
+    }
+    let mut relationships: Vec<_> = after.all_relationships().values().collect();
+    relationships.sort_by_key(|rel| rel.id);
+    for rel in relationships {
+        if before.get_relationship(rel.id).is_none() {
+            operations.push(Operation::InsertRel {
+                id: rel.id,
+                kind: rel.kind.clone(),
+                from: rel.from,
+                to: rel.to,
+                props: rel.props.clone(),
+            });
+        }
+    }
+    operations
+}
+
 fn run_statement(
     graph: &mut Graph,
     wal: &crate::Wal,
@@ -284,11 +410,12 @@ fn run_statement(
             {
                 return Err(error);
             }
+            let bound = rows
+                .iter()
+                .map(|row| crate::lang::bind_location_row(schema, template, row))
+                .collect::<Result<Vec<_>, _>>()?;
             let mut out = Vec::new();
-            for row in rows {
-                let Some(query) = crate::lang::bind_row(template, row)? else {
-                    continue;
-                };
+            for query in bound.into_iter().flatten() {
                 let Some(root) = &query.root else {
                     continue;
                 };
@@ -320,7 +447,11 @@ pub fn parse_import(format: LoadFormat, text: &str) -> Result<Vec<HashMap<String
     parse_load(format, text, "import").map_err(|error| error.to_string())
 }
 
-fn parse_load(format: LoadFormat, text: &str, location: &str) -> Result<Vec<HashMap<String, Json>>, LangError> {
+fn parse_load(
+    format: LoadFormat,
+    text: &str,
+    location: &str,
+) -> Result<Vec<HashMap<String, Json>>, LangError> {
     if text.len() > MAX_IMPORT_BYTES {
         return Err(LangError::bare(format!("{location} is larger than 2MB")));
     }
@@ -336,7 +467,11 @@ fn parse_load(format: LoadFormat, text: &str, location: &str) -> Result<Vec<Hash
 
 fn supplied_source(location: &str, sources: &HashMap<String, String>) -> Result<String, LangError> {
     validate_location(location).map_err(LangError::bare)?;
-    sources.get(location).cloned().ok_or_else(|| LangError::bare(format!("cannot read {location}: host did not supply this source")))
+    sources.get(location).cloned().ok_or_else(|| {
+        LangError::bare(format!(
+            "cannot read {location}: host did not supply this source"
+        ))
+    })
 }
 
 /// Return the locations a host must fetch for a statement or document. The
@@ -344,14 +479,22 @@ fn supplied_source(location: &str, sources: &HashMap<String, String>) -> Result<
 pub fn zql_load_locations(entry_point: ZqlEntryPoint, source: &str) -> Result<Vec<String>, String> {
     let statements = match entry_point {
         ZqlEntryPoint::File => crate::lang::parse_zql(source).map(|file| file.statements),
-        ZqlEntryPoint::Statement | ZqlEntryPoint::Query => crate::lang::parse_statement(source).map(|statement| vec![statement]),
-    }.map_err(|error| crate::lang::render_error("schema", source, &error))?;
+        ZqlEntryPoint::Statement | ZqlEntryPoint::Query => {
+            crate::lang::parse_statement(source).map(|statement| vec![statement])
+        }
+    }
+    .map_err(|error| crate::lang::render_error("schema", source, &error))?;
     let mut locations = Vec::new();
     for statement in statements {
-        if let Statement::Load { locations: sources, .. } = statement {
+        if let Statement::Load {
+            locations: sources, ..
+        } = statement
+        {
             for location in sources {
                 validate_location(&location)?;
-                if !locations.contains(&location) { locations.push(location); }
+                if !locations.contains(&location) {
+                    locations.push(location);
+                }
             }
         }
     }
@@ -394,7 +537,9 @@ fn validate_location(location: &str) -> Result<(), String> {
 }
 
 fn validate_remote_syntax(location: &str) -> Result<(), String> {
-    if !is_remote(location) { return Err("only http and https addresses are allowed".into()); }
+    if !is_remote(location) {
+        return Err("only http and https addresses are allowed".into());
+    }
     let rest = location
         .split_once("://")
         .map(|(_, rest)| rest)
@@ -416,15 +561,31 @@ fn validate_remote_syntax(location: &str) -> Result<(), String> {
 
 fn validate_remote(location: &str) -> Result<(), String> {
     validate_remote_syntax(location)?;
-    let authority = location.split_once("://").unwrap().1.split(['/', '?', '#']).next().unwrap();
-    let host = if let Some(host) = authority.strip_prefix('[') { host.split(']').next().unwrap() } else { authority.split(':').next().unwrap() };
-    if blocked_host(host) { return Err("that address points at a private network".into()); }
+    let authority = location
+        .split_once("://")
+        .unwrap()
+        .1
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap();
+    let host = if let Some(host) = authority.strip_prefix('[') {
+        host.split(']').next().unwrap()
+    } else {
+        authority.split(':').next().unwrap()
+    };
+    if blocked_host(host) {
+        return Err("that address points at a private network".into());
+    }
     Ok(())
 }
 
 fn blocked_host(host: &str) -> bool {
     let host = host.trim().to_ascii_lowercase();
-    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") || host == "metadata.google.internal" {
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host == "metadata.google.internal"
+    {
         return true;
     }
     host.parse::<std::net::IpAddr>().is_ok_and(blocked_ip)
@@ -432,8 +593,25 @@ fn blocked_host(host: &str) -> bool {
 
 fn blocked_ip(ip: std::net::IpAddr) -> bool {
     match ip {
-        std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast() || ip.octets()[0] == 0,
-        std::net::IpAddr::V6(ip) => ip.to_ipv4_mapped().map(|ip| blocked_ip(ip.into())).unwrap_or_else(|| ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local() || ip.is_unicast_link_local() || ip.is_multicast()),
+        std::net::IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+                || ip.octets()[0] == 0
+        }
+        std::net::IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(|ip| blocked_ip(ip.into()))
+            .unwrap_or_else(|| {
+                ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_unique_local()
+                    || ip.is_unicast_link_local()
+                    || ip.is_multicast()
+            }),
     }
 }
 
@@ -441,15 +619,26 @@ fn blocked_ip(ip: std::net::IpAddr) -> bool {
 // and redirect targets; a textual hostname check alone permits DNS rebinding.
 #[cfg(all(not(target_arch = "wasm32"), feature = "http"))]
 #[derive(Debug)]
-struct ImportResolver { allow_private: bool }
+struct ImportResolver {
+    allow_private: bool,
+}
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "http"))]
 impl ureq::unversioned::resolver::Resolver for ImportResolver {
-    fn resolve(&self, uri: &ureq::http::Uri, config: &ureq::config::Config, timeout: ureq::unversioned::transport::NextTimeout) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
         use ureq::unversioned::resolver::DefaultResolver;
         let addresses = DefaultResolver::default().resolve(uri, config, timeout)?;
         if !self.allow_private && addresses.iter().any(|addr| blocked_ip(addr.ip())) {
-            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "that address points at a private network").into());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "that address points at a private network",
+            )
+            .into());
         }
         Ok(addresses)
     }
@@ -474,8 +663,13 @@ fn read_location_text(location: &str, allow_private: bool) -> Result<String, Str
 fn read_bounded(reader: impl std::io::Read) -> Result<String, String> {
     use std::io::Read;
     let mut bytes = Vec::new();
-    reader.take(MAX_IMPORT_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|error| error.to_string())?;
-    if bytes.len() > MAX_IMPORT_BYTES { return Err("larger than 2MB".into()); }
+    reader
+        .take(MAX_IMPORT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_IMPORT_BYTES {
+        return Err("larger than 2MB".into());
+    }
     String::from_utf8(bytes).map_err(|_| "not utf-8".into())
 }
 
@@ -492,17 +686,34 @@ fn fetch_location(location: &str, allow_private: bool) -> Result<String, String>
         .max_redirects_will_error(false)
         .proxy(None)
         .build();
-    let agent = ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::default(), ImportResolver { allow_private });
+    let agent = ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::default(),
+        ImportResolver { allow_private },
+    );
     let mut url = location.to_string();
     for _ in 0..=5 {
-        if allow_private { validate_remote_syntax(&url)?; } else { validate_remote(&url)?; }
+        if allow_private {
+            validate_remote_syntax(&url)?;
+        } else {
+            validate_remote(&url)?;
+        }
         let mut response = agent.get(&url).call().map_err(|error| error.to_string())?;
         if response.status().is_redirection() {
-            let next = response.headers().get("location").and_then(|value| value.to_str().ok()).ok_or("redirect has no location")?;
-            url = url::Url::parse(&url).and_then(|base| base.join(next)).map_err(|error| error.to_string())?.to_string();
+            let next = response
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok())
+                .ok_or("redirect has no location")?;
+            url = url::Url::parse(&url)
+                .and_then(|base| base.join(next))
+                .map_err(|error| error.to_string())?
+                .to_string();
             continue;
         }
-        if !response.status().is_success() { return Err(format!("status {}", response.status())); }
+        if !response.status().is_success() {
+            return Err(format!("status {}", response.status()));
+        }
         return read_bounded(response.body_mut().as_reader());
     }
     Err("too many redirects".into())
@@ -520,7 +731,7 @@ fn read(
 ) -> Result<Json, LangError> {
     let mut ids = candidates(graph, root);
     ids.retain(|id| node_matches(graph, *id, root.condition.as_ref()));
-    ids.sort_unstable();
+    order_limit(graph, root, &mut ids, |id| *id);
     if equality_lookup(root) {
         return match ids.len() {
             0 => Ok(Json::Null),
@@ -555,13 +766,14 @@ fn apply_node(
     wal: &crate::Wal,
     schema: &Schema,
     sel: &Selection,
-    parent: Option<(NodeId, Direction, String)>,
+    parent: Option<(NodeId, Direction, String, String, bool, Span)>,
     uniques: &[(String, String)],
 ) -> Result<Json, LangError> {
     let lookup = !sel.sets.is_empty() || has_link(sel);
     let id = if lookup {
-        lookup_one(graph, sel)?
+        lookup_one(graph, sel, uniques)?
     } else {
+        require_points(schema, sel)?;
         insert_node(graph, wal, sel, uniques)?
     };
     if !sel.sets.is_empty() {
@@ -587,9 +799,9 @@ fn apply_node(
         wal.append(&Operation::UpdateNode { id, props })
             .map_err(|error| LangError::bare(error.to_string()))?;
     }
-    if let Some((parent_id, direction, rel)) = &parent {
+    if let Some((parent_id, direction, field, rel, many, edge_span)) = &parent {
         let props = edge_sets(sel)?;
-        let span = sel
+        let props_span = sel
             .items
             .iter()
             .find_map(|item| match item {
@@ -597,8 +809,16 @@ fn apply_node(
                 _ => None,
             })
             .unwrap_or(sel.type_span);
-        require_edge_props(schema, rel, &props, span)?;
-        connect(graph, wal, *parent_id, id, *direction, rel, props)?;
+        require_edge_props(schema, rel, &props, props_span)?;
+        connect(
+            graph,
+            wal,
+            *parent_id,
+            id,
+            *direction,
+            RelationshipSpec { field, kind: rel, many: *many, span: *edge_span },
+            props,
+        )?;
     }
     let node = graph
         .get_node(id)
@@ -610,6 +830,14 @@ fn apply_node(
         match item {
             Item::Prop(name, _) => {
                 object.insert(name.clone(), prop_json(&node, name));
+            }
+            Item::Distance(alias, distance) => {
+                object.insert(
+                    alias.clone(),
+                    point_prop(&node, &distance.field)
+                        .map(|point| json!(point.distance(distance.origin)))
+                        .unwrap_or(Json::Null),
+                );
             }
             Item::Hops => {
                 object.insert("hops".into(), json!(0));
@@ -627,6 +855,7 @@ fn apply_node(
             }
             Item::Walk {
                 field,
+                span,
                 link,
                 direction,
                 target,
@@ -645,9 +874,9 @@ fn apply_node(
                     )));
                 }
                 let child = if *link {
-                    let child_id = lookup_one(graph, target)?;
+                    let child_id = lookup_one(graph, target, uniques)?;
                     let props = edge_sets(target)?;
-                    let span = target
+                    let props_span = target
                         .items
                         .iter()
                         .find_map(|item| match item {
@@ -655,14 +884,30 @@ fn apply_node(
                             _ => None,
                         })
                         .unwrap_or(target.type_span);
-                    require_edge_props(schema, rel, &props, span)?;
-                    connect(graph, wal, id, child_id, *direction, rel, props)?;
+                    require_edge_props(schema, rel, &props, props_span)?;
+                    connect(
+                        graph,
+                        wal,
+                        id,
+                        child_id,
+                        *direction,
+                        RelationshipSpec { field, kind: rel, many, span: *span },
+                        props,
+                    )?;
                     let saved = graph.get_node(child_id).unwrap().clone();
                     let mut child_object = serde_json::Map::new();
                     for child_item in &target.items {
                         match child_item {
                             Item::Prop(name, _) => {
                                 child_object.insert(name.clone(), prop_json(&saved, name));
+                            }
+                            Item::Distance(alias, distance) => {
+                                child_object.insert(
+                                    alias.clone(),
+                                    point_prop(&saved, &distance.field)
+                                        .map(|point| json!(point.distance(distance.origin)))
+                                        .unwrap_or(Json::Null),
+                                );
                             }
                             Item::EdgeSet(name, value, _) => {
                                 child_object.insert(name.clone(), value.clone());
@@ -680,7 +925,7 @@ fn apply_node(
                         wal,
                         schema,
                         target,
-                        Some((id, *direction, rel.to_string())),
+                        Some((id, *direction, field.clone(), rel.to_string(), many, *span)),
                         uniques,
                     )?
                 };
@@ -699,8 +944,12 @@ fn apply_node(
     Ok(Json::Object(object))
 }
 
-fn lookup_one(graph: &Graph, sel: &Selection) -> Result<NodeId, LangError> {
-    let mut ids = candidates(graph, sel);
+fn lookup_one(
+    graph: &Graph,
+    sel: &Selection,
+    uniques: &[(String, String)],
+) -> Result<NodeId, LangError> {
+    let mut ids = unique_candidates(graph, sel, uniques).unwrap_or_else(|| candidates(graph, sel));
     ids.retain(|id| node_matches(graph, *id, sel.condition.as_ref()));
     match ids.len() {
         1 => Ok(ids[0]),
@@ -712,6 +961,48 @@ fn lookup_one(graph: &Graph, sel: &Selection) -> Result<NodeId, LangError> {
             LangError::at(sel.type_span, format!("{} matched {n} rows", sel.type_name))
                 .with_help("`link` and `set` need exactly one matching row"),
         ),
+    }
+}
+
+fn unique_candidates(
+    graph: &Graph,
+    sel: &Selection,
+    uniques: &[(String, String)],
+) -> Option<Vec<NodeId>> {
+    for (ty, field) in uniques {
+        if ty != &sel.type_name || !sel.also.is_empty() {
+            continue;
+        }
+        if let Some(value) = sel
+            .condition
+            .as_ref()
+            .and_then(|expr| guaranteed_eq(expr, field))
+        {
+            let value = json_to_value(value).ok()?;
+            let mut ids: Vec<_> = graph
+                .nodes_by_property(field, &value)
+                .into_iter()
+                .flat_map(|ids| ids.iter().copied())
+                .filter(|id| {
+                    graph
+                        .get_node(*id)
+                        .is_some_and(|node| node.labels.iter().any(|label| label == ty))
+                })
+                .collect();
+            ids.sort_unstable();
+            return Some(ids);
+        }
+    }
+    None
+}
+
+fn guaranteed_eq<'a>(expr: &'a BoolExpr, field: &str) -> Option<&'a Json> {
+    match expr {
+        BoolExpr::Test(Pred::Eq(name, value, _)) if name == field => Some(value),
+        BoolExpr::And(left, right) => {
+            guaranteed_eq(left, field).or_else(|| guaranteed_eq(right, field))
+        }
+        BoolExpr::Test(_) | BoolExpr::Or(_, _) => None,
     }
 }
 
@@ -855,29 +1146,105 @@ fn edge_sets(sel: &Selection) -> Result<HashMap<String, Value>, LangError> {
     Ok(props)
 }
 
+struct RelationshipSpec<'a> {
+    field: &'a str,
+    kind: &'a str,
+    many: bool,
+    span: Span,
+}
+
 fn connect(
     graph: &mut Graph,
     wal: &crate::Wal,
     parent: NodeId,
     child: NodeId,
     direction: Direction,
-    rel: &str,
+    relationship: RelationshipSpec<'_>,
     props: HashMap<String, Value>,
 ) -> Result<RelId, LangError> {
+    let RelationshipSpec { field, kind, many, span } = relationship;
+    if !many {
+        let mut existing = neighbors(graph, parent, kind, direction);
+        existing.sort_unstable();
+        if let Some((current, _)) = existing.first() {
+            let source = graph
+                .get_node(parent)
+                .map(node_description)
+                .unwrap_or_else(|| format!("node {parent}"));
+            let source_type = graph
+                .get_node(parent)
+                .and_then(|node| node.labels.first())
+                .map(String::as_str)
+                .unwrap_or("node");
+            let first = graph
+                .get_node(*current)
+                .map(node_description)
+                .unwrap_or_else(|| format!("node {current}"));
+            let second = graph
+                .get_node(child)
+                .map(node_description)
+                .unwrap_or_else(|| format!("node {child}"));
+            return Err(LangError::at(
+                span,
+                format!("single-valued relationship {source_type}.{field} on {source} already connects {first}; cannot also connect {second}"),
+            )
+            .with_help("declare it `Book[]` if many are intended, or unlink the current one first"));
+        }
+    }
     let (from, to) = match direction {
         Direction::Out => (parent, child),
         Direction::In => (child, parent),
     };
-    let id = graph.create_relationship(rel.to_string(), from, to, props.clone());
+    let id = graph.create_relationship(kind.to_string(), from, to, props.clone());
     wal.append(&Operation::InsertRel {
         id,
-        kind: rel.to_string(),
+        kind: kind.to_string(),
         from,
         to,
         props,
     })
     .map_err(|error| LangError::bare(error.to_string()))?;
     Ok(id)
+}
+
+fn node_description(node: &Node) -> String {
+    let ty = node.labels.first().map(String::as_str).unwrap_or("node");
+    format!("{ty}#{}", node.id)
+}
+
+fn ensure_single_valued(
+    graph: &Graph,
+    id: NodeId,
+    rel: &str,
+    field: &str,
+    direction: Direction,
+    span: Span,
+) -> Result<(), LangError> {
+    let mut edges = neighbors(graph, id, rel, direction);
+    if edges.len() <= 1 {
+        return Ok(());
+    }
+    edges.sort_unstable();
+    let node = graph
+        .get_node(id)
+        .ok_or_else(|| LangError::bare(format!("missing node {id}")))?;
+    let first = graph
+        .get_node(edges[0].0)
+        .map(node_description)
+        .unwrap_or_else(|| format!("node {}", edges[0].0));
+    let second = graph
+        .get_node(edges[1].0)
+        .map(node_description)
+        .unwrap_or_else(|| format!("node {}", edges[1].0));
+    Err(LangError::at(
+        span,
+        format!(
+            "single-valued relationship {}.{field} on {} connects both {first} and {second}",
+            node.labels.first().map(String::as_str).unwrap_or("node"),
+            node_description(node)
+        ),
+    )
+    .with_help("declare it `Book[]` if many are intended, or unlink the current one first"))
 }
 
 fn project(
@@ -898,6 +1265,14 @@ fn project(
             Item::Prop(name, _) => {
                 ensure_prop(schema, sel, name)?;
                 object.insert(name.clone(), prop_json(node, name));
+            }
+            Item::Distance(alias, distance) => {
+                object.insert(
+                    alias.clone(),
+                    point_prop(node, &distance.field)
+                        .map(|point| json!(point.distance(distance.origin)))
+                        .unwrap_or(Json::Null),
+                );
             }
             Item::Hops => {
                 object.insert("hops".into(), json!(hops));
@@ -923,6 +1298,7 @@ fn project(
                 range,
                 direction,
                 target,
+                span,
                 ..
             } => {
                 let edge = schema.edge(node_type(node, sel)?, field)?;
@@ -946,8 +1322,24 @@ fn project(
                     )));
                 }
                 let reached = if let Some((min, max)) = range {
-                    walk_range(graph, id, rel, *direction, targets, (*min, *max), budget)?
+                    walk_range(
+                        graph,
+                        id,
+                        WalkSpec {
+                            rel,
+                            field,
+                            direction: *direction,
+                            targets,
+                            range: (*min, *max),
+                            single_valued: !many,
+                            span: *span,
+                        },
+                        budget,
+                    )?
                 } else {
+                    if !many {
+                        ensure_single_valued(graph, id, rel, field, *direction, *span)?;
+                    }
                     charge(budget, 1)?;
                     neighbors(graph, id, rel, *direction)
                         .into_iter()
@@ -955,11 +1347,11 @@ fn project(
                         .map(|(next, rel_id)| (next, 1usize, rel_id))
                         .collect()
                 };
+                let mut reached = reached;
+                reached.retain(|(next, ..)| node_matches(graph, *next, target.condition.as_ref()));
+                order_limit(graph, target, &mut reached, |(id, ..)| *id);
                 let mut rows = Vec::new();
                 for (next, depth, rel_id) in reached {
-                    if !node_matches(graph, next, target.condition.as_ref()) {
-                        continue;
-                    }
                     rows.push(project(
                         graph,
                         schema,
@@ -1012,20 +1404,39 @@ fn ensure_prop(schema: &Schema, sel: &Selection, name: &str) -> Result<(), LangE
     )))
 }
 
+struct WalkSpec<'a> {
+    rel: &'a str,
+    field: &'a str,
+    direction: Direction,
+    targets: &'a [String],
+    range: (usize, usize),
+    single_valued: bool,
+    span: Span,
+}
+
 fn walk_range(
     graph: &Graph,
     start: NodeId,
-    rel: &str,
-    direction: Direction,
-    targets: &[String],
-    range: (usize, usize),
+    spec: WalkSpec<'_>,
     budget: &mut usize,
 ) -> Result<Vec<(NodeId, usize, RelId)>, LangError> {
+    let WalkSpec {
+        rel,
+        field,
+        direction,
+        targets,
+        range,
+        single_valued,
+        span,
+    } = spec;
     let (min, max) = range;
     let mut seen = HashSet::from([start]);
     let mut queue = VecDeque::from([(start, 0usize, 0u64)]);
     let mut found = Vec::new();
     while let Some((node, depth, via)) = queue.pop_front() {
+        if single_valued {
+            ensure_single_valued(graph, node, rel, field, direction, span)?;
+        }
         if depth >= min && depth > 0 && node_has_any_label(graph, node, targets) {
             found.push((node, depth, via));
         }
@@ -1075,18 +1486,136 @@ fn neighbors(
     out
 }
 
+fn spatial_filter(graph: &Graph, expr: &BoolExpr) -> Option<HashSet<NodeId>> {
+    match expr {
+        BoolExpr::Test(Pred::Box(field, bounds, _)) => {
+            Some(graph.spatial_candidates(field, *bounds))
+        }
+        BoolExpr::Test(Pred::Distance(distance, Cmp::Lt | Cmp::Lte, metres)) => Some(
+            graph.spatial_candidates(&distance.field, Bounds::radius(distance.origin, *metres)),
+        ),
+        BoolExpr::And(left, right) => {
+            match (spatial_filter(graph, left), spatial_filter(graph, right)) {
+                (Some(mut a), Some(b)) => {
+                    a.retain(|id| b.contains(id));
+                    Some(a)
+                }
+                (a, b) => a.or(b),
+            }
+        }
+        BoolExpr::Or(left, right) => {
+            match (spatial_filter(graph, left), spatial_filter(graph, right)) {
+                (Some(mut a), Some(b)) => {
+                    a.extend(b);
+                    Some(a)
+                }
+                _ => None, // A non-spatial branch may match anywhere.
+            }
+        }
+        _ => None,
+    }
+}
 fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
-    let mut labels = vec![sel.type_name.as_str()];
-    labels.extend(sel.also.iter().map(String::as_str));
-    let mut ids = Vec::new();
-    for label in labels {
-        if let Some(set) = graph.nodes_by_label(label) {
-            ids.extend(set.iter().copied());
+    let has_label = |id: &NodeId| {
+        graph.get_node(*id).is_some_and(|node| {
+            node.labels
+                .iter()
+                .any(|label| label == &sel.type_name || sel.also.contains(label))
+        })
+    };
+    let indexed = sel
+        .condition
+        .as_ref()
+        .and_then(|expr| spatial_filter(graph, expr));
+    // Expand a geodesic circle until k qualifying points are inside. Every
+    // point outside is farther than the kth match, so early stopping is exact.
+    if let Some(order) = &sel.order {
+        if sel.limit == Some(0) {
+            return Vec::new();
+        }
+        let maximum = std::f64::consts::PI * EARTH_RADIUS;
+        let mut radius = if sel.limit.is_some() { 1000.0 } else { maximum };
+        loop {
+            let mut ids: Vec<_> = graph
+                .spatial_candidates(&order.field, Bounds::radius(order.origin, radius))
+                .into_iter()
+                .filter(has_label)
+                .filter(|id| indexed.as_ref().is_none_or(|set| set.contains(id)))
+                .filter(|id| node_matches(graph, *id, sel.condition.as_ref()))
+                .filter(|id| node_distance(graph, *id, order).is_some_and(|d| d <= radius))
+                .collect();
+            if radius >= maximum || sel.limit.is_some_and(|k| ids.len() >= k) {
+                ids.sort_unstable();
+                return ids;
+            }
+            radius = (radius * 2.0).min(maximum);
         }
     }
+    let mut ids: Vec<_> = if let Some(indexed) = indexed {
+        indexed.into_iter().filter(has_label).collect()
+    } else {
+        std::iter::once(&sel.type_name)
+            .chain(&sel.also)
+            .filter_map(|label| graph.nodes_by_label(label))
+            .flat_map(|set| set.iter().copied())
+            .collect()
+    };
     ids.sort_unstable();
     ids.dedup();
     ids
+}
+fn point_prop(node: &Node, field: &str) -> Option<Point> {
+    match node.props.get(field) {
+        Some(Value::Point(point)) => Some(*point),
+        _ => None,
+    }
+}
+fn node_distance(graph: &Graph, id: NodeId, distance: &crate::lang::Distance) -> Option<f64> {
+    Some(point_prop(graph.get_node(id)?, &distance.field)?.distance(distance.origin))
+}
+fn order_limit<T>(graph: &Graph, sel: &Selection, ids: &mut Vec<T>, id: impl Fn(&T) -> NodeId) {
+    if let Some(order) = &sel.order {
+        ids.retain(|row| node_distance(graph, id(row), order).is_some());
+        ids.sort_by(|a, b| {
+            node_distance(graph, id(a), order)
+                .unwrap()
+                .total_cmp(&node_distance(graph, id(b), order).unwrap())
+                .then(id(a).cmp(&id(b)))
+        });
+    }
+    if let Some(limit) = sel.limit {
+        ids.truncate(limit);
+    }
+}
+fn require_points(schema: &Schema, sel: &Selection) -> Result<(), LangError> {
+    let tests = sel
+        .condition
+        .as_ref()
+        .map(BoolExpr::tests)
+        .unwrap_or_default();
+    for name in std::iter::once(&sel.type_name).chain(&sel.also) {
+        for field in &schema.get(name)?.fields {
+            if let crate::lang::Field::Prop {
+                name,
+                ty,
+                optional: false,
+                ..
+            } = field
+            {
+                if ty == "Point"
+                    && !tests
+                        .iter()
+                        .any(|pred| matches!(pred, Pred::Eq(field, _, _) if field == name))
+                {
+                    return Err(LangError::at(
+                        sel.type_span,
+                        format!("{} requires Point field {name}", sel.type_name),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn node_has_any_label(graph: &Graph, id: NodeId, labels: &[String]) -> bool {
@@ -1140,6 +1669,14 @@ fn pred_matches(graph: &Graph, id: NodeId, pred: &Pred) -> bool {
         return false;
     };
     match pred {
+        Pred::Distance(distance, op, metres) => {
+            point_prop(node, &distance.field).is_some_and(|point| {
+                cmp_json(&json!(point.distance(distance.origin)), *op, &json!(metres))
+            })
+        }
+        Pred::Box(field, bounds, _) => {
+            point_prop(node, field).is_some_and(|point| bounds.contains(point))
+        }
         Pred::Eq(field, value, _) => prop_json(node, field) == *value,
         Pred::Ne(field, value, _) => prop_json(node, field) != *value,
         Pred::Cmp(field, op, value, _) => cmp_json(&prop_json(node, field), *op, value),
@@ -1181,9 +1718,12 @@ fn cmp_value(left: &Json, right: &Json) -> Option<std::cmp::Ordering> {
 }
 
 fn equality_lookup(sel: &Selection) -> bool {
-    sel.condition
-        .as_ref()
-        .is_some_and(|expr| expr.is_equality_and())
+    sel.order.is_none()
+        && sel.limit.is_none()
+        && sel
+            .condition
+            .as_ref()
+            .is_some_and(|expr| expr.is_equality_and())
 }
 
 fn prop_json(node: &Node, name: &str) -> Json {
@@ -1217,6 +1757,7 @@ fn value_to_json(value: &Value) -> Json {
         Value::Bool(value) => Json::Bool(*value),
         Value::Null => Json::Null,
         Value::List(values) => Json::Array(values.iter().map(value_to_json).collect()),
+        Value::Point(point) => point.to_json(),
         Value::Map(values) => {
             let mut object = serde_json::Map::new();
             for (key, value) in values {
@@ -1241,7 +1782,12 @@ fn json_to_value(value: &Json) -> Result<Value, LangError> {
         }
         Json::Bool(value) => Ok(Value::Bool(*value)),
         Json::Null => Ok(Value::Null),
-        _ => Err(LangError::bare("only scalar values can be stored")),
+        Json::Object(_) => Point::from_json(value)
+            .map(Value::Point)
+            .map_err(LangError::bare),
+        _ => Err(LangError::bare(
+            "only scalar values and Points can be stored",
+        )),
     }
 }
 
@@ -1642,6 +2188,50 @@ mod tests {
     }
 
     #[test]
+    fn lookup_one_unique_index_matches_scan_for_seeded_data() {
+        let uniques = vec![("Person".to_string(), "name".to_string())];
+        for seed in 1..=16_u64 {
+            let mut graph = Graph::new();
+            let mut state = seed;
+            let mut selected = Vec::new();
+            for index in 0..100_u64 {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                let name = format!("person-{seed}-{index}");
+                let age = ((state >> 32) % 100) as i64;
+                let id = graph.create_node(
+                    vec!["Person".into()],
+                    HashMap::from([
+                        ("name".into(), Value::String(name.clone())),
+                        ("age".into(), Value::Int(age)),
+                    ]),
+                );
+                if index % 3 == (seed % 3) {
+                    selected.push((name, id));
+                }
+            }
+            for (name, expected) in selected {
+                let source = format!(
+                    "mutation {{ Person(name = {name:?} && age >= 0) set age: 0 {{ name }} }}"
+                );
+                let Statement::Run(query) = crate::lang::parse_statement(&source).unwrap() else {
+                    panic!("expected mutation statement");
+                };
+                let selection = query.root.unwrap();
+                let mut scan = candidates(&graph, &selection);
+                scan.retain(|id| node_matches(&graph, *id, selection.condition.as_ref()));
+                assert_eq!(scan, vec![expected]);
+                assert_eq!(
+                    unique_candidates(&graph, &selection, &uniques),
+                    Some(scan.clone())
+                );
+                assert_eq!(lookup_one(&graph, &selection, &uniques).unwrap(), scan[0]);
+            }
+        }
+    }
+
+    #[test]
     fn link_and_set_reject_ambiguous_lookups() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
@@ -1813,17 +2403,22 @@ mod tests {
     }
 
     #[test]
-    fn single_valued_query_relationship_returns_first_of_multiple_targets() {
-        let zega = Zega::in_memory().build().unwrap();
+    fn single_valued_relationship_rejects_second_target_on_every_write_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
         let schema = r#"
+            schema {
             type Author { name: String favorite -> Book }
             type Book { title: String }
+            }
         "#;
+        zega.apply_zql(schema).unwrap();
         zega.run_lang(schema, r#"mutation { Author(name: "A") { name } }"#)
             .unwrap();
-        zega.run_lang(schema, r#"mutation { Book(title: "Twin") { title } }"#)
+        zega.run_lang(schema, r#"mutation { Book(title: "First") { title } }"#)
             .unwrap();
-        zega.run_lang(schema, r#"mutation { Book(title: "Twin") { title } }"#)
+        zega.run_lang(schema, r#"mutation { Book(title: "Second") { title } }"#)
             .unwrap();
         let graph = zega.graph_json().unwrap();
         let author = graph["nodes"]
@@ -1838,24 +2433,259 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|node| node["title"] == "Twin")
+            .filter(|node| node["title"].is_string())
             .map(|node| node["id"].as_u64().unwrap())
             .collect();
         zega.connect_schema(schema, author, "favorite", books[0])
             .unwrap();
-        zega.connect_schema(schema, author, "favorite", books[1])
+        let before = zega.graph_json().unwrap();
+
+        let direct = zega
+            .connect_schema(schema, author, "favorite", books[1])
+            .unwrap_err();
+        assert!(direct.to_string().contains("Author.favorite"), "{direct}");
+        for target in &books {
+            assert!(direct.to_string().contains(&format!("Book#{target}")), "{direct}");
+        }
+        assert!(
+            direct.to_string().contains("unlink the current one first"),
+            "{direct}"
+        );
+
+        let link = zega
+            .run_lang(
+                schema,
+                r#"mutation {
+            Author(name: "A") { favorite -> link Book(title: "First") { title } }
+        }"#,
+            )
+            .unwrap_err();
+        assert!(link.to_string().contains("Author.favorite"), "{link}");
+        assert!(link.to_string().contains("query:2:"), "{link}");
+        assert!(
+            link.to_string().contains("unlink the current one first"),
+            "{link}"
+        );
+        assert_eq!(zega.graph_json().unwrap(), before);
+
+        let created = zega
+            .run_lang(
+                schema,
+                r#"mutation {
+            Author(name: "New") {
+              favorite -> Book(title: "Third") { title }
+              favorite -> Book(title: "Fourth") { title }
+            }
+        }"#,
+            )
+            .unwrap_err();
+        assert!(created.to_string().contains("Author.favorite"), "{created}");
+        assert_eq!(zega.graph_json().unwrap(), before);
+        drop(zega);
+        let reopened = Zega::open(path).wal_flush_every_write().build().unwrap();
+        assert_eq!(reopened.graph_json().unwrap(), before);
+    }
+
+    #[test]
+    fn single_valued_relationship_loads_are_atomic_for_json_and_csv() {
+        let schema = r#"schema {
+          type Author { name: String favorite -> Book }
+          type Book { title: String }
+        }"#;
+        for (format, data) in [
+            (
+                "json",
+                r#"[{"author":"A","title":"First"},{"author":"A","title":"Second"}]"#,
+            ),
+            ("csv", "author,title\nA,First\nA,Second\n"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().to_str().unwrap();
+            let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
+            zega.apply_zql(schema).unwrap();
+            let schema_body = r#"type Author { name: String favorite -> Book } type Book { title: String }"#;
+            zega.run_lang(schema_body, r#"mutation { Author(name: "A") { name } }"#)
+                .unwrap();
+            let before = zega.graph_json().unwrap();
+            let document = format!(
+                "{schema}\nmutation {format} [\"rows.{format}\"] {{ Author(name: $author) set name: $author {{ favorite -> Book(title: $title) {{ title }} }} }}"
+            );
+            let err = zega
+                .apply_zql_with_sources(
+                    &document,
+                    &HashMap::from([(format!("rows.{format}"), data.to_string())]),
+                )
+            .unwrap_err();
+            assert!(err.to_string().contains("Author.favorite"), "{err}");
+            assert_eq!(zega.graph_json().unwrap(), before);
+            drop(zega);
+            let reopened = Zega::open(path).wal_flush_every_write().build().unwrap();
+            assert_eq!(reopened.graph_json().unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn single_valued_read_rejects_legacy_raw_graph_state() {
+        let zega = Zega::in_memory().build().unwrap();
+        let schema = r#"type Author { name: String favorite -> Book } type Book { title: String }"#;
+        zega.run_lang(schema, r#"mutation { Author(name: "A") { name } }"#)
             .unwrap();
-        let result = zega
+        zega.run_lang(schema, r#"mutation { Book(title: "One") { title } }"#)
+            .unwrap();
+        zega.run_lang(schema, r#"mutation { Book(title: "Two") { title } }"#)
+            .unwrap();
+        let graph = zega.graph_json().unwrap();
+        let author = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["name"] == "A")
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let books: Vec<_> = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["title"].is_string())
+            .map(|n| n["id"].as_u64().unwrap())
+            .collect();
+        {
+            let mut raw = zega.graph.lock().unwrap();
+            raw.create_relationship("favorite".into(), author, books[0], HashMap::new());
+            raw.create_relationship("favorite".into(), author, books[1], HashMap::new());
+        }
+        let error = zega
             .run_lang(
                 schema,
                 r#"{ Author(name = "A") { favorite -> Book { title } } }"#,
             )
-            .unwrap();
-        assert_eq!(result["favorite"]["title"], "Twin");
-        assert_eq!(
-            zega.graph_json().unwrap()["rels"].as_array().unwrap().len(),
-            2
+            .unwrap_err();
+        assert!(error.to_string().contains("Author.favorite"), "{error}");
+        assert!(error.to_string().contains("Book#"), "{error}");
+
+        let ranged_error = zega
+            .run_lang(
+                schema,
+                r#"{ Author(name = "A") { favorite *1..1 -> Book { title } } }"#,
+            )
+            .unwrap_err();
+        assert!(
+            ranged_error.to_string().contains("Author.favorite"),
+            "{ranged_error}"
         );
+        assert!(
+            ranged_error
+                .to_string()
+                .contains(&format!("Author#{author}")),
+            "{ranged_error}"
+        );
+        for target in &books {
+            assert!(
+                ranged_error
+                    .to_string()
+                    .contains(&format!("Book#{target}")),
+                "{ranged_error}"
+            );
+        }
+        assert!(
+            ranged_error
+                .to_string()
+                .contains("unlink the current one first"),
+            "{ranged_error}"
+        );
+    }
+
+    #[test]
+    fn ranged_single_valued_walk_checks_every_node_in_the_walk() {
+        let zega = Zega::in_memory().build().unwrap();
+        let schema = r#"type Person { name: String parent -> Person }"#;
+        zega.run_lang(
+            schema,
+            r#"mutation {
+                Person(name: "A") {
+                  parent -> Person(name: "B") {
+                    parent -> Person(name: "C") {
+                      parent -> Person(name: "D") { name }
+                    }
+                  }
+                }
+            }"#,
+        )
+        .unwrap();
+        let clean = zega
+            .run_lang(
+                schema,
+                r#"{ Person(name = "A") { parent *1..3 -> Person { name } } }"#,
+            )
+            .unwrap();
+        let chain = clean["parent"].as_array().unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0]["name"], "B");
+        assert_eq!(chain[1]["name"], "C");
+        assert_eq!(chain[2]["name"], "D");
+
+        zega.run_lang(schema, r#"mutation { Person(name: "E") { name } }"#)
+            .unwrap();
+        let graph = zega.graph_json().unwrap();
+        let nodes = graph["nodes"].as_array().unwrap();
+        let b_id = nodes.iter().find(|node| node["name"] == "B").unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let c_id = nodes.iter().find(|node| node["name"] == "C").unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let e_id = nodes.iter().find(|node| node["name"] == "E").unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        {
+            let mut raw = zega.graph.lock().unwrap();
+            raw.create_relationship("parent".into(), b_id, e_id, HashMap::new());
+        }
+
+        let error = zega
+            .run_lang(
+                schema,
+                r#"{ Person(name = "A") { parent *1..3 -> Person { name } } }"#,
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(&format!("Person#{b_id}")),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains(&format!("Person#{c_id}")),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains(&format!("Person#{e_id}")),
+            "{error}"
+        );
+        assert!(error.to_string().contains("Person.parent"), "{error}");
+        assert!(
+            error.to_string().contains("unlink the current one first"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn many_relationship_still_accepts_multiple_targets() {
+        let zega = Zega::in_memory().build().unwrap();
+        let schema =
+            r#"type Author { name: String favorites -> Book[] } type Book { title: String }"#;
+        let result = zega
+            .run_lang(
+                schema,
+                r#"mutation {
+            Author(name: "A") {
+              favorites -> Book(title: "One") { title }
+              favorites -> Book(title: "Two") { title }
+            }
+        }"#,
+            )
+            .unwrap();
+        assert_eq!(result["favorites"].as_array().unwrap().len(), 2);
+        assert_eq!(zega.graph_json().unwrap()["rels"].as_array().unwrap().len(), 2);
     }
 
     #[test]

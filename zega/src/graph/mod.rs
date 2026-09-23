@@ -26,10 +26,30 @@ pub struct Graph {
     relationships: HashMap<RelId, Relationship>,
     label_index: HashMap<String, HashSet<NodeId>>,
     property_index: HashMap<(String, Value), HashSet<NodeId>>,
+    spatial_index: crate::location::SpatialIndex,
     outgoing: HashMap<NodeId, HashSet<RelId>>,
     incoming: HashMap<NodeId, HashSet<RelId>>,
     next_node_id: AtomicU64,
     next_rel_id: AtomicU64,
+}
+
+impl Clone for Graph {
+    fn clone(&self) -> Self {
+        let mut graph = Self::new();
+        for node in self.nodes.values() {
+            graph.restore_node(node.id, node.labels.clone(), node.props.clone());
+        }
+        for rel in self.relationships.values() {
+            graph.restore_relationship(
+                rel.id,
+                rel.kind.clone(),
+                rel.from,
+                rel.to,
+                rel.props.clone(),
+            );
+        }
+        graph
+    }
 }
 
 impl Default for Graph {
@@ -45,11 +65,21 @@ impl Graph {
             relationships: HashMap::new(),
             label_index: HashMap::new(),
             property_index: HashMap::new(),
+            spatial_index: Default::default(),
             outgoing: HashMap::new(),
             incoming: HashMap::new(),
             next_node_id: AtomicU64::new(1),
             next_rel_id: AtomicU64::new(1),
         }
+    }
+
+    /// Conservative Morton-range candidates. Apply an exact predicate afterwards.
+    pub fn spatial_candidates(
+        &self,
+        field: &str,
+        bounds: crate::location::Bounds,
+    ) -> HashSet<NodeId> {
+        self.spatial_index.candidates(field, bounds)
     }
 
     pub fn create_node(&mut self, labels: Vec<String>, props: HashMap<String, Value>) -> NodeId {
@@ -74,6 +104,9 @@ impl Graph {
                 .insert(id);
         }
         for (k, v) in &props {
+            if let Value::Point(point) = v {
+                self.spatial_index.insert(k, *point, id);
+            }
             self.property_index
                 .entry((k.clone(), v.clone()))
                 .or_default()
@@ -85,12 +118,18 @@ impl Graph {
     pub fn update_node(&mut self, id: NodeId, props: HashMap<String, Value>) {
         if let Some(node) = self.nodes.get_mut(&id) {
             for (k, v) in &node.props {
+                if let Value::Point(point) = v {
+                    self.spatial_index.remove(k, *point, id);
+                }
                 if let Some(set) = self.property_index.get_mut(&(k.clone(), v.clone())) {
                     set.remove(&id);
                 }
             }
             node.props.extend(props);
             for (k, v) in &node.props {
+                if let Value::Point(point) = v {
+                    self.spatial_index.insert(k, *point, id);
+                }
                 self.property_index
                     .entry((k.clone(), v.clone()))
                     .or_default()
@@ -106,6 +145,9 @@ impl Graph {
             }
         }
         for (k, v) in &node.props {
+            if let Value::Point(point) = v {
+                self.spatial_index.remove(k, *point, node.id);
+            }
             if let Some(set) = self.property_index.get_mut(&(k.clone(), v.clone())) {
                 set.remove(&node.id);
             }
@@ -225,29 +267,14 @@ impl Graph {
     }
 
     pub fn set_state(&mut self, nodes: HashMap<NodeId, Node>, rels: HashMap<RelId, Relationship>) {
-        self.nodes = nodes;
-        self.relationships = rels;
-        self.label_index.clear();
-        self.property_index.clear();
-        self.outgoing.clear();
-        self.incoming.clear();
-        for (id, node) in &self.nodes {
-            for lbl in &node.labels {
-                self.label_index.entry(lbl.clone()).or_default().insert(*id);
-            }
-            for (k, v) in &node.props {
-                self.property_index.entry((k.clone(), v.clone())).or_default().insert(*id);
-            }
+        // Snapshots and WAL replay use the same index-maintenance paths.
+        *self = Self::new();
+        for (id, node) in nodes {
+            self.restore_node(id, node.labels, node.props);
         }
-        for (id, rel) in &self.relationships {
-            self.outgoing.entry(rel.from).or_default().insert(*id);
-            self.incoming.entry(rel.to).or_default().insert(*id);
+        for (id, rel) in rels {
+            self.restore_relationship(id, rel.kind, rel.from, rel.to, rel.props);
         }
-        // Update next ids
-        let max_node = self.nodes.keys().copied().max().unwrap_or(0);
-        let max_rel = self.relationships.keys().copied().max().unwrap_or(0);
-        self.next_node_id.store(max_node + 1, Ordering::SeqCst);
-        self.next_rel_id.store(max_rel + 1, Ordering::SeqCst);
     }
 }
 

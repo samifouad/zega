@@ -1,6 +1,7 @@
 //! The v2 schema and query language. Users write this. The engine walks the
 //! graph it already stores; this crate does not parse ZQL.
 
+use crate::location::{Bounds, Point};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use thiserror::Error;
@@ -139,8 +140,13 @@ fn check_display(schema: &Schema, block: DisplayBlock) -> Result<DisplayConfig> 
             ViewKind::Graph | ViewKind::Table => None,
         };
         let eligible = |ty: &TypeDef| match kind {
-            ViewKind::Map => ["lat", "lon"].iter().all(|coordinate| ty.fields.iter().any(|field|
-                matches!(field, Field::Prop { name, ty, .. } if name == coordinate && ty == "Float"))),
+            ViewKind::Map => ty.fields.iter().any(|field| {
+                matches!(field, Field::Prop { ty, .. } if ty == "Point")
+            }) || ["lat", "lon"].iter().all(|coordinate| {
+                ty.fields.iter().any(|field| {
+                    matches!(field, Field::Prop { name, ty, .. } if name == coordinate && ty == "Float")
+                })
+            }),
             ViewKind::Timeline => ty.timeline_field.is_some(),
             ViewKind::Graph | ViewKind::Table => true,
         };
@@ -188,6 +194,8 @@ pub enum Field {
         name: String,
         ty: String,
         optional: bool,
+        /// Explicit source column names, latitude then longitude, for loads.
+        from: Option<[String; 2]>,
     },
     Edge {
         /// Name used in a query.
@@ -238,11 +246,21 @@ pub struct Selection {
     /// The condition in parentheses. `&&` is and, `||` is or, `!=` is not equal.
     pub condition: Option<BoolExpr>,
     pub sets: Vec<(String, Json, Span)>,
+    pub order: Option<Distance>,
+    pub limit: Option<usize>,
     pub items: Vec<Item>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Distance {
+    pub field: String,
+    pub origin: Point,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Item {
+    Distance(String, Distance),
     Prop(String, Span),
     Hops,
     EdgeProp(String, Span),
@@ -260,6 +278,8 @@ pub enum Item {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pred {
+    Distance(Distance, Cmp, f64),
+    Box(String, Bounds, Span),
     Eq(String, Json, Span),
     Ne(String, Json, Span),
     Cmp(String, Cmp, Json, Span),
@@ -314,6 +334,8 @@ impl BoolExpr {
 impl Pred {
     pub fn field(&self) -> &str {
         match self {
+            Pred::Distance(distance, ..) => &distance.field,
+            Pred::Box(field, ..) => field,
             Pred::Eq(field, _, _)
             | Pred::Ne(field, _, _)
             | Pred::Cmp(field, _, _, _)
@@ -325,6 +347,8 @@ impl Pred {
 
     pub fn span(&self) -> Span {
         match self {
+            Pred::Distance(distance, ..) => distance.span,
+            Pred::Box(_, _, span) => *span,
             Pred::Eq(_, _, span)
             | Pred::Ne(_, _, span)
             | Pred::Cmp(_, _, _, span)
@@ -544,6 +568,7 @@ fn json_matches(ty: &str, value: &Json) -> bool {
         "Int" => value.as_i64().is_some(),
         "Float" => value.is_number(),
         "Bool" => value.is_boolean(),
+        "Point" => Point::from_json(value).is_ok(),
         _ => true,
     }
 }
@@ -1020,7 +1045,25 @@ impl<'a> Parser<'a> {
                 return self.finish_edge(name, rel, direction, targets, target_spans, many);
             }
             let (ty, _) = self.ident()?;
-            return Ok(Field::Prop { name, ty, optional });
+            let from = if self.eat_word("from") {
+                if ty != "Point" {
+                    return Err(self.err_at(name_span, "from (...) is only valid on a Point field"));
+                }
+                self.expect("(")?;
+                let (lat, _) = self.ident()?;
+                self.expect(",")?;
+                let (lon, _) = self.ident()?;
+                self.expect(")")?;
+                Some([lat, lon])
+            } else {
+                None
+            };
+            return Ok(Field::Prop {
+                name,
+                ty,
+                optional,
+                from,
+            });
         }
         if optional {
             return Err(self
@@ -1167,6 +1210,25 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let order = if self.eat_word("order") {
+            self.expect_word("by")?;
+            Some(self.distance()?)
+        } else {
+            None
+        };
+        let limit = if self.eat_word("limit") {
+            self.skip();
+            let start = self.i;
+            let n = self.integer()?;
+            Some(usize::try_from(n).map_err(|_| {
+                self.err_at(
+                    self.span_bytes(start, self.i),
+                    "limit must be a non-negative integer",
+                )
+            })?)
+        } else {
+            None
+        };
         let mut sets = Vec::new();
         if self.eat_word("set") {
             loop {
@@ -1193,6 +1255,8 @@ impl<'a> Parser<'a> {
             also_spans,
             condition,
             sets,
+            order,
+            limit,
             items,
         })
     }
@@ -1217,7 +1281,18 @@ impl<'a> Parser<'a> {
                 Item::EdgeProp(name, span)
             });
         }
+        if self.starts_word("distance")
+            && self.src[self.i..]
+                .trim_start()
+                .strip_prefix("distance")
+                .is_some_and(|rest| rest.trim_start().starts_with('('))
+        {
+            return Ok(Item::Distance("distance".into(), self.distance()?));
+        }
         let (field, mut span) = self.ident()?;
+        if self.eat(":") {
+            return Ok(Item::Distance(field, self.distance()?));
+        }
         let range = if self.eat("*") {
             let min = self.integer()? as usize;
             self.expect("..")?;
@@ -1314,6 +1389,53 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pred(&mut self) -> Result<Pred> {
+        self.skip();
+        if self.starts_word("distance")
+            && self.src[self.i..]
+                .trim_start()
+                .strip_prefix("distance")
+                .is_some_and(|rest| rest.trim_start().starts_with('('))
+        {
+            let distance = self.distance()?;
+            let op = if self.eat("<=") {
+                Cmp::Lte
+            } else if self.eat("<") {
+                Cmp::Lt
+            } else if self.eat(">=") {
+                Cmp::Gte
+            } else if self.eat(">") {
+                Cmp::Gt
+            } else {
+                return Err(self.err("distance needs <, <=, >, or >= and metres"));
+            };
+            self.skip();
+            let start = self.i;
+            let metres = self
+                .parse_value()?
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= 0.0)
+                .ok_or_else(|| {
+                    self.err_at(
+                        self.span_bytes(start, self.i),
+                        "distance must be a non-negative number of metres",
+                    )
+                })?;
+            return Ok(Pred::Distance(distance, op, metres));
+        }
+        if self.eat_word("within_box") {
+            self.expect("(")?;
+            let (field, span) = self.ident()?;
+            self.expect(",")?;
+            let southwest = self.point()?;
+            self.expect(",")?;
+            let northeast = self.point()?;
+            self.expect(")")?;
+            return Ok(Pred::Box(
+                field,
+                Bounds::new(southwest, northeast).map_err(|message| self.err_at(span, message))?,
+                span,
+            ));
+        }
         let (field, span) = self.ident()?;
         self.skip();
         if self.eat(":") || self.eat("=") {
@@ -1365,8 +1487,69 @@ impl<'a> Parser<'a> {
             .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
     }
 
+    fn point(&mut self) -> Result<Point> {
+        self.skip();
+        let start = self.i;
+        self.expect_word("point")?;
+        self.expect("(")?;
+        let arity = |p: &Self| {
+            p.err_at(
+                p.span_bytes(start, p.i),
+                "point() needs exactly two numbers: latitude, longitude",
+            )
+        };
+        if self.eat(")") {
+            return Err(arity(self));
+        }
+        self.skip();
+        let lat_start = self.i;
+        let lat = self.parse_value()?;
+        let lat_span = self.span_bytes(lat_start, self.i);
+        if !self.eat(",") {
+            return Err(arity(self));
+        }
+        self.skip();
+        if self.eat(")") {
+            return Err(arity(self));
+        }
+        let lon_start = self.i;
+        let lon = self.parse_value()?;
+        let lon_span = self.span_bytes(lon_start, self.i);
+        if !self.eat(")") {
+            return Err(arity(self));
+        }
+        let latitude = lat
+            .as_f64()
+            .filter(|n| n.is_finite() && (-90.0..=90.0).contains(n))
+            .ok_or_else(|| self.err_at(lat_span, "Point latitude must be a number in [-90, 90]"))?;
+        let longitude = lon
+            .as_f64()
+            .filter(|n| n.is_finite() && (-180.0..=180.0).contains(n))
+            .ok_or_else(|| {
+                self.err_at(lon_span, "Point longitude must be a number in [-180, 180]")
+            })?;
+        Ok(Point::new(latitude, longitude).expect("validated coordinates"))
+    }
+
+    fn distance(&mut self) -> Result<Distance> {
+        self.expect_word("distance")?;
+        self.expect("(")?;
+        let (field, span) = self.ident()?;
+        self.expect(",")?;
+        let origin = self.point()?;
+        self.expect(")")?;
+        Ok(Distance {
+            field,
+            origin,
+            span,
+        })
+    }
+
     fn parse_value(&mut self) -> Result<Json> {
         self.skip();
+        if self.starts_word("point") {
+            return Ok(self.point()?.to_json());
+        }
         if self.eat("$") {
             if !self.columns {
                 return Err(self
@@ -1599,6 +1782,8 @@ fn bind_selection(
         also_spans: sel.also_spans.clone(),
         condition,
         sets,
+        order: sel.order.clone(),
+        limit: sel.limit,
         items,
     }))
 }
@@ -1750,6 +1935,90 @@ pub fn bind_row(
     row: &std::collections::HashMap<String, Json>,
 ) -> Result<Option<Query>> {
     bind_query(template, row)
+}
+
+/// Bind the explicit load template, then populate Point fields from their named
+/// object or the schema's explicit `from` mapping. Validate before any writes.
+pub fn bind_location_row(
+    schema: &Schema,
+    template: &Query,
+    row: &std::collections::HashMap<String, Json>,
+) -> Result<Option<Query>> {
+    let Some(mut query) = bind_row(template, row)? else {
+        return Ok(None);
+    };
+    if let Some(root) = &mut query.root {
+        bind_points(schema, root, row, false)?;
+        check(schema, root, true)?;
+    }
+    Ok(Some(query))
+}
+fn bind_points(
+    schema: &Schema,
+    sel: &mut Selection,
+    row: &std::collections::HashMap<String, Json>,
+    link: bool,
+) -> Result<()> {
+    let lookup = link || !sel.sets.is_empty() || sel.items.iter().any(|item| matches!(item, Item::Walk { link: true, .. }));
+    for field in &schema.get(&sel.type_name)?.fields {
+        let Field::Prop {
+            name,
+            ty,
+            optional,
+            from,
+        } = field
+        else {
+            continue;
+        };
+        if ty != "Point" || lookup {
+            continue;
+        }
+        if sel.sets.iter().any(|(key, ..)| key == name)
+            || sel
+                .condition
+                .as_ref()
+                .is_some_and(|expr| expr.tests().iter().any(|pred| pred.field() == name))
+        {
+            continue;
+        }
+        let value = if let Some(value) = row.get(name) {
+            value.clone()
+        } else if let Some([lat, lon]) = from {
+            let coordinate = |column: &str| {
+                row.get(column)
+                    .filter(|value| value.is_number())
+                    .ok_or_else(|| {
+                        Error::at(
+                            sel.type_span,
+                            if row.contains_key(column) {
+                                format!("Point source column {column} must be numeric")
+                            } else {
+                                format!("no column {column} for Point field {name}")
+                            },
+                        )
+                    })
+            };
+            serde_json::json!({"lat": coordinate(lat)?, "lon": coordinate(lon)?})
+        } else if *optional {
+            continue;
+        } else {
+            return Err(Error::at(sel.type_span, format!("{name} requires a Point object or an explicit from (latitude, longitude) mapping")));
+        };
+        if !(value.is_null() && *optional) {
+            Point::from_json(&value).map_err(|message| Error::at(sel.type_span, message))?;
+        }
+        let pred = BoolExpr::Test(Pred::Eq(name.clone(), value, sel.type_span));
+        sel.condition = Some(match sel.condition.take() {
+            Some(expr) => BoolExpr::And(Box::new(expr), Box::new(pred)),
+            None => pred,
+        });
+    }
+    for item in &mut sel.items {
+        if let Item::Walk { target, link, .. } = item {
+            bind_points(schema, target, row, *link)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn json_rows(
@@ -1951,9 +2220,32 @@ impl Check<'_> {
                 if pred.field() != "id" {
                     self.ensure_prop(sel, pred.field(), pred.span());
                 }
+                match pred {
+                    Pred::Distance(distance, ..) => {
+                        self.ensure_point(sel, &distance.field, distance.span)
+                    }
+                    Pred::Box(field, _, span) => self.ensure_point(sel, field, *span),
+                    Pred::Eq(field, value, span)
+                    | Pred::Ne(field, value, span)
+                    | Pred::Cmp(field, _, value, span) => {
+                        self.check_point_value(sel, field, value, *span)
+                    }
+                    _ => {}
+                }
             }
         }
-        for (name, _, span) in &sel.sets {
+        if let Some(order) = &sel.order {
+            self.ensure_point(sel, &order.field, order.span);
+        }
+        if self.mutation && (sel.order.is_some() || sel.limit.is_some()) {
+            self.push(
+                sel.type_span,
+                "order and limit are only valid in queries",
+                None,
+            );
+        }
+        for (name, value, span) in &sel.sets {
+            self.check_point_value(sel, name, value, *span);
             if self.mutation {
                 self.ensure_prop(sel, name, *span);
             } else {
@@ -1967,6 +2259,9 @@ impl Check<'_> {
         for item in &sel.items {
             match item {
                 Item::Prop(name, span) => self.ensure_prop(sel, name, *span),
+                Item::Distance(_, distance) => {
+                    self.ensure_point(sel, &distance.field, distance.span)
+                }
                 Item::Hops => {}
                 Item::EdgeProp(name, span) => {
                     self.edge_field(arrived, name, *span, None);
@@ -2143,6 +2438,42 @@ impl Check<'_> {
                     format!("{}.{} does not reach {name}", sel.type_name, field),
                     Some(format!("`{field}` reaches {}", targets.join(", "))),
                 );
+            }
+        }
+    }
+
+    fn ensure_point(&mut self, sel: &Selection, name: &str, span: Span) {
+        if !selection_types(sel).iter().any(
+            |ty| matches!(self.schema.prop(ty, name), Ok(Field::Prop { ty, .. }) if ty == "Point"),
+        ) {
+            self.push(
+                span,
+                format!(
+                    "{}.{} must be Point for a spatial query",
+                    sel.type_name, name
+                ),
+                Some(format!("declare `{name}: Point`")),
+            );
+        }
+    }
+
+    fn check_point_value(&mut self, sel: &Selection, name: &str, value: &Json, span: Span) {
+        if column_name(value).is_some() {
+            return;
+        }
+        for type_name in selection_types(sel) {
+            if let Ok(Field::Prop { ty, optional, .. }) = self.schema.prop(type_name, name) {
+                if ty == "Point" && !(value.is_null() && *optional) {
+                    if let Err(message) = Point::from_json(value) {
+                        self.push(
+                            span,
+                            message,
+                            Some("write `point(latitude, longitude)`".into()),
+                        );
+                    }
+                } else if ty != "Point" && Point::from_json(value).is_ok() {
+                    self.push(span, format!("{type_name}.{name} is {ty}, not Point"), None);
+                }
             }
         }
     }
