@@ -1,0 +1,10 @@
+[package]
+name = "zega-lang"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+zega-validation = { workspace = true }

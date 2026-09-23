@@ -14,6 +14,8 @@ use sha2::Sha256;
 use zega_parser::value::Value;
 
 use crate::{JwtConfig, JwtKey, Result, ZegaError};
+#[cfg(target_arch = "wasm32")]
+use crate::now_millis;
 
 type HmacSha256 = Hmac<Sha256>;
 

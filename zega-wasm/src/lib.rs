@@ -15,6 +15,55 @@ impl ZegaWasm {
         Ok(ZegaWasm { inner })
     }
 
+    /// Run a v2 schema-language query. `schema` is the text of `schema.zql`.
+    /// `source` is one read or one `mutation`.
+    /// Run a `.zql` file of `schema`, `unique`, `mutation`, and `query` blocks.
+    pub fn apply(&self, source: String) -> Result<String, JsValue> {
+        let value = self.inner.apply_zql(&source).map_err(to_js_error)?;
+        serde_json::to_string(&value).map_err(to_js_error)
+    }
+
+    pub fn run(&self, schema: String, source: String) -> Result<String, JsValue> {
+        let value = self.inner.run_lang(&schema, &source).map_err(to_js_error)?;
+        serde_json::to_string(&value).map_err(to_js_error)
+    }
+
+    /// Parse and type-check. Returns a JSON array of diagnostics. An empty
+    /// array means the schema and query are clean.
+    pub fn check(&self, schema: String, source: String) -> String {
+        serde_json::to_string(&zega_core::diagnose(&schema, &source))
+            .unwrap_or_else(|_| "[]".into())
+    }
+
+    pub fn delete_node(&self, id: f64) -> Result<(), JsValue> {
+        self.inner.delete_node(id as u64).map_err(to_js_error)
+    }
+
+    pub fn delete_relationship(&self, id: f64) -> Result<(), JsValue> {
+        self.inner
+            .delete_relationship(id as u64)
+            .map_err(to_js_error)
+    }
+
+    /// `field` is the relationship name on the source node's type.
+    pub fn connect(
+        &self,
+        schema: String,
+        from_id: f64,
+        field: String,
+        to_id: f64,
+    ) -> Result<(), JsValue> {
+        self.inner
+            .connect_schema(&schema, from_id as u64, &field, to_id as u64)
+            .map_err(to_js_error)
+    }
+
+    /// Every stored node and relationship, for the graph canvas.
+    pub fn graph(&self) -> Result<String, JsValue> {
+        let value = self.inner.graph_json().map_err(to_js_error)?;
+        serde_json::to_string(&value).map_err(to_js_error)
+    }
+
     pub fn query(&self, zql: String, params_json: String) -> Result<String, JsValue> {
         let params = parse_params(&params_json)?;
         let rows = self.inner.query(&zql, params).map_err(to_js_error)?;

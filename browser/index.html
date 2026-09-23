@@ -3,60 +3,53 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>zega browser</title>
+<title>zega</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
 </head>
 <body>
 <header id="topbar">
-  <span class="brand">zega<span class="brand-dim">:browser</span></span>
-  <span class="conn" title="The database runs inside this page via WebAssembly — no server needed.">
-    <span class="conn-dot"></span> local · wasm
-  </span>
+  <span class="brand">zega</span>
+  <span class="conn"><span class="conn-dot"></span> local · wasm</span>
   <span class="spacer"></span>
-  <button id="btn-sample" title="Load a small movie graph to explore">load sample graph</button>
-  <button id="btn-export" title="Download the whole database as a base64 snapshot">export</button>
-  <button id="btn-import" title="Restore a snapshot downloaded earlier">import</button>
-  <input type="file" id="import-file" accept=".zega,.b64,.txt" hidden>
-  <button id="btn-clear" title="Delete all nodes, relationships and keys">clear</button>
-  <a class="btn-link" href="https://github.com/samifouad/zega" target="_new">about</a>
+  <button id="btn-csv">Import</button>
+  <button id="btn-run" class="primary">Run</button>
+  <button id="btn-seed">reset</button>
+  <button id="btn-clear">clear</button>
 </header>
-
-<div id="main">
-  <aside id="sidebar">
-    <section>
-      <h3>database</h3>
-      <div id="db-stats" class="side-list"><span class="dim">loading…</span></div>
+<div id="panes">
+  <div class="band" id="band-top">
+    <section class="pane">
+      <h2>schema</h2>
+      <div id="schema" class="editor"></div>
     </section>
-    <section>
-      <h3>node labels <button id="btn-refresh-meta" class="mini" title="refresh">↻</button></h3>
-      <div id="db-labels" class="side-list"></div>
+    <div class="split split-x" data-band="top" title="drag the graph wider or narrower"></div>
+    <section class="pane pane-graph">
+      <h2>graph</h2>
+      <div id="graph"></div>
     </section>
-    <section>
-      <h3>relationship types</h3>
-      <div id="db-reltypes" class="side-list"></div>
+  </div>
+  <div id="split-rows" class="split split-y" title="drag to resize rows"></div>
+  <div class="band" id="band-bottom">
+    <section class="pane">
+      <h2>query <span id="query-time" class="pane-stat"></span></h2>
+      <div id="query" class="editor"></div>
     </section>
-    <section>
-      <h3>favorites</h3>
-      <div id="favorites" class="side-list"></div>
+    <section class="pane">
+      <h2>output <span id="output-size" class="pane-stat"></span></h2>
+      <div id="output" class="editor"></div>
     </section>
-    <section>
-      <h3>history</h3>
-      <div id="history" class="side-list"><span class="dim">nothing yet</span></div>
+    <section class="pane">
+      <h2>raw <span id="raw-count" class="pane-stat"></span></h2>
+      <div id="raw" class="editor"></div>
     </section>
-  </aside>
-
-  <div id="content">
-    <div id="editor-bar">
-      <span class="prompt">zega$</span>
-      <textarea id="editor" rows="3" spellcheck="false" placeholder="MATCH (n) RETURN n LIMIT 25"></textarea>
-      <button id="btn-run" class="primary">Run ▸</button>
-    </div>
-    <div class="editor-hint">Ctrl/Cmd + Enter to run · ZQL, the Cypher-inspired query language (<code>MATCH</code>, <code>CREATE</code>, <code>MERGE</code>, <code>SET KEY</code>…)</div>
-    <div id="frames"></div>
   </div>
 </div>
-
-<script type="module" src="app.js"></script>
+<div id="tour">
+  <button id="btn-play" class="primary">pause</button>
+  <div id="tour-queries"></div>
+</div>
+<script type="module" src="repl.js"></script>
 </body>
 </html>

@@ -18,6 +18,9 @@ pub mod context;
 pub mod jwt;
 pub mod planner;
 pub mod policy;
+mod v2;
+
+pub use zega_lang::diagnose;
 
 pub use config::{JwtConfig, JwtKey};
 pub use context::{ResolvedContext, ZegaContext};
