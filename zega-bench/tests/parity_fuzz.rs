@@ -12,8 +12,7 @@ use generator::{
 use neo4rs::{query, BoltType, Graph};
 use std::collections::HashMap;
 use std::env;
-use zega_core::Zega;
-use zega_parser::Parser;
+use zega::Zega;
 
 const DEFAULT_SEED: u64 = 0x5eed_cafe_d15c_a11e;
 
@@ -54,15 +53,11 @@ fn generated_cypher_parses() {
     for case in 0..500 {
         let (graph, generated_query) = generator::generate_case(&mut rng);
         for statement in graph.creates("parse-self-test") {
-            Parser::new(&statement)
-                .unwrap()
-                .parse()
+            zega::query_is_write(&statement)
                 .unwrap_or_else(|error| panic!("case {case}: {statement}: {error}"));
         }
         let statement = generated_query.cypher("parse-self-test");
-        Parser::new(&statement)
-            .unwrap()
-            .parse()
+        zega::query_is_write(&statement)
             .unwrap_or_else(|error| panic!("case {case}: {statement}: {error}"));
     }
 }
@@ -137,9 +132,7 @@ fn v2_shrink_candidates_keep_queries_parseable() {
         let (_, query) = generator::generate_case(&mut rng);
         for candidate in shrink::query_candidates(&query) {
             let statement = candidate.cypher("shrink-parse-self-test");
-            Parser::new(&statement)
-                .unwrap()
-                .parse()
+            zega::query_is_write(&statement)
                 .unwrap_or_else(|error| panic!("case {case}: {statement}: {error}"));
         }
     }

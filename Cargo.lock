@@ -2429,24 +2429,10 @@ dependencies = [
 [[package]]
 name = "zega"
 version = "0.1.0"
-
-[[package]]
-name = "zega-bench"
-version = "0.1.0"
-dependencies = [
- "neo4rs",
- "serde_json",
- "tokio",
- "zega-core",
- "zega-parser",
-]
-
-[[package]]
-name = "zega-core"
-version = "0.1.0"
 dependencies = [
  "base64",
  "bincode",
+ "crc32fast",
  "getrandom 0.2.17",
  "hmac",
  "js-sys",
@@ -2460,36 +2446,16 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "web-sys",
- "zega-graph",
- "zega-lang",
- "zega-parser",
- "zega-wal",
 ]
 
 [[package]]
-name = "zega-graph"
+name = "zega-bench"
 version = "0.1.0"
 dependencies = [
- "serde",
+ "neo4rs",
  "serde_json",
- "zega-parser",
-]
-
-[[package]]
-name = "zega-lang"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "thiserror 1.0.69",
- "zega-validation",
-]
-
-[[package]]
-name = "zega-parser"
-version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror 1.0.69",
+ "tokio",
+ "zega",
 ]
 
 [[package]]
@@ -2505,28 +2471,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "tokio",
- "zega-core",
- "zega-parser",
-]
-
-[[package]]
-name = "zega-validation"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "zega-wal"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "crc32fast",
- "serde",
- "tempfile",
- "thiserror 1.0.69",
- "zega-graph",
- "zega-parser",
+ "zega",
 ]
 
 [[package]]

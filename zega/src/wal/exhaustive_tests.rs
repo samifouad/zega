@@ -1,4 +1,4 @@
-//! Exhaustive durability test suite for the `zega-wal` crate.
+//! Exhaustive durability tests for the `zega::wal` module.
 //!
 //! Focus: write-ahead log + snapshot DURABILITY. A DB must never lose an
 //! acknowledged write and must never panic on a malformed file. Every error
@@ -21,9 +21,9 @@ use std::thread;
 use std::time::Duration;
 
 use tempfile::tempdir;
-use zega_graph::Graph;
-use zega_parser::Value;
-use zega_wal::{restore, snapshot, Operation, Wal, WalError};
+use crate::graph::Graph;
+use crate::parser::Value;
+use super::{restore, snapshot, Operation, Wal, WalError};
 
 // ---------------------------------------------------------------------------
 // Wire-format constants mirrored from the crate (private there).

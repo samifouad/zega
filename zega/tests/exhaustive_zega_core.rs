@@ -1,4 +1,4 @@
-//! Exhaustive integration tests for the `zega-core` integrating engine.
+//! Exhaustive integration tests for the `zega` engine.
 //!
 //! These exercise the public API surface (`Zega`, `ZegaBuilder`, `query`,
 //! `query_with_context`, contexts, policies) and the query
@@ -12,8 +12,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use zega_core::{Row, Value, Zega, ZegaContext, ZegaError};
-use zega_core::{ExprValue, PolicyCondition, PolicyExpr, PolicyTargets};
+use zega::{Row, Value, Zega, ZegaContext, ZegaError};
+use zega::{ExprValue, PolicyCondition, PolicyExpr, PolicyTargets};
 
 // ---------------------------------------------------------------------------
 // Helpers

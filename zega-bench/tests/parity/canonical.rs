@@ -1,7 +1,7 @@
 use serde_json::{json, Map, Value as Json};
 use std::collections::HashMap;
-use zega_core::Row;
-use zega_parser::Value;
+use zega::Row;
+use zega::Value;
 
 pub type CanonicalRows = Vec<Json>;
 

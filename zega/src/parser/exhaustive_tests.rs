@@ -1,8 +1,8 @@
-//! Exhaustive integration test suite for the `zega-parser` crate.
+//! Exhaustive tests for the `zega::parser` module.
 //!
 //! Covers the Cypher tokenizer (`Lexer` / `Token`) and the parser
 //! (`Parser` / `Statement` / `Expr` / AST nodes) against the crate's
-//! PUBLIC API only (`use zega_parser::...`).
+//! PUBLIC API of the module only (`use super::...`).
 //!
 //! Errors in Zega are VALUES: the parser returns `Result<_, ParseError>` and
 //! the lexer returns `Result<_, LexError>`. These tests assert on
@@ -14,15 +14,15 @@
 
 use std::collections::HashMap;
 
-use zega_parser::{
-    AggregateFunction, BinaryOperator, Direction, Expr, Lexer, OrderDirection, Parser,
+use super::{
+    AggregateFunction, BinaryOperator, Direction, Expr, OrderDirection, Parser,
     PatternElement, RelationshipLength, ReturnClause, SetClause, Statement, Value,
 };
-// `Token` and `ParseError` are NOT re-exported at the crate root (lib.rs only
-// `pub use`s ast::*, Lexer, Parser, Value). Their defining modules ARE public
-// (`pub mod lexer`, `pub mod parser`), so reach them by full module path.
-use zega_parser::lexer::{LexError, Token};
-use zega_parser::parser::ParseError;
+// `Lexer`, `Token` and `ParseError` are NOT re-exported at the module root
+// (`mod.rs` only `pub use`s ast::*, Parser, Value). Their defining submodules
+// ARE public (`pub mod lexer`, `pub mod parser`), so reach them by full path.
+use super::lexer::{LexError, Lexer, Token};
+use super::grammar::ParseError;
 
 // =====================================================================
 // Helpers

@@ -1,6 +1,6 @@
-use crate::ast::*;
-use crate::lexer::{LexError, Lexer, Token};
-use crate::value::Value;
+use super::ast::*;
+use super::lexer::{LexError, Lexer, Token};
+use super::value::Value;
 use std::collections::HashMap;
 use thiserror::Error;
 

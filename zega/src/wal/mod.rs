@@ -16,8 +16,8 @@ use std::thread::{self, JoinHandle};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 use thiserror::Error;
-use zega_graph::{Graph, Node, NodeId, RelId, Relationship};
-use zega_parser::Value;
+use crate::graph::{Graph, Node, NodeId, RelId, Relationship};
+use crate::parser::Value;
 
 const WAL_MAGIC: &[u8; 4] = b"ZWAL";
 const WAL_VERSION: u16 = 2;
@@ -123,6 +123,10 @@ impl Wal {
         }
     }
 
+    // Only this module's own durability tests call `new`/`flush` directly;
+    // `Zega` always goes through `with_group_commit`. Kept public and
+    // allowed here rather than deleted: it's real WAL API, not dead code.
+    #[allow(dead_code)]
     pub fn new(path: &Path, flush_every: bool) -> Result<Self, WalError> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -140,6 +144,9 @@ impl Wal {
         }
     }
 
+    // On wasm32 `Wal` is a stub with no file I/O (see `new` above), so this
+    // constructor is only reachable on the native, file-backed path.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn with_group_commit(
         path: &Path,
         flush_every: bool,
@@ -244,6 +251,7 @@ impl Wal {
         }
     }
 
+    #[allow(dead_code)]
     pub fn flush(&self) -> Result<(), WalError> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -262,6 +270,8 @@ impl Wal {
         }
     }
 
+    // Replays the on-disk log; nothing to replay for the wasm32 stub.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn iter(&self) -> Result<Vec<Operation>, WalError> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -541,6 +551,10 @@ fn group_commit_worker(group: Arc<GroupCommit>) {
     }
 }
 
+// `Zega::open`/`Zega::snapshot` only call this on the native, file-backed
+// path (see the `cfg(not(target_arch = "wasm32"))` call sites in lib.rs);
+// the wasm32 build persists through `encode_snapshot`/`restore_bytes` instead.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn snapshot(graph: &Graph, path: &Path) -> Result<(), WalError> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -564,6 +578,7 @@ pub fn snapshot(graph: &Graph, path: &Path) -> Result<(), WalError> {
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn restore(graph: &mut Graph, path: &Path) -> Result<bool, WalError> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -840,7 +855,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let wal_path = dir.path().join("wal.bin");
             let mut child = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "tests::crash_writer_helper", "--nocapture"])
+                .args(["--exact", "wal::tests::crash_writer_helper", "--nocapture"])
                 .env("ZEGA_CRASH_WRITER_PATH", &wal_path)
                 .stdout(Stdio::piped())
                 .spawn()
@@ -885,3 +900,6 @@ mod tests {
         assert_eq!(graph2.all_nodes().len(), 1);
     }
 }
+
+#[cfg(test)]
+mod exhaustive_tests;

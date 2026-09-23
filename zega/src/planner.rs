@@ -1,4 +1,4 @@
-use zega_parser::{
+use crate::parser::{
     ast::{BinaryOperator, Expr as ZqlExpr, PatternElement, ReturnClause, Statement},
     value::Value,
     OrderDirection,

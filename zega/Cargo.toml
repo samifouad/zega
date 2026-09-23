@@ -9,3 +9,32 @@ homepage = "https://zega.dev"
 readme = "README.md"
 keywords = ["graph", "database", "query", "zql"]
 categories = ["database-implementations"]
+
+[dependencies]
+base64 = { workspace = true }
+bincode = { workspace = true }
+crc32fast = { workspace = true }
+getrandom = { workspace = true }
+hmac = { workspace = true }
+rsa = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["XmlHttpRequest"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+serde_json = { workspace = true }

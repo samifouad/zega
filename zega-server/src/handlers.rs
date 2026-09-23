@@ -1,4 +1,4 @@
-use crate::{auth, classification, AppState};
+use crate::{auth, AppState};
 use axum::{
     extract::{rejection::JsonRejection, State},
     http::{HeaderMap, StatusCode},
@@ -8,7 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
-use zega_core::Value;
+use zega::Value;
 
 #[derive(Serialize)]
 struct ErrorBody {
@@ -66,9 +66,9 @@ pub async fn cql(
         Ok(params) => params,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
     };
-    let is_write = match classification::cql_is_write(&request.query) {
+    let is_write = match zega::query_is_write(&request.query) {
         Ok(value) => value,
-        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+        Err(err) => return error(StatusCode::BAD_REQUEST, err.to_string()),
     };
     let result = if is_write {
         state.zega.write().await.query(&request.query, params)

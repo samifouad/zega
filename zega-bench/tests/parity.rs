@@ -10,7 +10,7 @@ use serde_json::Value as Json;
 use std::collections::HashMap;
 use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zega_core::Zega;
+use zega::Zega;
 
 #[test]
 fn unordered_rows_compare_equal_after_normalization() {
@@ -216,7 +216,7 @@ async fn neo4j_rows(graph: &Graph, op: &GraphOp) -> Result<CanonicalRows, String
 }
 
 fn compare_results(
-    zega: Result<CanonicalRows, zega_core::ZegaError>,
+    zega: Result<CanonicalRows, zega::ZegaError>,
     reference: Result<CanonicalRows, String>,
 ) -> Option<String> {
     match (zega, reference) {
