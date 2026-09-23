@@ -96,7 +96,9 @@ test('failed tiles keep the GeoJSON markers and permanent attribution on plain g
   await page.route('https://tiles.zega.dev/**', (route) => route.abort());
   await ready(page);
   await page.locator('#btn-calgary').click();
+  await expect(page.locator('.map-count')).toBeVisible();
   await setEditor(page, 'query', '{ Place { id name kind at } }');
+  await expect(page.locator('.map-count')).toHaveText('30 places');
   await expect(page.locator('.map-notice')).toHaveText('Base map unavailable. Your places are still shown.');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('© OpenStreetMap contributors');
   await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).length || 0)).toBe(30);
@@ -151,6 +153,7 @@ test('Calgary Point radius query matches an independent scan and plots exactly t
   await expect(page.getByRole('tab', { name: 'Map', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('.map-count')).toHaveText(`${expected.length} places`);
   await expect.poll(async () => JSON.parse(await editorValue(page, 'output')).map((row) => row.name)).toEqual(expected.map((row) => row.name));
+  expect(await editorValue(page, 'raw')).toContain('\"at\":{\"lat\":');
   const output = JSON.parse(await editorValue(page, 'output'));
   output.forEach((row, i) => {
     expect(row.at).toEqual({ lat: expected[i].lat, lon: expected[i].lon });

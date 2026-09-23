@@ -547,10 +547,11 @@ function formatRaw(graph) {
     const name = node.name ?? node.title;
     return name == null ? '' : String(name);
   };
+  const sortedJson = (props) => JSON.stringify(Object.fromEntries(Object.entries(props).sort(([a], [b]) => a.localeCompare(b))));
   const propsOf = (node) => {
     const skip = new Set(['id', 'labels']);
     const props = Object.fromEntries(Object.entries(node).filter(([key]) => !skip.has(key)));
-    return JSON.stringify(props, Object.keys(props).sort());
+    return sortedJson(props);
   };
   const lines = [];
   for (const node of nodes) {
@@ -565,7 +566,7 @@ function formatRaw(graph) {
     lines.push(`  kind:  ${rel.type}`);
     lines.push(`  from:  ${rel.from}  ${nameOf(rel.from)}`.trimEnd());
     lines.push(`  to:    ${rel.to}  ${nameOf(rel.to)}`.trimEnd());
-    lines.push(`  props: ${JSON.stringify(props, Object.keys(props).sort())}`);
+    lines.push(`  props: ${sortedJson(props)}`);
     lines.push('');
   }
   return lines.join('\n').replace(/\n$/, '');
