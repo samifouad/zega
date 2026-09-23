@@ -1677,7 +1677,10 @@ fn parse_delete_no_identifiers_yields_empty_vec() {
 fn parse_parameter_simple() {
     let stmt = parse_one("MATCH (n {value: $myParam}) RETURN n");
     let (pattern, _, _) = as_match(&stmt);
-    assert_eq!(pattern[0].properties.get("value"), Some(&Expr::Parameter("myParam".to_string())));
+    assert_eq!(
+        pattern[0].properties.get("value"),
+        Some(&Expr::Parameter("myParam".to_string()))
+    );
 }
 
 #[test]

@@ -234,4 +234,3 @@ fn compare_results(
         )),
     }
 }
-

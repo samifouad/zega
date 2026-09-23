@@ -60,5 +60,4 @@ impl Policy {
     pub fn applies_to_unlabeled_node(&self) -> bool {
         matches!(self.targets, PolicyTargets::All)
     }
-
 }

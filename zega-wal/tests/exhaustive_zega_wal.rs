@@ -850,7 +850,9 @@ fn large_single_entry_roundtrips() {
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
     assert_eq!(recovered.len(), 1);
     match &recovered[0] {
-        Operation::UpdateNode { props, .. } => assert_eq!(props.get("big").and_then(Value::as_string).unwrap().len(), big.len()),
+        Operation::UpdateNode { props, .. } => {
+            assert_eq!(props.get("big").and_then(Value::as_string).unwrap().len(), big.len());
+        }
         other => panic!("expected large UpdateNode, got {other:?}"),
     }
 }
@@ -1016,14 +1018,19 @@ fn nested_and_float_values_roundtrip() {
     inner.insert("nan".to_string(), Value::from_f64(f64::NAN));
     inner.insert("inf".to_string(), Value::from_f64(f64::INFINITY));
     let nested = Value::Map(inner);
-    let op = update_property("nested", Value::List(vec![nested.clone(), Value::Bool(true), Value::Null]));
+    let op = update_property(
+        "nested",
+        Value::List(vec![nested.clone(), Value::Bool(true), Value::Null]),
+    );
     wal.append(&op).unwrap();
     drop(wal);
 
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
     match &recovered[0] {
         Operation::UpdateNode { props, .. } => {
-            let Value::List(items) = &props["nested"] else { panic!("expected list property") };
+            let Value::List(items) = &props["nested"] else {
+                panic!("expected list property")
+            };
             assert_eq!(items.len(), 3);
             match &items[0] {
                 Value::Map(m) => {
@@ -1474,9 +1481,10 @@ fn legacy_length_prefix_overflowing_past_eof_is_corruption() {
     // ordinary torn tail and is reported as hard corruption.
     let dir = tempdir().unwrap();
     let path = dir.path().join("wal.bin");
+    let good = payload_of(&insert_node("kept"));
+    let corrupt_offset = 8 + good.len() as u64;
     {
         let mut file = File::create(&path).unwrap();
-        let good = payload_of(&insert_node("kept"));
         file.write_all(&(good.len() as u64).to_le_bytes()).unwrap();
         file.write_all(&good).unwrap();
         // Declare a giant length but provide almost no payload.
@@ -1486,7 +1494,7 @@ fn legacy_length_prefix_overflowing_past_eof_is_corruption() {
     }
     match Wal::new(&path, true) {
         Err(WalError::Corruption { offset, reason }) => {
-            assert_eq!(offset, 41);
+            assert_eq!(offset, corrupt_offset);
             assert!(reason.contains("legacy entry length overflow"));
         }
         Ok(_) => panic!("overflowing legacy length must not migrate"),

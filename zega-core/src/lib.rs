@@ -4645,7 +4645,9 @@ mod tests {
             let zega = Zega::in_memory().build().unwrap();
             let params = HashMap::from([("value".to_string(), Value::Int(i))]);
             zega.query("CREATE (n:Instance {value: $value})", params).unwrap();
-            let rows = zega.query("MATCH (n:Instance) RETURN n.value AS value", HashMap::new()).unwrap();
+            let rows = zega
+                .query("MATCH (n:Instance) RETURN n.value AS value", HashMap::new())
+                .unwrap();
             assert_eq!(rows[0].fields.get("value"), Some(&Value::Int(i)));
             instances.push(zega);
         }

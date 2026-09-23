@@ -25,5 +25,4 @@ mod tests {
         assert!(cql_is_write("MATCH (n) CREATE (m)").unwrap());
         assert!(cql_is_write("MERGE (n:Person {id: 1})").unwrap());
     }
-
 }
