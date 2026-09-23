@@ -1,0 +1,19 @@
+{
+  "name": "zega-explorer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/check.mjs",
+    "dev": "npm run build && wrangler dev --local --ip 127.0.0.1",
+    "test": "npm run check && playwright test",
+    "wasm:rebuild": "node scripts/rebuild-wasm.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "wrangler": "4.136.3"
+  }
+}

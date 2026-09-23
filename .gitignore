@@ -8,3 +8,9 @@
 /.target
 /:memory:
 /.tmp
+
+# The explorer is a normal npm project inside this repo.
+browser/node_modules/
+browser/test-results/
+browser/dist/
+browser/playwright-report/

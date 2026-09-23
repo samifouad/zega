@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/zegadb/zega",
+  "commit": "d3fa69566c780d4da4d1022a1de208b7069928d5",
+  "provenance": "Vendored byte-for-byte from browser/pkg/ at this engine commit; original build toolchain was not recorded. This identifies the committed artifact source, not an independently reproduced build.",
+  "sha256": {
+    "package.json": "d1183a80470e6d59d7e9a50515c8d0029485cfa3afa35720b71ce2b58bf5b2ea",
+    "zega_wasm.d.ts": "c4a8fd1b8667b2d51bdd84fa3d6eaad25cf9b1077c45212ceec0e4793d71dd18",
+    "zega_wasm.js": "55e60dcf2ab40724c7ba24b8ea7fabf52b35b48c686f4aeb0ad38166d754a3bb",
+    "zega_wasm_bg.wasm": "c440497bda9652b1de7b5cf48404c2f77e1efddcc1ab042e7458ea1a1daf1f40",
+    "zega_wasm_bg.wasm.d.ts": "9329345a1ab97d3aa93b05faaa3b6606e9c3af6447cf1ef995888fba83d022c0"
+  }
+}
