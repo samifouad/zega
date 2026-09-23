@@ -33,6 +33,25 @@ pub struct Graph {
     next_rel_id: AtomicU64,
 }
 
+impl Clone for Graph {
+    fn clone(&self) -> Self {
+        let mut graph = Self::new();
+        for node in self.nodes.values() {
+            graph.restore_node(node.id, node.labels.clone(), node.props.clone());
+        }
+        for rel in self.relationships.values() {
+            graph.restore_relationship(
+                rel.id,
+                rel.kind.clone(),
+                rel.from,
+                rel.to,
+                rel.props.clone(),
+            );
+        }
+        graph
+    }
+}
+
 impl Default for Graph {
     fn default() -> Self {
         Self::new()
