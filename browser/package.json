@@ -12,7 +12,8 @@
     "check": "node scripts/check.mjs",
     "dev": "npm run build && wrangler dev --local --ip 127.0.0.1",
     "test": "npm run check && playwright test",
-    "wasm:rebuild": "node scripts/rebuild-wasm.mjs"
+    "wasm:rebuild": "node scripts/rebuild-wasm.mjs",
+    "test:cli": "playwright test --config playwright.cli.config.js"
   },
   "devDependencies": {
     "@mapbox/vector-tile": "3.0.0",

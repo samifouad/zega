@@ -1,7 +1,6 @@
-"""Start the released server binary and exercise its authenticated HTTP API."""
+"""Start the released CLI binary and exercise its authenticated HTTP API."""
 
 import json
-import os
 from pathlib import Path
 import socket
 import subprocess
@@ -16,31 +15,31 @@ with tempfile.TemporaryDirectory(dir=".tmp") as directory:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-    env = {**os.environ, "ZEGA_DATA": str(Path(directory).resolve() / "data"),
-           "ZEGA_SERVER_TOKEN": "local-smoke-fixture", "ZEGA_SERVER_WORKERS": "2",
-           "ZEGA_SERVER_ADDR": f"127.0.0.1:{port}"}
-    server = subprocess.Popen([str(Path(sys.argv[1]).resolve())], env=env)
+    token = Path(directory).resolve() / "token"
+    token.write_text("local-smoke-fixture\n")
+    server = subprocess.Popen([str(Path(sys.argv[1]).resolve()), "start", "--data", str(Path(directory).resolve() / "data"),
+                               "--port", str(port), "--token-file", str(token)])
     try:
         request = Request(f"http://127.0.0.1:{port}/health", headers={"Authorization": "Bearer local-smoke-fixture"})
         for attempt in range(100):
             if server.poll() is not None:
-                raise RuntimeError("Built server exited before becoming healthy")
+                raise RuntimeError("Built CLI exited before becoming healthy")
             try:
                 with urlopen(request, timeout=1) as response:
                     assert response.status == 200
                     assert json.load(response) == {"ok": True}
-                    print("Built server: authenticated /health HTTP 200")
+                    print("Built CLI: authenticated /health HTTP 200")
                     break
             except URLError:
                 time.sleep(0.1)
         else:
-            raise RuntimeError("Built server did not become healthy")
-        request = Request(f"http://127.0.0.1:{port}/cql", data=json.dumps({"query": "CREATE (n:Release {answer: 42}) RETURN n.answer AS answer"}).encode(),
+            raise RuntimeError("Built CLI did not become healthy")
+        request = Request(f"http://127.0.0.1:{port}/zql", data=json.dumps({"schema": "type Release { answer: Int }", "query": "mutation { Release(answer: 42) { answer } }"}).encode(),
                           headers={"Authorization": "Bearer local-smoke-fixture", "Content-Type": "application/json"})
         with urlopen(request, timeout=5) as response:
             result = json.load(response)
-            assert result == {"ok": True, "count": 1, "rows": [{"answer": 42}]}, result
-            print("Built server: /cql returned answer=42")
+            assert result == {"ok": True, "result": {"answer": 42}}, result
+            print("Built CLI: /zql returned answer=42")
     finally:
         server.terminate()
         server.wait(timeout=10)

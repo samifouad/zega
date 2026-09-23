@@ -1,32 +1,29 @@
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
-use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::{net::TcpListener, task::JoinHandle};
 use zega::Zega;
 use zega_server::{server, AppState};
 
 const TOKEN: &str = "test-secret";
-
+const SCHEMA: &str = "type Person { name: String age?: Int active?: Bool }";
 struct TestServer {
     base_url: String,
     _data: TempDir,
     task: JoinHandle<()>,
 }
-
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.task.abort();
     }
 }
-
 async fn start_server() -> TestServer {
     let data = tempfile::tempdir().unwrap();
     let zega = Zega::open(data.path().to_str().unwrap()).build().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {
-        server::serve(listener, AppState::new(zega, TOKEN))
+        server::serve(listener, AppState::new(zega, Some(TOKEN)))
             .await
             .unwrap();
     });
@@ -36,264 +33,197 @@ async fn start_server() -> TestServer {
         task,
     }
 }
-
-fn authed(client: &Client, method: reqwest::Method, url: String) -> reqwest::RequestBuilder {
-    client.request(method, url).bearer_auth(TOKEN)
+fn post(client: &Client, server: &TestServer) -> reqwest::RequestBuilder {
+    client
+        .post(format!("{}/zql", server.base_url))
+        .bearer_auth(TOKEN)
 }
 
 #[tokio::test]
-async fn cql_create_then_match_returns_node() {
+async fn zql_mutation_then_query_returns_typed_json() {
     let server = start_server().await;
     let client = Client::new();
-    let create = authed(
-        &client,
-        reqwest::Method::POST,
-        format!("{}/cql", server.base_url),
-    )
-    .json(&json!({"query": "CREATE (n:Person {name: 'Ada'})"}))
-    .send()
-    .await
-    .unwrap();
-    assert!(create.status().is_success());
-
-    let body: Value = authed(
-        &client,
-        reqwest::Method::POST,
-        format!("{}/cql", server.base_url),
-    )
-    .json(&json!({"query": "MATCH (n:Person) RETURN n.name AS name"}))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    assert_eq!(body["ok"], true);
-    assert_eq!(body["count"], 1);
-    assert_eq!(body["rows"][0]["name"], "Ada");
-}
-
-#[tokio::test]
-async fn cql_raw_json_params_round_trip() {
-    let server = start_server().await;
-    let client = Client::new();
-    let params = json!({
-        "string": "x",
-        "int": 42,
-        "float": 2.5,
-        "bool": true,
-        "null_value": null,
-        "array": ["nested", 7, false, null],
-        "object": {"name": "Ada", "scores": [1, 2.5]}
-    });
-    let body: Value = authed(
-        &client,
-        reqwest::Method::POST,
-        format!("{}/cql", server.base_url),
-    )
-    .json(&json!({
-        "query": "CREATE (n:RawParams {string: $string, int: $int, float: $float, bool: $bool, null_value: $null_value, array: $array, object: $object})",
-        "params": params
-    }))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    assert_eq!(body["ok"], true, "{body}");
-
-    let matched: Value = authed(
-        &client,
-        reqwest::Method::POST,
-        format!("{}/cql", server.base_url),
-    )
-    .json(&json!({
-        "query": "MATCH (n:RawParams) RETURN n.string AS string, n.int AS int, n.float AS float, n.bool AS bool, n.null_value AS null_value, n.array AS array, n.object AS object"
-    }))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    assert_eq!(matched["ok"], true);
-    assert_eq!(matched["rows"][0]["string"], "x");
-    assert_eq!(matched["rows"][0]["int"], 42);
-    assert_eq!(matched["rows"][0]["float"], 2.5);
-    assert_eq!(matched["rows"][0]["bool"], true);
-    assert_eq!(matched["rows"][0]["null_value"], Value::Null);
+    let body: Value = post(&client, &server).json(&json!({"schema":SCHEMA,"query":"mutation { Person(name: \"Ada\" && age: 37 && active: true) { name age active } }"})).send().await.unwrap().json().await.unwrap();
     assert_eq!(
-        matched["rows"][0]["array"],
-        json!(["nested", 7, false, null])
+        body,
+        json!({"ok":true,"result":{"name":"Ada","age":37,"active":true}})
+    );
+    let body: Value = post(&client, &server)
+        .json(&json!({"schema":SCHEMA,"query":"{ Person { name age active } }"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        body["result"],
+        json!([{"name":"Ada","age":37,"active":true}])
     );
     assert_eq!(
-        matched["rows"][0]["object"],
-        json!({"name": "Ada", "scores": [1, 2.5]})
+        client
+            .post(format!("{}/cql", server.base_url))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
     );
 }
 
 #[tokio::test]
-async fn create_with_raw_params_then_match_returns_raw_json() {
+async fn raw_import_uses_the_engine_and_graph_edits_use_wal_paths() {
     let server = start_server().await;
     let client = Client::new();
-    let create: Value = authed(
-        &client,
-        reqwest::Method::POST,
-        format!("{}/cql", server.base_url),
-    )
-    .json(&json!({
-        "query": "CREATE (n:Person {name: $name, age: $age, active: $active})",
-        "params": {"name": "Ada", "age": 37, "active": true}
-    }))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    assert_eq!(create["ok"], true);
-
-    let matched: Value = authed(
-        &client,
-        reqwest::Method::POST,
-        format!("{}/cql", server.base_url),
-    )
-    .json(&json!({
-        "query": "MATCH (n:Person {name: $name}) RETURN n.name AS name, n.age AS age, n.active AS active",
-        "params": {"name": "Ada"}
-    }))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    assert_eq!(
-        matched["rows"][0],
-        json!({"name": "Ada", "age": 37, "active": true})
-    );
+    let body: Value = post(&client, &server).json(&json!({"schema":SCHEMA,"query":"mutation csv [\"./import\"] { Person(name: $Name && age: $Age) { name age } }", "sources":{"./import":"Name,Age\nAda,37\n"}})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(body["result"], json!([{"name":"Ada","age":37}]));
+    let graph: Value = client
+        .get(format!("{}/graph", server.base_url))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = graph["result"]["nodes"][0]["id"].as_u64().unwrap();
+    assert!(client
+        .delete(format!("{}/graph/nodes/{id}", server.base_url))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    let body: Value = post(&client, &server)
+        .json(&json!({"schema":SCHEMA,"query":"{ Person { name } }"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["result"], json!([]));
 }
 
 #[tokio::test]
-async fn health_is_ok_and_requires_token() {
+async fn every_database_route_requires_the_bearer() {
     let server = start_server().await;
     let client = Client::new();
-    let unauthorized = client
+    for (method, path) in [
+        (reqwest::Method::GET, "/health"),
+        (reqwest::Method::POST, "/zql"),
+        (reqwest::Method::GET, "/graph"),
+        (reqwest::Method::DELETE, "/graph"),
+        (reqwest::Method::DELETE, "/graph/nodes/1"),
+        (reqwest::Method::DELETE, "/graph/relationships/1"),
+        (reqwest::Method::POST, "/graph/relationships"),
+    ] {
+        for token in [None, Some("wrong")] {
+            let request = client.request(method.clone(), format!("{}{path}", server.base_url));
+            let request = if let Some(token) = token {
+                request.bearer_auth(token)
+            } else {
+                request
+            };
+            assert_eq!(
+                request.json(&json!({})).send().await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "{path}"
+            );
+        }
+    }
+    let body: Value = client
         .get(format!("{}/health", server.base_url))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body, json!({"ok":true}));
+}
+
+#[tokio::test]
+async fn malformed_zql_is_json_error_and_server_stays_healthy() {
+    let server = start_server().await;
+    let client = Client::new();
+    let response = post(&client, &server)
+        .json(&json!({"schema":SCHEMA,"query":"MATCH this is not ZQL"}))
         .send()
         .await
         .unwrap();
-    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(unauthorized.json::<Value>().await.unwrap()["ok"], false);
-
-    let health: Value = authed(
-        &client,
-        reqwest::Method::GET,
-        format!("{}/health", server.base_url),
-    )
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    assert_eq!(health["ok"], true);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(response.json::<Value>().await.unwrap()["error"].is_string());
+    assert!(client
+        .get(format!("{}/health", server.base_url))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
 }
 
 #[tokio::test]
-async fn malformed_query_is_json_error_not_server_failure() {
+async fn malformed_json_is_a_json_error() {
     let server = start_server().await;
-    let client = Client::new();
-    let response = authed(
-        &client,
-        reqwest::Method::POST,
-        format!("{}/cql", server.base_url),
-    )
-    .json(&json!({"query": "MATCH this is not valid"}))
-    .send()
-    .await
-    .unwrap();
+    let response = post(&Client::new(), &server)
+        .header("content-type", "application/json")
+        .body("{")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body: Value = response.json().await.unwrap();
-    assert_eq!(body["ok"], false);
-    assert!(body["error"].is_string());
-
-    let health = authed(
-        &client,
-        reqwest::Method::GET,
-        format!("{}/health", server.base_url),
-    )
-    .send()
-    .await
-    .unwrap();
-    assert!(health.status().is_success());
+    assert_eq!(response.json::<Value>().await.unwrap()["ok"], false);
 }
 
 #[tokio::test]
-async fn malformed_json_is_json_error() {
-    let server = start_server().await;
-    let client = Client::new();
-    let response = authed(
-        &client,
-        reqwest::Method::POST,
-        format!("{}/cql", server.base_url),
-    )
-    .header("content-type", "application/json")
-    .body("{")
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body: Value = response.json().await.unwrap();
-    assert_eq!(body["ok"], false);
-    assert!(body["error"].is_string());
+async fn server_refuses_unauthenticated_non_loopback_listener() {
+    let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let state = AppState::new(Zega::in_memory().build().unwrap(), None);
+    assert_eq!(
+        server::serve(listener, state).await.unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn parallel_readers_never_observe_half_applied_write() {
+async fn readers_never_observe_half_a_zql_document() {
     let server = start_server().await;
-    let client = Arc::new(Client::new());
-    let base_url = Arc::new(server.base_url.clone());
-
     let mut tasks = Vec::new();
     for writer in 0..4 {
-        let client = Arc::clone(&client);
-        let base_url = Arc::clone(&base_url);
+        let url = format!("{}/zql", server.base_url);
         tasks.push(tokio::spawn(async move {
-            for pair in 0..20 {
-                let query = format!(
-                    "CREATE (a:GateTest {{id: 'a-{writer}-{pair}'}}); \
-                     CREATE (b:GateTest {{id: 'b-{writer}-{pair}'}})"
-                );
-                let body: Value = authed(&client, reqwest::Method::POST, format!("{base_url}/cql"))
-                    .json(&json!({"query": query}))
-                    .send()
-                    .await
-                    .unwrap()
-                    .json()
-                    .await
-                    .unwrap();
-                assert_eq!(body["ok"], true);
+            let client = Client::new();
+            for pair in 0..10 {
+                let source = format!("schema {{ type Pair {{ id: Int }} }} mutation {{ Pair(id: {}) {{ id }} }} mutation {{ Pair(id: {}) {{ id }} }}", writer*100+pair*2,writer*100+pair*2+1);
+                let body: Value = client.post(&url).bearer_auth(TOKEN).json(&json!({"document":true,"query":source})).send().await.unwrap().json().await.unwrap();
+                assert_eq!(body["ok"],true,"{body}");
             }
         }));
     }
-    for _ in 0..16 {
-        let client = Arc::clone(&client);
-        let base_url = Arc::clone(&base_url);
+    for _ in 0..8 {
+        let url = format!("{}/zql", server.base_url);
         tasks.push(tokio::spawn(async move {
-            for _ in 0..50 {
-                let body: Value = authed(&client, reqwest::Method::POST, format!("{base_url}/cql"))
-                    .json(&json!({"query": "MATCH (n:GateTest) RETURN count(*) AS count"}))
+            let client = Client::new();
+            for _ in 0..25 {
+                let body: Value = client
+                    .post(&url)
+                    .bearer_auth(TOKEN)
+                    .json(&json!({"schema":"type Pair { id: Int }","query":"{ Pair { id } }"}))
                     .send()
                     .await
                     .unwrap()
                     .json()
                     .await
                     .unwrap();
-                assert_eq!(body["ok"], true);
-                let count = body["rows"][0]["count"].as_i64().unwrap();
-                assert_eq!(count % 2, 0, "reader observed a half-applied pair");
+                assert_eq!(
+                    body["result"].as_array().unwrap().len() % 2,
+                    0,
+                    "partial pair: {body}"
+                );
             }
         }));
     }

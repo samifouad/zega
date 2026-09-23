@@ -2,8 +2,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 #[cfg(feature = "http")]
 use std::{
-    io::{Read, Write},
-    net::TcpListener,
+    io::{BufRead, BufReader, Read, Write},
+    net::{Shutdown, TcpListener, TcpStream},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -90,11 +90,24 @@ impl HttpFixture {
             while !stopped.load(Ordering::Relaxed) {
                 if let Ok((mut stream, _)) = listener.accept() {
                     stream
+                        .set_nonblocking(false)
+                        .expect("accepted HTTP fixture sockets must block while reading requests");
+                    stream
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
-                    let mut request = [0; 4096];
-                    let _ = stream.read(&mut request);
-                    let _ = stream.write_all(response.as_bytes());
+                    // TCP reads may end anywhere in the headers. Closing with
+                    // unread request bytes can reset the client's connection.
+                    let mut request = BufReader::new(&mut stream);
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        assert_ne!(request.read_line(&mut line).unwrap(), 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    stream.write_all(response.as_bytes()).unwrap();
+                    stream.shutdown(Shutdown::Write).unwrap();
                 } else {
                     thread::sleep(Duration::from_millis(5));
                 }
@@ -113,6 +126,37 @@ impl Drop for HttpFixture {
         self.stop.store(true, Ordering::Relaxed);
         self.task.take().unwrap().join().unwrap();
     }
+}
+
+#[cfg(feature = "http")]
+#[test]
+fn http_fixture_consumes_fragmented_request_headers() {
+    let fixture = HttpFixture::new(CSV, "200 OK");
+    let mut client = TcpStream::connect(fixture.url.strip_prefix("http://").unwrap()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    // Exceed the old single-read buffer and split the request across writes.
+    let request = format!(
+        "GET /players.csv HTTP/1.1\r\nHost: localhost\r\nX-Padding: {}\r\nConnection: close\r\n\r\n",
+        "x".repeat(16 * 1024)
+    );
+    for chunk in request.as_bytes().chunks(17) {
+        client.write_all(chunk).unwrap();
+    }
+    client.shutdown(Shutdown::Write).unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    assert_eq!(
+        response,
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{CSV}",
+            CSV.len()
+        )
+    );
 }
 
 #[cfg(feature = "http")]

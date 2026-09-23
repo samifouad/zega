@@ -161,7 +161,7 @@ impl Wal {
         #[cfg(not(target_arch = "wasm32"))]
         {
             prepare_wal(path)?;
-            let file = OpenOptions::new().read(true).append(true).open(path)?;
+            let file = open_wal_writer(path)?;
             let group = Arc::new(GroupCommit {
                 state: Mutex::new(WalState {
                     file: Some(file),
@@ -384,12 +384,13 @@ fn prepare_wal(path: &Path) -> Result<(), WalError> {
         return Ok(());
     }
 
-    migrate_legacy_wal(path, file_len)
+    file.seek(SeekFrom::Start(0))?;
+    migrate_legacy_wal(path, file, file_len)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn migrate_legacy_wal(path: &Path, file_len: u64) -> Result<(), WalError> {
-    let mut reader = BufReader::new(File::open(path)?);
+fn migrate_legacy_wal(path: &Path, file: File, file_len: u64) -> Result<(), WalError> {
+    let mut reader = BufReader::new(file);
     let mut entries = Vec::new();
     let mut offset = 0u64;
     while offset < file_len {
@@ -423,6 +424,9 @@ fn migrate_legacy_wal(path: &Path, file_len: u64) -> Result<(), WalError> {
         entries.push(payload);
         offset = entry_end;
     }
+    // Release the original WAL before replacing it. The append writer is
+    // opened by with_group_commit only after migration has completed.
+    drop(reader);
 
     let tmp_path = path.with_extension("wal.migrate.tmp");
     let mut migrated = File::create(&tmp_path)?;
@@ -435,25 +439,94 @@ fn migrate_legacy_wal(path: &Path, file_len: u64) -> Result<(), WalError> {
         migrated.write_all(&crc.to_le_bytes())?;
         migrated.write_all(&payload)?;
     }
-    migrated.sync_all()?;
-    drop(migrated);
-    std::fs::rename(&tmp_path, path)?;
-    if let Some(parent) = path.parent() {
+    persist_replacement(migrated, &tmp_path, path)
+}
+
+// Both callers write a sibling temporary file and release all destination
+// handles before entering here. Never remove the destination before replacing
+// it: a failed rename must leave the last durable version available.
+#[cfg(not(target_arch = "wasm32"))]
+fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), WalError> {
+    file.sync_all()?;
+    drop(file);
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+
+        // Canonical parents produce absolute verbatim paths, including for
+        // a new destination, so Unicode and paths beyond MAX_PATH still work.
+        fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let name = path.file_name().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "replacement needs a file name")
+            })?;
+            let mut wide: Vec<u16> = parent
+                .canonicalize()?
+                .join(name)
+                .as_os_str()
+                .encode_wide()
+                .collect();
+            if wide.contains(&0) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "path contains NUL",
+                ));
+            }
+            wide.push(0);
+            Ok(wide)
+        }
+        let from = wide_path(tmp_path)?;
+        let to = wide_path(path)?;
+        // Windows cannot use File::open(directory).sync_all(). Request a
+        // write-through rename instead; COPY_ALLOWED is deliberately absent.
+        // https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw
+        // SAFETY: both pointers refer to live, NUL-terminated UTF-16 buffers.
+        if unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(tmp_path, path)?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         File::open(parent)?.sync_all()?;
     }
     Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn open_wal_writer(path: &Path) -> io::Result<File> {
+    // Windows append-only handles lack FILE_WRITE_DATA, which set_len needs
+    // to roll back partial writes. append_entry seeks under the WAL mutex.
+    OpenOptions::new().read(true).write(true).open(path)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 trait AppendTarget: Write {
-    fn len(&self) -> io::Result<u64>;
+    fn seek_end(&mut self) -> io::Result<u64>;
     fn truncate(&mut self, len: u64) -> io::Result<()>;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl AppendTarget for File {
-    fn len(&self) -> io::Result<u64> {
-        Ok(self.metadata()?.len())
+    fn seek_end(&mut self) -> io::Result<u64> {
+        self.seek(SeekFrom::End(0))
     }
 
     fn truncate(&mut self, len: u64) -> io::Result<()> {
@@ -468,7 +541,9 @@ fn append_entry<T: AppendTarget>(
     crc: u32,
     payload: &[u8],
 ) -> Result<(), WalError> {
-    let offset = target.len()?;
+    // Seek for every append, including after rollback: set_len does not move
+    // the cursor, and another handle may have truncated a torn tail.
+    let offset = target.seek_end()?;
     let result = target
         .write_all(&len.to_le_bytes())
         .and_then(|()| target.write_all(&crc.to_le_bytes()))
@@ -568,13 +643,7 @@ pub fn snapshot(graph: &Graph, path: &Path) -> Result<(), WalError> {
         let mut file = File::create(&tmp_path)?;
         file.write_all(&bytes)?;
         file.flush()?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&tmp_path, path)?;
-        if let Some(parent) = path.parent() {
-            File::open(parent)?.sync_all()?;
-        }
-        Ok(())
+        persist_replacement(file, &tmp_path, path)
     }
 }
 
@@ -590,11 +659,7 @@ pub fn restore(graph: &mut Graph, path: &Path) -> Result<bool, WalError> {
         if !path.exists() {
             return Ok(false);
         }
-        let file = File::open(path)?;
-        let file_len = file.metadata()?.len();
-        let mut bytes = Vec::with_capacity(file_len as usize);
-        let mut reader = io::BufReader::new(file);
-        io::Read::read_to_end(&mut reader, &mut bytes)?;
+        let bytes = std::fs::read(path)?;
         restore_bytes(graph, &bytes)?;
         Ok(true)
     }
@@ -702,6 +767,41 @@ mod tests {
             .starts_with(WAL_FILE_HEADER));
     }
 
+    #[test]
+    fn replacement_supports_long_unicode_paths() {
+        let dir = tempdir().unwrap();
+        let mut path = dir.path().to_path_buf();
+        for _ in 0..6 {
+            path.push("storage-世界-🦀-abcdefghijklmnopqrstuvwxyz-0123456789");
+        }
+        std::fs::create_dir_all(&path).unwrap();
+        let snap_path = path.join("snapshot-世界.bin");
+        snapshot(&Graph::new(), &snap_path).unwrap();
+        let mut graph = Graph::new();
+        graph.create_node(vec!["saved".to_string()], HashMap::new());
+        snapshot(&graph, &snap_path).unwrap();
+        let mut restored = Graph::new();
+        assert!(restore(&mut restored, &snap_path).unwrap());
+        assert_eq!(restored.all_nodes().len(), 1);
+        assert!(!snap_path.with_extension("bin.tmp").exists());
+
+        let wal_path = path.join("wal-世界.bin");
+        let payload = bincode::serialize(&insert_node("legacy")).unwrap();
+        let mut legacy = File::create(&wal_path).unwrap();
+        legacy
+            .write_all(&(payload.len() as u64).to_le_bytes())
+            .unwrap();
+        legacy.write_all(&payload).unwrap();
+        legacy.sync_all().unwrap();
+        drop(legacy);
+        let wal = Wal::new(&wal_path, true).unwrap();
+        wal.append(&insert_node("new")).unwrap();
+        drop(wal);
+        let wal = Wal::new(&wal_path, true).unwrap();
+        assert_eq!(node_labels(&wal.iter().unwrap()), ["legacy", "new"]);
+        assert!(!wal_path.with_extension("wal.migrate.tmp").exists());
+    }
+
     struct PartialWriteTarget {
         file: File,
         bytes_before_error: usize,
@@ -728,8 +828,8 @@ mod tests {
     }
 
     impl AppendTarget for PartialWriteTarget {
-        fn len(&self) -> io::Result<u64> {
-            Ok(self.file.metadata()?.len())
+        fn seek_end(&mut self) -> io::Result<u64> {
+            self.file.seek_end()
         }
 
         fn truncate(&mut self, len: u64) -> io::Result<()> {
@@ -748,23 +848,40 @@ mod tests {
 
         let payload = bincode::serialize(&insert_node("partial")).unwrap();
         let mut target = PartialWriteTarget {
-            file: OpenOptions::new().append(true).open(&wal_path).unwrap(),
+            file: open_wal_writer(&wal_path).unwrap(),
             bytes_before_error: 10,
             failed: false,
         };
-        assert!(append_entry(
+        let error = append_entry(
             &mut target,
             payload.len() as u64,
             crc32fast::hash(&payload),
-            &payload
+            &payload,
         )
-        .is_err());
+        .unwrap_err();
+        assert!(matches!(error, WalError::Io(_)), "rollback failed: {error}");
         assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), valid_len);
+        // Continue on the SAME handle: a successful rollback must also leave
+        // later appends at EOF rather than at the old partial-write cursor.
+        target.failed = false;
+        target.bytes_before_error = usize::MAX;
+        let payload = bincode::serialize(&insert_node("same-handle")).unwrap();
+        append_entry(
+            &mut target,
+            payload.len() as u64,
+            crc32fast::hash(&payload),
+            &payload,
+        )
+        .unwrap();
+        target.file.sync_all().unwrap();
         drop(target);
 
         let wal = Wal::new(&wal_path, true).unwrap();
         wal.append(&insert_node("after")).unwrap();
-        assert_eq!(node_labels(&wal.iter().unwrap()), ["before", "after"]);
+        assert_eq!(
+            node_labels(&wal.iter().unwrap()),
+            ["before", "same-handle", "after"]
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ import { renderTable } from './table.js';
 import { applyTheme } from './theme.js';
 import { createEditors } from './editor.js';
 import { openCsv, parseSchema } from './csv.js';
+import { connectDatabase } from './backend.js';
 
 const LS_DB = 'zega.v2.since';
 const LS_SCHEMA = 'zega.v2.schema';
@@ -221,9 +222,10 @@ const editorsReady = createEditors({
 });
 
 await init();
-const db = new ZegaWasm();
-const EMPTY_DB = db.export_base64();
-const saved = localStorage.getItem(LS_DB);
+const db = await connectDatabase(new ZegaWasm());
+if (db.native) document.querySelector('.conn').innerHTML = '<span class="conn-dot"></span> local · native';
+const EMPTY_DB = db.native ? null : db.export_base64();
+const saved = db.native ? null : localStorage.getItem(LS_DB);
 if (saved) {
   try { db.import_base64(saved); } catch (e) { console.error(e); }
 }
@@ -252,16 +254,19 @@ function setQuiet(editor, value) {
 function schemaText() { return schemaEditor.getValue(); }
 function queryText() { return queryEditor.getValue(); }
 
-function clearDatabase() {
-  db.import_base64(EMPTY_DB);
-  try { localStorage.setItem(LS_DB, EMPTY_DB); } catch (e) { console.error(e); }
+async function clearDatabase() {
+  if (db.native) await db.clear();
+  else {
+    db.import_base64(EMPTY_DB);
+    try { localStorage.setItem(LS_DB, EMPTY_DB); } catch (e) { console.error(e); }
+  }
   lastValue = null;
 }
 
 function persist() {
   localStorage.setItem(LS_SCHEMA, schemaText());
   localStorage.setItem(LS_QUERY, queryText());
-  try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); }
+  if (!db.native) { try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); } }
 }
 
 let lastValue = null;
@@ -352,7 +357,8 @@ async function run(source, options = {}) {
   localStorage.setItem(LS_QUERY, queryText());
   if (options.apply && looksLikeZqlFile(schemaText())) {
     try {
-      const applied = JSON.parse(db.apply_with_sources(schemaText(), JSON.stringify(await loadSources(schemaText(), true))));
+      const sources = db.native ? options.sources : await loadSources(schemaText(), true, options.sources);
+      const applied = JSON.parse(await db.apply_with_sources(schemaText(), sources === undefined ? undefined : JSON.stringify(sources)));
       if (!String(source || '').trim()) {
         showJson(applied);
         return applied;
@@ -371,13 +377,14 @@ async function run(source, options = {}) {
   }
   const started = performance.now();
   try {
-    const raw = db.run_with_sources(schemaText(), source, JSON.stringify(await loadSources(source, false, options.sources)));
+    const sources = db.native ? options.sources : await loadSources(source, false, options.sources);
+    const raw = await db.run_with_sources(schemaText(), source, sources === undefined ? undefined : JSON.stringify(sources));
     const elapsedUs = (performance.now() - started) * 1000;
     queryTime.textContent = elapsedUs < 1000
       ? `${Math.round(elapsedUs)} µs`
       : `${(elapsedUs / 1000).toFixed(2)} ms`;
     const value = JSON.parse(raw);
-    try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); }
+    if (!db.native) { try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); } }
     if (!options.quiet) showJson(value);
     return value;
   } catch (e) {
@@ -410,11 +417,12 @@ $('#btn-calgary').onclick = async () => {
     if (!response.ok) throw new Error(`Cannot load Calgary: HTTP ${response.status}`);
     const source = await response.text();
     db.schema(source); // Validate before replacing the current sample.
+    const sources = await loadSources(source, true);
     hideTour();
-    clearDatabase();
+    await clearDatabase();
     setQuiet(schemaEditor, source);
     setQuiet(queryEditor, source.slice(source.lastIndexOf('query {')).trim());
-    await run(queryText(), { apply: true });
+    await run(queryText(), { apply: true, sources });
     persist();
   } catch (error) { showThrown(error); }
 };
@@ -424,15 +432,15 @@ $('#btn-tickets').onclick = async () => {
     if (!response.ok) throw new Error(`Cannot load tickets: HTTP ${response.status}`);
     const source = await response.text();
     db.schema(source);
-    hideTour(); clearDatabase();
+    hideTour(); await clearDatabase();
     setQuiet(schemaEditor, source);
     setQuiet(queryEditor, source.slice(source.lastIndexOf('query {')).trim());
     await run(queryText(), { apply: true }); persist();
   } catch (error) { showThrown(error); }
 };
-$('#btn-clear').onclick = () => {
+$('#btn-clear').onclick = async () => {
   pauseAutoplay();
-  clearDatabase();
+  await clearDatabase();
   setQuiet(schemaEditor, '');
   setQuiet(queryEditor, '');
   localStorage.setItem(LS_SCHEMA, '');
@@ -539,7 +547,7 @@ function showTourBar() {
 
 async function reseed() {
   pauseAutoplay();
-  clearDatabase();
+  await clearDatabase();
   setQuiet(schemaEditor, SCHEMA);
   for (const seed of SEEDS) await run(seed);
   showTourBar();
@@ -741,12 +749,12 @@ function showMenu(x, y, rows) {
     button.textContent = row.label;
     if (row.danger) button.classList.add('danger');
     button.disabled = Boolean(row.disabled);
-    button.onclick = (event) => {
+    button.onclick = async (event) => {
       event.stopPropagation();
       if (row.menu) showMenu(x, y, row.menu);
       else {
         closeMenu();
-        row.run?.();
+        try { await row.run?.(); } catch (error) { showThrown(error); }
       }
     };
     menu.appendChild(button);
@@ -768,7 +776,7 @@ function nodesOf(typeName) {
 }
 
 function refreshGraph() {
-  try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); }
+  if (!db.native) { try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); } }
   const source = queryText().trim();
   if (source && !isMutation(source)) run(source);
   else {
@@ -780,7 +788,7 @@ function refreshGraph() {
 function openNodeMenu(node, x, y) {
   const edges = (node.labels || []).flatMap(schemaEdges);
   showMenu(x, y, [
-    { label: 'Delete Node', danger: true, run: () => { db.delete_node(node.id); refreshGraph(); } },
+    { label: 'Delete Node', danger: true, run: async () => { await db.delete_node(node.id); refreshGraph(); } },
     {
       label: 'Add Edge',
       disabled: !edges.length,
@@ -790,9 +798,9 @@ function openNodeMenu(node, x, y) {
           label: `${edge.name} ${edge.dir} ${edge.target}`,
           menu: targets.length ? targets.map((target) => ({
             label: nodeCaption(target),
-            run: () => {
+            run: async () => {
               try {
-                db.connect(schemaText(), node.id, edge.name, target.id);
+                await db.connect(schemaText(), node.id, edge.name, target.id);
                 refreshGraph();
               } catch (error) {
                 showThrown(error);
@@ -807,7 +815,7 @@ function openNodeMenu(node, x, y) {
 
 function openEdgeMenu(rel, x, y) {
   showMenu(x, y, [
-    { label: 'Delete Edge', danger: true, run: () => { db.delete_relationship(rel.id); refreshGraph(); } },
+    { label: 'Delete Edge', danger: true, run: async () => { await db.delete_relationship(rel.id); refreshGraph(); } },
   ]);
 }
 
@@ -877,11 +885,13 @@ dragSplit(document.getElementById('split-rows'), (ev) => {
   applySplits();
 });
 
-let opening = { nodes: [] };
-try { opening = storedGraph(); } catch (e) { showThrown(e); }
-
 const defaultSchema = schemaText().trim() === SCHEMA.trim();
-if (!saved && !localStorage.getItem(LS_SCHEMA)) {
+if (db.native) {
+  // Opening an existing data directory must never reseed or clear its graph.
+  hideTour();
+  drawGraph();
+  if (queryText().trim() && !isMutation(queryText())) await run(queryText());
+} else if (!saved && !localStorage.getItem(LS_SCHEMA)) {
   await reseed();
 } else if (defaultSchema) {
   showTour(0);

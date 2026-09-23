@@ -22,5 +22,5 @@ async function checkDirectory(dir, recursive = false) {
     count++;
   }
 }
-for (const dir of ['.', 'pkg', 'vendor', 'scripts', 'tests']) await checkDirectory(dir, dir === 'vendor');
+for (const dir of ['.', 'pkg', 'vendor', 'scripts', 'tests', 'cli-tests']) await checkDirectory(dir, dir === 'vendor');
 console.log(`PASS: ${count} JavaScript syntax checks; wasm compiles; all pkg/ SHA-256 hashes match engine ${source.commit}`);

@@ -1,0 +1,3 @@
+browser/pkg/** -text
+browser/wasm-source.json -text
+*.wasm binary
