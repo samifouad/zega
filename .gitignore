@@ -1,6 +1,7 @@
 /target
 .target
-Cargo.lock
+# Cargo.lock is committed: this workspace ships a CLI and a server, so a build
+# has to be reproducible and CI can pass --locked.
 *.swp
 *.swo
 .DS_Store
