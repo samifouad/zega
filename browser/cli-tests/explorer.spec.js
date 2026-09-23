@@ -40,7 +40,7 @@ test('embedded explorer writes through native ZQL and preserves data across relo
     ]) {
       await page.locator('#btn-csv').click();
       await page.locator('#csv-file').setInputFiles({ name, mimeType, buffer: Buffer.from(text) });
-      await expect(page.locator('#csv-status')).toContainText('1 rows');
+      await expect(page.locator('#csv-status')).toHaveText(`${name}: 1 rows`);
       await page.evaluate((schema) => window.monaco.editor.getEditors()
         .find((editor) => editor.getDomNode()?.closest('#csv-schema')).setValue(schema), schema);
       await page.locator(button).click();
