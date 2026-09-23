@@ -1,9 +1,9 @@
 # Follow-up: publish wasm with the engine
 
-[RFD 2](https://github.com/zegadb/rfd/issues/2) is defining the `@zega/*` npm
+[APS 2](https://github.com/zegadb/aps/issues/2) is defining the `@zega/*` npm
 surfaces. The explorer currently has **no npm engine dependency**. The proposed
 name below is `@zega/wasm`; it is a future package, not something this extraction
-installs or claims has been published. Confirm the final name in RFD 2 first.
+installs or claims has been published. Confirm the final name in APS 2 first.
 
 Vendoring `pkg/` is the immediate choice: it preserves the exact working engine
 artifact and makes normal builds independent of Rust and the engine checkout.
@@ -30,7 +30,7 @@ artifact, and neither is needed for this static application.
    In release CI, configure `RUSTC_WRAPPER: sccache` at job level, install
    sccache, and fail if it is missing, per the workspace rules.
 3. Normalize the generated package name and public surface before packing
-   (these commands assume RFD 2 accepts `@zega/wasm`):
+   (these commands assume APS 2 accepts `@zega/wasm`):
 
    ```sh
    node --input-type=module - <<'JS'

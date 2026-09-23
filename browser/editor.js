@@ -41,6 +41,7 @@ function registerLanguages(monaco) {
     tokenizer: {
       root: [
         [/\/\/.*$/, 'comment'],
+        [/\b(schema|display|map|table|graph|timeline|Default)\b/, 'keyword'],
         [/\btype\b/, { token: 'keyword', next: '@typeName' }],
         [/\s+/, 'white'],
       ],

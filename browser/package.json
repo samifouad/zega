@@ -16,7 +16,13 @@
     "test:cli": "playwright test --config playwright.cli.config.js"
   },
   "devDependencies": {
+    "@mapbox/vector-tile": "3.0.0",
     "@playwright/test": "1.63.0",
+    "@protomaps/basemaps": "5.7.2",
+    "maplibre-gl": "6.11.1",
+    "monaco-editor": "0.52.2",
+    "pbf": "5.1.2",
+    "pmtiles": "4.5.0",
     "wrangler": "4.136.3"
   }
 }

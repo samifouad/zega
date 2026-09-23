@@ -1,4 +1,16 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './offline.js';
+
+test('explorer header links the zega wordmark and back button to zega.dev', async ({ page }) => {
+  await page.goto('/');
+
+  const wordmark = page.locator('.brand');
+  await expect(wordmark).toHaveAttribute('href', 'https://zega.dev');
+  await expect(wordmark.locator('svg path')).toHaveAttribute('d', 'M8 7 H24 L8 25 H24');
+
+  const backLink = page.getByRole('link', { name: 'back to zega.dev' });
+  await expect(backLink).toHaveAttribute('href', 'https://zega.dev');
+  await expect(backLink).toHaveCSS('background-color', 'rgb(12, 139, 67)');
+});
 
 test('Wrangler serves modules and wasm with the correct MIME types', async ({ request }) => {
   for (const [path, type] of [['/', 'text/html'], ['/repl.js', 'text/javascript'], ['/pkg/zega_wasm.js', 'text/javascript'], ['/pkg/zega_wasm_bg.wasm', 'application/wasm']]) {

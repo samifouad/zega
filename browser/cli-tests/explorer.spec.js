@@ -23,7 +23,7 @@ test('embedded explorer writes through native ZQL and preserves data across relo
   let server = await start(directory);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  const schema = 'type Player {\n  name: String\n  salary: Int\n}';
+  const schema = 'type Player {\n  name: String\n  salary: Int\n}\ndisplay { table: Default graph }';
   const query = '{ Player { name salary } }';
   const read = async () => {
     const response = await request.post(`${server.url}/zql`, { data: { schema, query } });
@@ -48,6 +48,8 @@ test('embedded explorer writes through native ZQL and preserves data across relo
     }
     const expected = [{ name: 'Native, CSV', salary: 7 }, { name: 'Native JSON', salary: 8 }];
     expect(await read()).toEqual(expected);
+    await expect(page.getByRole('tab')).toHaveText(['Table', 'Graph']);
+    await expect(page.locator('.table-view tbody tr')).toHaveCount(2);
     await page.reload();
     await expect(page.locator('#raw-count')).toContainText('2 nodes');
     expect(await read()).toEqual(expected);

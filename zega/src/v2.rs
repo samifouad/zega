@@ -48,6 +48,11 @@ pub fn check_zql(entry_point: ZqlEntryPoint, source: &str) -> std::result::Resul
 }
 
 impl Zega {
+    /// Parse and check the schema, including the explicit display contract.
+    pub fn schema(&self, source: &str) -> Result<Schema, ZegaError> {
+        crate::lang::parse_schema(source).map_err(|error| explain(error, "schema", source))
+    }
+
     /// Execute ZQL. Native loads resolve relative paths against the process cwd.
     /// HTTP(S) loads require the default `http` feature. Wasm hosts must supply
     /// raw UTF-8 sources with [`Self::run_lang_with_sources`].
@@ -1269,6 +1274,17 @@ mod tests {
         }
     "#;
 
+    const UNIQUE_SCHEMA: &str = r#"
+        schema {
+          type Author {
+            name: String
+            wrote -> Book[]
+          }
+          type Book { title: String pages: Int }
+        }
+        unique { Author { name } Book { title } }
+    "#;
+
     #[test]
     fn create_then_read_filters_pages() {
         let zega = Zega::in_memory().build().unwrap();
@@ -1623,6 +1639,223 @@ mod tests {
             r#"mutation { Player(name: "Leon Draisaitl") set salary: 9000000 }"#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn link_and_set_reject_ambiguous_lookups() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
+        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+            .unwrap();
+        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+            .unwrap();
+        let missing_author = zega.run_lang(
+            SCHEMA,
+            r#"mutation { Author(name: "A") { wrote -> link Book(title: "Twin") { title } } }"#,
+        );
+        assert!(missing_author
+            .unwrap_err()
+            .to_string()
+            .contains("no Author matched"));
+
+        zega.run_lang(SCHEMA, r#"mutation { Author(name: "A") { name } }"#)
+            .unwrap();
+        let link = zega
+            .run_lang(
+                SCHEMA,
+                r#"mutation { Author(name: "A") { wrote -> link Book(title: "Twin") { title } } }"#,
+            )
+            .unwrap_err();
+        let set = zega
+            .run_lang(
+                SCHEMA,
+                r#"mutation { Book(title: "Twin") set pages: 1 { title } }"#,
+            )
+            .unwrap_err();
+        let unique_link = zega
+            .run_lang(
+                UNIQUE_SCHEMA,
+                r#"mutation { Author(name: "A") { wrote -> link Book(title: "Twin") { title } } }"#,
+            )
+            .unwrap_err();
+        let unique_set = zega
+            .run_lang(
+                UNIQUE_SCHEMA,
+                r#"mutation { Book(title: "Twin") set pages: 1 { title } }"#,
+            )
+            .unwrap_err();
+        assert!(link.to_string().contains("Book matched 2 rows"), "{link}");
+        assert!(set.to_string().contains("Book matched 2 rows"), "{set}");
+        assert!(
+            unique_link.to_string().contains("Book matched 2 rows"),
+            "{unique_link}"
+        );
+        assert!(
+            unique_set.to_string().contains("Book matched 2 rows"),
+            "{unique_set}"
+        );
+        assert!(zega.graph_json().unwrap()["rels"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let graph = zega.graph_json().unwrap();
+        let books: Vec<_> = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["title"] == "Twin")
+            .collect();
+        assert_eq!(books.len(), 2);
+        assert!(books.iter().all(|book| book["pages"].is_null()));
+        let before = zega.graph_json().unwrap();
+        drop(zega);
+        let reopened = Zega::open(path).wal_flush_every_write().build().unwrap();
+        assert_eq!(reopened.graph_json().unwrap(), before);
+    }
+
+    #[test]
+    fn link_and_set_zero_and_one_match_with_and_without_unique() {
+        let plain = Zega::in_memory().build().unwrap();
+        let missing_link = plain.run_lang(
+            SCHEMA,
+            r#"mutation { Author(name: "A") { wrote -> link Book(title: "Twin") { title } } }"#,
+        );
+        assert!(missing_link
+            .unwrap_err()
+            .to_string()
+            .contains("no Author matched"));
+        plain
+            .run_lang(SCHEMA, r#"mutation { Author(name: "A") { name } }"#)
+            .unwrap();
+        let missing_target = plain.run_lang(
+            SCHEMA,
+            r#"mutation { Author(name: "A") { wrote -> link Book(title: "Twin") { title } } }"#,
+        );
+        assert!(missing_target
+            .unwrap_err()
+            .to_string()
+            .contains("no Book matched"));
+        let missing_set = plain.run_lang(
+            SCHEMA,
+            r#"mutation { Book(title: "Twin") set pages: 1 { title } }"#,
+        );
+        assert!(missing_set
+            .unwrap_err()
+            .to_string()
+            .contains("no Book matched"));
+        plain
+            .run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+            .unwrap();
+        assert_eq!(
+            plain
+                .run_lang(
+                    SCHEMA,
+                    r#"mutation { Author(name: "A") { wrote -> link Book(title: "Twin") { title } } }"#,
+                )
+                .unwrap()["wrote"][0]["title"],
+            "Twin"
+        );
+        assert_eq!(
+            plain
+                .run_lang(
+                    SCHEMA,
+                    r#"mutation { Book(title: "Twin") set pages: 1 { title pages } }"#,
+                )
+                .unwrap()["pages"],
+            1
+        );
+
+        let unique = Zega::in_memory().build().unwrap();
+        let missing_unique_link = unique.run_lang(
+            UNIQUE_SCHEMA,
+            r#"mutation { Author(name: "A") { wrote -> link Book(title: "Twin") { title } } }"#,
+        );
+        assert!(missing_unique_link
+            .unwrap_err()
+            .to_string()
+            .contains("no Author matched"));
+        let missing_unique_set = unique.run_lang(
+            UNIQUE_SCHEMA,
+            r#"mutation { Book(title: "Twin") set pages: 1 { title } }"#,
+        );
+        assert!(missing_unique_set
+            .unwrap_err()
+            .to_string()
+            .contains("no Book matched"));
+        unique
+            .run_lang(UNIQUE_SCHEMA, r#"mutation { Author(name: "A") { name } }"#)
+            .unwrap();
+        unique
+            .run_lang(
+                UNIQUE_SCHEMA,
+                r#"mutation { Book(title: "Twin") { title } }"#,
+            )
+            .unwrap();
+        assert_eq!(
+            unique
+                .run_lang(
+                    UNIQUE_SCHEMA,
+                    r#"mutation { Author(name: "A") { wrote -> link Book(title: "Twin") { title } } }"#,
+                )
+                .unwrap()["wrote"][0]["title"],
+            "Twin"
+        );
+        assert_eq!(
+            unique
+                .run_lang(
+                    UNIQUE_SCHEMA,
+                    r#"mutation { Book(title: "Twin") set pages: 1 { title pages } }"#,
+                )
+                .unwrap()["pages"],
+            1
+        );
+    }
+
+    #[test]
+    fn single_valued_query_relationship_returns_first_of_multiple_targets() {
+        let zega = Zega::in_memory().build().unwrap();
+        let schema = r#"
+            type Author { name: String favorite -> Book }
+            type Book { title: String }
+        "#;
+        zega.run_lang(schema, r#"mutation { Author(name: "A") { name } }"#)
+            .unwrap();
+        zega.run_lang(schema, r#"mutation { Book(title: "Twin") { title } }"#)
+            .unwrap();
+        zega.run_lang(schema, r#"mutation { Book(title: "Twin") { title } }"#)
+            .unwrap();
+        let graph = zega.graph_json().unwrap();
+        let author = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["name"] == "A")
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let books: Vec<_> = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["title"] == "Twin")
+            .map(|node| node["id"].as_u64().unwrap())
+            .collect();
+        zega.connect_schema(schema, author, "favorite", books[0])
+            .unwrap();
+        zega.connect_schema(schema, author, "favorite", books[1])
+            .unwrap();
+        let result = zega
+            .run_lang(
+                schema,
+                r#"{ Author(name = "A") { favorite -> Book { title } } }"#,
+            )
+            .unwrap();
+        assert_eq!(result["favorite"]["title"], "Twin");
+        assert_eq!(
+            zega.graph_json().unwrap()["rels"].as_array().unwrap().len(),
+            2
+        );
     }
 
     #[test]

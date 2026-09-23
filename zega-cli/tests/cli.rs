@@ -212,6 +212,18 @@ fn explorer_embeds_assets_and_shares_the_persistent_database() {
         assert_eq!(mime, "application/wasm");
         assert_eq!(&body[..4], b"\0asm");
         assert_eq!(server.request("GET", "/backend.js", None, None).0, 200);
+        for path in ["/map.js", "/map-style.js", "/table.js", "/theme.js"] {
+            let (status, _, mime) = server.request("GET", path, None, None);
+            assert_eq!(status, 200, "{path}");
+            assert!(mime.starts_with("text/javascript"), "{path}: {mime}");
+        }
+        let (status, font, mime) = server.request("GET", "/fonts/space-grotesk-700.ttf", None, None);
+        assert_eq!(status, 200);
+        assert_eq!(mime, "font/ttf");
+        assert!(!font.is_empty());
+        let (status, sample, _) = server.request("GET", "/samples/calgary.zql", None, None);
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(sample).unwrap().contains("display"));
         let (_, body, _) = server.request("GET", "/explorer-config.json", None, None);
         assert_eq!(
             serde_json::from_slice::<Value>(&body).unwrap(),
