@@ -23,6 +23,9 @@ just like [cqx](https://cqx.bio) does for running queries without a server:
 
 - **Property graph** — labelled nodes, typed relationships, property indexes,
   and variable-length traversals (`-[*1..3]->`).
+- **Path finding** — `road *path -> Junction(name: "B")` returns one route
+  with its nodes, edges and cost: fewest edges, `by &km` (Dijkstra), or
+  `by &km toward at` (A*, with `km: Float<km>`). See [paths](docs/path.md).
 - **ZQL** — a Cypher-inspired query language: `MATCH`, `CREATE`, `MERGE`,
   `SET`, `DELETE`/`DETACH DELETE`, `WHERE`, `WITH`, `UNWIND`, `FOREACH`,
   `ORDER BY`/`SKIP`/`LIMIT`, aggregates (`count`, `sum`, `avg`, `min`, `max`,

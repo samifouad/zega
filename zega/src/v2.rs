@@ -107,6 +107,17 @@ impl Zega {
         Ok(graph.examined())
     }
 
+    /// Nodes whose edges a ZQL `*path` search has read since this database
+    /// opened. `toward` (A*) lowers this number and never changes a route's
+    /// cost; tests use it to show the guess was used.
+    pub fn nodes_expanded(&self) -> Result<u64, ZegaError> {
+        let graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        Ok(graph.expanded())
+    }
+
     pub fn delete_node(&self, id: u64) -> Result<(), ZegaError> {
         let mut graph = self
             .graph
@@ -297,23 +308,7 @@ impl Zega {
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let mut nodes: Vec<Json> = graph.all_nodes().values().map(node_json).collect();
         nodes.sort_by_key(|node| node["id"].as_u64().unwrap_or(0));
-        let mut rels: Vec<Json> = graph
-            .all_relationships()
-            .values()
-            .map(|rel| {
-                let mut props = serde_json::Map::new();
-                for (key, value) in &rel.props {
-                    props.insert(key.clone(), value_to_json(value));
-                }
-                json!({
-                    "id": rel.id,
-                    "type": rel.kind,
-                    "from": rel.from,
-                    "to": rel.to,
-                    "props": props,
-                })
-            })
-            .collect();
+        let mut rels: Vec<Json> = graph.all_relationships().values().map(rel_json).collect();
         rels.sort_by_key(|rel| rel["id"].as_u64().unwrap_or(0));
         Ok(json!({ "nodes": nodes, "rels": rels }))
     }
@@ -814,10 +809,13 @@ fn apply_node(
                 direction,
                 target,
                 range,
-                ..
+                path,
             } => {
                 if range.is_some() {
                     return Err(LangError::bare("a mutation cannot use a hop range"));
+                }
+                if path.is_some() {
+                    return Err(LangError::bare("a mutation cannot find a path"));
                 }
                 let edge = schema.edge(&sel.type_name, field)?;
                 let (_, rel, schema_dir, targets, many) = edge.as_edge().unwrap();
@@ -1244,6 +1242,7 @@ fn project(
             Item::Walk {
                 field,
                 range,
+                path,
                 direction,
                 target,
                 span,
@@ -1268,6 +1267,29 @@ fn project(
                         "{field} does not reach {}",
                         target.type_name
                     )));
+                }
+                if let Some(path) = path {
+                    let weight_ty = match edge {
+                        crate::lang::Field::Edge { props, .. } => path
+                            .weight
+                            .as_ref()
+                            .and_then(|(name, _)| props.iter().find(|prop| &prop.name == name)),
+                        crate::lang::Field::Prop { .. } => None,
+                    };
+                    let walk = PathWalk {
+                        field,
+                        rel,
+                        direction: *direction,
+                        targets,
+                        span: *span,
+                        path,
+                        target,
+                        weight_ty: weight_ty.map(|prop| prop.ty.as_str()),
+                        weight_unit: weight_ty.and_then(|prop| prop.unit),
+                    };
+                    let value = route(graph, schema, id, hops, walk, budget)?;
+                    object.insert(field.clone(), value);
+                    continue;
                 }
                 let reached = if let Some((min, max)) = range {
                     walk_range(
@@ -1350,6 +1372,247 @@ fn ensure_prop(schema: &Schema, sel: &Selection, name: &str) -> Result<(), LangE
         "{} has no field {name}",
         sel.type_name
     )))
+}
+
+/// A relationship as the explorer draws it: the shape of `graph_json`'s rels.
+fn rel_json(rel: &crate::graph::Relationship) -> Json {
+    let mut props = serde_json::Map::new();
+    for (key, value) in &rel.props {
+        props.insert(key.clone(), value_to_json(value));
+    }
+    json!({
+        "id": rel.id,
+        "type": rel.kind,
+        "from": rel.from,
+        "to": rel.to,
+        "props": props,
+    })
+}
+
+/// A* guesses this share of the straight line to the target. Distances here
+/// are on a sphere; a road measured on the WGS84 ellipsoid can be up to 0.56%
+/// shorter than the sphere's straight line, and the guess must stay below it.
+const STRAIGHT_LINE_SHARE: f64 = 0.99;
+
+struct PathWalk<'a> {
+    field: &'a str,
+    rel: &'a str,
+    direction: Direction,
+    targets: &'a [String],
+    span: Span,
+    path: &'a crate::lang::PathSpec,
+    target: &'a Selection,
+    /// The declared type of the weight field, `Int` or `Float`.
+    weight_ty: Option<&'a str>,
+    /// Its declared distance unit, `Float<km>`, which A* needs.
+    weight_unit: Option<crate::lang::DistanceUnit>,
+}
+
+/// `field *path ... -> Target`: one route from `start` to the nearest node
+/// the target selects, or null when there is none within the bound.
+fn route(
+    graph: &Graph,
+    schema: &Schema,
+    start: NodeId,
+    hops: usize,
+    walk: PathWalk<'_>,
+    budget: &mut usize,
+) -> Result<Json, LangError> {
+    use crate::lang::PathBound;
+    use crate::path::{cheapest, fewest_edges, Limit, Step};
+
+    let PathWalk { field, rel, direction, targets, span, path, target, weight_ty, weight_unit } = walk;
+    let mut goals = candidates(graph, target);
+    retain_matches(graph, &mut goals, target.condition.as_ref());
+    let goal_set: HashSet<NodeId> = goals.iter().copied().collect();
+    let is_goal = |id: NodeId| goal_set.contains(&id);
+    let describe = |id: NodeId| {
+        graph.get_node(id).map_or_else(|| format!("node#{id}"), node_description)
+    };
+    // Every node after the start is one the target selection can read.
+    let next = |node: NodeId, budget: &mut usize| -> Result<Vec<(NodeId, RelId)>, LangError> {
+        let out: Vec<_> = neighbors(graph, node, rel, direction)
+            .into_iter()
+            .filter(|(to, _)| node_has_any_label(graph, *to, targets))
+            .collect();
+        charge(budget, out.len())?;
+        Ok(out)
+    };
+    let found = match &path.weight {
+        None => {
+            let max_hops = match path.bound {
+                None => None,
+                Some((PathBound::Hops(n), _)) => Some(n),
+                Some((PathBound::Cost { limit, inclusive }, _)) => {
+                    // A route of n edges costs n.
+                    let whole = limit.floor();
+                    let most = if inclusive || whole < limit { whole } else { whole - 1.0 };
+                    if most < 0.0 {
+                        return Ok(Json::Null);
+                    }
+                    Some(most as usize)
+                }
+            };
+            fewest_edges(start, is_goal, max_hops, |node| next(node, budget))?
+        }
+        Some((weight, _)) => {
+            let limit = match path.bound {
+                None => None,
+                Some((PathBound::Cost { limit, inclusive }, _)) => Some(Limit { limit, inclusive }),
+                Some((PathBound::Hops(_), bound_span)) => {
+                    return Err(LangError::at(bound_span, "a weighted path is bounded by cost"))
+                }
+            };
+            let toward = path.toward.as_ref();
+            let point_of = |id: NodeId| -> Result<Option<Point>, LangError> {
+                let Some(toward) = toward else { return Ok(None) };
+                let node = graph
+                    .get_node(id)
+                    .ok_or_else(|| LangError::bare(format!("missing node {id}")))?;
+                match point_prop(node, &toward.field) {
+                    Some(point) => Ok(Some(point)),
+                    None => Err(LangError::at(
+                        toward.span,
+                        format!(
+                            "{} has no {}, and `toward {}` needs a location on every node it reaches",
+                            node_description(node),
+                            toward.field,
+                            toward.field
+                        ),
+                    )
+                    .with_help("store the Point, or drop `toward` to search without a guess")),
+                }
+            };
+            let goal_points = goals
+                .iter()
+                .map(|goal| point_of(*goal))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<Point>>();
+            // The checker requires the unit for `toward`; this is the backstop.
+            let unit = match (toward, weight_unit) {
+                (None, _) => crate::lang::DistanceUnit::Metres,
+                (Some(_), Some(unit)) => unit,
+                (Some(toward), None) => {
+                    return Err(LangError::at(
+                        toward.span,
+                        format!("toward needs a unit on the weight: declare {weight}: {}<km>", weight_ty.unwrap_or("Float")),
+                    ))
+                }
+            };
+            let unit_name = unit.as_str();
+            let unit = unit.metres();
+            let straight = |from: Point, to: Point| from.portable_distance(to) / unit;
+            let guess = |node: NodeId| -> Result<f64, LangError> {
+                if toward.is_none() || goal_points.is_empty() {
+                    return Ok(0.0);
+                }
+                let here = point_of(node)?.expect("toward is set");
+                let nearest = goal_points
+                    .iter()
+                    .map(|goal| straight(here, *goal))
+                    .fold(f64::INFINITY, f64::min);
+                Ok(STRAIGHT_LINE_SHARE * nearest)
+            };
+            let steps = |node: NodeId, budget: &mut usize| -> Result<Vec<Step>, LangError> {
+                let mut out = Vec::new();
+                for (to, rel_id) in next(node, budget)? {
+                    let edge = || format!("{field}#{rel_id} from {} to {}", describe(node), describe(to));
+                    let stored = graph.get_relationship(rel_id).and_then(|r| r.props.get(weight));
+                    let weight_value = match stored {
+                        Some(Value::Int(n)) => *n as f64,
+                        Some(Value::Float(bits)) => f64::from_bits(*bits),
+                        None | Some(Value::Null) => {
+                            return Err(LangError::at(span, format!("{} has no {weight}", edge()))
+                                .with_help(format!(
+                                    "a path does not guess a missing weight; store `&{weight}` on every {field}"
+                                )))
+                        }
+                        Some(other) => {
+                            return Err(LangError::at(
+                                span,
+                                format!("{} has {weight} {}, not a number", edge(), value_to_json(other)),
+                            ))
+                        }
+                    };
+                    if weight_value < 0.0 {
+                        return Err(LangError::at(
+                            span,
+                            format!("{} has {weight} {weight_value}, and a path weight cannot be negative", edge()),
+                        )
+                        .with_help("the cheapest route is only defined for weights of 0 or more"));
+                    }
+                    if let Some(toward) = toward {
+                        // Every node, the start included, has its Point here:
+                        // a missing one is an error, never a skipped check.
+                        if let (Some(from), Some(to_point)) = (point_of(node)?, point_of(to)?) {
+                            let line = straight(from, to_point);
+                            if weight_value < STRAIGHT_LINE_SHARE * line {
+                                return Err(LangError::at(
+                                    toward.span,
+                                    format!(
+                                        "{} has {weight} {weight_value}, shorter than the {line:.3} {} straight line between its ends",
+                                        edge(),
+                                        unit_name
+                                    ),
+                                )
+                                .with_help(format!(
+                                    "`toward` needs every {weight} to be at least the straight-line distance; {weight} is declared in {unit_name}, so check that unit, or drop `toward`"
+                                )));
+                            }
+                        }
+                    }
+                    out.push(Step { to, rel: rel_id, weight: weight_value });
+                }
+                Ok(out)
+            };
+            cheapest(start, is_goal, limit, |node| steps(node, budget), guess)?
+        }
+    };
+    graph.note_expanded(found.expanded);
+    let Some(route) = found.route else {
+        return Ok(Json::Null);
+    };
+    let steps = route.rels.len();
+    let cost = match weight_ty {
+        None => json!(steps),
+        Some("Int") => json!(route.cost as i64),
+        Some(_) => json!(route.cost),
+    };
+    // The start has no edge that arrived at it: its edge fields read null.
+    let mut first = target.clone();
+    let edge_fields: Vec<String> = first
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::EdgeProp(name, _) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    first.items.retain(|item| !matches!(item, Item::EdgeProp(..)));
+    let mut nodes = Vec::with_capacity(route.nodes.len());
+    for (i, node) in route.nodes.iter().enumerate() {
+        if i == 0 {
+            let mut row = project(graph, schema, &first, *node, hops, None, budget)?;
+            if let Json::Object(object) = &mut row {
+                for name in &edge_fields {
+                    object.insert(name.clone(), Json::Null);
+                }
+            }
+            nodes.push(row);
+        } else {
+            let arrived = Some(route.rels[i - 1]);
+            nodes.push(project(graph, schema, target, *node, hops + i, arrived, budget)?);
+        }
+    }
+    let edges: Vec<Json> = route
+        .rels
+        .iter()
+        .filter_map(|id| graph.get_relationship(*id))
+        .map(rel_json)
+        .collect();
+    Ok(json!({ "cost": cost, "hops": steps, "nodes": nodes, "edges": edges }))
 }
 
 struct WalkSpec<'a> {

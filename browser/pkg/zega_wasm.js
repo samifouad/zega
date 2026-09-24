@@ -215,6 +215,17 @@ export class ZegaWasm {
         return this;
     }
     /**
+     * Nodes a ZQL `*path` search has expanded since this database opened.
+     * @returns {number}
+     */
+    nodes_expanded() {
+        const ret = wasm.zegawasm_nodes_expanded(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
      * Preview metadata and cells come from the same Rust parser as insertion.
      * @param {string} text
      * @returns {string}

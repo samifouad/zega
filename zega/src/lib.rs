@@ -26,6 +26,7 @@ mod journal;
 mod jwt;
 mod lang;
 mod parser;
+mod path;
 mod planner;
 pub mod policy;
 mod v2;

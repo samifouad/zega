@@ -13,6 +13,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts import channels
 
@@ -22,12 +23,12 @@ SCRIPT = Path(os.environ.get("CHANNELS_SCRIPT", ROOT / "scripts/channels.py")).r
 
 class Fixture(unittest.TestCase):
     def setUp(self):
-        (ROOT / ".tmp").mkdir(exist_ok=True)
-        self.temp = tempfile.TemporaryDirectory(dir=ROOT / ".tmp")
+        self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
+        (self.repo / ".tmp").mkdir()
         self.env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
                     "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
                     "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid"}
@@ -51,14 +52,33 @@ class Fixture(unittest.TestCase):
         self.executable("aws", '''import json, os, pathlib, shutil, sys
 args = sys.argv[1:]
 with open(os.environ['FIXTURE_LOG'], 'a') as f: f.write(json.dumps(args) + '\\n')
-assert args[:2] == ['s3', 'cp'], args
-recursive = '--recursive' in args
-paths = [a for a in args[2:args.index('--endpoint-url')] if a != '--recursive']
+if args[0] == 's3api':
+    bucket = args[args.index('--bucket') + 1]
+    prefix = args[args.index('--prefix') + 1]
+    target = pathlib.Path(os.environ['FIXTURE_STORE']) / bucket / prefix
+    if args[1] == 'list-objects-v2' and 'Contents[].Key' in args:
+        keys = [p.relative_to(pathlib.Path(os.environ['FIXTURE_STORE']) / bucket).as_posix()
+                for p in sorted(target.rglob('*')) if p.is_file()] if target.exists() else []
+        print(json.dumps(keys))
+    else:
+        print('1' if target.exists() and any(target.rglob('*')) else '0')
+    raise SystemExit(0)
+assert args[:1] == ['s3'] and args[1] in ('cp', 'sync', 'rm'), args
+operation = args[1]
+paths = [a for a in args[2:args.index('--endpoint-url')] if a not in ('--recursive', '--delete')]
 def local(value):
     return pathlib.Path(os.environ['FIXTURE_STORE']) / value[5:] if value.startswith('s3://') else pathlib.Path(value)
+if operation == 'rm':
+    local(paths[0]).unlink()
+    raise SystemExit(0)
 source, dest = map(local, paths)
-if recursive:
+if operation == 'sync':
+    if '--delete' in args and dest.exists(): shutil.rmtree(dest)
     shutil.copytree(source, dest, dirs_exist_ok=True)
+elif '--recursive' in args:
+    shutil.copytree(source, dest, dirs_exist_ok=True)
+    if source.name == 'canary' and source.is_relative_to(pathlib.Path(os.environ['FIXTURE_STORE'])) and os.environ.get('CORRUPT_READBACK'):
+        next(dest.rglob('zega.wasm')).write_bytes(b'corrupted-readback')
 else:
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, dest)
@@ -85,24 +105,34 @@ with open(os.environ['FIXTURE_LOG'], 'a') as f: f.write(json.dumps(sys.argv[1:])
         self.git("tag", self.tag)
         for bucket in channels.BUCKETS:
             dest = self.store / bucket / self.tag
-            dest.mkdir(parents=True)
-            (dest / "zega.wasm").write_bytes(b"\0asm-fixture-payload")
-            with tarfile.open(dest / "package.tgz", "w:gz") as archive:
-                for name, payload in {
-                    "package/package.json": json.dumps({"name": "zegadb", "version": f"1.2.3-canary.{self.commit[:7]}", "exports": "./index.js"}).encode(),
-                    "package/index.js": b"export const answer = 42;\n",
-                    "package/engine.wasm": b"\0asm-fixture-payload",
-                }.items():
-                    member = tarfile.TarInfo(name)
-                    member.size = len(payload)
-                    archive.addfile(member, io.BytesIO(payload))
-            data = dict(version=self.tag[1:], tag=self.tag, channel="canary", promoted_from=None,
-                        commit=self.commit, base_version="1.2.3", artifacts={p.name: channels.digest(p) for p in dest.iterdir()})
-            for name in channels.METADATA:
-                channels.write_json(dest / name, data)
+            self.create_canary(dest)
             latest = self.store / bucket / "latest"
             latest.mkdir()
             (latest / "sentinel").write_text("previous stable")
+
+    def create_canary(self, dest):
+        dest.mkdir(parents=True)
+        (dest / "zega.wasm").write_bytes(b"\0asm-fixture-payload")
+        with tarfile.open(dest / "package.tgz", "w:gz") as archive:
+            for name, payload in {
+                "package/package.json": json.dumps({"name": "zegadb", "version": f"1.2.3-canary.{self.commit[:7]}", "exports": "./index.js"}).encode(),
+                "package/index.js": b"export const answer = 42;\n",
+                "package/engine.wasm": b"\0asm-fixture-payload",
+            }.items():
+                member = tarfile.TarInfo(name)
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+        data = dict(version=self.tag[1:], tag=self.tag, channel="canary", promoted_from=None,
+                    commit=self.commit, base_version="1.2.3", artifacts={p.name: channels.digest(p) for p in dest.iterdir()})
+        for name in channels.METADATA:
+            channels.write_json(dest / name, data)
+
+    def assert_no_bucket_copies(self):
+        operations = [json.loads(line) for line in self.log.read_text().splitlines()]
+        for operation in operations:
+            s3_paths = [arg for arg in operation if arg.startswith("s3://")]
+            self.assertLessEqual(len(s3_paths), 1, f"Bucket-to-bucket S3 operation: {operation}")
+        return operations
 
     def snapshot(self):
         return {str(p.relative_to(self.store)): p.read_bytes() for p in self.store.rglob("*") if p.is_file()}
@@ -186,6 +216,24 @@ class Promotion(Fixture):
         before["version"] = "1.2.3"
         self.assertEqual(before, after)
         self.assertEqual(canary, stable)
+        operations = self.assert_no_bucket_copies()
+        for bucket in channels.BUCKETS:
+            local_source = (self.repo / "promotion" / bucket).resolve()
+            sync = next(operation for operation in operations
+                        if operation[:2] == ["s3", "sync"] and f"s3://{bucket}/v1.2.3/" in operation)
+            self.assertIn("--delete", sync)
+            self.assertEqual((self.repo / sync[2].rstrip("/")).resolve(), local_source)
+            self.assertFalse(any(operation[:2] == ["s3", "sync"] and f"s3://{bucket}/latest/" in operation
+                                 for operation in operations))
+            latest_upload = next(i for i, operation in enumerate(operations)
+                                 if operation[:2] == ["s3", "cp"] and "--recursive" in operation
+                                 and f"s3://{bucket}/latest/" in operation)
+            latest_readback = next(i for i, operation in enumerate(operations)
+                                   if operation[:2] == ["s3", "cp"] and "--recursive" in operation
+                                   and f"s3://{bucket}/latest/" in operation and i > latest_upload)
+            latest_json = next(i for i, operation in enumerate(operations)
+                               if operation[:2] == ["s3", "cp"] and f"s3://{bucket}/latest.json" in operation)
+            self.assertLess(latest_readback, latest_json)
         print("PROMOTED: R2 payloads byte-identical; npm contents differ only by package.json version")
 
     def test_corrupt_wasm_rejected_without_writes(self):
@@ -221,6 +269,69 @@ class Release(Fixture):
         self.assertNotEqual(self.command("resolve", bad_tag).returncode, 0)
         self.git("tag", "v1.2.3")
         self.assertNotEqual(self.command("resolve", self.tag).returncode, 0)
+
+
+class Publication(Fixture):
+    def test_r2_errors_name_operation_and_prefix_without_diagnostics(self):
+        result = subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"private endpoint and credentials")
+        with patch.dict(os.environ, {"R2_ENDPOINT": "https://fixture.invalid"}):
+            with patch("scripts.channels.subprocess.run", return_value=result):
+                with self.assertRaisesRegex(RuntimeError, r"R2 sync failed for zega-releases/canary/ \(diagnostics withheld\)") as error:
+                    channels.aws("sync", "release/", "s3://zega-releases/canary/", "--delete")
+        self.assertNotIn("private endpoint", str(error.exception))
+        self.assertNotIn("credentials", str(error.exception))
+
+    def test_canary_pointer_uploads_all_bytes_deletes_only_stale_and_reads_back_before_json(self):
+        self.git("tag", self.tag)
+        release = self.repo / "release"
+        self.create_canary(release)
+        for bucket in channels.BUCKETS:
+            stale = self.store / bucket / "canary"
+            stale.mkdir(parents=True)
+            (stale / "zega-server-old").write_bytes(b"stale binary")
+            # Same-size stale content with a newer mtime is the case `s3 sync` can skip.
+            (stale / "zega.wasm").write_bytes(b"X" * (release / "zega.wasm").stat().st_size)
+            os.utime(stale / "zega.wasm", (2_000_000_000, 2_000_000_000))
+        result = self.command("publish-r2", self.tag, "release")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        operations = self.assert_no_bucket_copies()
+        for bucket in channels.BUCKETS:
+            pointer = self.store / bucket / "canary"
+            self.assertEqual({p.name for p in pointer.iterdir()}, {p.name for p in release.iterdir()})
+            self.assertEqual((pointer / "zega.wasm").read_bytes(), (release / "zega.wasm").read_bytes())
+            self.assertEqual(channels.read_json(self.store / bucket / "canary.json"), channels.read_json(release / "release.json"))
+            self.assertFalse(any(operation[:2] == ["s3", "sync"] for operation in operations))
+            upload = next(operation for operation in operations
+                          if operation[:2] == ["s3", "cp"] and "--recursive" in operation
+                          and f"s3://{bucket}/canary/" in operation)
+            local_source = next(path for path in upload[2:] if not path.startswith("s3://") and path != "--recursive")
+            self.assertEqual((self.repo / local_source).resolve(), release.resolve())
+            deletes = [operation for operation in operations if operation[:2] == ["s3", "rm"]
+                       and f"s3://{bucket}/canary/" in operation[2]]
+            self.assertEqual([operation[2] for operation in deletes], [f"s3://{bucket}/canary/zega-server-old"])
+            readback = next(i for i, operation in enumerate(operations)
+                            if operation[:2] == ["s3", "cp"] and "--recursive" in operation
+                            and f"s3://{bucket}/canary/" in operation)
+            pointer_json = next(i for i, operation in enumerate(operations)
+                                if operation[:2] == ["s3", "cp"] and f"s3://{bucket}/canary.json" in operation)
+            readback_copy = next(i for i, operation in enumerate(operations)
+                                 if operation[:2] == ["s3", "cp"] and "--recursive" in operation
+                                 and f"s3://{bucket}/canary/" in operation and i > readback)
+            self.assertLess(readback_copy, pointer_json)
+
+    def test_canary_readback_mismatch_aborts_before_json_pointer_write(self):
+        self.git("tag", self.tag)
+        release = self.repo / "release"
+        self.create_canary(release)
+        env = {**self.env, "CORRUPT_READBACK": "1"}
+        result = subprocess.run([sys.executable, str(SCRIPT), "publish-r2", self.tag, "release"],
+                                cwd=self.repo, env=env, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0, "Corrupt pointer readback was accepted")
+        self.assertIn("checksum mismatch", result.stderr)
+        operations = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertFalse(any(operation[:2] == ["s3", "cp"] and
+                             any(path in operation for path in (f"s3://{bucket}/canary.json" for bucket in channels.BUCKETS))
+                             for operation in operations), "canary.json was written after a failed readback")
 
     def test_prepare_binds_native_wasm_and_tested_npm_to_commit(self):
         self.git("tag", self.tag)
