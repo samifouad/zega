@@ -1,0 +1,17 @@
+# client --smoke, in Docker: server at shared-cpu-1x limits (--memory 256m --memory-swap 256m --cpus 0.0625), volume at /data, token file at /etc/zega/admin-token; client container on the same Docker network
+{"at":"2026-09-24T12:33:06.113Z","phase":"smoke-wipe","target":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":0,"serverMs":1.3,"roundTripMs":39.58,"before":{"peakRss":5455872,"rss":5455872,"rssAnon":659456},"after":{"peakRss":5664768,"rss":5664768,"rssAnon":675840},"disk":{"snapshotBytes":null,"walBytes":6}}
+{"at":"2026-09-24T12:33:06.125Z","phase":"smoke-mem","target":"s1x","vm":"shared-cpu-1x","ok":true,"mem":{"rss":5668864,"peakRss":5668864,"machine":{"cgroupMax":268435456,"memAvailable":4889395200,"memTotal":8324960256},"disk":{"snapshotBytes":null,"walBytes":6},"openMs":9.759981,"startedAtMs":1790253183785}}
+{"at":"2026-09-24T12:33:07.701Z","phase":"smoke-load","target":2000,"vm":"shared-cpu-1x","ok":true,"error":null,"done":true,"nodes":2000,"relationships":6000,"batches":{"samples":2,"p50Ms":723.29,"p99Ms":795.69,"maxMs":795.69,"minMs":723.29,"over2s":0},"elapsedMs":1576,"mem":{"rss":28708864,"peakRss":28708864,"machine":{"cgroupMax":268435456,"memAvailable":4859994112,"memTotal":8324960256},"disk":{"snapshotBytes":null,"walBytes":636592},"openMs":9.759981,"startedAtMs":1790253183785}}
+{"at":"2026-09-24T12:33:08.000Z","phase":"smoke","target":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"read","nodes":2000,"samples":5,"p50Ms":2.06,"p99Ms":3.16,"maxMs":3.16,"minMs":1.6,"over2s":0,"errors":0,"firstError":null}
+{"at":"2026-09-24T12:33:08.304Z","phase":"smoke","target":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"write","nodes":2000,"samples":5,"p50Ms":6.17,"p99Ms":9,"maxMs":9,"minMs":4.44,"over2s":0,"errors":0,"firstError":null}
+{"at":"2026-09-24T12:33:08.601Z","phase":"smoke","target":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"hop2","nodes":2000,"samples":5,"p50Ms":2.11,"p99Ms":2.18,"maxMs":2.18,"minMs":1.47,"over2s":0,"errors":0,"firstError":null}
+{"at":"2026-09-24T12:33:08.998Z","phase":"smoke","target":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"heavy","nodes":2000,"samples":2,"p50Ms":96.89,"p99Ms":201.62,"maxMs":201.62,"minMs":96.89,"over2s":0,"errors":0,"firstError":null}
+{"at":"2026-09-24T12:33:09.197Z","phase":"smoke","target":"s1x","vm":"shared-cpu-1x","bench":"snapshot","ok":true,"nodes":2000,"serverMs":196.74,"roundTripMs":198.73,"before":{"peakRss":28901376,"rss":28901376,"rssAnon":23076864},"after":{"peakRss":29356032,"rss":29356032,"rssAnon":23531520},"disk":{"snapshotBytes":669370,"walBytes":637496}}
+{"at":"2026-09-24T12:33:09.599Z","phase":"smoke","target":"s1x","vm":"shared-cpu-1x","bench":"reload","ok":true,"nodes":2000,"serverMs":400.19,"roundTripMs":401.51,"before":{"peakRss":29356032,"rss":29356032,"rssAnon":23531520},"after":{"peakRss":28930048,"rss":28360704,"rssAnon":22470656},"disk":{"snapshotBytes":669370,"walBytes":637496}}
+{"at":"2026-09-24T12:33:10.698Z","phase":"smoke-fingerprint","target":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":2000,"found":22,"hash":"a1c1871fe4955f40"}
+{"at":"2026-09-24T12:33:10.699Z","phase":"smoke-auth","target":"s1x","ok":true,"withoutTokenStatus":401}
+{"at":"2026-09-24T12:33:10.752Z","phase":"smoke-wipe","target":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":2000,"serverMs":5.22,"roundTripMs":6.87,"before":{"peakRss":28930048,"rss":28368896,"rssAnon":22478848},"after":{"peakRss":28368896,"rss":28368896,"rssAnon":22478848},"disk":{"snapshotBytes":null,"walBytes":6}}
+
+smoke on s1x (http://zega-fly-s1x:8080): ok
+
+elapsed 5 s

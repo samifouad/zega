@@ -1,0 +1,42 @@
+# explorer2-api's command (zega-cloud/explorer2-api/fly.toml entrypoint) in Docker at shared-cpu-1x limits; curl from the host
+## preflight from https://explorer2.zega.dev, no token
+HTTP/1.1 204 No Content
+access-control-allow-methods: GET, POST, DELETE
+access-control-allow-headers: authorization, content-type
+access-control-max-age: 7200
+vary: Origin
+access-control-allow-origin: https://explorer2.zega.dev
+allow: POST
+
+## preflight from https://evil.example
+HTTP/1.1 403 Forbidden
+vary: Origin
+allow: POST
+content-length: 0
+
+## GET /graph from explorer2, no token
+HTTP/1.1 401 Unauthorized
+content-type: application/json
+vary: Origin
+access-control-allow-origin: https://explorer2.zega.dev
+content-length: 35
+
+{"error":"unauthorized","ok":false}
+
+## GET /graph from http://localhost:8788 with the token
+HTTP/1.1 200 OK
+content-type: application/json
+vary: Origin
+access-control-allow-origin: http://localhost:8788
+content-length: 43
+
+{"ok":true,"result":{"nodes":[],"rels":[]}}
+
+## GET /graph from https://evil.example with the token (answered, but no allow-origin, so a browser blocks it)
+HTTP/1.1 200 OK
+content-type: application/json
+vary: Origin
+content-length: 43
+
+{"ok":true,"result":{"nodes":[],"rels":[]}}
+
