@@ -168,10 +168,44 @@ query {
 
 ## Order
 
-Results come back in the order the nodes were created. The one ordering ZQL has
-today is by distance from a point, `order by @distance(field, @point(lat, lon))`,
-nearest first; see [locations](location.md). Ordering by other fields is not in
-the language yet ([zegadb/zega#73](https://github.com/zegadb/zega/issues/73)).
+Without `order by`, results come back in the order the nodes were created.
+`order by` sorts by a field, ascending, or descending with `desc`:
+
+```zql
+query {
+  Player order by salary desc { name salary }
+}
+```
+
+```json
+[
+  { "name": "Alice", "salary": 12500000 },
+  { "name": "Cara", "salary": 4000000 },
+  { "name": "Bob", "salary": 950000 }
+]
+```
+
+It comes after the filter and before `limit`, so `limit` keeps the first rows of
+the sorted result:
+
+```zql
+query {
+  Player(position != "D") order by salary limit 1 { name }
+}
+```
+
+```json
+[
+  { "name": "Cara" }
+]
+```
+
+More keys break ties, left to right: `order by position, salary desc`. Equal
+rows keep creation order. Numbers, strings and `true`/`false` sort as you
+would expect; a node without the field, or with `null`, comes last in either
+direction. A location is ordered by its distance from a point,
+`order by @distance(field, @point(lat, lon))`, nearest first unless `desc`; see
+[locations](location.md).
 
 ```zql
 query {
