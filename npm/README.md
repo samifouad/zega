@@ -40,7 +40,9 @@ use `await import('zegadb')`. For large workloads use a Web Worker or worker thr
 `db.run(schema, source)` executes ZQL v2 against a schema string.
 `db.apply(source)` executes a complete `.zql` file containing schema, mutation
 and query blocks. `db.check(schema, source)` returns JSON diagnostics.
-`db.query(source, paramsJson)` exposes the older Cypher-style query interface.
+`db.query(source, paramsJson)` is deprecated: it runs the older Cypher-style
+language, which is being removed in zega 0.2.0 (zegadb/zega#55). Use `db.run` or
+`db.apply`.
 Results from these methods are JSON strings; use `JSON.parse`.
 The generated types also cover graph inspection, node/relationship deletion,
 connections and base64 snapshot import/export. Errors from the bindings can be strings, so catch `unknown`.
