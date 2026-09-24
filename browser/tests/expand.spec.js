@@ -184,10 +184,13 @@ test('at 390px the modal fits the screen with nothing off its edges', async ({ p
   const button = await box(expandButton(page));
   expect(button.left).toBeGreaterThanOrEqual(modal.left);
   expect(button.right).toBeLessThanOrEqual(modal.right);
+  // The layout keeps moving after the modal opens; judge where it settles. A
+  // slow CI runner needs more than the default 5 s to get there.
+  await settle(page);
   await expect.poll(async () => {
     const spread = await nodeSpread(page);
     return spread.left >= modal.left && spread.right <= modal.right && spread.top >= modal.top && spread.bottom <= modal.bottom;
-  }).toBe(true);
+  }, { timeout: 15_000 }).toBe(true);
   // Nothing inside the modal runs past it. (The explorer's top bar is wider
   // than a phone with or without this change; the modal is fixed to the
   // viewport, so it does not depend on that.)
