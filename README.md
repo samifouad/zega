@@ -251,3 +251,6 @@ Bolt compatibility yet), and there is no REPL.
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+ZQL uses `@` for language-owned names and `&` for user edge fields. See
+[Names in ZQL (APS 6)](docs/names.md) for the complete syntax inventory and migration rules.

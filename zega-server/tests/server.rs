@@ -77,9 +77,9 @@ async fn vector_view_endpoint_uses_native_vectors_for_both_dimensions() {
     let client = Client::new();
     let schema = "type Ticket { title: String embedding: Vector<2> } display { vector2d { Ticket }: Default vector3d { Ticket } }";
     for mutation in [
-        "mutation { Ticket(title: \"A\" && embedding: vector[1,0]) { id } }",
-        "mutation { Ticket(title: \"B\" && embedding: vector[0.9,0.1]) { id } }",
-        "mutation { Ticket(title: \"C\" && embedding: vector[-1,0]) { id } }",
+        "mutation { Ticket(title: \"A\" && embedding: @vector[1,0]) { @id } }",
+        "mutation { Ticket(title: \"B\" && embedding: @vector[0.9,0.1]) { @id } }",
+        "mutation { Ticket(title: \"C\" && embedding: @vector[-1,0]) { @id } }",
     ] {
         post(&client, &server)
             .json(&json!({"schema":schema,"query":mutation}))
@@ -90,7 +90,7 @@ async fn vector_view_endpoint_uses_native_vectors_for_both_dimensions() {
             .unwrap();
     }
     let query: Value = post(&client, &server)
-        .json(&json!({"schema":schema,"query":"{ Ticket { id title } }"}))
+        .json(&json!({"schema":schema,"query":"{ Ticket { @id title } }"}))
         .send()
         .await
         .unwrap()

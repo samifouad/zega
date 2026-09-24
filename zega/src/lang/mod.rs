@@ -287,7 +287,8 @@ pub enum Item {
     Similarity(String, Similarity),
     Distance(String, Distance),
     Prop(String, Span),
-    Hops,
+    Hops(String),
+    Id(String),
     EdgeProp(String, Span),
     /// `&year: 1974` on a mutation stores `year` on the edge that arrived here.
     EdgeSet(String, Json, Span),
@@ -303,7 +304,7 @@ pub enum Item {
     },
 }
 
-/// `road *path(cost <= 50) by &km toward at in km -> Junction(...)`.
+/// `road *path(@cost <= 50) by &km toward at in km -> Junction(...)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PathSpec {
     /// The `*path` word.
@@ -1024,7 +1025,7 @@ impl<'a> Parser<'a> {
                                 field_span,
                                 format!("text index needs a String field; {type_name}.{field} is {field_ty}"),
                             )
-                            .with_help("`text` speeds CONTAINS, STARTS WITH and ENDS WITH on a String"));
+                            .with_help("`text` speeds findWith, startsWith and endsWith on a String"));
                     }
                     IndexKind::Range if !orderable(field_ty) => {
                         return Err(self
@@ -1271,6 +1272,47 @@ impl<'a> Parser<'a> {
         Ok((self.src[start..self.i].to_string(), span))
     }
 
+    fn starts_call(&self, name: &str, delimiter: &str) -> bool {
+        let mut lookahead = Self { src: self.src, i: self.i, columns: self.columns };
+        let _ = lookahead.eat("@");
+        lookahead.eat_word(name) && lookahead.eat(delimiter)
+    }
+
+    fn expect_builtin(&mut self, name: &str) -> Result<()> {
+        self.skip();
+        if self.starts_word(name) {
+            let (_, span) = self.ident()?;
+            return Err(self.err_at(span, format!("`{name}` is built in: write `@{name}`")));
+        }
+        self.expect_word(&format!("@{name}"))
+    }
+
+    fn builtin_item(&mut self, alias: Option<String>) -> Result<Item> {
+        self.skip();
+        let start = self.i;
+        let prefixed = self.eat("@");
+        let (name, _) = self.ident()?;
+        let span = self.span_bytes(start, self.i);
+        if !prefixed {
+            return Err(self.err_at(span, format!("`{name}` is built in: write `@{name}`")));
+        }
+        let alias = alias.unwrap_or_else(|| name.clone());
+        match name.as_str() {
+            "hops" => {
+                if self.eat(":") {
+                    return Err(self.err_at(span, "@hops is measured, not stored")
+                        .with_help("`@hops` counts edges from the start of the query"));
+                }
+                Ok(Item::Hops(alias))
+            }
+            "id" => Ok(Item::Id(alias)),
+            "score" => Ok(Item::Score(alias, span)),
+            "distance" => { self.i = start; Ok(Item::Distance(alias, self.distance()?)) }
+            "similarity" => { self.i = start; Ok(Item::Similarity(alias, self.similarity()?)) }
+            _ => Err(self.err_at(span, format!("unknown built-in @{name}"))),
+        }
+    }
+
     fn parse_display(&mut self) -> Result<DisplayBlock> {
         let (_, span) = self.ident()?;
         self.expect("{")?;
@@ -1348,7 +1390,8 @@ impl<'a> Parser<'a> {
                 ty = format!("Vector<{n},{metric}>");
             }
             let unit = self.parse_unit(&ty, ty_span)?;
-            let from = if self.eat_word("from") {
+            let from = if self.starts_call("from", "(") {
+                self.expect_word("from")?;
                 if ty != "Point" && VectorSpec::parse(&ty).is_none() {
                     return Err(self.err_at(name_span, "from (...) is only valid on a Point or Vector field"));
                 }
@@ -1536,7 +1579,8 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let near = if self.eat_word("near") {
+        let near = if self.starts_call("near", "(") {
+            self.expect_builtin("near")?;
             self.expect("(")?;
             let (field, span) = self.ident()?; self.expect(",")?;
             let query = self.vector()?; self.expect(",")?;
@@ -1580,11 +1624,7 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         if self.eat("{") {
             while !self.eat("}") {
-                let item = self.parse_item()?;
-                items.push(match item {
-                    Item::Score(name, span) if near.is_none() && name == "score" => Item::Prop(name, span),
-                    other => other,
-                });
+                items.push(self.parse_item()?);
                 self.skip();
             }
         }
@@ -1604,42 +1644,27 @@ impl<'a> Parser<'a> {
 
     fn parse_item(&mut self) -> Result<Item> {
         self.skip();
+        if self.src[self.i..].starts_with('@') {
+            return self.builtin_item(None);
+        }
         if self.eat("&") {
             let amp = self.i - 1;
             let (name, _) = self.ident()?;
             let span = self.span_bytes(amp, self.i);
             if self.eat(":") {
-                if name == "hops" {
-                    return Err(self
-                        .err_at(span, "&hops is measured, not stored")
-                        .with_help("`&hops` counts edges from the start of the query"));
-                }
                 return Ok(Item::EdgeSet(name, self.parse_value()?, span));
             }
-            return Ok(if name == "hops" {
-                Item::Hops
-            } else {
-                Item::EdgeProp(name, span)
-            });
+            return Ok(Item::EdgeProp(name, span));
         }
-        if self.starts_word("similarity") && self.src[self.i..].strip_prefix("similarity").is_some_and(|r| r.trim_start().starts_with('(')) {
-            return Ok(Item::Similarity("similarity".into(), self.similarity()?));
-        }
-        if self.starts_word("distance")
-            && self.src[self.i..]
-                .trim_start()
-                .strip_prefix("distance")
-                .is_some_and(|rest| rest.trim_start().starts_with('('))
-        {
-            return Ok(Item::Distance("distance".into(), self.distance()?));
+        for name in ["similarity", "distance"] {
+            if self.starts_call(name, "(") {
+                return self.builtin_item(None);
+            }
         }
         let (field, mut span) = self.ident()?;
         if self.eat(":") {
-            if self.eat_word("score") { return Ok(Item::Score(field, span)); }
-            if self.starts_word("similarity") { return Ok(Item::Similarity(field, self.similarity()?)); }
-            return Ok(Item::Distance(field, self.distance()?));
+            return self.builtin_item(Some(field));
         }
-        if field == "score" { return Ok(Item::Score(field, span)); }
         let mut path = None;
         let star = self.eat("*");
         let range = if star && self.starts_word("path") {
@@ -1693,8 +1718,8 @@ impl<'a> Parser<'a> {
         Ok(Item::Prop(field, span))
     }
 
-    /// `path` after the `*`, then an optional bound `(hops <= 20)` or
-    /// `(cost <= 50)`, a weight `by &km`, and an A* guide `toward at in km`,
+    /// `path` after the `*`, then an optional bound `(@hops <= 20)` or
+    /// `(@cost <= 50)`, a weight `by &km`, and an A* guide `toward at in km`,
     /// in that order.
     fn parse_path(&mut self) -> Result<PathSpec> {
         self.skip();
@@ -1704,7 +1729,12 @@ impl<'a> Parser<'a> {
         let bound = if self.eat("(") {
             self.skip();
             let bound_start = self.i;
-            let (name, name_span) = self.ident()?;
+            let builtin = self.eat("@");
+            let (name, _) = self.ident()?;
+            let name_span = self.span_bytes(bound_start, self.i);
+            if !builtin && matches!(name.as_str(), "hops" | "cost") {
+                return Err(self.err_at(name_span, format!("`{name}` is a path bound: write `@{name}`")));
+            }
             let inclusive = if self.eat("<=") {
                 true
             } else if self.eat("<") {
@@ -1712,7 +1742,7 @@ impl<'a> Parser<'a> {
             } else {
                 return Err(self
                     .err("a path bound is `<=` or `<`")
-                    .with_help("write `*path(hops <= 20)` or `*path(cost <= 50)`"));
+                    .with_help("write `*path(@hops <= 20)` or `*path(@cost <= 50)`"));
             };
             self.skip();
             let value_start = self.i;
@@ -1730,8 +1760,8 @@ impl<'a> Parser<'a> {
                         (true, n) => PathBound::Hops(n),
                         (false, 0) => {
                             return Err(self
-                                .err_at(value_span, "`hops < 0` allows no route")
-                                .with_help("write `hops <= 0` for a route of no edges"))
+                                .err_at(value_span, "`@hops < 0` allows no route")
+                                .with_help("write `@hops <= 0` for a route of no edges"))
                         }
                         (false, n) => PathBound::Hops(n - 1),
                     }
@@ -1748,7 +1778,7 @@ impl<'a> Parser<'a> {
                 _ => {
                     return Err(self
                         .err_at(name_span, format!("unknown path bound {name}"))
-                        .with_help("bound a path by `hops` or `cost`, e.g. `*path(cost <= 50)`"))
+                        .with_help("bound a path by `@hops` or `@cost`, e.g. `*path(@cost <= 50)`"))
                 }
             };
             let bound_span = self.span_bytes(bound_start, self.i);
@@ -1845,18 +1875,13 @@ impl<'a> Parser<'a> {
 
     fn parse_pred(&mut self) -> Result<Pred> {
         self.skip();
-        if self.starts_word("similarity") {
+        if self.starts_call("similarity", "(") {
             let sim = self.similarity()?;
             let op = if self.eat(">=") { Cmp::Gte } else if self.eat("<=") { Cmp::Lte } else if self.eat(">") { Cmp::Gt } else if self.eat("<") { Cmp::Lt } else { return Err(self.err("similarity needs <, <=, >, or >= and a score")); };
             let value = self.parse_value()?.as_f64().filter(|v| v.is_finite()).ok_or_else(|| self.err("similarity threshold must be finite"))?;
             return Ok(Pred::Similarity(sim, op, value));
         }
-        if self.starts_word("distance")
-            && self.src[self.i..]
-                .trim_start()
-                .strip_prefix("distance")
-                .is_some_and(|rest| rest.trim_start().starts_with('('))
-        {
+        if self.starts_call("distance", "(") {
             let distance = self.distance()?;
             let op = if self.eat("<=") {
                 Cmp::Lte
@@ -1883,7 +1908,8 @@ impl<'a> Parser<'a> {
                 })?;
             return Ok(Pred::Distance(distance, op, metres));
         }
-        if self.eat_word("within_box") {
+        if self.starts_call("within_box", "(") {
+            self.expect_builtin("within_box")?;
             self.expect("(")?;
             let (field, span) = self.ident()?;
             self.expect(",")?;
@@ -1897,7 +1923,17 @@ impl<'a> Parser<'a> {
                 span,
             ));
         }
-        let (field, span) = self.ident()?;
+        self.skip();
+        let start = self.i;
+        let builtin = self.eat("@");
+        let (mut field, _) = self.ident()?;
+        let span = self.span_bytes(start, self.i);
+        if builtin {
+            if field != "id" {
+                return Err(self.err_at(span, format!("unknown filter built-in @{field}")));
+            }
+            field = "@id".into();
+        }
         self.skip();
         if self.eat(":") || self.eat("=") {
             return Ok(Pred::Eq(field, self.parse_value()?, span));
@@ -1922,21 +1958,28 @@ impl<'a> Parser<'a> {
         if self.eat("<") {
             return Ok(Pred::Cmp(field, Cmp::Lt, self.parse_value()?, span));
         }
-        if self.eat_word("CONTAINS") {
+        for (old, new) in [("CONTAINS", "findWith"), ("STARTS", "startsWith"), ("ENDS", "endsWith")] {
+            let start = self.i;
+            if self.eat_word(old) {
+                let mut end = self.i;
+                if old != "CONTAINS" && self.eat_word("WITH") { end = self.i; }
+                let spelling = if old == "CONTAINS" { old.to_string() } else { format!("{old} WITH") };
+                return Err(self.err_at(self.span_bytes(start, end), format!("`{spelling}` was renamed: write `{new}`")));
+            }
+        }
+        if self.eat_word("findWith") {
             return Ok(Pred::Contains(field, self.string()?, span));
         }
-        if self.eat_word("STARTS") {
-            self.expect_word("WITH")?;
+        if self.eat_word("startsWith") {
             return Ok(Pred::StartsWith(field, self.string()?, span));
         }
-        if self.eat_word("ENDS") {
-            self.expect_word("WITH")?;
+        if self.eat_word("endsWith") {
             return Ok(Pred::EndsWith(field, self.string()?, span));
         }
         Err(self
             .err(format!("expected a comparison after {field}"))
             .with_help(
-            "use `=`, `!=`, `>`, `<`, `>=`, `<=`, `<>`, `CONTAINS`, `STARTS WITH`, or `ENDS WITH`",
+            "use `=`, `!=`, `>`, `<`, `>=`, `<=`, `<>`, `findWith`, `startsWith`, or `endsWith`",
         ))
     }
 
@@ -1951,12 +1994,12 @@ impl<'a> Parser<'a> {
     fn point(&mut self) -> Result<Point> {
         self.skip();
         let start = self.i;
-        self.expect_word("point")?;
+        self.expect_builtin("point")?;
         self.expect("(")?;
         let arity = |p: &Self| {
             p.err_at(
                 p.span_bytes(start, p.i),
-                "point() needs exactly two numbers: latitude, longitude",
+                "@point() needs exactly two numbers: latitude, longitude",
             )
         };
         if self.eat(")") {
@@ -1993,7 +2036,7 @@ impl<'a> Parser<'a> {
     }
 
     fn distance(&mut self) -> Result<Distance> {
-        self.expect_word("distance")?;
+        self.expect_builtin("distance")?;
         self.expect("(")?;
         let (field, span) = self.ident()?;
         self.expect(",")?;
@@ -2007,7 +2050,7 @@ impl<'a> Parser<'a> {
     }
 
     fn vector(&mut self) -> Result<Vector> {
-        self.expect_word("vector")?; self.expect("[")?;
+        self.expect_builtin("vector")?; self.expect("[")?;
         let mut values = Vec::new();
         if !self.eat("]") { loop {
             self.skip(); let start = self.i;
@@ -2020,7 +2063,7 @@ impl<'a> Parser<'a> {
         Vector::new(&values, Metric::Cosine).map_err(|m| self.err(m))
     }
     fn similarity(&mut self) -> Result<Similarity> {
-        self.expect_word("similarity")?; self.expect("(")?;
+        self.expect_builtin("similarity")?; self.expect("(")?;
         let (field, span) = self.ident()?; self.expect(",")?;
         let query = self.vector()?; self.expect(")")?;
         Ok(Similarity { field, query, span })
@@ -2028,8 +2071,8 @@ impl<'a> Parser<'a> {
 
     fn parse_value(&mut self) -> Result<Json> {
         self.skip();
-        if self.starts_word("vector") { return Ok(self.vector()?.to_json()); }
-        if self.starts_word("point") {
+        if self.starts_call("vector", "[") { return Ok(self.vector()?.to_json()); }
+        if self.starts_call("point", "(") {
             return Ok(self.point()?.to_json());
         }
         if self.eat("$") {
@@ -2715,7 +2758,7 @@ impl Check<'_> {
         }
         if let Some(expr) = &sel.condition {
             for pred in expr.tests() {
-                if pred.field() != "id" {
+                if pred.field() != "@id" {
                     self.ensure_prop(sel, pred.field(), pred.span());
                 }
                 match pred {
@@ -2761,13 +2804,13 @@ impl Check<'_> {
         }
         for item in &sel.items {
             match item {
-                Item::Score(_, span) => { if sel.near.is_none() { self.push(*span, "score requires a near(...) selection", None); } }
+                Item::Score(_, span) => { if sel.near.is_none() { self.push(*span, "@score requires an @near(...) selection", None); } }
                 Item::Similarity(_, sim) => self.ensure_vector(sel, sim),
                 Item::Prop(name, span) => self.ensure_prop(sel, name, *span),
                 Item::Distance(_, distance) => {
                     self.ensure_point(sel, &distance.field, distance.span)
                 }
-                Item::Hops => {}
+                Item::Hops(_) | Item::Id(_) => {}
                 Item::EdgeProp(name, span) => {
                     self.edge_field(arrived, name, *span, None);
                 }
@@ -2820,6 +2863,15 @@ impl Check<'_> {
         span: Span,
         value: Option<&Json>,
     ) {
+        // A declared user edge property wins. Only the removed implicit value
+        // gets migration help; no user property name is reserved.
+        if name == "hops" && arrived
+            .and_then(|(ty, field)| find_edge(self.schema, ty, field))
+            .is_none_or(|edge| !matches!(edge, Field::Edge { props, .. } if props.iter().any(|prop| prop.name == name)))
+        {
+            self.push(span, "`&hops` is built in: write `@hops`", None);
+            return;
+        }
         let Some((type_name, field)) = arrived else {
             self.push(
                 span,
@@ -3021,7 +3073,7 @@ impl Check<'_> {
                 self.push(
                     *bound_span,
                     "a weighted path is bounded by cost",
-                    Some("write `*path(cost <= 50) by &km`; hops bound a path without a weight".into()),
+                    Some("write `*path(@cost <= 50) by &km`; hops bound a path without a weight".into()),
                 );
             }
         }
@@ -3132,14 +3184,14 @@ impl Check<'_> {
         for type_name in selection_types(sel) {
             if let Ok(Field::Prop { ty, optional, .. }) = self.schema.prop(type_name, name) {
                 if let Some(spec) = VectorSpec::parse(ty) {
-                    if !(value.is_null() && *optional) { if let Err(m) = spec.value(value) { self.push(span, m, Some("write `vector[0.1, 0.2, ...]` with the declared dimension".into())); } }
+                    if !(value.is_null() && *optional) { if let Err(m) = spec.value(value) { self.push(span, m, Some("write `@vector[0.1, 0.2, ...]` with the declared dimension".into())); } }
                 } else if value.is_array() { self.push(span, format!("{type_name}.{name} is {ty}, not Vector"), None);
                 } else if ty == "Point" && !(value.is_null() && *optional) {
                     if let Err(message) = Point::from_json(value) {
                         self.push(
                             span,
                             message,
-                            Some("write `point(latitude, longitude)`".into()),
+                            Some("write `@point(latitude, longitude)`".into()),
                         );
                     }
                 } else if ty != "Point" && Point::from_json(value).is_ok() {
@@ -3150,11 +3202,15 @@ impl Check<'_> {
     }
 
     fn ensure_prop(&mut self, sel: &Selection, name: &str, span: Span) {
-        if name == "id" {
+        if name == "@id" {
             return;
         }
         let types = selection_types(sel);
         if types.iter().any(|ty| self.schema.prop(ty, name).is_ok()) {
+            return;
+        }
+        if matches!(name, "id" | "score") {
+            self.push(span, format!("`{name}` is built in: write `@{name}`"), None);
             return;
         }
         for ty in &types {

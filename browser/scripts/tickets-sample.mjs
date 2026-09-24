@@ -14,9 +14,9 @@ const lines=['// SYNTHETIC vectors, generated deterministically; NOT embeddings 
 for(let i=0;i<200;i++){
   const topic=Math.floor(i/40), v=Array.from({length:16},(_,d)=>(d===topic?1.8:0)+(random()-.5)*.7);
   const values=v.map(x=>x.toFixed(6)).join(', ');
-  lines.push(`mutation { Ticket(title: ${JSON.stringify(issues[topic][i%8]+' #'+(i+1))} && topic: ${JSON.stringify(topics[topic])} && status: ${JSON.stringify(i%3?'Open':'Resolved')} && embedding: vector[${values}]) { id } }`);
+  lines.push(`mutation { Ticket(title: ${JSON.stringify(issues[topic][i%8]+' #'+(i+1))} && topic: ${JSON.stringify(topics[topic])} && status: ${JSON.stringify(i%3?'Open':'Resolved')} && embedding: @vector[${values}]) { @id } }`);
 }
 // Most links join the same topic; selected cross-topic links expose disagreement.
-for(let i=1;i<=200;i++)if(i%4===0){const next=i%20===0?(i+47)%200+1:(Math.floor((i-1)/40)*40+i%40+1);lines.push(`mutation { Ticket(id: ${i}) { related -> link Ticket(id: ${next}) { id } } }`);}
-lines.push('query { Ticket { id title topic status embedding related -> Ticket { id title } } }','');
+for(let i=1;i<=200;i++)if(i%4===0){const next=i%20===0?(i+47)%200+1:(Math.floor((i-1)/40)*40+i%40+1);lines.push(`mutation { Ticket(@id: ${i}) { related -> link Ticket(@id: ${next}) { @id } } }`);}
+lines.push('query { Ticket { @id title topic status embedding related -> Ticket { @id title } } }','');
 await writeFile(new URL('../samples/tickets.zql',import.meta.url),lines.join('\n'));

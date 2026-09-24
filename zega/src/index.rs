@@ -7,10 +7,10 @@
 //!
 //! - `range` is an ordered map from value to nodes, per (type, field).
 //! - `text` is a trigram index per (type, field). The text is padded with a
-//!   start and an end marker, so one structure answers `CONTAINS`,
-//!   `STARTS WITH` and `ENDS WITH`: a match has every trigram of the needle
-//!   (`CONTAINS`), of start+needle (`STARTS WITH`) or of needle+end
-//!   (`ENDS WITH`). A needle too short to form a trigram falls back to every
+//!   start and an end marker, so one structure answers `findWith`,
+//!   `startsWith` and `endsWith`: a match has every trigram of the needle
+//!   (`findWith`), of start+needle (`startsWith`) or of needle+end
+//!   (`endsWith`). A needle too short to form a trigram falls back to every
 //!   node with a string in that field.
 
 use std::cmp::Ordering;

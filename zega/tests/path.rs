@@ -233,11 +233,11 @@ fn all_three_agree_with_brute_force_on_random_graphs() {
                 let km = astar_km["cost"].as_f64().unwrap();
                 assert!((km - cost as f64 / 1000.0).abs() < 1e-9, "round {round}: {astar_km}");
                 // Bounds: exactly at the cost is in, just under it is out.
-                assert_eq!(route(&db, start, &target, &format!("(cost <= {cost}) by &m"))["cost"], json!(cost));
-                assert_eq!(route(&db, start, &target, &format!("(cost < {cost}) by &m toward at")), Json::Null);
-                assert_eq!(route(&db, start, &target, &format!("(hops <= {hops})"))["hops"], json!(hops));
+                assert_eq!(route(&db, start, &target, &format!("(@cost <= {cost}) by &m"))["cost"], json!(cost));
+                assert_eq!(route(&db, start, &target, &format!("(@cost < {cost}) by &m toward at")), Json::Null);
+                assert_eq!(route(&db, start, &target, &format!("(@hops <= {hops})"))["hops"], json!(hops));
                 if hops > 0 {
-                    assert_eq!(route(&db, start, &target, &format!("(hops < {hops})")), Json::Null);
+                    assert_eq!(route(&db, start, &target, &format!("(@hops < {hops})")), Json::Null);
                 }
             }
         }
@@ -333,10 +333,10 @@ const ROADS: &str = "schema {
   type Junction { name: String at: Point road -> Junction[] { km: Float<km> } }
 }
 unique { Junction { name } }
-mutation { Junction(name: \"A\" && at: point(51.0, -114.0)) { name } }
-mutation { Junction(name: \"B\" && at: point(51.0, -113.99)) { name } }
-mutation { Junction(name: \"C\" && at: point(51.0, -113.98)) { name } }
-mutation { Junction(name: \"D\" && at: point(51.01, -113.99)) { name } }
+mutation { Junction(name: \"A\" && at: @point(51.0, -114.0)) { name } }
+mutation { Junction(name: \"B\" && at: @point(51.0, -113.99)) { name } }
+mutation { Junction(name: \"C\" && at: @point(51.0, -113.98)) { name } }
+mutation { Junction(name: \"D\" && at: @point(51.01, -113.99)) { name } }
 mutation { Junction(name: \"A\") { road -> link Junction(name: \"B\") { &km: 0.8 } } }
 mutation { Junction(name: \"B\") { road -> link Junction(name: \"C\") { &km: 0.8 } } }
 mutation { Junction(name: \"A\") { road -> link Junction(name: \"D\") { &km: 1.4 } } }
@@ -352,19 +352,19 @@ fn a_route_returns_its_nodes_edges_and_cost() {
     };
     // Fewest edges: the direct road.
     assert_eq!(
-        run("Junction(name: \"A\") { name road *path -> Junction(name: \"C\") { name &km &hops } }"),
+        run("Junction(name: \"A\") { name road *path -> Junction(name: \"C\") { name &km @hops } }"),
         r#"{"name":"A","road":{"cost":1,"edges":[{"from":1,"id":5,"props":{"km":2.5},"to":3,"type":"road"}],"hops":1,"nodes":[{"hops":0,"km":null,"name":"A"},{"hops":1,"km":2.5,"name":"C"}]}}"#
     );
     // Least km: through B.
     let expected = r#"{"name":"A","road":{"cost":1.6,"edges":[{"from":1,"id":1,"props":{"km":0.8},"to":2,"type":"road"},{"from":2,"id":2,"props":{"km":0.8},"to":3,"type":"road"}],"hops":2,"nodes":[{"hops":0,"km":null,"name":"A"},{"hops":1,"km":0.8,"name":"B"},{"hops":2,"km":0.8,"name":"C"}]}}"#;
-    assert_eq!(run("Junction(name: \"A\") { name road *path by &km -> Junction(name: \"C\") { name &km &hops } }"), expected);
+    assert_eq!(run("Junction(name: \"A\") { name road *path by &km -> Junction(name: \"C\") { name &km @hops } }"), expected);
     assert_eq!(
-        run("Junction(name: \"A\") { name road *path by &km toward at -> Junction(name: \"C\") { name &km &hops } }"),
+        run("Junction(name: \"A\") { name road *path by &km toward at -> Junction(name: \"C\") { name &km @hops } }"),
         expected
     );
     // Unreachable, and outside the bound, are null rather than errors.
     assert_eq!(run("Junction(name: \"C\") { road *path by &km -> Junction(name: \"A\") { name } }"), r#"{"road":null}"#);
-    assert_eq!(run("Junction(name: \"A\") { road *path(cost < 1.6) by &km -> Junction(name: \"C\") { name } }"), r#"{"road":null}"#);
+    assert_eq!(run("Junction(name: \"A\") { road *path(@cost < 1.6) by &km -> Junction(name: \"C\") { name } }"), r#"{"road":null}"#);
     // Every start gets its own route.
     assert_eq!(
         run("Junction { name road *path by &km -> Junction(name: \"C\") { name } }"),
@@ -400,7 +400,7 @@ fn bad_weights_are_errors_that_name_the_edge() {
 fn astar_needs_a_location_on_every_node_it_reaches() {
     let schema = "type Stop { n: Int at?: Point next -> Stop[] { m: Int<m> } }";
     let db = Zega::in_memory().build().unwrap();
-    db.run_lang(schema, "mutation { Stop(n: 1 && at: point(51.0, -114.0)) { n } }").unwrap();
+    db.run_lang(schema, "mutation { Stop(n: 1 && at: @point(51.0, -114.0)) { n } }").unwrap();
     db.run_lang(schema, "mutation { Stop(n: 2) { n } }").unwrap();
     db.run_lang(schema, "mutation { Stop(n: 1) { next -> link Stop(n: 2) { &m: 5000 } } }").unwrap();
     let error = db
@@ -427,7 +427,7 @@ fn astar_needs_a_location_on_the_start_too() {
     let start = diag.column as usize - 1;
     assert_eq!(&query[start..start + diag.underline_length as usize], "at");
     let db = Zega::in_memory().build().unwrap();
-    db.run_lang(schema, "mutation { Depot(name: \"D\") { road -> Junction(name: \"J\" && at: point(51.0, -114.0)) { name &m: 1 } } }")
+    db.run_lang(schema, "mutation { Depot(name: \"D\") { road -> Junction(name: \"J\" && at: @point(51.0, -114.0)) { name &m: 1 } } }")
         .unwrap();
     let error = db.run_lang(schema, query).unwrap_err().to_string();
     assert!(error.contains(message), "{error}");
@@ -441,7 +441,7 @@ fn astar_needs_a_location_on_the_start_too() {
     let schema = "type Stop { n: Int at?: Point next -> Stop[] { m: Int<m> } }";
     let db = Zega::in_memory().build().unwrap();
     db.run_lang(schema, "mutation { Stop(n: 1) { n } }").unwrap();
-    db.run_lang(schema, "mutation { Stop(n: 2 && at: point(51.0, -114.0)) { n } }").unwrap();
+    db.run_lang(schema, "mutation { Stop(n: 2 && at: @point(51.0, -114.0)) { n } }").unwrap();
     db.run_lang(schema, "mutation { Stop(n: 1) { next -> link Stop(n: 2) { &m: 1 } } }").unwrap();
     let error = db
         .run_lang(schema, "{ Stop(n: 1) { next *path by &m toward at -> Stop(n: 2) { n } } }")
@@ -456,7 +456,7 @@ fn the_checker_rejects_paths_it_cannot_run() {
     let cases = [
         ("{ Junction { road *path by &kms -> Junction { name } } }", "road has no field kms", "&kms"),
         ("{ Junction { road *path by &label -> Junction { name } } }", "a path weight is a number; road.label is String", "&label"),
-        ("{ Junction { road *path(hops <= 3) by &km -> Junction { name } } }", "a weighted path is bounded by cost", "hops <= 3"),
+        ("{ Junction { road *path(@hops <= 3) by &km -> Junction { name } } }", "a weighted path is bounded by cost", "@hops <= 3"),
         ("{ Junction { road *path toward at -> Junction { name } } }", "toward needs a weight measured in a distance", "at"),
         ("{ Junction { road *path by &km toward name -> Junction { name } } }", "toward needs a Point; Junction.name is String", "name"),
         ("{ Junction { road *path by &len toward at -> Junction { name } } }", "toward needs a unit on the weight: declare len: Float<km>", "at"),
@@ -482,8 +482,8 @@ fn the_checker_rejects_paths_it_cannot_run() {
     let parse = [
         ("{ Junction { road *path by &km toward at in km -> Junction { name } } }", "the unit is declared on the weight, not here"),
         ("{ Junction { road *path(depth <= 3) -> Junction { name } } }", "unknown path bound depth"),
-        ("{ Junction { road *path(hops < 0) -> Junction { name } } }", "`hops < 0` allows no route"),
-        ("{ Junction { road *path(cost <= -1) -> Junction { name } } }", "a cost bound is a non-negative number"),
+        ("{ Junction { road *path(@hops < 0) -> Junction { name } } }", "`@hops < 0` allows no route"),
+        ("{ Junction { road *path(@cost <= -1) -> Junction { name } } }", "a cost bound is a non-negative number"),
         ("{ Junction { road *path by km -> Junction { name } } }", "a path weight is an edge field"),
         ("{ Junction { road *path } }", "road *path needs an arrow and a target"),
     ];
@@ -523,7 +523,7 @@ fn the_checker_rejects_paths_it_cannot_run() {
     assert_eq!(serde_json::to_value(&units.types[0].fields[0]).unwrap()["unit"], json!("m"));
     assert_eq!(serde_json::to_value(&units.types[0].fields[1]).unwrap()["props"][0]["unit"], json!("km"));
     // `*1..3` is unchanged beside `*path`.
-    let report = zega::diagnose(schema, "{ Junction { road *1..3 -> Junction { name &hops } } }");
+    let report = zega::diagnose(schema, "{ Junction { road *1..3 -> Junction { name @hops } } }");
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
 }
 

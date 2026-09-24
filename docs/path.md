@@ -59,7 +59,7 @@ same relationship, so each target type declares it too.
 
 - `nodes` runs from the start to the end, in order. Each one is the target
   selection read on that node. `&km` is the road that arrived there, which is
-  null on the start. `&hops` is its position.
+  null on the start. `@hops` is its position.
 - `edges[i]` joins `nodes[i]` and `nodes[i + 1]`: the turn-by-turn list. Edges
   have the same shape as the explorer's graph (`id`, `type`, `from`, `to`,
   `props`). `from` and `to` are the stored direction.
@@ -76,9 +76,9 @@ browser.
 ## Bounds
 
 ```zql
-road *path(hops <= 20) -> Junction(name: "B") { name }
-road *path(cost <= 50) by &km -> Junction(name: "B") { name }
-road *path(cost < 50) by &km toward at -> Junction(name: "B") { name }
+road *path(@hops <= 20) -> Junction(name: "B") { name }
+road *path(@cost <= 50) by &km -> Junction(name: "B") { name }
+road *path(@cost < 50) by &km toward at -> Junction(name: "B") { name }
 ```
 
 A bound stops the search. A route outside it is `null`. A weighted path is

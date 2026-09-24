@@ -41,7 +41,7 @@ revision's server exposes `/health` and `/cql`; it has no schema endpoint.
 
 Table sections use stored nodes and declared fields, with sortable values and
 relationship chips. Graph type filters also filter relationship endpoints. Maps
-plot coordinates projected by the current query; include `id lat lon` to preserve
+plot coordinates projected by the current query; include `@id lat lon` to preserve
 identity even when two nodes share the same values. Clicking a map marker, table
 cell/chip, or graph node opens the same inspector. The Calgary button loads the
 committed OSM sample and selects its declared default. Light/dark theme preference
