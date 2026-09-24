@@ -16,11 +16,45 @@ No property name is reserved.
 
 ```zql
 schema {
-  type Stop { name: String hops: Int cost: Int road -> Stop[] { hops: Int cost: Int shape: String } }
-  display { graph: Default table }
+  type Stop {
+    name: String
+    hops: Int
+    cost: Int
+    road -> Stop[] {
+      hops: Int
+      cost: Int
+      shape: String
+    }
+  }
+
+  display {
+    graph : Default
+    table
+  }
 }
-mutation { Stop(name: "A" && hops: 11 && cost: 12) { road -> Stop(name: "B" && hops: 21 && cost: 22) { &hops: 7 &cost: 8 &shape: "circle" } } }
-query { Stop(name: "A") { road *path(@cost <= 8) by &cost -> Stop(name: "B") { name &hops &cost &shape depth: @hops node: @id } } }
+
+mutation {
+  Stop(name: "A" && hops: 11 && cost: 12) {
+    road -> Stop(name: "B" && hops: 21 && cost: 22) {
+      &hops: 7
+      &cost: 8
+      &shape: "circle"
+    }
+  }
+}
+
+query {
+  Stop(name: "A") {
+    road *path(@cost <= 8) by &cost -> Stop(name: "B") {
+      name
+      &hops
+      &cost
+      &shape
+      depth: @hops
+      node: @id
+    }
+  }
+}
 ```
 
 Here `&hops` returns the stored edge value `7`, while `depth: @hops` returns

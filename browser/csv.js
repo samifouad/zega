@@ -1,3 +1,4 @@
+import { format_json } from './pkg/zega_wasm.js';
 // CSV import for the explorer. The schema text is what the user edits.
 // Dragging a column inserts a field or a new type. A column is covered when
 // its name shows up in that schema.
@@ -477,7 +478,7 @@ export function openCsv({ run, previewImport, clearDatabase, setSchema, setQuery
     });
   }
 
-  function showPrettyJson(value) {
+  function showPrettyJson(source) {
     const host = root.querySelector('#csv-json');
     const cols = root.querySelector('#csv-json-cols');
     tableWrap.hidden = true;
@@ -489,7 +490,7 @@ export function openCsv({ run, previewImport, clearDatabase, setSchema, setQuery
       return `<th draggable="true" data-header="${escapeAttr(header)}" class="${on ? 'covered' : ''}"><span class="csv-mark">${on ? '✓' : ''}</span>${escapeHtml(header)}</th>`;
     }).join('')}</tr></thead></table>`;
     bindHeaderDrag(cols);
-    const text = JSON.stringify(value, null, 2);
+    const text = format_json(source);
     const monaco = window.monaco;
     if (!monaco) {
       host.textContent = text;
@@ -534,7 +535,7 @@ export function openCsv({ run, previewImport, clearDatabase, setSchema, setQuery
       return;
     }
     if (sourceKind === 'json' && jsonValue != null) {
-      showPrettyJson(jsonValue);
+      showPrettyJson(rawText);
       return;
     }
     cols.hidden = true;

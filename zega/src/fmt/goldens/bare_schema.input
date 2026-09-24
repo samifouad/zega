@@ -1,0 +1,1 @@
+type A{name:String child->B}type B{name:String}display{graph table{A,B}:Default}unique{A{name}}

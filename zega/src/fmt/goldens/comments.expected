@@ -1,0 +1,17 @@
+// heading
+query // query keyword
+{ // root start
+  Player // type
+  (
+    // filter
+    name // property
+    : // colon
+    "https://example.test//path" // URL
+    && // and
+    salary > 1 // salary
+  ) // filtered
+  { // fields
+    name // first
+    salary // last
+  } // selection end
+} // end

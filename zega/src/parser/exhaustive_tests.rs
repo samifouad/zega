@@ -612,10 +612,9 @@ fn lex_full_match_query_stream() {
 // =====================================================================
 
 #[test]
-fn parser_new_always_ok_even_for_garbage() {
-    // Parser::new only primes the first token; it never fails.
+fn parser_new_reports_lexical_errors_while_priming_the_first_token() {
     assert!(Parser::new("").is_ok());
-    assert!(Parser::new("@#%^&").is_ok());
+    assert!(matches!(Parser::new("@#%^&"), Err(ParseError::Lex(LexError::UnsupportedComment { .. }))));
     assert!(Parser::new("MATCH").is_ok());
 }
 

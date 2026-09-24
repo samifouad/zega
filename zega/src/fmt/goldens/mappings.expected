@@ -1,0 +1,10 @@
+schema {
+  type Pointy {
+    at: Point from (latitude, longitude)
+    embedding?: Vector<3, dot> from (x, y, z)
+    road -> Pointy[] {
+      metres: Float<m>
+      miles: Int<mi>
+    }
+  }
+}

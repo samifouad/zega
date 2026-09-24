@@ -1,4 +1,4 @@
-import init, { ZegaWasm } from './pkg/zega_wasm.js';
+import init, { ZegaWasm, format_json } from './pkg/zega_wasm.js';
 import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide, forceX, forceY } from './vendor/d3-force.js';
 import { SAMPLE_STATEMENTS } from './sample.js';
 
@@ -209,7 +209,7 @@ function addFrame(query, result) {
   frame.querySelector('[data-act=dismiss]').onclick = () => frame.remove();
   frame.querySelector('[data-act=download]').onclick = () => {
     if (!result.ok) return;
-    download('zega-result.json', JSON.stringify(result.rows, null, 2), 'application/json');
+    download('zega-result.json', format_json(JSON.stringify(result.rows)), 'application/json');
   };
   frame.querySelector('[data-act=downloadcsv]').onclick = () => {
     if (!result.ok) return;
@@ -685,7 +685,7 @@ function overviewChips(graph) {
 
 function formatCell(v) {
   if (v === null || v === undefined) return 'null';
-  if (typeof v === 'object') return JSON.stringify(v);
+  if (typeof v === 'object') return format_json(JSON.stringify(v)).trimEnd();
   return String(v);
 }
 
@@ -712,7 +712,7 @@ function renderTable(container, rows) {
 function renderText(container, rows) {
   const pre = document.createElement('pre');
   pre.className = 'result-json';
-  pre.textContent = JSON.stringify(rows, null, 2);
+  pre.textContent = format_json(JSON.stringify(rows));
   container.innerHTML = '';
   container.appendChild(pre);
 }

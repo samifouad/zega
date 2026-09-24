@@ -1,0 +1,1 @@
+query{Person{name bio country}}display{skip}then{(findWith{"a" in{name bio}}||findWithout{"b"})&&common{Person{country name}Other{x}}}then{similar{&v>0.9}||near{&at<10 km}}display{skip}then{startsWith{"A" in{name}}&&endsWith{"z"}||regex{"[a-z]+"}}then{findWith{"x" in{name bio country}}}then{common{Person{country}Other{x}Third{y}}}then{similar{&v>=0.95}&&near{&at<=1 mi}}

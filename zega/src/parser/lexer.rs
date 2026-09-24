@@ -6,6 +6,12 @@ use thiserror::Error;
 pub enum LexError {
     #[error("integer literal is out of range for i64: {0}")]
     IntegerOutOfRange(String),
+    #[error("comments must use // at {line}:{column}")]
+    UnsupportedComment {
+        line: u32,
+        column: u32,
+        end_column: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,8 +80,9 @@ impl<'a> Lexer<'a> {
     }
 
     fn advance(&mut self) -> Option<char> {
-        self.pos += 1;
-        self.chars.next()
+        let c = self.chars.next()?;
+        self.pos += c.len_utf8();
+        Some(c)
     }
 
     fn peek(&mut self) -> Option<&char> {
@@ -199,6 +206,27 @@ impl<'a> Lexer<'a> {
 
     pub fn next_token(&mut self) -> Result<Token, LexError> {
         self.skip_whitespace();
+        let rest = &self.input[self.pos..];
+        // In the legacy query grammar, `(*)` is a star argument and `--`
+        // is a relationship, not a comment. ZQL accepts neither form.
+        if let Some(marker) = crate::lang::unsupported_comment(rest)
+            .filter(|marker| !matches!(*marker, "--" | "(*" | "*)"))
+        {
+            let before = &self.input[..self.pos];
+            let line = before.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
+            let column = before
+                .rsplit('\n')
+                .next()
+                .unwrap_or("")
+                .encode_utf16()
+                .count() as u32
+                + 1;
+            return Err(LexError::UnsupportedComment {
+                line,
+                column,
+                end_column: column + marker.len() as u32,
+            });
+        }
         match self.peek() {
             None => Ok(Token::Eof),
             Some(&c) => {
@@ -370,5 +398,32 @@ mod tests {
         let mut lex = Lexer::new("42 3.125");
         assert_eq!(lex.next_token().unwrap(), Token::Integer(42));
         assert_eq!(lex.next_token().unwrap(), Token::Float(3.125));
+    }
+}
+
+#[cfg(test)]
+mod comment_tests {
+    use super::*;
+    #[test]
+    fn rejects_other_comment_syntax_with_a_span() {
+        for marker in ["/*", "*/", "#", "<!--"] {
+            let source = format!("// valid\n  {marker} bad");
+            let error = Lexer::new(&source).next_token().unwrap_err();
+            assert!(error.to_string().contains("//"));
+            assert_eq!(
+                error,
+                LexError::UnsupportedComment {
+                    line: 2,
+                    column: 3,
+                    end_column: 3 + marker.len() as u32
+                }
+            );
+        }
+        let mut lexer = Lexer::new("'é' // valid\nRETURN");
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Token::StringLiteral("é".into())
+        );
+        assert_eq!(lexer.next_token().unwrap(), Token::Return);
     }
 }

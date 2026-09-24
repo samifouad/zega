@@ -1,5 +1,6 @@
 // Extract OSM POI label points from the same Calgary PMTiles as the basemap.
 // No coordinates are authored here. Polygon POIs use Protomaps' label point.
+import { format } from './format.mjs';
 import { open, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -81,7 +82,7 @@ query { Place(@distance(at, ${origin}) <= 1500) order by @distance(at, ${origin}
 const cell = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const csv = 'name,kind,lat,lon\n' + selected.map((p) => [p.name, p.kind, p.lat, p.lon].map(cell).join(',')).join('\n') + '\n';
 await mkdir('samples', { recursive: true });
-await writeFile('samples/calgary.zql', source);
+await writeFile('samples/calgary.zql', format(source));
 await writeFile('samples/calgary.csv', csv);
 console.log(`Generated ${selected.length} places from ${all.length} named POIs; source SHA-256 ${sourceHash}`);
 console.log(selected.map((p) => `${p.kind}: ${p.name}`).join('\n'));

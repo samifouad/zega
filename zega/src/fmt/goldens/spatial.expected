@@ -1,0 +1,10 @@
+query {
+  Place(
+    @within_box(at, @point(-10, -20), @point(10, 20)) &&
+    @distance(at, @point(1, 2)) < 1234.0
+  ) order by @distance(at, @point(1, 2)) limit 5 {
+    @id
+    @distance(at, @point(1, 2))
+    metres: @distance(at, @point(1, 2))
+  }
+}

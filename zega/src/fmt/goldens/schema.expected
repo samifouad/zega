@@ -1,0 +1,25 @@
+schema {
+  type Player {
+    name: String
+    salary: Int
+    position?: String
+    playsFor: MEMBER -> Team[] {
+      since?: Int
+      km: Float<km>
+    }
+  }
+
+  type Team {
+    name: String
+    members: MEMBER <- Player[]
+  }
+}
+
+unique {
+  Player { name }
+}
+
+index {
+  range Player { salary }
+  text Team { name }
+}

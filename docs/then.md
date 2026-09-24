@@ -3,10 +3,24 @@
 [APS 7](https://github.com/zegadb/aps/issues/7) adds a query pipeline:
 
 ```zql
-query { Player { name playsFor -> Team { name } } }
-display { skip }
-then { common { Player { country } Team { country } } && findWith { "Oilers" } }
-then { startsWith { "A" in { name } } || regex { "ers$" } }
+query {
+  Player {
+    name
+    playsFor -> Team { name }
+  }
+}
+
+display {
+  skip
+}
+
+then {
+  common { Player { country } Team { country } } && findWith { "Oilers" }
+}
+
+then {
+  startsWith { "A" in { name } } || regex { "ers$" }
+}
 ```
 
 A `then` has one condition. `&&` binds more tightly than `||`; parentheses
@@ -108,7 +122,13 @@ the result is an object containing `stages`:
     {
       "index": 0,
       "kind": "query",
-      "nodes": [{"id": 1, "labels": ["Player"], "props": {"name": "Alice"}}],
+      "nodes": [
+        {
+          "id": 1,
+          "labels": ["Player"],
+          "props": { "name": "Alice" }
+        }
+      ],
       "edges": []
     },
     {

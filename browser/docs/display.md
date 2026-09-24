@@ -4,10 +4,16 @@
 
 ```zql
 schema {
-  type Place { name: String lat: Float lon: Float }
+  type Place {
+    name: String
+    lat: Float
+    lon: Float
+  }
+
   type Review { title: String }
+
   display {
-    map { Place }: Default
+    map { Place } : Default
     table { Review }
     graph
   }
@@ -31,7 +37,14 @@ Rust's `Zega::schema(source)` returns the parsed `Schema`, including `display`.
 Wasm's `ZegaWasm.schema(source)` returns the same JSON contract:
 
 ```json
-{"views":[{"kind":"map","types":["Place"]},{"kind":"table","types":["Review"]},{"kind":"graph","types":null}],"default":"map"}
+{
+  "views": [
+    { "kind": "map", "types": ["Place"] },
+    { "kind": "table", "types": ["Review"] },
+    { "kind": "graph", "types": null }
+  ],
+  "default": "map"
+}
 ```
 
 The JSON above is the `display` member. `types` also carries parsed fields,
@@ -64,14 +77,30 @@ button loads the deterministic synthetic support-ticket sample. See
 
 ```zql
 schema {
-  type Log { name: String notes: String }
-  type Contract { name: String scan: String<url> }
-  type Player { name: String photo?: String<url> }
+  type Log {
+    name: String
+    notes: String
+  }
+
+  type Contract {
+    name: String
+    scan: String<url>
+  }
+
+  type Player {
+    name: String
+    photo?: String<url>
+  }
+
   display {
     graph {
       Log(@shape: document)
       Contract(@shape: document, @image: &scan)
-      Player(@shape: circle, @image: &photo, @size: 2)
+      Player(
+        @shape: circle,
+        @image: &photo,
+        @size: 2
+      )
     }
   }
 }

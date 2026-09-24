@@ -1,1 +1,19 @@
-["index.html", "style.css", "repl.js", "backend.js", "editor.js", "graph.js", "node-display.js", "csv.js", "vector.js", "map.js", "map-style.js", "table.js", "theme.js", "samples", "fonts", "pkg", "vendor"]
+[
+  "index.html",
+  "style.css",
+  "repl.js",
+  "backend.js",
+  "editor.js",
+  "graph.js",
+  "csv.js",
+  "vector.js",
+  "map.js",
+  "map-style.js",
+  "table.js",
+  "theme.js",
+  "samples",
+  "fonts",
+  "pkg",
+  "vendor",
+  "node-display.js"
+]

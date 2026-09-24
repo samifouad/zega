@@ -1,0 +1,1 @@
+schema{type Log{name:String}type Contract{scan:String<url>}type Player{photo?:String<url>}display{graph{Log(@shape:document) Contract(@shape:document,@image:&scan) Player(@shape:circle,@image:&photo,@size:2)}:Default table{Contract(@image:&scan),Player(@size:3)}}}

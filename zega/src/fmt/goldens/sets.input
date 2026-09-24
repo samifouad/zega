@@ -1,0 +1,1 @@
+mutation{Player(name:"A") set salary:100,active:true,other:null{edge->link Team(name:"T"){&year:1974 &tag:"abc" &weight:-0.5 @id}}}

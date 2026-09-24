@@ -145,6 +145,28 @@ test('embedded explorer serves the tickets sample in both vector views', async (
   } finally { await server.stop(); await rm(directory, { recursive: true, force: true }); }
 });
 
+
+test('native explorer formats both editor panes through the shared WASM export', async ({ page }) => {
+  await mkdir('.tmp', { recursive: true, mode: 0o700 });
+  const directory = await mkdtemp(resolve('.tmp/cli-format-'));
+  const server = await start(directory);
+  try {
+    await page.goto(server.url);
+    await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45000 });
+    for (const [pane, source, expected] of [
+      ['schema', 'type Person{name:String age:Int}', 'type Person {\n  name: String\n  age: Int\n}\n'],
+      ['query', 'query{Person{name age}}', 'query {\n  Person { name age }\n}\n'],
+    ]) {
+      await page.evaluate(({ pane, source }) => {
+        const editor = window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest(`#${pane}`));
+        editor.setValue(source); editor.setPosition({ lineNumber: 1, column: 3 }); editor.focus();
+      }, { pane, source });
+      await page.keyboard.press('Control+s');
+      await expect.poll(() => page.evaluate(pane => window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest(`#${pane}`)).getValue(), pane)).toBe(expected);
+    }
+  } finally { await server.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test('native storage and WASM checker agree on URL documents and Space preview', async ({page, request}) => {
   await mkdir('.tmp', {recursive:true,mode:0o700});
   const directory=await mkdtemp(resolve('.tmp/cli-shapes-'));

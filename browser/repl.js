@@ -1,4 +1,4 @@
-import init, { ZegaWasm } from './pkg/zega_wasm.js';
+import init, { ZegaWasm, format, format_json } from './pkg/zega_wasm.js';
 import { renderGraph, stopSim } from './graph.js';
 import { renderMap } from './map.js';
 import { renderVector } from './vector.js';
@@ -20,10 +20,7 @@ const SCHEMA = `type Team {
   name: String
   city: String
   logo: String
-
-  playsFor -> Player[] {
-    since?: Int
-  }
+  playsFor -> Player[] { since?: Int }
 }
 
 type Player {
@@ -31,7 +28,6 @@ type Player {
   position: String
   face: String
   salary: Int
-
   playsFor <- Team
   born <- Country
 }
@@ -39,7 +35,6 @@ type Player {
 type Country {
   name: String
   flag: String
-
   born -> Player[]
 }`;
 
@@ -82,13 +77,21 @@ const TOUR = [
   ['Golden Knights', `{
   Team(name = "Golden Knights") {
     name
-    playsFor -> Player { name salary born <- Country { name } }
+    playsFor -> Player {
+      name
+      salary
+      born <- Country { name }
+    }
   }
 }`],
   ['Germany', `{
   Country(name = "Germany") {
     name
-    born -> Player { name salary playsFor <- Team { name } }
+    born -> Player {
+      name
+      salary
+      playsFor <- Team { name }
+    }
   }
 }`],
   ['Hops from Canada', `{
@@ -103,7 +106,10 @@ const TOUR = [
   ['Born outside Canada', `{
   Country(name != "Canada") {
     name
-    born -> Player { name playsFor <- Team { name } }
+    born -> Player {
+      name
+      playsFor <- Team { name }
+    }
   }
 }`],
 ];
@@ -216,9 +222,10 @@ applyTheme(theme);
 let activeView = null, displayKey = '', disposeView = null;
 
 
+const savedQuery = localStorage.getItem(LS_QUERY);
 const editorsReady = createEditors({
   schema: localStorage.getItem(LS_SCHEMA) || SCHEMA,
-  query: localStorage.getItem(LS_QUERY) || QUERY,
+  query: savedQuery || QUERY,
 });
 
 await init();
@@ -232,6 +239,36 @@ if (saved) {
 window.__zega = db;
 
 const { schema: schemaEditor, query: queryEditor, output: outputEditor, raw: rawEditor, monaco } = await editorsReady;
+
+// The CLI and both explorer backends use this same WASM formatter.
+let formatEditor = queryEditor;
+function formatSource(editor) {
+  const source = editor.getValue();
+  const formatted = format(source);
+  if (formatted !== source) {
+    const position = editor.getPosition();
+    const scroll = editor.getScrollTop();
+    editor.pushUndoStop();
+    editor.executeEdits('zega.format', [{ range: editor.getModel().getFullModelRange(), text: formatted }]);
+    editor.pushUndoStop();
+    editor.setPosition(position); // Monaco clamps a line/column that no longer exists.
+    editor.setScrollTop(scroll);
+  }
+  persist();
+}
+for (const editor of [schemaEditor, queryEditor]) {
+  editor.onDidFocusEditorText(() => { formatEditor = editor; });
+  editor.addAction({ id: 'zega.format', label: 'Format ZQL', contextMenuGroupId: '1_modification',
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS], run: () => formatSource(editor) });
+}
+$('#btn-format').onclick = () => { formatSource(formatEditor); formatEditor.focus(); };
+document.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault();
+    event.stopPropagation();
+    formatSource(formatEditor);
+  }
+}, true);
 
 monaco.editor.setTheme(theme === 'dark' ? 'vs-dark' : 'vs');
 $('#btn-theme').textContent = theme === 'dark' ? 'Light' : 'Dark';
@@ -317,8 +354,8 @@ function mark(diags) {
   }
 }
 
-function showJson(value) {
-  const text = JSON.stringify(value, null, 2);
+function showJson(value, raw) {
+  const text = format_json(raw);
   monaco.editor.setModelLanguage(outputEditor.getModel(), 'json');
   outputEditor.setValue(text);
   const kb = new TextEncoder().encode(text).length / 1024;
@@ -358,9 +395,10 @@ async function run(source, options = {}) {
   if (options.apply && looksLikeZqlFile(schemaText())) {
     try {
       const sources = db.native ? options.sources : await loadSources(schemaText(), true, options.sources);
-      const applied = JSON.parse(await db.apply_with_sources(schemaText(), sources === undefined ? undefined : JSON.stringify(sources)));
+      const raw = await db.apply_with_sources(schemaText(), sources === undefined ? undefined : JSON.stringify(sources));
+      const applied = JSON.parse(raw);
       if (!String(source || '').trim()) {
-        showJson(applied);
+        showJson(applied, raw);
         return applied;
       }
     } catch (e) {
@@ -385,7 +423,7 @@ async function run(source, options = {}) {
       : `${(elapsedUs / 1000).toFixed(2)} ms`;
     const value = JSON.parse(raw);
     if (!db.native) { try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); } }
-    if (!options.quiet) showJson(value);
+    if (!options.quiet) showJson(value, raw);
     return value;
   } catch (e) {
     const failedUs = (performance.now() - started) * 1000;
@@ -631,7 +669,7 @@ function inspectNode(node) {
     const term = document.createElement('dt');
     const detail = document.createElement('dd');
     term.textContent = key;
-    detail.textContent = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    detail.textContent = typeof value === 'object' ? format_json(JSON.stringify(value)).trimEnd() : String(value);
     props.append(term, detail);
   }
   panel.append(close, title, props);
@@ -896,7 +934,7 @@ if (db.native) {
   if (queryText().trim() && !isMutation(queryText())) await run(queryText());
 } else if (!saved && !localStorage.getItem(LS_SCHEMA)) {
   await reseed();
-} else if (defaultSchema) {
+} else if (defaultSchema && !savedQuery) {
   showTour(0);
   startAutoplay();
 } else {

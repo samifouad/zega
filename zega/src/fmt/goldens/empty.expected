@@ -1,0 +1,15 @@
+schema {
+  type Empty {}
+}
+
+unique {
+}
+
+index {
+}
+
+mutation {
+}
+
+query {
+}

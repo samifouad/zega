@@ -1,0 +1,7 @@
+query {
+  Player(salary > 10000000 && position = "C") {
+    name
+    salary
+    country -> Country { name }
+  }
+}

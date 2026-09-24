@@ -6,9 +6,17 @@ The answer is the same either way.
 
 ```zql
 schema {
-  type Player { name: String salary: Int rating?: Float }
+  type Player {
+    name: String
+    salary: Int
+    rating?: Float
+  }
 }
-unique { Player { name } }
+
+unique {
+  Player { name }
+}
+
 index {
   range Player { salary rating }
   text Player { name }

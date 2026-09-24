@@ -1,0 +1,9 @@
+query {
+  Stop {
+    road *path(@hops < 3) -> Stop {
+      back *path(@cost < 2.5) by &mi <- Stop {
+        road *path -> Stop { @hops }
+      }
+    }
+  }
+}

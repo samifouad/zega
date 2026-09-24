@@ -1,6 +1,8 @@
 //! The v2 schema and query language. Users write this. The engine walks the
 //! graph it already stores; this crate does not parse ZQL.
 
+#[path = "../fmt/mod.rs"]
+pub mod fmt;
 mod node_display;
 pub use node_display::{NodeDisplay, NodeShape};
 use node_display::DisplayAttribute;
@@ -851,6 +853,10 @@ fn orderable(ty: &str) -> bool {
     matches!(ty, "Int" | "Float" | "String" | "String<url>")
 }
 
+pub(crate) fn unsupported_comment(source: &str) -> Option<&'static str> {
+    ["/*", "*/", "#", "--", "<!--", "(*", "*)"].into_iter().find(|marker| source.starts_with(marker))
+}
+
 struct Parser<'a> {
     src: &'a str,
     i: usize,
@@ -1225,6 +1231,10 @@ impl<'a> Parser<'a> {
 
     fn err(&self, message: impl Into<String>) -> Error {
         let start = self.i.min(self.src.len());
+        let rest = &self.src[start..];
+        if let Some(marker) = unsupported_comment(rest) {
+            return Error::at(self.span_bytes(start, start + marker.len()), "comments must use //");
+        }
         Error::at(self.span_bytes(start, self.peek_token_end(start)), message)
     }
 
@@ -1262,6 +1272,7 @@ impl<'a> Parser<'a> {
 
     fn eat(&mut self, token: &str) -> bool {
         self.skip();
+        if unsupported_comment(&self.src[self.i..]).is_some() { return false; }
         if self.src[self.i..].starts_with(token) {
             let next = self.src[self.i + token.len()..].chars().next();
             if token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')

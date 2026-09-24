@@ -11,16 +11,31 @@ schema {
     road -> Junction[] { km: Float<km> }
   }
 }
-unique { Junction { name } }
+
+unique {
+  Junction { name }
+}
 
 // Fewest roads.
-query { Junction(name: "A") { road *path -> Junction(name: "B") { name } } }
+query {
+  Junction(name: "A") {
+    road *path -> Junction(name: "B") { name }
+  }
+}
 
 // Fewest kilometres (Dijkstra).
-query { Junction(name: "A") { road *path by &km -> Junction(name: "B") { name &km } } }
+query {
+  Junction(name: "A") {
+    road *path by &km -> Junction(name: "B") { name &km }
+  }
+}
 
 // Fewest kilometres, searching toward B first (A*).
-query { Junction(name: "A") { road *path by &km toward at -> Junction(name: "B") { name &km } } }
+query {
+  Junction(name: "A") {
+    road *path by &km toward at -> Junction(name: "B") { name &km }
+  }
+}
 ```
 
 - `*path` counts roads. It is a breadth-first search.
@@ -50,8 +65,20 @@ same relationship, so each target type declares it too.
       { "name": "C", "km": 0.8 }
     ],
     "edges": [
-      { "id": 1, "type": "road", "from": 1, "to": 2, "props": { "km": 0.8 } },
-      { "id": 2, "type": "road", "from": 2, "to": 3, "props": { "km": 0.8 } }
+      {
+        "id": 1,
+        "type": "road",
+        "from": 1,
+        "to": 2,
+        "props": { "km": 0.8 }
+      },
+      {
+        "id": 2,
+        "type": "road",
+        "from": 2,
+        "to": 3,
+        "props": { "km": 0.8 }
+      }
     ]
   }
 }
@@ -92,7 +119,11 @@ A number field can declare its distance unit in its type: `Float<km>`,
 `*path by &weight` and everywhere else.
 
 ```zql
-type Junction { name: String at: Point road -> Junction[] { km: Float<km> } }
+type Junction {
+  name: String
+  at: Point
+  road -> Junction[] { km: Float<km> }
+}
 ```
 
 `toward` reads the unit from the weight's type: the guess is the

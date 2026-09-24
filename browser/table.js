@@ -1,5 +1,6 @@
+import { format_json } from './pkg/zega_wasm.js';
 const caption = (node) => String(node.name ?? node.title ?? node.id);
-const cellText = (value) => value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+const cellText = (value) => value == null ? '—' : typeof value === 'object' ? format_json(JSON.stringify(value)).trimEnd() : String(value);
 
 export function renderTable(container, graph, types, onNode) {
   const root = document.createElement('div');

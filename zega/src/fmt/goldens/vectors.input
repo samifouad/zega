@@ -1,0 +1,1 @@
+query{Ticket(@similarity(embedding,@vector[0.1,0.2,0.3])>=0.5) @near(embedding,@vector[1,0,0],10,exact) limit 3{@score score:@score @similarity(embedding,@vector[1,0,0]) sim:@similarity(embedding,@vector[1,0,0]) id:@id hops:@hops}}

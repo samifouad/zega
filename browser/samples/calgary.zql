@@ -8,11 +8,36 @@ schema {
     kind: String
     at: Point from (lat, lon)
   }
-  display { map { Place }: Default table { Place } graph }
-}
-unique { Place { name } }
 
-mutation csv ["./samples/calgary.csv"] { Place(name: $name && kind: $kind) { name kind at } }
+  display {
+    map { Place } : Default
+    table { Place }
+    graph
+  }
+}
+
+unique {
+  Place { name }
+}
+
+mutation csv ["./samples/calgary.csv"] {
+  Place(name: $name && kind: $kind) {
+    name
+    kind
+    at
+  }
+}
 
 // Places within 1.5 km of the Calgary Tower
-query { Place(@distance(at, @point(51.044299581787385, -114.06313508749008)) <= 1500) order by @distance(at, @point(51.044299581787385, -114.06313508749008)) { @id name kind at @distance(at, @point(51.044299581787385, -114.06313508749008)) } }
+query {
+  Place(@distance(at, @point(51.044299581787385, -114.06313508749008)) <= 1500) order by @distance(
+    at,
+    @point(51.044299581787385, -114.06313508749008)
+  ) {
+    @id
+    name
+    kind
+    at
+    @distance(at, @point(51.044299581787385, -114.06313508749008))
+  }
+}
