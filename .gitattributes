@@ -1,3 +1,14 @@
+# Files the formatter and its checks compare byte-for-byte stay LF on every
+# checkout (Windows runners default to core.autocrlf=true): the syntax goldens,
+# every ZQL/JSON file `zega fmt --check` walks, and the Markdown and explorer
+# script whose embedded samples scripts/fmt-samples.py checks.
+zega/src/fmt/goldens/** text eol=lf
+*.zql text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+browser/repl.js text eol=lf
+
+# Generated build output keeps its bytes (these override the rules above).
 browser/pkg/** -text
 browser/wasm-source.json -text
 *.wasm binary

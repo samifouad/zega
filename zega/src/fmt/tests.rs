@@ -282,6 +282,37 @@ fn syntax_goldens() {
     assert_eq!(count, 20);
 }
 
+/// CRLF input (a Windows editor, or a checkout with core.autocrlf) formats to
+/// the same canonical LF output; a raw CRLF inside a string literal is part of
+/// the value and is kept.
+#[test]
+fn crlf_input_emits_lf() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fmt/goldens");
+    let mut count = 0;
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "input") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace('\n', "\r\n");
+        let expected = std::fs::read_to_string(path.with_extension("expected")).unwrap();
+        assert_eq!(format_zql(&source).unwrap(), expected, "{}", path.display());
+        invariant(&source, &path.display().to_string());
+        count += 1;
+    }
+    assert_eq!(count, 20);
+    let literal = "query { A(name = \"one\r\ntwo\") { name } }";
+    let output = format_zql(literal).unwrap();
+    assert!(output.contains("\"one\r\ntwo\""), "{output:?}");
+    assert_eq!(output.matches('\r').count(), 1, "{output:?}");
+    assert_eq!(
+        format_json("{\r\n  \"a\": [1, 2],\r\n  \"b\": \"c\"\r\n}\r\n"),
+        "{ \"a\": [1, 2], \"b\": \"c\" }\n"
+    );
+}
+
 #[test]
 #[ignore = "requires scripts/fmt-samples.py --extract .tmp/samples; CI runs this explicitly"]
 fn every_embedded_sample() {
