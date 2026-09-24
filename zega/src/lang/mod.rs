@@ -4,6 +4,9 @@
 mod node_display;
 pub use node_display::{NodeDisplay, NodeShape};
 use node_display::DisplayAttribute;
+mod discovery;
+pub(crate) use discovery::{check_pipeline, DiscoveryExpr, Primitive, TextOp};
+use discovery::ThenStage;
 
 pub use crate::index::{IndexKind, IndexSpec};
 use crate::location::{Bounds, Point};
@@ -258,6 +261,8 @@ pub enum Direction {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Query {
     pub mutation: bool,
+    pub skip: bool,
+    pub then: Vec<ThenStage>,
     /// None when the block is empty: `query { }`.
     pub root: Option<Selection>,
 }
@@ -858,6 +863,7 @@ impl<'a> Parser<'a> {
 
     fn parse_statement(&mut self) -> Result<Statement> {
         self.skip();
+        self.reject_detached_discovery()?;
         let mutation = self.eat_word("mutation");
         if mutation && self.eat_word("csv") {
             return self.parse_load(LoadFormat::Csv);
@@ -874,7 +880,9 @@ impl<'a> Parser<'a> {
             let _ = self.eat_word("query");
         }
         self.columns = false;
-        Ok(Statement::Run(self.parse_braced(mutation)?))
+        let mut query = self.parse_braced(mutation)?;
+        self.take_pipeline(&mut query)?;
+        Ok(Statement::Run(query))
     }
 
     fn parse_load(&mut self, format: LoadFormat) -> Result<Statement> {
@@ -910,6 +918,8 @@ impl<'a> Parser<'a> {
         if self.eat("}") {
             return Ok(Query {
                 mutation,
+                skip: false,
+                then: Vec::new(),
                 root: None,
             });
         }
@@ -917,6 +927,8 @@ impl<'a> Parser<'a> {
         self.expect("}")?;
         Ok(Query {
             mutation,
+            skip: false,
+            then: Vec::new(),
             root: Some(root),
         })
     }
@@ -1580,6 +1592,7 @@ impl<'a> Parser<'a> {
 
     fn parse_selection(&mut self) -> Result<Selection> {
         self.skip();
+        self.reject_discovery_literal()?;
         let mut also = Vec::new();
         let mut also_spans = Vec::new();
         let (type_name, type_span) = if self.eat("(") {
@@ -1671,6 +1684,7 @@ impl<'a> Parser<'a> {
 
     fn parse_item(&mut self) -> Result<Item> {
         self.skip();
+        self.reject_discovery_block()?;
         if self.src[self.i..].starts_with('@') {
             return self.builtin_item(None);
         }
@@ -1902,6 +1916,7 @@ impl<'a> Parser<'a> {
 
     fn parse_pred(&mut self) -> Result<Pred> {
         self.skip();
+        self.reject_discovery_block()?;
         if self.starts_call("similarity", "(") {
             let sim = self.similarity()?;
             let op = if self.eat(">=") { Cmp::Gte } else if self.eat("<=") { Cmp::Lte } else if self.eat(">") { Cmp::Gt } else if self.eat("<") { Cmp::Lt } else { return Err(self.err("similarity needs <, <=, >, or >= and a score")); };
@@ -2282,6 +2297,8 @@ fn bind_query(
     };
     Ok(bind_selection(root, row)?.map(|root| Query {
         mutation: query.mutation,
+        skip: query.skip,
+        then: query.then.clone(),
         root: Some(root),
     }))
 }
@@ -2648,6 +2665,11 @@ fn csv_cell(cell: &str) -> Json {
 }
 
 fn note_statement(schema: &Schema, statement: &Statement, pane: Pane, out: &mut Vec<Diagnostic>) {
+    if let Statement::Run(query) = statement {
+        if let Err(error) = check_pipeline(schema, query) {
+            out.push(from_error(pane, error));
+        }
+    }
     let (root, mutation) = match statement {
         Statement::Run(query) => (query.root.as_ref(), query.mutation),
         Statement::Load { template, .. } => (template.root.as_ref(), true),

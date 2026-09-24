@@ -2573,6 +2573,7 @@ dependencies = [
  "hmac",
  "js-sys",
  "libm",
+ "regex",
  "rsa",
  "serde",
  "serde_json",
