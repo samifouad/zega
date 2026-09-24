@@ -39,8 +39,6 @@ just like [cqx](https://cqx.bio) does for running queries without a server:
   detection, snapshots, and automatic WAL replay on open.
 - **Optional server** — a tokio/axum HTTP server with token auth and
   ZQL execution on the blocking pool.
-- **JWT auth + policy engine** — HS256/RS256 token verification and row-level
-  access control when you need multi-tenant semantics.
 
 ## Use the CLI
 
@@ -275,8 +273,8 @@ tests against Neo4j were removed with the legacy language.
 
 ## Workspace layout
 
-`zega` is the only published crate — the whole engine (query execution,
-planner, JWT, policies, WAL, graph storage, ZQL parser and language) lives
+`zega` is the only published crate — the whole engine (the ZQL parser,
+checker and executor, WAL, and graph storage) lives
 inside it as private modules. Everything else in this workspace is a
 consumer that depends on `zega` by path and is never published:
 
@@ -290,7 +288,7 @@ consumer that depends on `zega` by path and is never published:
 
 ## Status
 
-zega is early (0.1.0). The engine, query language, WAL, server, and wasm
+zega is early (0.2.0). The engine, query language, WAL, server, and wasm
 wrapper are functional and tested; the wire protocol is HTTP/JSON only (no
 Bolt compatibility yet), and there is no REPL.
 
