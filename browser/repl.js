@@ -659,10 +659,13 @@ function markTour() {
   });
 }
 
-function showTour(index) {
+// A click on a tour step is an explicit run; autoplay is a timer, so it obeys
+// the same mutation pause as auto-run and never writes on its own.
+function showTour(index, { auto = false } = {}) {
   tourIndex = index;
   setQuiet(queryEditor, TOUR[index][1]);
   markTour();
+  if (auto && autorunPaused()) { drawGraph(); return; }
   execute();
 }
 
@@ -678,7 +681,7 @@ function startAutoplay() {
   playBtn.textContent = 'pause';
   clearInterval(tourTimer);
   tourTimer = setInterval(() => {
-    showTour((tourIndex + 1) % TOUR.length);
+    showTour((tourIndex + 1) % TOUR.length, { auto: true });
   }, 5000);
 }
 

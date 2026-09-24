@@ -106,11 +106,11 @@ test('Cmd+Z right after an auto-format restores the unformatted text in one step
   await page.keyboard.type(panes.query.typed, { delay: 50 });
   await page.waitForTimeout(600);
   expect(await text(page, 'query')).toBe(panes.query.formatted);
-  await page.keyboard.press('Control+z');
+  await page.keyboard.press('ControlOrMeta+z');
   expect(await text(page, 'query')).toBe(panes.query.typedText);
   await page.waitForTimeout(800); // past both pipelines' pause
   expect(await text(page, 'query')).toBe(panes.query.typedText);
-  await page.keyboard.press('Control+z'); // then the typing
+  await page.keyboard.press('ControlOrMeta+z'); // then the typing
   expect(await text(page, 'query')).not.toContain('salary');
 });
 
@@ -151,7 +151,7 @@ test('a mutation is formatted but not auto-run; the note shows; Run runs it; rem
 test('Cmd/Ctrl+Enter runs a mutation too', async ({ page }) => {
   await ready(page);
   await place(page, 'query', 'mutation { Player(name: "Chord Skater" && position: "D") { name } }');
-  await page.keyboard.press('Control+Enter');
+  await page.keyboard.press('ControlOrMeta+Enter');
   await expect(page.locator('#raw-count')).toContainText('51 nodes');
 });
 
