@@ -86,7 +86,8 @@ excluded. An additional `limit` can truncate the nearest result.
 
 Nearest searches use HNSW by default. Ordinary filters and relationship
 traversals restrict eligible results before nearest-k is chosen. Search
-expands its candidate budget if filtering leaves too few results. Threshold
+widens if filtering leaves too few results, and finishes as an exact scan
+once it has scored half the indexed vectors. Threshold
 filters evaluate full-vector scores by scanning candidates, so they do not
 silently discard threshold matches. `exact` always scans the full eligible
 set, with the same scores and tie order.
@@ -97,9 +98,19 @@ Every Vector field automatically maintains an in-tree Rust HNSW index, with
 no C/C++ dependencies, threads or network access. It runs on native and wasm32.
 The implementation follows the layered greedy search, bounded best-first
 search and diversity heuristic in [Malkov and Yashunin's HNSW paper](https://arxiv.org/abs/1603.09320).
-M=24, the bottom layer permits 48 links, construction ef=160 and search ef=768
-(or at least k). A fixed seed and node IDs determine levels; ties are stable.
-Index partitions separate field names, dimensions and metrics.
+M=24, the bottom layer permits 48 links and construction ef=160. A fixed seed
+and node IDs determine levels; ties are stable. Index partitions separate
+field names, dimensions and metrics.
+
+The search width adapts to the query. It starts at max(k, 32) and doubles
+until two successive widths return the same top k; a wider pass continues the
+narrower one and never scores a vector twice. Data whose neighbors stand out
+(clustered, like real embeddings) settles after a few percent of the index.
+Data where the nearest vectors are barely nearer than the rest, such as
+uniform noise in hundreds of dimensions, cannot be searched in a small
+fraction by any index; there the width keeps growing, and once half the
+vectors are scored the search completes as an exact scan, reusing those
+scores. It never costs more distance computations than a scan.
 
 Insert and replacement update the index. Deletes immediately remove eligibility;
 tombstones remain routing nodes until a deterministic rebuild when over half
@@ -110,11 +121,15 @@ restoration inserts nodes in ID order. Rebuilding can change approximate
 neighbors after a history of updates; exact results remain identical.
 
 The regression test measures recall@10 against independent brute force on
-10,000 seeded 128-dimensional vectors and 40 held-out queries. It requires
-at least 0.95 recall, and checks exact IDs **and scores** against the reference.
-This branch measured **1.0000 recall@10** (400/400 neighbors).
-Approximate recall is data-dependent; the measured corpus is not a guarantee
-for every dataset.
+10,000 seeded uniform 128-dimensional vectors and 40 held-out queries. It
+requires at least 0.95 recall, and checks exact IDs **and scores** against the
+reference; it measures **0.9725 recall@10** (389/400 neighbors). A second test
+bounds both recall (at least 0.95) and the vectors scored per query on 20,000
+seeded 32-dimensional vectors, uniform and clustered. At N = 100,000, k = 10,
+uniform 32-dimensional data measures 0.984 recall scoring 4.5% of N per query,
+and 40-cluster data at 32 to 384 dimensions 0.98 to 0.999 recall scoring
+1.4 to 2.2%. Approximate recall is data-dependent; the measured corpora are not
+a guarantee for every dataset.
 
 ## Explorer
 
