@@ -103,6 +103,8 @@ fn order_by_distance_goes_either_way_and_takes_a_second_key() {
     assert_eq!(names(&db.run_lang(schema, &format!("{{ City order by {near} {{ name }} }}")).unwrap()), ["Near", "Mid", "Mid2", "Far"]);
     assert_eq!(names(&db.run_lang(schema, &format!("{{ City order by {near} limit 2 {{ name }} }}")).unwrap()), ["Near", "Mid"]);
     assert_eq!(names(&db.run_lang(schema, &format!("{{ City order by {near} desc {{ name }} }}")).unwrap()), ["Far", "Mid", "Mid2", "Near"]);
+    // Farthest first with a limit: the nearest-first search must not stop early.
+    assert_eq!(names(&db.run_lang(schema, &format!("{{ City order by {near} desc limit 2 {{ name }} }}")).unwrap()), ["Far", "Mid"]);
     assert_eq!(names(&db.run_lang(schema, &format!("{{ City order by {near}, size {{ name }} }}")).unwrap()), ["Near", "Mid2", "Mid", "Far"]);
     assert_eq!(names(&db.run_lang(schema, &format!("{{ City order by size desc, {near} {{ name }} }}")).unwrap()), ["Mid", "Far", "Near", "Mid2"]);
 }
