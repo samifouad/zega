@@ -4,11 +4,6 @@ use crate::graph::NodeId;
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-
-#[cfg(test)]
-static DISTANCE_COMPUTATIONS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -98,8 +93,6 @@ impl Vector {
         serde_json::json!(self.values().collect::<Vec<_>>())
     }
     pub fn score(&self, other: &Self) -> Option<f64> {
-        #[cfg(test)]
-        DISTANCE_COMPUTATIONS.fetch_add(1, AtomicOrdering::Relaxed);
         if self.dimensions() != other.dimensions() {
             return None;
         }
@@ -125,9 +118,8 @@ impl Vector {
 }
 
 #[cfg(test)]
-mod vector_benchmarks {
-    use super::{Hnsw, Metric, Vector, DISTANCE_COMPUTATIONS};
-    use std::sync::atomic::Ordering;
+mod vector_search_width {
+    use super::{Hnsw, Metric, Vector};
     use std::time::Instant;
 
     fn cosine(a: &[f32], b: &[f32]) -> f64 {
@@ -139,7 +131,6 @@ mod vector_benchmarks {
         }
         (dot / (aa * bb).sqrt()).clamp(-1.0, 1.0)
     }
-
     fn rng(seed: &mut u64) -> f32 {
         *seed ^= *seed << 13;
         *seed ^= *seed >> 7;
@@ -147,92 +138,181 @@ mod vector_benchmarks {
         ((*seed >> 40) as f32 / 16777216.0) * 2.0 - 1.0
     }
 
-    #[test]
-    #[ignore = "local HNSW quality and distance-count benchmark"]
-    fn vector_hnsw_benchmark_20000_by_128() {
-        const N: usize = 20_000;
-        const D: usize = 128;
-        const Q: usize = 100;
-        let mut seed = 0x123456789abcdefu64;
-        let uniform: Vec<Vec<f32>> = (0..N)
-            .map(|_| (0..D).map(|_| rng(&mut seed)).collect())
-            .collect();
+    /// Seeded rows and held-out queries with brute-force top-10 IDs.
+    struct Corpus {
+        name: &'static str,
+        rows: Vec<Vec<f32>>,
+        queries: Vec<Vec<f32>>,
+        truth: Vec<Vec<u64>>,
+        /// Mean cosine distance over the 10th-nearest distance, averaged over
+        /// queries (He, Kumar and Chang, 2012). Near 1, neighbours are barely
+        /// nearer than anything else and no index can skip much of the data.
+        contrast: f64,
+    }
+    /// Uniform in [-1, 1]^d, or 40 centres with ±0.08 noise per coordinate.
+    fn corpus(clustered: bool, n: usize, d: usize, q: usize) -> Corpus {
+        let mut seed = 0x123456789abcdefu64 ^ ((n as u64) << 20) ^ d as u64;
         let centers: Vec<Vec<f32>> = (0..40)
-            .map(|_| (0..D).map(|_| rng(&mut seed)).collect())
+            .map(|_| (0..d).map(|_| rng(&mut seed)).collect())
             .collect();
-        let clustered: Vec<Vec<f32>> = (0..N)
-            .map(|i| {
-                let center = &centers[i % centers.len()];
-                center.iter().map(|&x| x + rng(&mut seed) * 0.08).collect()
-            })
-            .collect();
-        let uniform_queries: Vec<Vec<f32>> = (0..Q)
-            .map(|_| (0..D).map(|_| rng(&mut seed)).collect())
-            .collect();
-        let clustered_queries: Vec<Vec<f32>> = (0..Q)
-            .map(|i| {
-                let center = &centers[i % centers.len()];
-                center.iter().map(|&x| x + rng(&mut seed) * 0.08).collect()
-            })
-            .collect();
-
-        for (name, data, queries) in [
-            ("uniform", &uniform, &uniform_queries),
-            ("40-cluster", &clustered, &clustered_queries),
-        ] {
-            let mut index = Hnsw::new(0x5e6a);
-            for (id, row) in data.iter().enumerate() {
-                index.insert(id as u64, Vector::new(row, Metric::Cosine).unwrap());
+        let mut row = |i: usize| -> Vec<f32> {
+            if clustered {
+                let c = &centers[i % centers.len()];
+                c.iter().map(|&x| x + rng(&mut seed) * 0.08).collect()
+            } else {
+                (0..d).map(|_| rng(&mut seed)).collect()
             }
-            let exact_start = Instant::now();
-            let expected: Vec<Vec<u64>> = queries
-                .iter()
-                .map(|query| {
-                    let mut ranked: Vec<_> = data
-                        .iter()
-                        .enumerate()
-                        .map(|(id, row)| (id as u64, cosine(row, query)))
-                        .collect();
-                    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-                    ranked.into_iter().take(10).map(|(id, _)| id).collect()
+        };
+        let rows: Vec<_> = (0..n).map(&mut row).collect();
+        let queries: Vec<_> = (0..q).map(&mut row).collect();
+        let exact: Vec<(Vec<u64>, f64)> = std::thread::scope(|s| {
+            let rows = &rows;
+            let handles: Vec<_> = queries
+                .chunks(q.div_ceil(8))
+                .map(|chunk| {
+                    s.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|query| {
+                                let mut ranked: Vec<_> = rows
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(id, r)| (id as u64, cosine(r, query)))
+                                    .collect();
+                                let mean =
+                                    ranked.iter().map(|(_, c)| 1.0 - c).sum::<f64>() / n as f64;
+                                ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                                let contrast = mean / (1.0 - ranked[9].1);
+                                (
+                                    ranked.iter().take(10).map(|(id, _)| *id).collect(),
+                                    contrast,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
                 })
                 .collect();
-            let exact_elapsed = exact_start.elapsed();
-
-            DISTANCE_COMPUTATIONS.store(0, Ordering::Relaxed);
-            let hnsw_start = Instant::now();
-            let actual: Vec<Vec<u64>> = queries
-                .iter()
-                .map(|query| {
-                    index
-                        .nearest(
-                            &Vector::new(query, Metric::Cosine).unwrap(),
-                            10,
-                            false,
-                            &|_| true,
-                        )
-                        .into_iter()
-                        .map(|(id, _)| id)
-                        .collect()
-                })
-                .collect();
-            let hnsw_elapsed = hnsw_start.elapsed();
-            let computations = DISTANCE_COMPUTATIONS.load(Ordering::Relaxed);
-            let hits: usize = actual
-                .iter()
-                .zip(&expected)
-                .map(|(got, want)| got.iter().filter(|id| want.contains(id)).count())
-                .sum();
-            let recall = hits as f64 / (Q * 10) as f64;
-            eprintln!(
-                "{name}: recall@10={recall:.4}; distance computations/query={:.1} ({:.4} x N); HNSW={:.3} ms/query; exact brute-force={:.3} ms/query",
-                computations as f64 / Q as f64,
-                computations as f64 / (Q * N) as f64,
-                hnsw_elapsed.as_secs_f64() * 1000.0 / Q as f64,
-                exact_elapsed.as_secs_f64() * 1000.0 / Q as f64,
-            );
-            assert!(recall >= 0.90, "{name} recall@10={recall}");
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap())
+                .collect()
+        });
+        Corpus {
+            name: if clustered { "40-cluster" } else { "uniform" },
+            rows,
+            queries,
+            contrast: exact.iter().map(|(_, c)| c).sum::<f64>() / q as f64,
+            truth: exact.into_iter().map(|(ids, _)| ids).collect(),
         }
+    }
+    struct Measured {
+        recall: f64,
+        /// Distance computations per query as a fraction of N.
+        visited: f64,
+        worst_visited: f64,
+        ms_per_query: f64,
+        exact_ms_per_query: f64,
+        build_s: f64,
+    }
+    fn measure(c: &Corpus) -> Measured {
+        let start = Instant::now();
+        let mut index = Hnsw::new(0x5e6a);
+        for (id, row) in c.rows.iter().enumerate() {
+            index.insert(id as u64, Vector::new(row, Metric::Cosine).unwrap());
+        }
+        let build_s = start.elapsed().as_secs_f64();
+        let queries: Vec<_> = c
+            .queries
+            .iter()
+            .map(|q| Vector::new(q, Metric::Cosine).unwrap())
+            .collect();
+        let start = Instant::now();
+        let found: Vec<_> = queries
+            .iter()
+            .map(|q| index.search(q, 10, &|_| true))
+            .collect();
+        let hnsw_elapsed = start.elapsed();
+        let (mut hits, mut visited, mut worst) = (0, 0, 0);
+        for ((q, (got, v)), want) in queries.iter().zip(&found).zip(&c.truth) {
+            assert_eq!(got, &index.nearest(q, 10, false, &|_| true));
+            visited += v;
+            worst = worst.max(*v);
+            hits += got.iter().filter(|(id, _)| want.contains(id)).count();
+        }
+        let start = Instant::now();
+        for q in &queries {
+            std::hint::black_box(index.nearest(q, 10, true, &|_| true));
+        }
+        let exact_elapsed = start.elapsed();
+        let (q, n) = (c.queries.len() as f64, c.rows.len() as f64);
+        let m = Measured {
+            recall: hits as f64 / (q * 10.0),
+            visited: visited as f64 / (q * n),
+            worst_visited: worst as f64 / n,
+            ms_per_query: hnsw_elapsed.as_secs_f64() * 1000.0 / q,
+            exact_ms_per_query: exact_elapsed.as_secs_f64() * 1000.0 / q,
+            build_s,
+        };
+        eprintln!(
+            "| {} | {} | {} | {:.2} | {:.4} | {:.2}% | {:.1}% | {:.3} | {:.3} | {:.1} |",
+            c.rows.len(),
+            c.rows[0].len(),
+            c.name,
+            c.contrast,
+            m.recall,
+            m.visited * 100.0,
+            m.worst_visited * 100.0,
+            m.ms_per_query,
+            m.exact_ms_per_query,
+            m.build_s,
+        );
+        m
+    }
+    fn table(sizes: &[usize], dims: &[usize]) {
+        eprintln!("| N | dims | data | contrast | recall@10 | scored/N (mean) | worst query | ms/query | exact scan ms/query | build s |");
+        eprintln!("|---|---|---|---|---|---|---|---|---|---|");
+        // One index at a time, so latency is not shared with other builds.
+        for &n in sizes {
+            for &d in dims {
+                for clustered in [false, true] {
+                    measure(&corpus(clustered, n, d, 100));
+                }
+            }
+        }
+    }
+
+    /// Fails with main's fixed search width of 768 (zega#26), which scored
+    /// ~87% of N per query on the uniform corpus and ~32% on the clustered one.
+    /// Sized to run in well under a minute in a debug build.
+    #[test]
+    fn vector_hnsw_search_width_6000_by_16() {
+        std::thread::scope(|s| {
+            for (clustered, max_visited) in [(false, 0.45), (true, 0.08)] {
+                s.spawn(move || {
+                    let c = corpus(clustered, 6_000, 16, 30);
+                    let m = measure(&c);
+                    assert!(m.recall >= 0.95, "{} recall@10={}", c.name, m.recall);
+                    assert!(
+                        m.visited <= max_visited,
+                        "{} scored {:.1}% of N per query",
+                        c.name,
+                        m.visited * 100.0
+                    );
+                });
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "local benchmark: builds 12 indexes of up to 100,000 x 384"]
+    fn vector_hnsw_benchmark_10k_100k() {
+        table(&[10_000, 100_000], &[32, 128, 384]);
+    }
+
+    #[test]
+    #[ignore = "local benchmark: builds 1,000,000-vector indexes (hours)"]
+    fn vector_hnsw_benchmark_1m() {
+        table(&[1_000_000], &[32, 128]);
     }
 }
 
@@ -278,7 +358,96 @@ pub struct Hnsw {
 }
 const M: usize = 24;
 const EF_CONSTRUCTION: usize = 160;
-const EF_SEARCH: usize = 768;
+/// First search width; it grows with k and doubles until the top k settle.
+const EF_START: usize = 64;
+
+/// Resumable bounded best-first search of one layer (the paper's SEARCH-LAYER).
+/// Every score is computed at most once per query; widening keeps the work
+/// already done, so a wider pass only explores what the narrower one skipped.
+struct Beam<'a> {
+    index: &'a Hnsw,
+    q: &'a Vector,
+    level: usize,
+    /// Negated scores by slot: every slot reached, and the distance
+    /// computations made for this query.
+    scores: HashMap<usize, f64>,
+    expanded: HashSet<usize>,
+    todo: BinaryHeap<Reverse<Candidate>>,
+    best: BinaryHeap<Candidate>,
+    /// Scored candidates outside `best`, readmitted when the beam widens.
+    spill: Vec<Candidate>,
+}
+impl<'a> Beam<'a> {
+    fn new(index: &'a Hnsw, q: &'a Vector, level: usize, entry: usize) -> Self {
+        let mut beam = Self {
+            index,
+            q,
+            level,
+            scores: HashMap::new(),
+            expanded: HashSet::new(),
+            todo: BinaryHeap::new(),
+            best: BinaryHeap::new(),
+            spill: Vec::new(),
+        };
+        let first = beam.candidate(entry);
+        beam.todo.push(Reverse(first));
+        beam.best.push(first);
+        beam
+    }
+    fn candidate(&mut self, slot: usize) -> Candidate {
+        let (entries, q) = (&self.index.entries, self.q);
+        let distance = *self
+            .scores
+            .entry(slot)
+            .or_insert_with(|| -entries[slot].vector.score(q).expect("index dimensions"));
+        Candidate { distance, slot }
+    }
+    fn admit(&mut self, c: Candidate, ef: usize) {
+        if self.best.len() < ef || c < *self.best.peek().unwrap() {
+            self.todo.push(Reverse(c));
+            self.best.push(c);
+            if self.best.len() > ef {
+                self.spill.push(self.best.pop().unwrap());
+            }
+        } else {
+            self.spill.push(c);
+        }
+    }
+    /// Searches until the `ef` nearest found so far cannot improve.
+    fn run(&mut self, ef: usize) -> Vec<Candidate> {
+        if self.best.len() < ef && !self.spill.is_empty() {
+            let room = (ef - self.best.len()).min(self.spill.len());
+            if room < self.spill.len() {
+                // Candidates are totally ordered, so the admitted set is unique.
+                self.spill.select_nth_unstable(room);
+            }
+            for c in self.spill.drain(..room) {
+                self.todo.push(Reverse(c));
+                self.best.push(c);
+            }
+        }
+        while let Some(Reverse(next)) = self.todo.pop() {
+            if self.best.len() >= ef && next > *self.best.peek().unwrap() {
+                self.todo.push(Reverse(next));
+                break;
+            }
+            if !self.expanded.insert(next.slot) {
+                continue;
+            }
+            let index = self.index;
+            for &slot in &index.entries[next.slot].links[self.level] {
+                if !self.scores.contains_key(&slot) {
+                    let c = self.candidate(slot);
+                    self.admit(c, ef);
+                }
+            }
+        }
+        let mut found: Vec<_> = self.best.iter().copied().collect();
+        found.sort_unstable();
+        found
+    }
+}
+
 impl Hnsw {
     pub fn new(seed: u64) -> Self {
         Self {
@@ -298,29 +467,7 @@ impl Hnsw {
         }
     }
     fn layer(&self, q: &Vector, entry: usize, level: usize, ef: usize) -> Vec<Candidate> {
-        let first = self.candidate(q, entry);
-        let mut todo = BinaryHeap::from([Reverse(first)]);
-        let mut best = BinaryHeap::from([first]);
-        let mut seen = HashSet::from([entry]);
-        while let Some(Reverse(next)) = todo.pop() {
-            if best.len() >= ef && next > *best.peek().unwrap() {
-                break;
-            }
-            for &slot in &self.entries[next.slot].links[level] {
-                if !seen.insert(slot) {
-                    continue;
-                }
-                let c = self.candidate(q, slot);
-                if best.len() < ef || c < *best.peek().unwrap() {
-                    todo.push(Reverse(c));
-                    best.push(c);
-                    if best.len() > ef {
-                        best.pop();
-                    }
-                }
-            }
-        }
-        best.into_sorted_vec()
+        Beam::new(self, q, level, entry).run(ef)
     }
     fn select(&self, candidates: &[Candidate], count: usize) -> Vec<usize> {
         let mut selected: Vec<usize> = Vec::new();
@@ -434,43 +581,98 @@ impl Hnsw {
         exact: bool,
         allowed: &impl Fn(NodeId) -> bool,
     ) -> Vec<(NodeId, f64)> {
-        if k == 0 || self.live.is_empty() {
-            return Vec::new();
-        }
-        let mut ep = self.entry.unwrap();
-        if self.entries[ep].vector.dimensions() != q.dimensions() {
-            return Vec::new();
-        }
-        let rank = |slots: Vec<usize>| {
-            let mut scores: Vec<_> = slots
-                .into_iter()
-                .filter(|&s| self.entries[s].live && allowed(self.entries[s].id))
-                .map(|s| (self.entries[s].id, self.entries[s].vector.score(q).unwrap()))
-                .collect();
-            scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-            scores.truncate(k);
-            scores
-        };
         if exact {
-            return rank(self.live.values().copied().collect());
-        }
-        for l in (1..self.entries[ep].links.len()).rev() {
-            ep = self.layer(q, ep, l, 1)[0].slot;
-        }
-        let mut ef = EF_SEARCH.max(k).min(self.entries.len());
-        loop {
-            let result = rank(
-                self.layer(q, ep, 0, ef)
-                    .into_iter()
-                    .map(|c| c.slot)
-                    .collect(),
-            );
-            if result.len() >= k || ef == self.entries.len() {
-                return result;
-            }
-            ef = (ef * 2).min(self.entries.len());
+            self.scan(q, k, allowed, &HashMap::new()).0
+        } else {
+            self.search(q, k, allowed).0
         }
     }
+    /// Exact top k over the eligible live entries, reusing scores already
+    /// computed; also returns how many scores it had to compute.
+    fn scan(
+        &self,
+        q: &Vector,
+        k: usize,
+        allowed: &impl Fn(NodeId) -> bool,
+        scored: &HashMap<usize, f64>,
+    ) -> (Vec<(NodeId, f64)>, usize) {
+        if k == 0 || !self.accepts(q) {
+            return (Vec::new(), 0);
+        }
+        let mut computed = 0;
+        let mut scores: Vec<_> = self
+            .live
+            .values()
+            .filter(|&&s| allowed(self.entries[s].id))
+            .map(|&s| {
+                let score = scored.get(&s).map(|d| -d).unwrap_or_else(|| {
+                    computed += 1;
+                    self.entries[s].vector.score(q).unwrap()
+                });
+                (self.entries[s].id, score)
+            })
+            .collect();
+        rank(&mut scores, k);
+        (scores, computed)
+    }
+    fn accepts(&self, q: &Vector) -> bool {
+        self.entry.is_some_and(|ep| {
+            !self.live.is_empty() && self.entries[ep].vector.dimensions() == q.dimensions()
+        })
+    }
+    /// Approximate nearest k, and how many distance computations it made.
+    ///
+    /// The search width starts at max(k, EF_START) and doubles until two
+    /// successive widths return the same top k, so the width tracks how hard
+    /// this query is on this data rather than a constant. Once a search has
+    /// scored half of the live entries, a wider one would cost as much as a
+    /// scan, so the scan finishes it exactly with the scores already computed.
+    pub(crate) fn search(
+        &self,
+        q: &Vector,
+        k: usize,
+        allowed: &impl Fn(NodeId) -> bool,
+    ) -> (Vec<(NodeId, f64)>, usize) {
+        let Some(mut ep) = self.entry.filter(|_| k > 0 && self.accepts(q)) else {
+            return (Vec::new(), 0);
+        };
+        let mut upper = 0;
+        for l in (1..self.entries[ep].links.len()).rev() {
+            let mut beam = Beam::new(self, q, l, ep);
+            ep = beam.run(1)[0].slot;
+            upper += beam.scores.len();
+        }
+        let n = self.entries.len();
+        let mut ef = EF_START.max(k).min(n);
+        let mut beam = Beam::new(self, q, 0, ep);
+        let mut previous = None;
+        loop {
+            let mut result: Vec<_> = beam
+                .run(ef)
+                .into_iter()
+                .filter(|c| self.entries[c.slot].live && allowed(self.entries[c.slot].id))
+                .map(|c| (self.entries[c.slot].id, -c.distance))
+                .collect();
+            rank(&mut result, k);
+            let ids: Vec<NodeId> = result.iter().map(|(id, _)| *id).collect();
+            let settled = result.len() == k && previous.as_ref() == Some(&ids);
+            if settled || ef == n {
+                return (result, upper + beam.scores.len());
+            }
+            if beam.scores.len() * 2 >= self.live.len() {
+                let (exact, computed) = self.scan(q, k, allowed, &beam.scores);
+                return (exact, upper + beam.scores.len() + computed);
+            }
+            previous = (result.len() == k).then_some(ids);
+            ef = (ef * 2).min(n);
+        }
+    }
+}
+
+/// Larger score first, ties by ascending node ID; keeps the first k.
+fn rank(scores: &mut Vec<(NodeId, f64)>, k: usize) {
+    scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    scores.truncate(k);
 }
 
 #[derive(Clone, Default)]

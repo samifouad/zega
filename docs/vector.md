@@ -86,7 +86,8 @@ excluded. An additional `limit` can truncate the nearest result.
 
 Nearest searches use HNSW by default. Ordinary filters and relationship
 traversals restrict eligible results before nearest-k is chosen. Search
-expands its candidate budget if filtering leaves too few results. Threshold
+widens if filtering leaves too few results, and finishes as an exact scan
+once it has scored half the indexed vectors. Threshold
 filters evaluate full-vector scores by scanning candidates, so they do not
 silently discard threshold matches. `exact` always scans the full eligible
 set, with the same scores and tie order.
@@ -97,9 +98,25 @@ Every Vector field automatically maintains an in-tree Rust HNSW index, with
 no C/C++ dependencies, threads or network access. It runs on native and wasm32.
 The implementation follows the layered greedy search, bounded best-first
 search and diversity heuristic in [Malkov and Yashunin's HNSW paper](https://arxiv.org/abs/1603.09320).
-M=24, the bottom layer permits 48 links, construction ef=160 and search ef=768
-(or at least k). A fixed seed and node IDs determine levels; ties are stable.
-Index partitions separate field names, dimensions and metrics.
+M=24, the bottom layer permits 48 links and construction ef=160. A fixed seed
+and node IDs determine levels; ties are stable. Index partitions separate
+field names, dimensions and metrics.
+
+The search width adapts to the query. It starts at max(k, 64) and doubles
+until two successive widths return the same top k; a wider pass continues the
+narrower one and never scores a vector twice. Once half the vectors are scored,
+the search completes as an exact scan, reusing those scores.
+
+What that guarantees depends on the data's *relative contrast*: the mean
+distance to all vectors over the distance to the k-th nearest.
+
+- **Contrast of about 2 or more** (clustered data, and real embeddings): at
+  N = 100,000 and k = 10, the target is recall@10 of at least 0.95 while
+  scoring at most 10% of the vectors per query.
+- **Low contrast** (below about 2, such as uniform noise in 128 or more
+  dimensions): the nearest vectors are barely nearer than the rest, and no index
+  can skip most of the data. The guarantee is recall@10 of at least 0.95 at
+  **never more work than an exact scan**.
 
 Insert and replacement update the index. Deletes immediately remove eligibility;
 tombstones remain routing nodes until a deterministic rebuild when over half
@@ -110,10 +127,22 @@ restoration inserts nodes in ID order. Rebuilding can change approximate
 neighbors after a history of updates; exact results remain identical.
 
 The regression test measures recall@10 against independent brute force on
-10,000 seeded 128-dimensional vectors and 40 held-out queries. It requires
-at least 0.95 recall, and checks exact IDs **and scores** against the reference.
-This branch measured **1.0000 recall@10** (400/400 neighbors).
-Approximate recall is data-dependent; the measured corpus is not a guarantee
+10,000 seeded uniform 128-dimensional vectors and 40 held-out queries. It
+requires at least 0.95 recall, and checks exact IDs **and scores** against the
+reference; it measures **0.9875 recall@10** (395/400 neighbors). A second test
+bounds both recall (at least 0.95) and the vectors scored per query on 6,000
+seeded 16-dimensional vectors, uniform and clustered.
+
+Measured at N = 100,000, k = 10, 100 held-out queries:
+
+| data | dims | contrast | recall@10 | scored per query |
+|---|---|---|---|---|
+| 40 clusters | 32 / 128 / 384 | 179–302 | 0.999 / 0.998 / 0.993 | 1.8% / 2.2% / 2.3% |
+| uniform | 32 | 2.6 | 0.995 | 5.1% |
+| uniform | 128 | 1.5 | 0.959 | 37% (hard queries become scans) |
+| uniform | 384 | 1.2 | 0.970 | 89% (hard queries become scans) |
+
+Approximate recall is data-dependent; the measured corpora are not a guarantee
 for every dataset.
 
 ## Explorer
