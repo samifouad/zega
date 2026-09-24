@@ -178,7 +178,7 @@ console.log(JSON.parse(db.run(schema, '{ Person { name } }')));
 
 ## Formatting ZQL and JSON
 
-`zega fmt paths…` formats files or directories recursively (`*.zql`).
+`zega fmt paths…` formats files or directories recursively (`*.zql` and `*.json`).
 `zega fmt --check paths…` lists every file that would change and exits 1;
 `zega fmt --stdin` reads source from stdin and writes the canonical layout.
 Invalid or incomplete input is left unchanged. There are no style options.
