@@ -9,7 +9,7 @@ use serde_json::Value as Json;
 use tempfile::TempDir;
 
 use crate::wal::tests::{switchable_wal, AppendSwitch};
-use crate::{Value, Zega};
+use crate::Zega;
 
 struct Store {
     zega: Zega,
@@ -58,157 +58,6 @@ impl Store {
             .build()
             .unwrap()
     }
-
-    fn cypher(&self, query: &str) -> Vec<crate::Row> {
-        self.zega.query(query, HashMap::new()).unwrap()
-    }
-}
-
-fn count(zega: &Zega, query: &str) -> i64 {
-    let rows = zega.query(query, HashMap::new()).unwrap();
-    match rows[0].fields.values().next() {
-        Some(Value::Int(n)) => *n,
-        other => panic!("{query}: expected a count, got {other:?}"),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Cypher-style statements (`Zega::query`)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn refused_create_is_invisible_and_its_id_is_reused() {
-    let store = Store::open();
-    store.cypher("CREATE (n:Person {name: 'Ada'})");
-    let (_, ids_before) = store.state();
-
-    store.refused(|z| z.query("CREATE (n:Person {name: 'Bob'})", HashMap::new()));
-    // Label index and property index both forget Bob.
-    assert_eq!(count(&store.zega, "MATCH (n:Person) RETURN count(n) AS c"), 1);
-    assert!(store.cypher("MATCH (n:Person {name: 'Bob'}) RETURN n").is_empty());
-
-    // The same write goes through once the disk recovers, with Bob's old id.
-    store.cypher("CREATE (n:Person {name: 'Bob'})");
-    let (graph, _) = store.state();
-    let bob = graph["nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|node| node["name"] == "Bob")
-        .unwrap();
-    assert_eq!(bob["id"].as_u64(), Some(ids_before.0));
-
-    let after = store.state().0;
-    assert_eq!(store.reopened().graph_json().unwrap(), after);
-}
-
-#[test]
-fn refused_multi_node_create_leaves_no_node_and_no_relationship() {
-    let store = Store::open();
-    store.refused(|z| {
-        z.query(
-            "CREATE (a:Person {name: 'Ada'})-[:KNOWS]->(b:Person {name: 'Bob'})",
-            HashMap::new(),
-        )
-    });
-    assert_eq!(count(&store.zega, "MATCH (n:Person) RETURN count(n) AS c"), 0);
-    assert_eq!(store.reopened().graph_json().unwrap()["nodes"], Json::Array(vec![]));
-}
-
-#[test]
-fn refused_set_keeps_the_old_value_in_the_node_and_its_index() {
-    let store = Store::open();
-    store.cypher("CREATE (n:Person {name: 'Ada', age: 36})");
-    store.refused(|z| {
-        z.query(
-            "MATCH (n:Person {name: 'Ada'}) SET n.age = 37 RETURN n.age AS age",
-            HashMap::new(),
-        )
-    });
-    let rows = store.cypher("MATCH (n:Person {name: 'Ada'}) RETURN n.age AS age");
-    assert_eq!(rows[0].fields.get("age"), Some(&Value::Int(36)));
-    assert!(store.cypher("MATCH (n:Person {age: 37}) RETURN n").is_empty());
-    assert_eq!(store.cypher("MATCH (n:Person {age: 36}) RETURN n").len(), 1);
-
-    let before = store.state().0;
-    assert_eq!(store.reopened().graph_json().unwrap(), before);
-}
-
-#[test]
-fn refused_detach_delete_keeps_the_node_and_its_relationships() {
-    let store = Store::open();
-    store.cypher("CREATE (a:Person {name: 'Ada'})-[:KNOWS]->(b:Person {name: 'Bob'})");
-    store.refused(|z| z.query("MATCH (n:Person {name: 'Ada'}) DETACH DELETE n", HashMap::new()));
-    assert_eq!(count(&store.zega, "MATCH (n:Person) RETURN count(n) AS c"), 2);
-    assert_eq!(
-        count(&store.zega, "MATCH (:Person {name: 'Ada'})-[:KNOWS]->(b) RETURN count(b) AS c"),
-        1
-    );
-
-    let before = store.state().0;
-    assert_eq!(store.reopened().graph_json().unwrap(), before);
-}
-
-#[test]
-fn refused_relationship_delete_keeps_it_traversable() {
-    let store = Store::open();
-    store.cypher("CREATE (a:Person {name: 'Ada'})-[:KNOWS]->(b:Person {name: 'Bob'})");
-    store.refused(|z| z.query("MATCH (:Person)-[r:KNOWS]->() DELETE r", HashMap::new()));
-    assert_eq!(
-        count(&store.zega, "MATCH (:Person)-[:KNOWS]->(b) RETURN count(b) AS c"),
-        1
-    );
-    let before = store.state().0;
-    assert_eq!(store.reopened().graph_json().unwrap(), before);
-}
-
-#[test]
-fn refused_merge_creates_nothing_and_a_retry_creates_one() {
-    let store = Store::open();
-    store.refused(|z| {
-        z.query(
-            "MERGE (n:Person {name: 'Ada'}) ON CREATE SET n.created = 1",
-            HashMap::new(),
-        )
-    });
-    assert!(store.cypher("MATCH (n:Person {name: 'Ada'}) RETURN n").is_empty());
-    store.cypher("MERGE (n:Person {name: 'Ada'}) ON CREATE SET n.created = 1");
-    store.cypher("MERGE (n:Person {name: 'Ada'}) ON CREATE SET n.created = 1");
-    assert_eq!(count(&store.zega, "MATCH (n:Person) RETURN count(n) AS c"), 1);
-    let before = store.state().0;
-    assert_eq!(store.reopened().graph_json().unwrap(), before);
-}
-
-#[test]
-fn refused_foreach_applies_no_row() {
-    let store = Store::open();
-    store.cypher("CREATE (n:Batch {name: 'b'})");
-    store.refused(|z| {
-        z.query(
-            "MATCH (b:Batch) FOREACH (x IN [1, 2, 3] | CREATE (:Row {v: x})) RETURN b",
-            HashMap::new(),
-        )
-    });
-    assert_eq!(count(&store.zega, "MATCH (n:Row) RETURN count(n) AS c"), 0);
-    assert_eq!(store.reopened().query("MATCH (n:Row) RETURN n", HashMap::new()).unwrap().len(), 0);
-}
-
-#[test]
-fn statement_that_fails_part_way_applies_nothing() {
-    // No WAL fault: the statement itself fails after its first writes. The
-    // first node is deleted before the second (which still has a
-    // relationship) makes plain DELETE fail; the first must come back.
-    let store = Store::open();
-    store.cypher("CREATE (n:Temp {n: 1})");
-    store.cypher("CREATE (a:Temp {n: 2})-[:HAS]->(b:Other)");
-    let before = store.state();
-    let error = store
-        .zega
-        .query("MATCH (n:Temp) DELETE n", HashMap::new())
-        .unwrap_err();
-    assert!(error.to_string().contains("DETACH DELETE"), "{error}");
-    assert_eq!(store.state(), before);
-    assert_eq!(store.reopened().graph_json().unwrap(), before.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +85,127 @@ fn players(zega: &Zega, query: &str) -> Vec<String> {
     .collect();
     names.sort();
     names
+}
+
+// ---------------------------------------------------------------------------
+// Creates, sets and relationship deletes (ported from the Cypher-style tests
+// removed with the legacy path in zega#55; MERGE, FOREACH and DETACH DELETE
+// have no ZQL form and went with it)
+// ---------------------------------------------------------------------------
+
+const PEOPLE: &str = r#"
+    schema { type Person { name: String age?: Int knows -> Person[] } }
+    index { range Person { age } }
+"#;
+
+fn names(zega: &Zega, query: &str) -> Vec<String> {
+    let rows = zega.run_lang(PEOPLE, query).unwrap();
+    let mut names: Vec<String> = match rows {
+        Json::Array(rows) => rows,
+        Json::Null => Vec::new(),
+        row => vec![row],
+    }
+    .iter()
+    .map(|row| row["name"].as_str().unwrap().to_string())
+    .collect();
+    names.sort();
+    names
+}
+
+/// Replaces `refused_create_is_invisible_and_its_id_is_reused`.
+#[test]
+fn refused_zql_create_is_invisible_and_its_id_is_reused() {
+    let store = Store::open();
+    store.zega.run_lang(PEOPLE, r#"mutation { Person(name: "Ada") }"#).unwrap();
+    let (_, ids_before) = store.state();
+
+    store.refused(|z| z.run_lang(PEOPLE, r#"mutation { Person(name: "Bob") }"#));
+    // The label scan and the name filter both forget Bob.
+    assert_eq!(names(&store.zega, "query { Person { name } }"), ["Ada"]);
+    assert!(names(&store.zega, r#"query { Person(name: "Bob") { name } }"#).is_empty());
+
+    // The same write goes through once the disk recovers, with Bob's old id.
+    store.zega.run_lang(PEOPLE, r#"mutation { Person(name: "Bob") }"#).unwrap();
+    let (graph, _) = store.state();
+    let bob = graph["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "Bob")
+        .unwrap();
+    assert_eq!(bob["id"].as_u64(), Some(ids_before.0));
+
+    let after = store.state().0;
+    assert_eq!(store.reopened().graph_json().unwrap(), after);
+}
+
+/// Replaces `refused_multi_node_create_leaves_no_node_and_no_relationship`.
+#[test]
+fn refused_zql_multi_node_create_leaves_no_node_and_no_relationship() {
+    let store = Store::open();
+    store.refused(|z| {
+        z.run_lang(PEOPLE, r#"mutation { Person(name: "Ada") { knows -> Person(name: "Bob") } }"#)
+    });
+    assert!(names(&store.zega, "query { Person { name } }").is_empty());
+    let reopened = store.reopened().graph_json().unwrap();
+    assert_eq!(reopened["nodes"], Json::Array(vec![]));
+    assert_eq!(reopened["rels"], Json::Array(vec![]));
+}
+
+/// Replaces `refused_set_keeps_the_old_value_in_the_node_and_its_index`.
+#[test]
+fn refused_zql_set_keeps_the_old_value_in_the_node_and_its_index() {
+    let store = Store::open();
+    store.zega.run_lang(PEOPLE, r#"mutation { Person(name: "Ada" && age: 36) }"#).unwrap();
+    store.refused(|z| z.run_lang(PEOPLE, r#"mutation { Person(name: "Ada") set age: 37 }"#));
+    let ada = store.zega.run_lang(PEOPLE, r#"query { Person(name: "Ada") { age } }"#).unwrap();
+    assert_eq!(ada["age"], 36);
+    // The range index on age still files Ada under 36, not 37.
+    assert!(names(&store.zega, "query { Person(age >= 37) { name } }").is_empty());
+    assert_eq!(names(&store.zega, "query { Person(age: 36) { name } }"), ["Ada"]);
+    assert_eq!(names(&store.zega, "query { Person(age < 37) { name } }"), ["Ada"]);
+
+    let before = store.state().0;
+    assert_eq!(store.reopened().graph_json().unwrap(), before);
+}
+
+/// Replaces `refused_relationship_delete_keeps_it_traversable`. ZQL has no
+/// delete statement; `delete_relationship` is the API every host uses.
+#[test]
+fn refused_relationship_delete_keeps_it_traversable_in_zql() {
+    let store = Store::open();
+    store
+        .zega
+        .run_lang(PEOPLE, r#"mutation { Person(name: "Ada") { knows -> Person(name: "Bob") } }"#)
+        .unwrap();
+    let rel = store.state().0["rels"][0]["id"].as_u64().unwrap();
+    store.refused(|z| z.delete_relationship(rel));
+    let known = store
+        .zega
+        .run_lang(PEOPLE, r#"query { Person(name: "Ada") { knows -> Person { name } } }"#)
+        .unwrap();
+    assert_eq!(known["knows"], serde_json::json!([{ "name": "Bob" }]));
+    let before = store.state().0;
+    assert_eq!(store.reopened().graph_json().unwrap(), before);
+}
+
+/// Replaces `statement_that_fails_part_way_applies_nothing`. No WAL fault: the
+/// load inserts Ada and Bob, then its third row repeats Ada's unique name;
+/// the first two rows must not stay.
+#[test]
+fn zql_statement_that_fails_part_way_applies_nothing() {
+    let store = Store::open();
+    store.zega.run_lang(SCHEMA, r#"mutation { Team(name: "Oilers") { name } }"#).unwrap();
+    let before = store.state();
+    let document = format!(
+        "{SCHEMA}\nmutation json [\"rows.json\"] {{ Player(name: $n && salary: $s) {{ name }} }}"
+    );
+    let rows = r#"[{"n":"Ada","s":1},{"n":"Bob","s":2},{"n":"Ada","s":3}]"#;
+    let sources = HashMap::from([("rows.json".to_string(), rows.to_string())]);
+    let error = store.zega.apply_zql_with_sources(&document, &sources).unwrap_err();
+    assert!(error.to_string().contains("unique Player { name }"), "{error}");
+    assert_eq!(store.state(), before);
+    assert_eq!(store.reopened().graph_json().unwrap(), before.0);
 }
 
 #[test]

@@ -39,8 +39,6 @@ just like [cqx](https://cqx.bio) does for running queries without a server:
   detection, snapshots, and automatic WAL replay on open.
 - **Optional server** — a tokio/axum HTTP server with token auth and
   ZQL execution on the blocking pool.
-- **JWT auth + policy engine** — HS256/RS256 token verification and row-level
-  access control when you need multi-tenant semantics.
 
 ## Use the CLI
 
@@ -262,20 +260,28 @@ automatically.
 
 ## Benchmarks
 
-`zega-bench` runs the same workloads against zega (embedded) and
-Neo4j (Bolt) side by side, and `commerce-bench` runs a commerce-shaped
-graph (10k users, 5k products, 50k orders):
+`zega-bench` runs the same workload against zega (embedded) and Neo4j
+(Bolt) side by side: load 10,000 `User` nodes one write at a time, then
+10,000 lookups by indexed `id`, reporting ops/s and p50/p99 latency.
 
 ```bash
 cargo run --release -p zega-bench -- zega
 cargo run --release -p zega-bench -- neo4j   # needs neo4j on localhost:7687
-cargo run --release -p zega-bench --bin commerce-bench
 ```
+
+What changed in 0.2.0 (zega#55): the zega side used to run the same Cypher
+text as Neo4j through zega's legacy query path, which is gone. It now runs
+ZQL through `Zega::run_lang`, the call the server makes for `/zql`, with
+`unique { User { id } }` standing in for Neo4j's index on `u.id`. ZQL has no
+query parameters, so values are written into each statement's text, and
+each call parses its schema; both costs are inside the measured time. The
+Neo4j side is unchanged. The `commerce-bench` binary and the Cypher parity
+tests against Neo4j were removed with the legacy language.
 
 ## Workspace layout
 
-`zega` is the only published crate — the whole engine (query execution,
-planner, JWT, policies, WAL, graph storage, ZQL parser and language) lives
+`zega` is the only published crate — the whole engine (the ZQL parser,
+checker and executor, WAL, and graph storage) lives
 inside it as private modules. Everything else in this workspace is a
 consumer that depends on `zega` by path and is never published:
 
@@ -285,11 +291,11 @@ consumer that depends on `zega` by path and is never published:
 | `zega-server` | reusable ZQL HTTP service |
 | `zega-cli` | `zega start` and the embedded `zega explorer` |
 | `zega-wasm` | wasm-bindgen wrapper for the browser (in-memory) |
-| `zega-bench` | benchmarks against Neo4j |
+| `zega-bench` | the ZQL-vs-Neo4j benchmark |
 
 ## Status
 
-zega is early (0.1.0). The engine, query language, WAL, server, and wasm
+zega is early (0.2.0). The engine, query language, WAL, server, and wasm
 wrapper are functional and tested; the wire protocol is HTTP/JSON only (no
 Bolt compatibility yet), and there is no REPL.
 

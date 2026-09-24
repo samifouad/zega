@@ -17,7 +17,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use thiserror::Error;
 use crate::graph::{Graph, Node, NodeId, RelId, Relationship};
-use crate::parser::Value;
+use crate::value::Value;
 
 const WAL_MAGIC: &[u8; 4] = b"ZWAL";
 const WAL_VERSION: u16 = 2;
