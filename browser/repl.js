@@ -273,10 +273,25 @@ function formatPane(editor, options) {
   try { return formatEditor(editor, format, options); } finally { selfFormatting -= 1; }
 }
 
-/** Formats both panes now, where they parse: on load, and before every run. */
-function formatSources(options) {
-  formatPane(schemaEditor, options);
-  formatPane(queryEditor, options);
+/**
+ * A space or new line just typed at a focused cursor is where the next word
+ * goes. Formatting would remove it, and the next word would join the last.
+ */
+function typingSpace(editor) {
+  const model = editor.getModel();
+  const position = editor.getPosition();
+  return editor.hasTextFocus() && Boolean(position) && typingAfterSpace(model.getValue(), model.getOffsetAt(position));
+}
+
+/**
+ * Formats both panes now, where they parse: on load, and before every run.
+ * `spareTyping` leaves a pane alone while `typingSpace` holds; the auto-run
+ * fires on the same pause as the auto-format and must not undo its care.
+ */
+function formatSources(options, { spareTyping = false } = {}) {
+  for (const editor of [schemaEditor, queryEditor]) {
+    if (!(spareTyping && typingSpace(editor))) formatPane(editor, options);
+  }
   saveSources();
 }
 
@@ -292,11 +307,8 @@ function autoformat(editor) {
     scheduleFormat(editor);
     return;
   }
-  // A space or new line just typed is where the next word goes. Leave it
-  // until the cursor moves on or the pane loses focus.
-  const model = editor.getModel();
-  const position = editor.getPosition();
-  if (editor.hasTextFocus() && position && typingAfterSpace(model.getValue(), model.getOffsetAt(position))) return;
+  // Leave just-typed whitespace until the cursor moves on or the pane loses focus.
+  if (typingSpace(editor)) return;
   if (formatPane(editor)) saveSources();
 }
 
@@ -540,11 +552,12 @@ $('#btn-clear').onclick = async () => {
 
 /**
  * Every run of the panes, auto or explicit, goes through here: format both
- * panes where they parse, then run what they now say. `format: false` is
- * only for the auto-run after an undo or redo (see sourceEdited).
+ * panes where they parse, then run what they now say. The auto-run passes
+ * `format: 'auto'`, which spares whitespace being typed, or `false` after an
+ * undo or redo (see sourceEdited).
  */
 function execute({ format: formatFirst = true, ...options } = {}) {
-  if (formatFirst) formatSources();
+  if (formatFirst) formatSources(undefined, { spareTyping: formatFirst === 'auto' });
   return run(queryText(), options);
 }
 
@@ -578,7 +591,7 @@ async function autorunOnce() {
   }
   if (!queryText().trim() || autorunPaused()) { drawGraph(); return; }
   const version = sourceVersion;
-  await execute({ format: !undoneLast, current: () => version === sourceVersion });
+  await execute({ format: undoneLast ? false : 'auto', current: () => version === sourceVersion });
 }
 
 async function autorun() {
