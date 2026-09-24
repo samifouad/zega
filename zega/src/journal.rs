@@ -1,7 +1,7 @@
 //! One statement's writes, held back from readers until the WAL accepts them.
 //!
-//! Every write path (the Cypher-style statements in `lib.rs` and the ZQL
-//! mutations, loads and API calls in `v2.rs`) goes through [`atomically`]:
+//! Every write path (the ZQL mutations, loads and API calls in `v2.rs`) goes
+//! through [`atomically`]:
 //!
 //! 1. The statement runs under the graph lock and makes its changes through a
 //!    [`Journal`], which records the WAL operation for each change and what it

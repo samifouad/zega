@@ -62,6 +62,21 @@ fn empty_query_block_returns_no_rows() {
     }
 }
 
+/// Legacy: lib.rs `test_open_many_instances_without_runtime_leak`.
+#[test]
+fn open_many_instances_without_runtime_leak() {
+    const INSTANCE: &str = "schema { type Instance { value: Int } }";
+    let mut instances = Vec::with_capacity(1_000);
+    for i in 0..1_000 {
+        let zega = Zega::in_memory().build().unwrap();
+        zega.run_lang(INSTANCE, &format!("mutation {{ Instance(value: {i}) }}")).unwrap();
+        let row = zega.run_lang(INSTANCE, "query { Instance { value } }").unwrap();
+        assert_eq!(row, json!([{ "value": i }]));
+        instances.push(zega);
+    }
+    assert_eq!(instances.len(), 1_000);
+}
+
 // ---------------------------------------------------------------------------
 // WAL recovery and snapshots (exhaustive_zega_core §21, lib.rs
 // `test_wal_recovery` and `test_snapshot_restore`)
