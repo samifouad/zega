@@ -18,6 +18,7 @@ use crate::wal::{Operation, Wal};
 pub mod config;
 pub mod context;
 mod graph;
+mod index;
 mod jwt;
 mod lang;
 mod parser;

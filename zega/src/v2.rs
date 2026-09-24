@@ -10,6 +10,7 @@ use crate::vector::{Vector, VectorSpec, Metric};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::graph::{Graph, Node, NodeId, RelId};
+use crate::index::{IndexKind, Interval, TextPattern};
 use crate::lang::{
     BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, Pred, Schema, Selection, Span,
     Statement,
@@ -87,9 +88,23 @@ impl Zega {
             .map_err(|error| explain(error, "schema", schema_src))?;
         let uniques = crate::lang::parse_uniques(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
+        let indexes = crate::lang::parse_indexes(schema_src)
+            .map_err(|error| explain(error, "schema", schema_src))?;
         let statement = crate::lang::parse_statement(source)
             .map_err(|error| explain(error, "query", source))?;
-        self.execute(&schema, &uniques, &statement, "query", source, loader)
+        let declared = Declared { uniques: &uniques, indexes: &indexes };
+        self.execute(&schema, declared, &statement, "query", source, loader)
+    }
+
+    /// Rows a ZQL filter has been tested on since this database opened. An
+    /// index lowers this number and never changes a result; tests use it to
+    /// show an index was used.
+    pub fn rows_examined(&self) -> Result<u64, ZegaError> {
+        let graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        Ok(graph.examined())
     }
 
     pub fn delete_node(&self, id: u64) -> Result<(), ZegaError> {
@@ -221,7 +236,7 @@ impl Zega {
         for statement in &file.statements {
             last = self.execute(
                 &file.schema,
-                &file.uniques,
+                Declared { uniques: &file.uniques, indexes: &file.indexes },
                 statement,
                 "schema",
                 source,
@@ -234,7 +249,7 @@ impl Zega {
     fn execute(
         &self,
         schema: &Schema,
-        uniques: &[(String, String)],
+        declared: Declared<'_>,
         statement: &Statement,
         source_name: &str,
         source: &str,
@@ -257,10 +272,18 @@ impl Zega {
         } else {
             Vec::new()
         };
+        let uniques = declared.uniques;
         let mut graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        // The schema of this statement says which indexes exist. Staged writes
+        // below start from a clone, so the live graph carries them afterwards.
+        graph.sync_indexes(&crate::lang::effective_indexes(
+            schema,
+            declared.uniques,
+            declared.indexes,
+        ));
         let mut budget = self.traversal_work_budget;
         let is_mutation = matches!(statement, Statement::Load { .. })
             || matches!(statement, Statement::Run(query) if query.mutation);
@@ -328,6 +351,13 @@ impl Zega {
         rels.sort_by_key(|rel| rel["id"].as_u64().unwrap_or(0));
         Ok(json!({ "nodes": nodes, "rels": rels }))
     }
+}
+
+/// The `unique` and `index` blocks that travel with a schema.
+#[derive(Clone, Copy)]
+struct Declared<'a> {
+    uniques: &'a [(String, String)],
+    indexes: &'a [crate::lang::IndexSpec],
 }
 
 fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
@@ -731,7 +761,7 @@ fn read(
     budget: &mut usize,
 ) -> Result<Json, LangError> {
     let mut ids = candidates(graph, root);
-    ids.retain(|id| node_matches(graph, *id, root.condition.as_ref()));
+    retain_matches(graph, &mut ids, root.condition.as_ref());
     order_limit(graph, root, &mut ids, |id| *id);
     if equality_lookup(root) {
         return match ids.len() {
@@ -955,7 +985,7 @@ fn lookup_one(
     uniques: &[(String, String)],
 ) -> Result<NodeId, LangError> {
     let mut ids = unique_candidates(graph, sel, uniques).unwrap_or_else(|| candidates(graph, sel));
-    ids.retain(|id| node_matches(graph, *id, sel.condition.as_ref()));
+    retain_matches(graph, &mut ids, sel.condition.as_ref());
     match ids.len() {
         1 => Ok(ids[0]),
         0 => Err(
@@ -1495,7 +1525,50 @@ fn neighbors(
     out
 }
 
-fn spatial_filter(graph: &Graph, expr: &BoolExpr) -> Option<HashSet<NodeId>> {
+/// Keep the rows whose condition holds, and count each row tested.
+fn retain_matches(graph: &Graph, ids: &mut Vec<NodeId>, condition: Option<&BoolExpr>) {
+    if condition.is_some() {
+        graph.note_examined(ids.len());
+    }
+    ids.retain(|id| node_matches(graph, *id, condition));
+}
+
+/// A condition on one field that a range index can answer.
+fn range_interval(pred: &Pred) -> Option<(&str, Interval)> {
+    let (field, interval) = match pred {
+        Pred::Eq(field, value, _) => (field, Interval::exactly(value)?),
+        Pred::Cmp(field, Cmp::Gt | Cmp::Gte, value, _) => (field, Interval::at_least(value)?),
+        Pred::Cmp(field, Cmp::Lt | Cmp::Lte, value, _) => (field, Interval::at_most(value)?),
+        _ => return None,
+    };
+    // `id` reads the node id, not a stored field.
+    (field != "id").then_some((field.as_str(), interval))
+}
+
+fn and_terms<'a>(expr: &'a BoolExpr, out: &mut Vec<&'a BoolExpr>) {
+    match expr {
+        BoolExpr::And(left, right) => {
+            and_terms(left, out);
+            and_terms(right, out);
+        }
+        other => out.push(other),
+    }
+}
+
+fn intersect(found: Option<HashSet<NodeId>>, next: HashSet<NodeId>) -> Option<HashSet<NodeId>> {
+    Some(match found {
+        None => next,
+        Some(mut found) => {
+            found.retain(|id| next.contains(id));
+            found
+        }
+    })
+}
+
+/// Candidates from the spatial index and the declared `index { }` block.
+/// Every row the condition accepts is in the set; the caller still tests each
+/// one. None means no index applies and the caller scans the types.
+fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSet<NodeId>> {
     match expr {
         BoolExpr::Test(Pred::Box(field, bounds, _)) => {
             Some(graph.spatial_candidates(field, *bounds))
@@ -1503,27 +1576,60 @@ fn spatial_filter(graph: &Graph, expr: &BoolExpr) -> Option<HashSet<NodeId>> {
         BoolExpr::Test(Pred::Distance(distance, Cmp::Lt | Cmp::Lte, metres)) => Some(
             graph.spatial_candidates(&distance.field, Bounds::radius(distance.origin, *metres)),
         ),
-        BoolExpr::And(left, right) => {
-            match (spatial_filter(graph, left), spatial_filter(graph, right)) {
-                (Some(mut a), Some(b)) => {
-                    a.retain(|id| b.contains(id));
-                    Some(a)
+        BoolExpr::Test(Pred::Contains(field, needle, _)) => {
+            graph.text_candidates(types, field, TextPattern::Contains(needle))
+        }
+        BoolExpr::Test(Pred::StartsWith(field, needle, _)) => {
+            graph.text_candidates(types, field, TextPattern::StartsWith(needle))
+        }
+        BoolExpr::Test(Pred::EndsWith(field, needle, _)) => {
+            graph.text_candidates(types, field, TextPattern::EndsWith(needle))
+        }
+        BoolExpr::Test(pred) => {
+            let (field, interval) = range_interval(pred)?;
+            graph.range_candidates(types, field, &interval)
+        }
+        BoolExpr::And(_, _) => {
+            // Bounds on one field join into one range scan: `a > 1 && a < 9`.
+            let mut terms = Vec::new();
+            and_terms(expr, &mut terms);
+            let mut ranges: Vec<(&str, Interval)> = Vec::new();
+            let mut found = None;
+            for term in terms {
+                if let BoolExpr::Test(pred) = term {
+                    if let Some((field, interval)) = range_interval(pred) {
+                        if graph.has_index(IndexKind::Range, types, field) {
+                            match ranges.iter_mut().find(|(name, _)| *name == field) {
+                                Some((_, joined)) => {
+                                    *joined = std::mem::replace(joined, Interval::Empty)
+                                        .intersect(interval)
+                                }
+                                None => ranges.push((field, interval)),
+                            }
+                            continue;
+                        }
+                    }
                 }
-                (a, b) => a.or(b),
+                if let Some(set) = index_filter(graph, types, term) {
+                    found = intersect(found, set);
+                }
             }
+            for (field, interval) in ranges {
+                if let Some(set) = graph.range_candidates(types, field, &interval) {
+                    found = intersect(found, set);
+                }
+            }
+            found
         }
         BoolExpr::Or(left, right) => {
-            match (spatial_filter(graph, left), spatial_filter(graph, right)) {
-                (Some(mut a), Some(b)) => {
-                    a.extend(b);
-                    Some(a)
-                }
-                _ => None, // A non-spatial branch may match anywhere.
-            }
+            // A branch with no index may match anywhere.
+            let mut left = index_filter(graph, types, left)?;
+            left.extend(index_filter(graph, types, right)?);
+            Some(left)
         }
-        _ => None,
     }
 }
+
 fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
     let has_label = |id: &NodeId| {
         graph.get_node(*id).is_some_and(|node| {
@@ -1532,10 +1638,13 @@ fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
                 .any(|label| label == &sel.type_name || sel.also.contains(label))
         })
     };
+    let types: Vec<&str> = std::iter::once(sel.type_name.as_str())
+        .chain(sel.also.iter().map(String::as_str))
+        .collect();
     let indexed = sel
         .condition
         .as_ref()
-        .and_then(|expr| spatial_filter(graph, expr));
+        .and_then(|expr| index_filter(graph, &types, expr));
     // Expand a geodesic circle until k qualifying points are inside. Every
     // point outside is farther than the kth match, so early stopping is exact.
     if let Some(order) = &sel.order {
@@ -1550,7 +1659,10 @@ fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
                 .into_iter()
                 .filter(has_label)
                 .filter(|id| indexed.as_ref().is_none_or(|set| set.contains(id)))
-                .filter(|id| node_matches(graph, *id, sel.condition.as_ref()))
+                .collect();
+            retain_matches(graph, &mut ids, sel.condition.as_ref());
+            let mut ids: Vec<_> = ids
+                .into_iter()
                 .filter(|id| node_distance(graph, *id, order).is_some_and(|d| d <= radius))
                 .collect();
             if radius >= maximum || sel.limit.is_some_and(|k| ids.len() >= k) {

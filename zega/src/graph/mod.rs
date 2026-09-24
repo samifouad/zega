@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
+use crate::index::{DeclaredIndexes, IndexKind, IndexSpec, Interval, TextPattern};
 use crate::parser::Value;
 
 pub type NodeId = u64;
@@ -28,10 +29,14 @@ pub struct Graph {
     property_index: HashMap<(String, Value), HashSet<NodeId>>,
     spatial_index: crate::location::SpatialIndex,
     vector_index: crate::vector::VectorIndex,
+    /// `index { }` declarations of the schema last run against this graph.
+    declared: DeclaredIndexes,
     outgoing: HashMap<NodeId, HashSet<RelId>>,
     incoming: HashMap<NodeId, HashSet<RelId>>,
     next_node_id: AtomicU64,
     next_rel_id: AtomicU64,
+    /// Rows a ZQL filter has been tested on. Indexes lower it.
+    examined: AtomicU64,
 }
 
 impl Clone for Graph {
@@ -45,10 +50,12 @@ impl Clone for Graph {
             property_index: self.property_index.clone(),
             spatial_index: self.spatial_index.clone(),
             vector_index: self.vector_index.clone(),
+            declared: self.declared.clone(),
             outgoing: self.outgoing.clone(),
             incoming: self.incoming.clone(),
             next_node_id: AtomicU64::new(self.next_node_id.load(Ordering::SeqCst)),
             next_rel_id: AtomicU64::new(self.next_rel_id.load(Ordering::SeqCst)),
+            examined: AtomicU64::new(self.examined.load(Ordering::Relaxed)),
         }
     }
 }
@@ -68,10 +75,12 @@ impl Graph {
             property_index: HashMap::new(),
             spatial_index: Default::default(),
             vector_index: Default::default(),
+            declared: Default::default(),
             outgoing: HashMap::new(),
             incoming: HashMap::new(),
             next_node_id: AtomicU64::new(1),
             next_rel_id: AtomicU64::new(1),
+            examined: AtomicU64::new(0),
         }
     }
 
@@ -86,6 +95,63 @@ impl Graph {
 
     pub fn vector_nearest(&self, field: &str, query: &crate::vector::Vector, k: usize, exact: bool, allowed: impl Fn(NodeId) -> bool) -> Vec<(NodeId, f64)> {
         self.vector_index.nearest(field, query, k, exact, allowed)
+    }
+
+    /// Make the declared indexes exactly `specs`: drop the rest and build any
+    /// new one from the nodes already stored. Writes keep them current after.
+    pub fn sync_indexes(&mut self, specs: &[IndexSpec]) {
+        self.declared.retain(specs);
+        for spec in specs {
+            if self.declared.contains(spec) {
+                continue;
+            }
+            let nodes = self
+                .label_index
+                .get(&spec.type_name)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| self.nodes.get(id));
+            self.declared.build(spec, nodes);
+        }
+    }
+
+    pub fn has_index(&self, kind: IndexKind, types: &[&str], field: &str) -> bool {
+        match kind {
+            IndexKind::Range => self.declared.has_range(types, field),
+            IndexKind::Text => types.iter().all(|ty| {
+                self.declared.contains(&IndexSpec {
+                    kind,
+                    type_name: ty.to_string(),
+                    field: field.to_string(),
+                })
+            }),
+        }
+    }
+
+    pub fn range_candidates(
+        &self,
+        types: &[&str],
+        field: &str,
+        interval: &Interval,
+    ) -> Option<HashSet<NodeId>> {
+        self.declared.range_candidates(types, field, interval)
+    }
+
+    pub fn text_candidates(
+        &self,
+        types: &[&str],
+        field: &str,
+        pattern: TextPattern<'_>,
+    ) -> Option<HashSet<NodeId>> {
+        self.declared.text_candidates(types, field, pattern)
+    }
+
+    pub fn note_examined(&self, rows: usize) {
+        self.examined.fetch_add(rows as u64, Ordering::Relaxed);
+    }
+
+    pub fn examined(&self) -> u64 {
+        self.examined.load(Ordering::Relaxed)
     }
 
     pub fn create_node(&mut self, labels: Vec<String>, props: HashMap<String, Value>) -> NodeId {
@@ -119,11 +185,13 @@ impl Graph {
                 .or_default()
                 .insert(id);
         }
+        self.declared.insert(id, &labels, &props);
         self.next_node_id.fetch_max(id + 1, Ordering::SeqCst);
     }
 
     pub fn update_node(&mut self, id: NodeId, props: HashMap<String, Value>) {
         if let Some(node) = self.nodes.get_mut(&id) {
+            self.declared.remove(id, &node.labels, &node.props);
             for (k, v) in &node.props {
                 if let Value::Point(point) = v {
                     self.spatial_index.remove(k, *point, id);
@@ -144,10 +212,12 @@ impl Graph {
                     .or_default()
                     .insert(id);
             }
+            self.declared.insert(id, &node.labels, &node.props);
         }
     }
 
     fn remove_node_indexes(&mut self, node: &Node) {
+        self.declared.remove(node.id, &node.labels, &node.props);
         for lbl in &node.labels {
             if let Some(set) = self.label_index.get_mut(lbl) {
                 set.remove(&node.id);

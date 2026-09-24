@@ -84,6 +84,12 @@ impl ZegaWasm {
             .unwrap_or_else(|_| "[]".into())
     }
 
+    /// Rows a ZQL filter has been tested on since this database was created.
+    /// An `index { }` block lowers it; results never change.
+    pub fn rows_examined(&self) -> Result<f64, JsValue> {
+        self.inner.rows_examined().map(|rows| rows as f64).map_err(to_js_error)
+    }
+
     pub fn delete_node(&self, id: f64) -> Result<(), JsValue> {
         self.inner.delete_node(id as u64).map_err(to_js_error)
     }

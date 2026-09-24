@@ -1,6 +1,7 @@
 //! The v2 schema and query language. Users write this. The engine walks the
 //! graph it already stores; this crate does not parse ZQL.
 
+pub use crate::index::{IndexKind, IndexSpec};
 use crate::location::{Bounds, Point};
 use crate::vector::{Vector, VectorSpec, Metric};
 use serde::{Deserialize, Serialize};
@@ -454,6 +455,7 @@ fn parse_schema_at(source: &str) -> Result<(Schema, usize)> {
             }
         } else if p.eof()
             || p.starts_word("unique")
+            || p.starts_word("index")
             || p.starts_word("mutation")
             || p.starts_word("query")
         {
@@ -632,12 +634,15 @@ pub fn parse_statement(source: &str) -> Result<Statement> {
     Ok(statement)
 }
 
-/// A `.zql` file: `schema`, then `unique`, then `mutation` and `query` blocks.
+/// A `.zql` file: `schema`, then `unique` and `index`, then `mutation` and
+/// `query` blocks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ZqlFile {
     pub schema: Schema,
     /// `(type, field)` pairs. Each field is unique on its own.
     pub uniques: Vec<(String, String)>,
+    /// The `index { }` block, in the order written.
+    pub indexes: Vec<IndexSpec>,
     pub statements: Vec<Statement>,
 }
 
@@ -670,7 +675,7 @@ pub fn parse_zql(source: &str) -> Result<ZqlFile> {
     }
     let (schema, end) = parse_schema_at(source)?;
     p.i = end;
-    let uniques = p.take_uniques(&schema)?;
+    let (uniques, indexes) = p.take_blocks(&schema)?;
     let mut statements = Vec::new();
     while !p.eof() {
         p.skip();
@@ -682,6 +687,7 @@ pub fn parse_zql(source: &str) -> Result<ZqlFile> {
     Ok(ZqlFile {
         schema,
         uniques,
+        indexes,
         statements,
     })
 }
@@ -689,10 +695,53 @@ pub fn parse_zql(source: &str) -> Result<ZqlFile> {
 /// Unique fields declared in `source`, or an empty list when the text has no
 /// `unique` block. Each name inside a type's braces is unique on its own.
 pub fn parse_uniques(source: &str) -> Result<Vec<(String, String)>> {
+    Ok(parse_blocks(source)?.0)
+}
+
+/// Indexes declared in `source`, or an empty list when the text has no
+/// `index` block.
+pub fn parse_indexes(source: &str) -> Result<Vec<IndexSpec>> {
+    Ok(parse_blocks(source)?.1)
+}
+
+/// The `unique` pairs and the `index` block of one text.
+type Blocks = (Vec<(String, String)>, Vec<IndexSpec>);
+
+fn parse_blocks(source: &str) -> Result<Blocks> {
     let (schema, end) = parse_schema_at(source)?;
     let mut p = Parser::new(source);
     p.i = end;
-    p.take_uniques(&schema)
+    p.take_blocks(&schema)
+}
+
+/// Every index the engine keeps for a schema: the `index` block, plus a range
+/// index on each unique field whose type can be ordered.
+pub fn effective_indexes(
+    schema: &Schema,
+    uniques: &[(String, String)],
+    indexes: &[IndexSpec],
+) -> Vec<IndexSpec> {
+    let mut out = indexes.to_vec();
+    for (type_name, field) in uniques {
+        let orderable = matches!(
+            schema.prop(type_name, field),
+            Ok(Field::Prop { ty, .. }) if orderable(ty)
+        );
+        let spec = IndexSpec {
+            kind: IndexKind::Range,
+            type_name: type_name.clone(),
+            field: field.clone(),
+        };
+        if orderable && !out.contains(&spec) {
+            out.push(spec);
+        }
+    }
+    out
+}
+
+/// Types a range index can order.
+fn orderable(ty: &str) -> bool {
+    matches!(ty, "Int" | "Float" | "String")
 }
 
 struct Parser<'a> {
@@ -783,6 +832,150 @@ impl<'a> Parser<'a> {
             mutation,
             root: Some(root),
         })
+    }
+
+    /// The `unique` and `index` blocks after the types, in either order, at
+    /// most one of each.
+    fn take_blocks(&mut self, schema: &Schema) -> Result<Blocks> {
+        let mut uniques = None;
+        let mut indexes = None;
+        loop {
+            self.skip();
+            if self.starts_word("unique") {
+                if uniques.is_some() {
+                    return Err(self
+                        .err("duplicate unique block")
+                        .with_help("a file has one unique block"));
+                }
+                uniques = Some(self.take_uniques(schema)?);
+            } else if self.starts_word("index") {
+                if indexes.is_some() {
+                    return Err(self
+                        .err("duplicate index block")
+                        .with_help("a file has one index block"));
+                }
+                indexes = Some(self.take_indexes(schema)?);
+            } else {
+                break;
+            }
+        }
+        let uniques = uniques.unwrap_or_default();
+        let indexes = indexes.unwrap_or_default();
+        let mut specs: Vec<IndexSpec> = Vec::new();
+        for (spec, span) in indexes {
+            if specs.contains(&spec) {
+                return Err(self
+                    .err_at(
+                        span,
+                        format!(
+                            "{}.{} already has a {} index",
+                            spec.type_name,
+                            spec.field,
+                            spec.kind.as_str()
+                        ),
+                    )
+                    .with_help("name each field once per index kind"));
+            }
+            if spec.kind == IndexKind::Range
+                && uniques
+                    .iter()
+                    .any(|(ty, field)| ty == &spec.type_name && field == &spec.field)
+            {
+                return Err(self
+                    .err_at(
+                        span,
+                        format!("{}.{} is already indexed by unique", spec.type_name, spec.field),
+                    )
+                    .with_help("a unique field already has a range index; remove it from `range`"));
+            }
+            specs.push(spec);
+        }
+        Ok((uniques, specs))
+    }
+
+    /// `index { range Player { salary } text Player { name } }`. Each field in
+    /// the braces gets its own index. Checked against the schema here;
+    /// duplicates and unique fields are checked by the caller.
+    fn take_indexes(&mut self, schema: &Schema) -> Result<Vec<(IndexSpec, Span)>> {
+        self.expect_word("index")?;
+        self.expect("{")?;
+        let mut specs = Vec::new();
+        loop {
+            self.skip();
+            if self.eat("}") {
+                break;
+            }
+            let (kind_name, kind_span) = self.ident()?;
+            let kind = match kind_name.as_str() {
+                "range" => IndexKind::Range,
+                "text" => IndexKind::Text,
+                _ => {
+                    return Err(self
+                        .err_at(kind_span, format!("unknown index kind {kind_name}"))
+                        .with_help("write `range Type { field }` or `text Type { field }`"))
+                }
+            };
+            let (type_name, type_span) = self.ident()?;
+            if schema.types.iter().all(|ty| ty.name != type_name) {
+                return Err(self
+                    .err_at(type_span, format!("unknown type {type_name}"))
+                    .with_help(type_help(schema, &type_name)));
+            }
+            self.expect("{")?;
+            loop {
+                self.skip();
+                if self.eat("}") {
+                    break;
+                }
+                let (field, field_span) = self.ident()?;
+                let ty = schema.get(&type_name)?;
+                let is_edge = ty
+                    .fields
+                    .iter()
+                    .any(|item| matches!(item, Field::Edge { field: name, .. } if name == &field));
+                if is_edge {
+                    return Err(self
+                        .err_at(field_span, format!("{type_name}.{field} is a relationship"))
+                        .with_help("an index applies to a field, such as `name`"));
+                }
+                let Some(field_ty) = ty.fields.iter().find_map(|item| match item {
+                    Field::Prop { name, ty, .. } if name == &field => Some(ty.as_str()),
+                    _ => None,
+                }) else {
+                    return Err(self
+                        .err_at(field_span, format!("{type_name} has no field {field}"))
+                        .with_help(prop_help(schema, &type_name, &field)));
+                };
+                match kind {
+                    IndexKind::Text if field_ty != "String" => {
+                        return Err(self
+                            .err_at(
+                                field_span,
+                                format!("text index needs a String field; {type_name}.{field} is {field_ty}"),
+                            )
+                            .with_help("`text` speeds CONTAINS, STARTS WITH and ENDS WITH on a String"));
+                    }
+                    IndexKind::Range if !orderable(field_ty) => {
+                        return Err(self
+                            .err_at(
+                                field_span,
+                                format!("range index needs an Int, Float or String field; {type_name}.{field} is {field_ty}"),
+                            )
+                            .with_help("`range` orders values; Point and Vector fields are indexed already"));
+                    }
+                    _ => {}
+                }
+                specs.push((
+                    IndexSpec {
+                        kind,
+                        type_name: type_name.clone(),
+                        field,
+                    },
+                    field_span,
+                ));
+            }
+        }
+        Ok(specs)
     }
 
     /// `(type, field)` pairs. Each field is unique by itself, not as a group.
@@ -2195,7 +2388,7 @@ fn note_statement(schema: &Schema, statement: &Statement, pane: Pane, out: &mut 
     }
 }
 
-/// Type-check a `unique` block and any `mutation` or `query` that follows the
+/// Type-check the `unique` and `index` blocks and any `mutation` or `query` that follows the
 /// types in the same text. The schema editor holds the whole file.
 fn document_diagnostics(schema: &Schema, source: &str, out: &mut Vec<Diagnostic>) {
     let Ok((_, end)) = parse_schema_at(source) else {
@@ -2203,7 +2396,7 @@ fn document_diagnostics(schema: &Schema, source: &str, out: &mut Vec<Diagnostic>
     };
     let mut p = Parser::new(source);
     p.i = end;
-    if let Err(error) = p.take_uniques(schema) {
+    if let Err(error) = p.take_blocks(schema) {
         out.push(from_error(Pane::Schema, error));
         return;
     }
@@ -2884,6 +3077,48 @@ mod tests {
             &file.statements[0],
             Statement::Run(query) if query.mutation
         ));
+    }
+
+    #[test]
+    fn index_block_names_one_index_per_field_and_kind() {
+        let file = parse_zql(
+            r#"
+            schema {
+              type Player { name: String salary: Int rating?: Float }
+            }
+            index {
+              range Player { salary rating }
+              text Player { name }
+            }
+            unique { Player { name } }
+            query { Player { name } }
+            "#,
+        )
+        .unwrap();
+        let spec = |kind, field: &str| IndexSpec {
+            kind,
+            type_name: "Player".into(),
+            field: field.into(),
+        };
+        assert_eq!(
+            file.indexes,
+            vec![
+                spec(IndexKind::Range, "salary"),
+                spec(IndexKind::Range, "rating"),
+                spec(IndexKind::Text, "name"),
+            ]
+        );
+        assert_eq!(file.uniques, vec![("Player".into(), "name".into())]);
+        assert_eq!(file.statements.len(), 1);
+        // A unique String field brings its own range index.
+        assert_eq!(
+            effective_indexes(&file.schema, &file.uniques, &file.indexes).last(),
+            Some(&spec(IndexKind::Range, "name"))
+        );
+        // Bare types stop at `index` the way they stop at `unique`.
+        let bare = "type Player { name: String }\nindex { text Player { name } }\n";
+        assert_eq!(parse_schema(bare).unwrap().types.len(), 1);
+        assert_eq!(parse_indexes(bare).unwrap(), vec![spec(IndexKind::Text, "name")]);
     }
 
     #[test]
