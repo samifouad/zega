@@ -174,8 +174,16 @@ impl<'a> Printer<'a> {
         } else {
             None
         };
+        let Schema {
+            types: definitions,
+            display:
+                DisplayConfig {
+                    views: _,
+                    default: _,
+                },
+        } = schema;
         let mut items = Vec::new();
-        let mut types = schema.types.iter();
+        let mut types = definitions.iter();
         while matches!(self.peek(), "type" | "display") {
             let node = if self.peek() == "display" {
                 self.display()?
@@ -313,13 +321,13 @@ impl<'a> Printer<'a> {
     }
     fn display(&mut self) -> Result<Node> {
         let mut p = self.parser();
-        let display = p.parse_display()?;
+        let DisplayBlock { entries, span: _ } = p.parse_display()?;
         let mut head = self.parser();
         head.ident()?;
         head.expect("{")?;
         let header = self.until(head.i, false);
         let mut items = Vec::new();
-        for entry in display.entries {
+        for entry in entries {
             let DisplayEntry {
                 view: DisplayView { kind, types },
                 span: _,
@@ -366,8 +374,16 @@ impl<'a> Printer<'a> {
         let index = self.peek() == "index";
         let mut check = self.parser();
         if index {
-            for (spec, _) in check.take_indexes(schema)? {
-                match spec.kind {
+            for (
+                IndexSpec {
+                    kind,
+                    type_name: _,
+                    field: _,
+                },
+                _,
+            ) in check.take_indexes(schema)?
+            {
+                match kind {
                     IndexKind::Range | IndexKind::Text => {}
                 }
             }
