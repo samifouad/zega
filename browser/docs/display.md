@@ -59,3 +59,48 @@ IDs, with engine-computed PCA positions, full-vector nearest neighbors and
 relationship disagreement flags. Both use the shared inspector. The **Tickets**
 button loads the deterministic synthetic support-ticket sample. See
 [Vectors and meaning views](../../docs/vector.md) for syntax, metrics and controls.
+
+## Node appearance and preview (APS 8)
+
+```zql
+schema {
+  type Log { name: String notes: String }
+  type Contract { name: String scan: String<url> }
+  type Player { name: String photo?: String<url> }
+  display {
+    graph {
+      Log(@shape: document)
+      Contract(@shape: document, @image: &scan)
+      Player(@shape: circle, @image: &photo, @size: 2)
+    }
+  }
+}
+```
+
+Attributes belong to a type inside a display view. `@shape` is `circle` (the
+default) or `document`; `@size` is `1` (default), `2`, or `3`; `@image` references
+a field with `&`. Type entries can be separated by whitespace or commas.
+Attributes never change stored data. Graph rendering uses the active graph
+view's attributes; other views retain their own presentation.
+
+`String<url>` stores an absolute URL as an ordinary string. Writes, updates,
+and bound CSV/JSON imports reject malformed URLs and whitespace. Optional URL
+fields may be null. String filters and indexes keep working. The same Rust
+URL parser runs in native and WASM; URL validation does not fetch anything.
+Images load only for visible nodes, over HTTP(S). Other schemes, absent images
+and failed requests retain the default node appearance. Loading never changes
+node geometry.
+
+Click a node to select it, then press Space for Quick Look. Keyboard users can
+Tab to any node and press Space. The preview heading uses the schema's `name`
+field, or `Type #id`; its two-column table includes declared properties and
+relationships, with nested values rendered as readable text. Escape, Space,
+the close button, or clicking outside closes it and restores focus to the node.
+The native modal keeps focus inside and makes the background inert.
+
+Implementation choices beyond [APS 8](https://github.com/zegadb/aps/issues/8):
+size levels scale geometry by 1, 1.5 and 2; document pages start at 36×44 graph
+units (circles retain radius 22). At graph zoom 2 or greater, visible documents
+show the heading and first five rows with ellipses for long cells. Zooming out
+restores the icon/image. The page fill, ink and fold use the explorer's theme
+tokens. Edges intersect the actual circle or rounded, folded page outline.

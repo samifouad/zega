@@ -1,3 +1,4 @@
+import { drawNode, nodeContent, nodeGeometry, previewNode } from './node-display.js';
 import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide, forceX, forceY } from './vendor/d3-force.js';
 
 const PALETTE = ['#8dd3c7', '#bebada', '#fb8072', '#80b1d3', '#fdb462', '#b3de69', '#fccde5', '#bc80bd', '#ccebc5', '#ffed6f', '#a6cee3', '#fdbf6f'];
@@ -34,15 +35,13 @@ function savePhys(phys) {
   try { localStorage.setItem(PHYS_KEY, JSON.stringify(phys)); } catch { /* private mode */ }
 }
 
-const NODE_R = 22;
-
-function startSimulation(nodes, links, onTick, phys) {
+function startSimulation(nodes, links, onTick, phys, geometry) {
   const baseCharge = -Math.max(140, 45 * Math.sqrt(nodes.length));
   const sim = forceSimulation(nodes)
     .force('charge', forceManyBody().strength(baseCharge * phys.repulsion / 100))
     .force('link', forceLink(links).id((node) => node.id).distance(phys.linkDist))
     .force('center', forceCenter(0, 0))
-    .force('collide', forceCollide(NODE_R + phys.pad))
+    .force('collide', forceCollide((node) => geometry.get(node.id).radius + phys.pad))
     .force('x', forceX(0).strength(phys.gravity / 100))
     .force('y', forceY(0).strength(phys.gravity / 100))
     .alphaDecay(nodes.length > 60 ? 0.012 : 0.0228)
@@ -52,6 +51,8 @@ function startSimulation(nodes, links, onTick, phys) {
 }
 
 export function stopSim(container) {
+  container._closePreview?.();
+  container._closePreview = null;
   if (container._sim) {
     container._sim.stop();
     container._sim = null;
@@ -98,9 +99,9 @@ function graphSignature(graph) {
   return `${nodes}|${rels}`;
 }
 
-export function renderGraph(container, graph, activeArg = new Set(), actions = null) {
+export function renderGraph(container, graph, activeArg = new Set(), actions = null, view = {}, types = []) {
   container._actions = actions;
-  const signature = graphSignature(graph);
+  const signature = graphSignature(graph) + JSON.stringify([view, types, graph.nodes.map((n) => types.flatMap((t) => t.fields.filter((f) => f.kind === "prop").map((f) => n[f.name])))]);
   if (container._graph && container._graph.signature === signature) {
     container._graph.setActive(activeArg);
     return;
@@ -113,7 +114,11 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     return;
   }
   let active = activeArg;
-  const R = NODE_R;
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const configs = new Map(graph.nodes.map((node) => [node.id, node.labels.map((label) => view.nodes?.[label]).find(Boolean) || {}]));
+  const geometry = new Map(graph.nodes.map((node) => [node.id, nodeGeometry(configs.get(node.id))]));
+  const contents = new Map(graph.nodes.map((node) => [node.id, nodeContent(node, types, graph)]));
+  let selected = null;
   const wrap = document.createElement('div');
   wrap.className = 'graph-wrap';
   wrap.innerHTML = `<svg viewBox="0 0 800 480" preserveAspectRatio="xMidYMid meet">
@@ -131,7 +136,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
   const tip = wrap.querySelector('.graph-tip');
   const NS = 'http://www.w3.org/2000/svg';
   const state = { scale: 1, tx: 0, ty: 0, fitted: false };
-  const apply = () => vp.setAttribute('transform', `translate(${state.tx},${state.ty}) scale(${state.scale})`);
+  const apply = () => { vp.setAttribute('transform', `translate(${state.tx},${state.ty}) scale(${state.scale})`); };
   const lit = (node) => active != null && (active.size === 0 || active.has(nodeCaption(node)));
   const marked = () => active != null && active.size > 0;
 
@@ -203,14 +208,12 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
   }
 
   function drawEdge(rel) {
-    const from = graph.nodes.find((node) => node.id === rel.from);
-    const to = graph.nodes.find((node) => node.id === rel.to);
+    const from = byId.get(rel.from);
+    const to = byId.get(rel.to);
     const a = from && drift(from);
     const b = to && drift(to);
     if (!a || !b) return;
     const dx = b.x - a.x, dy = b.y - a.y;
-    const d = Math.hypot(dx, dy) || 1;
-    const ux = dx / d, uy = dy / d;
     // Perpendicular is fixed for the node pair, so an edge in the opposite
     // direction does not fold back onto the same curve.
     const canonX = rel.from < rel.to ? dx : -dx;
@@ -223,7 +226,9 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     const cx = (a.x + b.x) / 2 + px * bow;
     const cy = (a.y + b.y) / 2 + py * bow;
     const drawn = edges.get(rel.id);
-    const pathD = `M ${a.x + ux * (R + 2)} ${a.y + uy * (R + 2)} Q ${cx} ${cy} ${b.x - ux * (R + 4)} ${b.y - uy * (R + 4)}`;
+    const start = geometry.get(from.id).outline(cx - a.x, cy - a.y);
+    const end = geometry.get(to.id).outline(cx - b.x, cy - b.y);
+    const pathD = `M ${a.x + start.x} ${a.y + start.y} Q ${cx} ${cy} ${b.x + end.x} ${b.y + end.y}`;
     drawn.path.setAttribute('d', pathD);
     drawn.hit.setAttribute('d', pathD);
     drawn.label.setAttribute('x', cx);
@@ -243,36 +248,30 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     g.dataset.node = String(node.id);
     g.style.cursor = 'pointer';
     const on = lit(node);
-    const picture = imageUrl(node.image) || node.face || node.logo || node.flag;
-    const plate = document.createElementNS(NS, 'circle');
-    plate.setAttribute('r', R);
-    plate.setAttribute('fill', picture ? '#fff' : labelColor((node.labels || [])[0]));
-    plate.setAttribute('stroke', on && marked() ? '#1a1a1a' : 'rgba(0,0,0,0.25)');
-    plate.setAttribute('stroke-width', on && marked() ? '2.5' : '1');
-    g.appendChild(plate);
-    if (picture) {
-      const clip = document.createElementNS(NS, 'clipPath');
-      clip.setAttribute('id', `mug-${node.id}`);
-      const clipCircle = document.createElementNS(NS, 'circle');
-      clipCircle.setAttribute('r', R - 1);
-      clip.appendChild(clipCircle);
-      svg.querySelector('defs').appendChild(clip);
-      const image = document.createElementNS(NS, 'image');
-      image.setAttribute('href', picture);
-      image.setAttribute('x', -R);
-      image.setAttribute('y', -R);
-      image.setAttribute('width', R * 2);
-      image.setAttribute('height', R * 2);
-      image.setAttribute('clip-path', `url(#mug-${node.id})`);
-      image.setAttribute('preserveAspectRatio', node.face ? 'xMidYMid slice' : 'xMidYMid meet');
-      g.appendChild(image);
-    }
+    const config = configs.get(node.id);
+    const shape = geometry.get(node.id);
+    const picture = config.image ? imageUrl(node[config.image]) : '';
+    g.dataset.shape = shape.page ? 'document' : 'circle';
+    g.dataset.size = String(config.size || 1);
+    g.setAttribute('tabindex', '0');
+    g.setAttribute('role', 'button');
+    g.setAttribute('aria-label', `${contents.get(node.id).heading}. Space to preview`);
+    g.setAttribute('aria-pressed', 'false');
+    const visual = drawNode(g, svg.querySelector('defs'), shape, picture, labelColor(node.labels[0]), contents.get(node.id));
+    const plate = visual.plate;
+    g.addEventListener('keydown', (event) => {
+      if (event.code === 'Space') {
+        event.preventDefault(); event.stopPropagation();
+        select(node.id);
+        container._closePreview = previewNode(contents.get(node.id), g);
+      } else if (event.key === 'Enter') { event.preventDefault(); select(node.id); }
+    });
     const text = document.createElementNS(NS, 'text');
     text.setAttribute('class', 'cap');
     text.setAttribute('font-size', '11.5');
     text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('dy', R + 17);
-    text.setAttribute('fill', '#3a3a42');
+    text.setAttribute('dy', shape.height + 17);
+    text.setAttribute('fill', 'var(--ink)');
     const caption = nodeCaption(node);
     text.textContent = caption.length > 22 ? caption.slice(0, 21) + '…' : caption;
     g.appendChild(text);
@@ -293,19 +292,26 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     });
     g.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
     vp.appendChild(g);
-    circles.set(node.id, { g, node, plate });
+    circles.set(node.id, { g, node, plate, visual });
+  }
+
+  function select(id) {
+    selected = id;
+    for (const [key, { g }] of circles) g.setAttribute('aria-pressed', String(key === id));
+    circles.get(id)?.g.focus();
+    paint();
   }
 
   function paint() {
     for (const { g, node, plate } of circles.values()) {
       const on = lit(node);
       dim(g, on, 0.28);
-      plate.setAttribute('stroke', on && marked() ? '#1a1a1a' : 'rgba(0,0,0,0.25)');
-      plate.setAttribute('stroke-width', on && marked() ? '2.5' : '1');
+      plate.setAttribute('stroke', node.id === selected ? 'var(--accent)' : 'var(--strongRule)');
+      plate.setAttribute('stroke-width', node.id === selected || (on && marked()) ? '2.5' : '1');
     }
     for (const rel of graph.rels) {
-      const a = graph.nodes.find((node) => node.id === rel.from);
-      const b = graph.nodes.find((node) => node.id === rel.to);
+      const a = byId.get(rel.from);
+      const b = byId.get(rel.to);
       const drawn = edges.get(rel.id);
       if (!a || !b || !drawn) continue;
       const on = lit(a) && lit(b);
@@ -318,7 +324,13 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     for (const node of graph.nodes) {
       const entry = circles.get(node.id);
       const at = entry && drift(node);
-      if (at) entry.g.setAttribute('transform', `translate(${at.x},${at.y})`);
+      if (at) {
+        entry.g.setAttribute('transform', `translate(${at.x},${at.y})`);
+        const shape = geometry.get(node.id);
+        const x = at.x * state.scale + state.tx, y = at.y * state.scale + state.ty;
+        const visible = x + shape.width * state.scale >= 0 && x - shape.width * state.scale <= 800 && y + shape.height * state.scale >= 0 && y - shape.height * state.scale <= 480;
+        entry.visual.update(visible, state.scale);
+      }
     }
     for (const rel of graph.rels) drawEdge(rel);
   }
@@ -348,7 +360,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
 
   const links = graph.rels.map((rel) => ({ source: rel.from, target: rel.to }));
   const phys = loadPhys();
-  const sim = startSimulation(graph.nodes, links, onTick, phys);
+  const sim = startSimulation(graph.nodes, links, onTick, phys, geometry);
   container._sim = sim;
 
   const gear = document.createElement('button');
@@ -365,7 +377,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     <div class="ph-foot"><button class="mini">reset</button></div>`;
   const hint = document.createElement('div');
   hint.className = 'graph-hint';
-  hint.textContent = 'scroll to zoom. drag to navigate.';
+  hint.textContent = 'Scroll to zoom. Drag to navigate. Select a node, Space to preview.';
   wrap.appendChild(hint);
   wrap.appendChild(gear);
   wrap.appendChild(panel);
@@ -375,7 +387,10 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
   wrap.appendChild(zoom);
   function zoomBy(factor) {
     userInteracted = true;
+    const before = state.scale;
     state.scale = Math.min(4, Math.max(0.1, state.scale * factor));
+    state.tx = 400 - (400 - state.tx) * state.scale / before;
+    state.ty = 240 - (240 - state.ty) * state.scale / before;
     apply();
   }
   zoom.querySelector('[data-zoom="in"]').onclick = () => zoomBy(1.12);
@@ -385,7 +400,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
   function applyPhys() {
     sim.force('charge').strength(sim.baseCharge * phys.repulsion / 100);
     sim.force('link').distance(phys.linkDist);
-    sim.force('collide').radius(NODE_R + phys.pad);
+    sim.force('collide').radius((node) => geometry.get(node.id).radius + phys.pad);
     sim.force('x').strength(phys.gravity / 100);
     sim.force('y').strength(phys.gravity / 100);
     if (sim.alpha() < 0.2) sim.alpha(0.25);
@@ -463,7 +478,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
   });
   svg.addEventListener('pointerup', (event) => {
     if (drag && drag.node) {
-      if (Math.hypot(event.clientX - drag.sx, event.clientY - drag.sy) < 5) container._actions?.onInspect?.(drag.node);
+      if (Math.hypot(event.clientX - drag.sx, event.clientY - drag.sy) < 5) { select(drag.node.id); container._actions?.onInspect?.(drag.node); }
       drag.node.fx = null;
       drag.node.fy = null;
       sim.alphaTarget(0);
@@ -474,7 +489,10 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     event.preventDefault();
     userInteracted = true;
     const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const before = state.scale;
     state.scale = Math.min(4, Math.max(0.1, state.scale * factor));
+    state.tx = 400 - (400 - state.tx) * state.scale / before;
+    state.ty = 240 - (240 - state.ty) * state.scale / before;
     apply();
   }, { passive: false });
 
