@@ -1,5 +1,6 @@
 // zega on Cloudflare Containers: one Container class per instance type, each
-// fronted by its own Durable Object. Routes, all behind the admin token:
+// fronted by its own Durable Object. Routes, all behind the admin token
+// (src/front.js, which also answers CORS for explorer2.zega.dev):
 //
 //   /c/<lite|basic|std1>/<graph>/bench/<load|read|write|hop2|heavy|snapshot|reload|cold|mem>
 //   /c/<lite|basic|std1>/<graph>/<anything else>   forwarded to the container (e.g. /zql)
@@ -8,12 +9,7 @@
 // DO-to-container hop plus zega, not the client's network.
 import { Container } from '@cloudflare/containers';
 import { Bench } from './bench.js';
-
-const BINDINGS = { lite: 'ZEGA_LITE', basic: 'ZEGA_BASIC', std1: 'ZEGA_STD1' };
-
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
-}
+import { handle, json } from './front.js';
 
 function number(params, name, fallback) {
   const value = params.get(name);
@@ -113,23 +109,4 @@ export class ZegaLite extends ZegaBench {}
 export class ZegaBasic extends ZegaBench {}
 export class ZegaStd1 extends ZegaBench {}
 
-async function authorized(request, env) {
-  const header = request.headers.get('authorization') ?? '';
-  const given = new TextEncoder().encode(header.startsWith('Bearer ') ? header.slice(7) : '');
-  const expected = new TextEncoder().encode(env.ADMIN_TOKEN);
-  if (given.byteLength !== expected.byteLength) return false;
-  return crypto.subtle.timingSafeEqual(given, expected);
-}
-
-export default {
-  async fetch(request, env) {
-    if (!env.ADMIN_TOKEN) return json({ ok: false, error: 'ADMIN_TOKEN secret is not set' }, 500);
-    if (!(await authorized(request, env))) return json({ ok: false, error: 'unauthorized' }, 401);
-    const [prefix, size, graph] = new URL(request.url).pathname.split('/').filter(Boolean);
-    const binding = env[BINDINGS[size]];
-    if (prefix !== 'c' || !binding || !graph) {
-      return json({ ok: false, error: 'use /c/<lite|basic|std1>/<graph>/bench/<kind> or /c/<size>/<graph>/zql' }, 404);
-    }
-    return binding.getByName(graph).fetch(request);
-  },
-};
+export default { fetch: handle };

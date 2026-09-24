@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "bench": "node driver/run.mjs"
+    "bench": "node driver/run.mjs",
+    "test": "node --test 'test/*.test.mjs'"
   },
   "dependencies": {
     "@cloudflare/containers": "0.3.7"
