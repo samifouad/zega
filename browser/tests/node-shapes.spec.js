@@ -117,11 +117,90 @@ async function overlaps(page) {
   return page.evaluate(() => {
     const rect = el => el.getBoundingClientRect();
     const captions = [...document.querySelectorAll('#graph .cap, #graph .node-plate')];
-    const labels = [...document.querySelectorAll('#graph .rlab')].filter(el => rect(el).width > 0);
+    const labels = [...document.querySelectorAll('#graph .rlab')].filter(el => rect(el).width > 0 && getComputedStyle(el).visibility !== 'hidden');
     const intersects = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
     return labels.flatMap(label => captions.filter(cap => intersects(rect(label),rect(cap))).map(cap => ({label:label.textContent,node:cap.closest('[data-node]').dataset.node,kind:cap.getAttribute('class')})));
   });
 }
+
+// Pairs of visible edge labels whose painted boxes intersect.
+async function labelOverlaps(page) {
+  return page.evaluate(() => {
+    const labels = [...document.querySelectorAll('#graph .rlab')]
+      .filter(el => el.getBoundingClientRect().width > 0 && getComputedStyle(el).visibility !== 'hidden')
+      .map(el => ({ rel: el.dataset.rel, text: el.textContent, box: el.getBoundingClientRect() }));
+    const intersects = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    return labels.flatMap((a, i) => labels.slice(i + 1).filter(b => intersects(a.box, b.box)).map(b => `${a.text}#${a.rel} × ${b.text}#${b.rel}`));
+  });
+}
+
+// zegadb/zega#42: a mesh of 30 nodes and 80 edges, fixed in place.
+async function denseMesh(page) {
+  await ready(page);
+  await page.evaluate(async () => {
+    const {renderGraph,stopSim} = await import('/graph.js');
+    const container=document.querySelector('#graph'); stopSim(container);
+    const nodes=Array.from({length:30},(_,i) => ({id:i+1,labels:['Person'],name:`Person ${i+1}`,x:(i%6)*120,y:Math.floor(i/6)*95})).map(n => ({...n,fx:n.x,fy:n.y}));
+    const types=['follows','likes','knows','blocks'];
+    const rels=[];
+    const add=(from,to) => rels.push({id:rels.length+1,from,to,type:types[rels.length%types.length]});
+    for (const n of nodes) {
+      const col=(n.id-1)%6, row=Math.floor((n.id-1)/6);
+      if (col<5) add(n.id,n.id+1);
+      if (row<4) add(n.id,n.id+6);
+      if (col<5 && row<4) add(n.id,n.id+7);
+    }
+    for (const [from,to] of [[1,9],[9,1],[4,16],[16,4],[7,20],[13,26],[22,11],[30,18],[25,14],[28,10],[3,3]]) add(from,to);
+    container._graph={capture:() => ({positions:new Map(),view:{scale:1,tx:100,ty:50}})};
+    renderGraph(container,{nodes,rels},new Set(),null,{nodes:{Person:{size:1}}},[{name:'Person',fields:[{kind:'prop',name:'name'}]}]);
+    container._sim.stop();
+  });
+}
+
+const hiddenLabels = (page) => page.locator('#graph .rlab').evaluateAll(els => els.filter(el => getComputedStyle(el).visibility === 'hidden').map(el => el.dataset.rel));
+
+test('dense mesh: every edge label is shown and no two overlap', async ({page}) => {
+  await denseMesh(page);
+  const labels = page.locator('#graph .rlab');
+  await expect(labels).toHaveCount(80);
+  await expect.poll(() => labelOverlaps(page)).toEqual([]);
+  await expect.poll(() => overlaps(page)).toEqual([]);
+  // Hiding is the fallback, not the answer: this mesh has room for all 80.
+  expect(await hiddenLabels(page)).toEqual([]);
+  // The same graph gives the same layout on every frame.
+  const positions = () => labels.evaluateAll(els => els.map(el => [el.getAttribute('x'), el.getAttribute('y'), getComputedStyle(el).visibility]));
+  const first = await positions();
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  expect(await positions()).toEqual(first);
+});
+
+test('a label with no free slot is hidden, and shown while its edge is pointed at', async ({page}) => {
+  await ready(page);
+  // Every pair of eight nodes on a small ring: 28 edges crossing one small
+  // middle, with no room for 28 labels.
+  await page.evaluate(async () => {
+    const {renderGraph,stopSim} = await import('/graph.js');
+    const container=document.querySelector('#graph'); stopSim(container);
+    const nodes=Array.from({length:8},(_,i) => ({id:i+1,labels:['Person'],name:`P${i+1}`,x:Math.round(Math.cos(i*Math.PI/4)*80),y:Math.round(Math.sin(i*Math.PI/4)*80)})).map(n => ({...n,fx:n.x,fy:n.y}));
+    const rels=[];
+    for (let a=1;a<=8;a++) for (let b=a+1;b<=8;b++) rels.push({id:rels.length+1,from:a,to:b,type:['follows','likes','knows'][rels.length%3]});
+    container._graph={capture:() => ({positions:new Map(),view:{scale:1,tx:400,ty:240}})};
+    renderGraph(container,{nodes,rels},new Set(),null,{nodes:{Person:{size:1}}},[{name:'Person',fields:[{kind:'prop',name:'name'}]}]);
+    container._sim.stop();
+  });
+  await expect(page.locator('#graph .rlab')).toHaveCount(28);
+  await expect.poll(() => labelOverlaps(page)).toEqual([]);
+  await expect.poll(() => overlaps(page)).toEqual([]);
+  const hidden = await hiddenLabels(page);
+  expect(hidden.length).toBeGreaterThan(0);
+  expect(hidden.length).toBeLessThan(28);
+  const rel = hidden[0];
+  const label = page.locator(`#graph .rlab[data-rel="${rel}"]`);
+  await page.locator(`#graph path[data-rel="${rel}"]`).dispatchEvent('pointerenter');
+  await expect(label).toHaveCSS('visibility', 'visible');
+  await page.locator(`#graph path[data-rel="${rel}"]`).dispatchEvent('pointerleave');
+  await expect(label).toHaveCSS('visibility', 'hidden');
+});
 
 test('archives stays clear of Field notes and every caption and node body', async ({page}) => {
   await fixture(page);
