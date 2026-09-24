@@ -279,7 +279,7 @@ fn syntax_goldens() {
         invariant(&source, &path.display().to_string());
         count += 1;
     }
-    assert_eq!(count, 19);
+    assert_eq!(count, 20);
 }
 
 #[test]
@@ -338,7 +338,7 @@ fn positional_comments_cover_every_syntax_form() {
 }
 
 #[test]
-fn future_syntax_is_conservative_until_the_ast_supports_it() {
+fn invalid_display_and_discovery_are_unchanged() {
     for source in [
         "schema { type Contract { scan: String } display { graph { Contract(@shape: document, @image: &scan) } } }",
         "query { Person { name } } then { take 10 }",
@@ -419,20 +419,57 @@ fn r6_blank_lines() {
 }
 #[test]
 fn r7_display() {
-    let source = "schema{type A{x:Int}type B{x:Int}display{graph{A,B}:Default table{A}}}";
-    let expected = "schema {\n  type A { x: Int }\n\n  type B { x: Int }\n\n  display {\n    graph {\n      A,\n      B\n    } : Default\n    table {\n      A\n    }\n  }\n}\n";
+    let source =
+        "schema{type A{x:Int}type B{x:Int}type C{x:Int}display{graph{A B}:Default table{A}}}";
+    let expected = "schema {\n  type A { x: Int }\n\n  type B { x: Int }\n\n  type C { x: Int }\n\n  display {\n    graph { A B } : Default\n    table { A }\n  }\n}\n";
     assert_eq!(format_zql(source).unwrap(), expected);
-    invariant(source, "R7");
-    // APS 6 per-type attributes are not in this parser yet. Keep 2 and 3
-    // attributes untouched until the AST acquires the syntax (zega#39).
-    for attrs in [
-        "@shape: document, @image: &scan",
-        "@shape: document, @image: &scan, @size: &size",
-    ] {
-        let input =
-            format!("schema{{type A{{scan:String size:Int}}display{{graph{{A({attrs})}}}}}}");
-        assert!(Parsed::parse(&input).is_err());
-        assert_eq!(format_zql(&input).unwrap(), input);
+    invariant(source, "R7 one/two types");
+    let source = source.replace("graph{A B}", "graph{A,B,C}");
+    let expected = expected.replace(
+        "graph { A B }",
+        "graph {\n      A,\n      B,\n      C\n    }",
+    );
+    assert_eq!(format_zql(&source).unwrap(), expected);
+    invariant(&source, "R7 three types");
+}
+#[test]
+fn r7_attribute_width() {
+    for width in [80, 81] {
+        let name = "A".repeat(width - "    graph { (@shape: document, @size: 2) }".len());
+        let source = format!(
+            "schema{{type {name}{{x:Int}}display{{graph{{{name}(@shape:document,@size:2)}}}}}}"
+        );
+        let output = format_zql(&source).unwrap();
+        let entry = if width == 80 {
+            format!("    graph {{ {name}(@shape: document, @size: 2) }}")
+        } else {
+            // The view opens first; at the narrower entry indent, its two
+            // attributes can still fit together on the same line.
+            format!("    graph {{\n      {name}(@shape: document, @size: 2)\n    }}")
+        };
+        assert!(output.contains(&entry), "{output}");
+        invariant(&source, "R7 width");
+    }
+}
+#[test]
+fn then_chain_width() {
+    for op in ["&&", "||"] {
+        for width in [80, 81] {
+            let value = "x".repeat(
+                width - "  findWith { \"\" } && startsWith { \"b\" } && endsWith { \"c\" }".len(),
+            );
+            let source = format!("query{{A{{name}}}}then{{findWith{{\"{value}\"}}{op}startsWith{{\"b\"}}{op}endsWith{{\"c\"}}}}");
+            let condition = if width == 80 {
+                format!("  findWith {{ \"{value}\" }} {op} startsWith {{ \"b\" }} {op} endsWith {{ \"c\" }}")
+            } else {
+                format!("  findWith {{ \"{value}\" }} {op}\n  startsWith {{ \"b\" }} {op}\n  endsWith {{ \"c\" }}")
+            };
+            assert_eq!(
+                format_zql(&source).unwrap(),
+                format!("query {{\n  A {{ name }}\n}}\n\nthen {{\n{condition}\n}}\n")
+            );
+            invariant(&source, "then chain width");
+        }
     }
 }
 #[test]

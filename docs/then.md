@@ -15,18 +15,11 @@ display {
 }
 
 then {
-  common {
-    Player { country }
-    Team { country }
-  } &&
-  findWith { "Oilers" }
+  common { Player { country } Team { country } } && findWith { "Oilers" }
 }
 
 then {
-  startsWith {
-    "A" in { name }
-  } ||
-  regex { "ers$" }
+  startsWith { "A" in { name } } || regex { "ers$" }
 }
 ```
 

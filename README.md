@@ -190,6 +190,11 @@ undoable and preserves the cursor line (clamped when lines are removed).
 The locked layout in [APS 12](https://github.com/zegadb/aps/issues/12) keeps
 1–2 plain selection fields inline, opens schema types with 2+ fields, separates
 types and top-level blocks with one blank line, and uses only `//` comments.
+Display views keep 1–2 types inline and open 3+ types one per line. Per-type
+attributes follow the same threshold inside parentheses. `String<url>` keeps its
+angle brackets tight. Every `then` and `display { skip }` opens as a top-level
+block; discovery sub-blocks stay compact when they fit, and boolean chains over
+80 columns put each operand on its own line.
 JSON objects with 1–2 members and scalar arrays stay inline when they fit 80
 columns. JSON key order, number spelling and string escapes are preserved;
 invalid input is returned unchanged. Directories include both `.zql` and `.json`.

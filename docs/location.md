@@ -13,9 +13,7 @@ schema {
   }
 
   display {
-    map {
-      Place
-    } : Default
+    map { Place } : Default
     table
     graph
   }

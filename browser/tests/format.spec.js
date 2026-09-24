@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { test, expect } from './offline.js';
 
 const source = 'query{Player{name salary}}';
@@ -59,3 +60,18 @@ test('JSON import preview keeps source bytes and result panes use canonical WASM
   expect(output).toMatch(/\{ "name": "[^"]+", "salary": \d+ \}/);
   expect(output).toBe(await page.evaluate(async text => (await import('/pkg/zega_wasm.js')).format_json(text), output));
 });
+
+for (const [pane, golden] of [['schema', 'display-attributes'], ['query', 'then']]) {
+  test(`format ${golden} syntax through the editor's WASM formatter`, async ({ page }) => {
+    const fixture = extension => readFileSync(new URL(`../../zega/src/fmt/goldens/${golden}.${extension}`, import.meta.url), 'utf8');
+    await page.goto('/');
+    await expect(page.locator(`#${pane} .monaco-editor`)).toBeVisible({ timeout: 45_000 });
+    await expect(page.locator('#raw-count')).toContainText('50 nodes');
+    await page.evaluate(({ pane, source }) => {
+      const editor = window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest(`#${pane}`));
+      editor.setValue(source); editor.focus();
+    }, { pane, source: fixture('input') });
+    await page.keyboard.press('Control+s');
+    await expect.poll(() => page.evaluate(pane => window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest(`#${pane}`)).getValue(), pane)).toBe(fixture('expected'));
+  });
+}

@@ -7,10 +7,7 @@ type B { name: String }
 
 display {
   graph
-  table {
-    A,
-    B
-  } : Default
+  table { A, B } : Default
 }
 
 unique {

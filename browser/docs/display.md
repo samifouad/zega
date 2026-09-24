@@ -13,12 +13,8 @@ schema {
   type Review { title: String }
 
   display {
-    map {
-      Place
-    } : Default
-    table {
-      Review
-    }
+    map { Place } : Default
+    table { Review }
     graph
   }
 }
@@ -81,14 +77,30 @@ button loads the deterministic synthetic support-ticket sample. See
 
 ```zql
 schema {
-  type Log { name: String notes: String }
-  type Contract { name: String scan: String<url> }
-  type Player { name: String photo?: String<url> }
+  type Log {
+    name: String
+    notes: String
+  }
+
+  type Contract {
+    name: String
+    scan: String<url>
+  }
+
+  type Player {
+    name: String
+    photo?: String<url>
+  }
+
   display {
     graph {
       Log(@shape: document)
       Contract(@shape: document, @image: &scan)
-      Player(@shape: circle, @image: &photo, @size: 2)
+      Player(
+        @shape: circle,
+        @image: &photo,
+        @size: 2
+      )
     }
   }
 }

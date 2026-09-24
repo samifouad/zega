@@ -203,6 +203,14 @@ pub(super) fn join(items: Vec<Doc>, separator: Doc) -> Doc {
 /// Source leaves, including parentheses/arguments. Comments remain attached to
 /// their written line, including end-of-line comments.
 pub(super) fn fragment(ts: &[Token<'_>], types: bool) -> Doc {
+    fragment_layout(ts, types, false)
+}
+
+pub(super) fn display_fragment(ts: &[Token<'_>], expand_attributes: bool) -> Doc {
+    fragment_layout(ts, false, expand_attributes)
+}
+
+fn fragment_layout(ts: &[Token<'_>], types: bool, expand_attributes: bool) -> Doc {
     fn spaced(prev: &str, next: &str, types: bool) -> bool {
         if prev.is_empty()
             || matches!(prev, "(" | "[" | "@" | "&" | "$" | ".." | "*")
@@ -221,7 +229,7 @@ pub(super) fn fragment(ts: &[Token<'_>], types: bool) -> Doc {
         }
         true
     }
-    fn sequence(ts: &[Token<'_>], types: bool) -> Doc {
+    fn sequence(ts: &[Token<'_>], types: bool, expand_attributes: bool) -> Doc {
         let mut docs = Vec::new();
         let mut i = 0;
         let mut prev = "";
@@ -253,12 +261,17 @@ pub(super) fn fragment(ts: &[Token<'_>], types: bool) -> Doc {
                     end += 1;
                 }
                 if end < ts.len() {
-                    let inner = sequence(&ts[i + 1..end], types);
+                    let inner = sequence(&ts[i + 1..end], types, expand_attributes);
+                    let boundary = if expand_attributes {
+                        Doc::Hard
+                    } else {
+                        Doc::Line("")
+                    };
                     docs.push(
                         Doc::seq([
                             Doc::text(t),
-                            Doc::seq([Doc::Line(""), inner]).nest(),
-                            Doc::Line(""),
+                            Doc::seq([boundary.clone(), inner]).nest(),
+                            boundary,
                             Doc::text(close),
                         ])
                         .group(),
@@ -272,7 +285,11 @@ pub(super) fn fragment(ts: &[Token<'_>], types: bool) -> Doc {
             if matches!(t, "," | "&&" | "||")
                 && ts.get(i + 1).is_some_and(|next| !next.inline_comment)
             {
-                docs.push(Doc::Line(" "));
+                docs.push(if expand_attributes {
+                    Doc::Hard
+                } else {
+                    Doc::Line(" ")
+                });
                 prev = "";
             } else {
                 prev = t;
@@ -281,5 +298,5 @@ pub(super) fn fragment(ts: &[Token<'_>], types: bool) -> Doc {
         }
         Doc::seq(docs)
     }
-    sequence(ts, types).group()
+    sequence(ts, types, expand_attributes).group()
 }

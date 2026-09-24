@@ -7,7 +7,7 @@ use super::*;
 mod json;
 mod layout;
 pub use json::format_json;
-use layout::{fragment, join, tokens, Doc, Token};
+use layout::{display_fragment, fragment, join, tokens, Doc, Token};
 
 /// Format a file, schema pane, or query pane with two-space indentation and an
 /// 80-column soft target. Parse errors return the source byte-for-byte unchanged.
@@ -83,6 +83,9 @@ impl<'a> Printer<'a> {
             .map_or("", |t| t.text)
     }
     fn until(&mut self, end: usize, types: bool) -> Doc {
+        fragment(self.until_tokens(end), types)
+    }
+    fn until_tokens(&mut self, end: usize) -> &[Token<'a>] {
         let start = self.cursor;
         while self.cursor < self.tokens.len() && self.tokens[self.cursor].start < end {
             self.cursor += 1;
@@ -94,7 +97,7 @@ impl<'a> Printer<'a> {
         {
             self.cursor += 1;
         }
-        fragment(&self.tokens[start..self.cursor], types)
+        &self.tokens[start..self.cursor]
     }
     fn token(&mut self) -> Doc {
         let mut end = self.cursor;
@@ -129,8 +132,8 @@ impl<'a> Printer<'a> {
                 block: true,
             };
         }
-        let multiline = matches!(style, Block::Top | Block::Schema | Block::Display)
-            || items.len() > if style == Block::Selection { 2 } else { 1 }
+        let multiline = matches!(style, Block::Top | Block::Schema)
+            || items.len() > if style == Block::Fields { 1 } else { 2 }
             || (style == Block::Selection && items.iter().any(|item| item.block))
             || has_comments
             || header.width() == usize::MAX;
@@ -355,9 +358,15 @@ impl<'a> Printer<'a> {
         let mut items = Vec::new();
         for entry in entries {
             let DisplayEntry {
-                view: DisplayView { kind, types },
+                view:
+                    DisplayView {
+                        kind,
+                        types,
+                        nodes: _,
+                    },
                 span: _,
                 type_spans: _,
+                attributes,
                 default_span,
             } = entry;
             let name = match kind {
@@ -374,15 +383,17 @@ impl<'a> Printer<'a> {
                 p.expect("{")?;
                 let h = self.until(p.i, false);
                 let mut names = Vec::new();
-                for (i, _) in types.iter().enumerate() {
+                for (_, attributes) in types.iter().zip(&attributes) {
                     let mut p = self.parser();
                     p.ident()?;
-                    if i + 1 < types.len() {
-                        p.expect(",")?;
-                    }
-                    names.push(Node::leaf(self.until(p.i, false)));
+                    p.parse_display_attributes()?;
+                    p.eat(",");
+                    names.push(Node::leaf(display_fragment(
+                        self.until_tokens(p.i),
+                        attributes.len() > 2,
+                    )));
                 }
-                self.block(h, names, Block::Display)
+                self.block(h, names, Block::Subblock)
             } else {
                 Node::leaf(self.until(p.i, false))
             };
@@ -476,7 +487,8 @@ impl<'a> Printer<'a> {
         }
         for ThenStage { condition, skip } in then {
             let header = Doc::seq([self.token(), Doc::text(" "), self.token()]);
-            let condition = self.discovery(condition)?;
+            let mut condition = self.discovery(condition)?;
+            condition.doc = condition.doc.group();
             stages.push(self.block(header, vec![condition], Block::Top).doc);
             if *skip {
                 stages.push(self.stage_display()?.doc);
@@ -515,8 +527,9 @@ impl<'a> Printer<'a> {
                 let op = self.token();
                 let right = self.discovery(right)?;
                 Ok(Node {
-                    doc: Doc::seq([left.doc, Doc::text(" "), op, Doc::Line(" "), right.doc])
-                        .group(),
+                    // One group at the stage/parenthesis boundary breaks every
+                    // operand together, regardless of the AST's associativity.
+                    doc: Doc::seq([left.doc, Doc::text(" "), op, Doc::Line(" "), right.doc]),
                     block: true,
                 })
             }
@@ -580,7 +593,7 @@ impl<'a> Printer<'a> {
                         span: _,
                     } => items.push(self.discovery_leaf()),
                 }
-                Ok(self.block(header, items, Block::Selection))
+                Ok(self.block(header, items, Block::Subblock))
             }
         }
     }
@@ -711,7 +724,7 @@ enum Block {
     Schema,
     Fields,
     Selection,
-    Display,
+    Subblock,
 }
 
 struct Node {

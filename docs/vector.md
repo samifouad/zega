@@ -15,12 +15,8 @@ schema {
   }
 
   display {
-    vector2d {
-      Ticket
-    } : Default
-    vector3d {
-      Ticket
-    }
+    vector2d { Ticket } : Default
+    vector3d { Ticket }
     table
   }
 }

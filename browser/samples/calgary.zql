@@ -10,12 +10,8 @@ schema {
   }
 
   display {
-    map {
-      Place
-    } : Default
-    table {
-      Place
-    }
+    map { Place } : Default
+    table { Place }
     graph
   }
 }
