@@ -165,13 +165,15 @@ test('arcs blend into the flat map with the globe, without a jump', async ({ pag
   await look(page, mid, { zoom: 11.5 });
   expect(await globeness(page)).toBeGreaterThan(0);
   expect(await globeness(page)).toBeLessThan(1);
+  // The dashes move, so one frame can put a gap on the sampled point: poll a
+  // few frames. A missing arc still fails.
   const blended = await screen(page, i, 0.4);
-  expect(await hasColor(page, blended.x, blended.y, light)).toBe(true);
+  await expect.poll(() => hasColor(page, blended.x, blended.y, light)).toBe(true);
   await page.screenshot({ path: `${SHOTS}/arcs-mid-transition-1440.png` });
   await look(page, mid, { zoom: 12.5 });
   expect(await globeness(page)).toBe(0);
   const flat = await screen(page, i, 0.45);
-  expect(await hasColor(page, flat.x, flat.y, light)).toBe(true);
+  await expect.poll(() => hasColor(page, flat.x, flat.y, light)).toBe(true);
   await page.screenshot({ path: `${SHOTS}/arcs-flat-1440.png` });
   // Tilted, the apex's height shows as a screen offset above the midpoint.
   // Across the end of the blend it scales with zoom alone: no jump in height.
