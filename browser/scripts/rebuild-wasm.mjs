@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { hashFiles } from './wasm-files.mjs';
+import { encodedRustflags, hashFiles, hostPaths, remapFlags } from './wasm-files.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const engineArg = process.argv[2];
@@ -22,15 +23,32 @@ const output = join(staging, 'pkg');
 try {
   const tool = (command) => execFileSync(command, ['--version'], { encoding: 'utf8' }).trim();
   const toolchain = { rustc: tool('rustc'), wasmPack: tool('wasm-pack') };
+  // Panic locations embed source paths. Remap every build-machine prefix so the
+  // shipped wasm names no user, home or worktree (#45).
+  const targetDir = resolve(process.env.CARGO_TARGET_DIR || join(root, '../.target'));
+  const local = {
+    engine,
+    targetDir,
+    cargoHome: resolve(process.env.CARGO_HOME || join(homedir(), '.cargo')),
+    sysroot: execFileSync('rustc', ['--print', 'sysroot'], { encoding: 'utf8' }).trim(),
+  };
   execFileSync('wasm-pack', ['build', join(engine, 'zega-wasm'), '--target', 'web', '--release', '--out-dir', output, '--locked'], {
     cwd: root,
     stdio: 'inherit',
-    env: { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(root, '../.target'), TMPDIR: process.env.TMPDIR || join(root, '.tmp') },
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: targetDir,
+      TMPDIR: process.env.TMPDIR || join(root, '.tmp'),
+      CARGO_ENCODED_RUSTFLAGS: encodedRustflags(process.env, remapFlags(local)),
+    },
   });
   // wasm-pack ignores generated files by default; these files are vendored here.
   await rm(join(output, '.gitignore'), { force: true });
   for (const name of ['package.json', 'zega_wasm.js', 'zega_wasm_bg.wasm', 'zega_wasm.d.ts', 'zega_wasm_bg.wasm.d.ts']) await access(join(output, name));
-  await WebAssembly.compile(await readFile(join(output, 'zega_wasm_bg.wasm')));
+  const wasm = await readFile(join(output, 'zega_wasm_bg.wasm'));
+  await WebAssembly.compile(wasm);
+  const leaked = hostPaths(wasm, [...Object.values(local), homedir()]);
+  if (leaked.length) throw new Error(`The build still embeds build-machine paths; pkg/ was not replaced:\n${leaked.slice(0, 10).join('\n')}`);
   if (git('rev-parse', 'HEAD') !== commit || git('status', '--porcelain')) throw new Error('Engine changed during the build; pkg/ was not replaced.');
   const { default: init, format_json } = await import(pathToFileURL(join(output, 'zega_wasm.js')));
   await init({ module_or_path: await readFile(join(output, 'zega_wasm_bg.wasm')) });
@@ -38,7 +56,7 @@ try {
   const metadata = {
     repository: 'https://github.com/zegadb/zega',
     commit,
-    provenance: 'Rebuilt from a clean local engine checkout with wasm-pack --target web --release --locked.',
+    provenance: 'Rebuilt from a clean local engine checkout with wasm-pack --target web --release --locked, with build-machine paths remapped to /zega, /target, /cargo and /rust.',
     toolchain,
     sha256: await hashFiles(output),
   };
