@@ -1,0 +1,11 @@
+.git
+.target
+.tmp
+target
+**/node_modules
+**/.wrangler
+browser/test-results
+browser/playwright-report
+browser/dist
+zega-cloud/containers-bench/evidence
+HANDOFF.md

@@ -2598,6 +2598,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zega-bench-server"
+version = "0.1.2"
+dependencies = [
+ "axum",
+ "serde_json",
+ "tokio",
+ "zega",
+ "zega-server",
+]
+
+[[package]]
 name = "zega-cli"
 version = "0.1.2"
 dependencies = [
