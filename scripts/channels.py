@@ -165,7 +165,12 @@ def aws(*args):
     result = subprocess.run(["aws", "s3", *args, "--endpoint-url", os.environ["R2_ENDPOINT"], "--only-show-errors"],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
-        raise RuntimeError("R2 operation failed; check bucket access and object existence (diagnostics withheld)")
+        operation = args[0]
+        paths = [arg for arg in args[1:] if arg.startswith("s3://")]
+        key_prefix = paths[-1] if paths else "unknown prefix"
+        if key_prefix.startswith("s3://"):
+            key_prefix = key_prefix.removeprefix("s3://")
+        raise RuntimeError(f"R2 {operation} failed for {key_prefix} (diagnostics withheld)")
 
 
 def check_commit(directory, tag, commit):
@@ -204,7 +209,7 @@ def publish_r2(tag, directory):
                                    "--max-keys", "1", "--query", "KeyCount", "--output", "text", "--endpoint-url", os.environ["R2_ENDPOINT"]],
                                   capture_output=True, text=True)
         if existing.returncode:
-            raise RuntimeError("Cannot check R2 prefix; check release credentials (diagnostics withheld)")
+            raise RuntimeError(f"R2 list-objects-v2 failed for {bucket}/{tag}/ (diagnostics withheld)")
         if existing.stdout.strip() != "0":
             raise ValueError(f"Canary prefix already exists in {bucket}; refusing overwrite")
     for bucket in BUCKETS:
@@ -216,7 +221,7 @@ def publish_r2(tag, directory):
         aws("cp", "--recursive", f"s3://{bucket}/{tag}/", f"{check}/")
         verify(check, tag, commit)
     for bucket in BUCKETS:
-        aws("cp", "--recursive", f"s3://{bucket}/{tag}/", f"s3://{bucket}/canary/")
+        aws("sync", f"{directory}/", f"s3://{bucket}/canary/", "--delete")
         aws("cp", f"{directory}/release.json", f"s3://{bucket}/canary.json")
 
 
@@ -237,12 +242,11 @@ def promote(tag, directory):
     repack(work / BUCKETS[0] / "package.tgz", work / "package.tgz", f"{base}-canary.{commit[:7]}", base)
     for bucket in BUCKETS:
         source = work / bucket
-        aws("cp", "--recursive", f"s3://{bucket}/{tag}/", f"s3://{bucket}/v{base}/")
         for name in METADATA:
             data = read_json(source / name)
             data.update(version=base, tag=f"v{base}", channel="stable", promoted_from=tag)
             write_json(source / name, data)
-            aws("cp", str(source / name), f"s3://{bucket}/v{base}/{name}")
+        aws("sync", f"{source}/", f"s3://{bucket}/v{base}/", "--delete")
         readback = work / f"{bucket}-readback"
         readback.mkdir()
         aws("cp", "--recursive", f"s3://{bucket}/v{base}/", f"{readback}/")
@@ -253,8 +257,9 @@ def promote(tag, directory):
     git("tag", "-a", f"v{base}", commit, "-m", f"zega v{base} (promoted from {tag})")
     git("push", "origin", f"refs/tags/v{base}")
     for bucket in BUCKETS:
-        aws("cp", "--recursive", f"s3://{bucket}/v{base}/", f"s3://{bucket}/latest/")
-        aws("cp", f"s3://{bucket}/v{base}/release.json", f"s3://{bucket}/latest.json")
+        source = work / bucket
+        aws("sync", f"{source}/", f"s3://{bucket}/latest/", "--delete")
+        aws("cp", str(source / "release.json"), f"s3://{bucket}/latest.json")
     output(tag=f"v{base}", version=base, commit=commit)
 
 
