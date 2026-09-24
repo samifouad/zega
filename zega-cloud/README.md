@@ -233,23 +233,22 @@ billing, replication behavior and real Cloudflare latency remain for Ava to meas
 From an already authorized Cloudflare environment, after reviewing the draft:
 
 ```sh
-# First run the local build commands above. Only Ava runs the next command.
-cd zega-cloud
-npm exec -- wrangler deploy --var SPIKE_CONTROLS:true
-# Supply the workers.dev URL printed by Wrangler; no secret is passed to scripts.
-endpoint='https://zega-cloud-spike.<your-workers-subdomain>.workers.dev'
-node bench/load.mjs "$endpoint" bench-10 10
-node bench/cold.mjs "$endpoint" bench-10
-node bench/read.mjs "$endpoint" bench-10
-node bench/write.mjs "$endpoint" bench-10
-node bench/load.mjs "$endpoint" bench-50 50
-node bench/cold.mjs "$endpoint" bench-50
-node bench/read.mjs "$endpoint" bench-50
-node bench/write.mjs "$endpoint" bench-50
-node bench/load.mjs "$endpoint" bench-100 100
-node bench/cold.mjs "$endpoint" bench-100
-node bench/read.mjs "$endpoint" bench-100
-node bench/write.mjs "$endpoint" bench-100
+# First run the local build commands above. Only Ava runs this subshell.
+(
+  set -e
+  cd zega-cloud
+  npm exec -- wrangler deploy --var SPIKE_CONTROLS:true
+  # Supply the workers.dev URL printed by Wrangler.
+  endpoint='https://zega-cloud-spike.<your-workers-subdomain>.workers.dev'
+  run=$(date -u +%Y%m%dT%H%M%SZ)
+  for size in 10 50 100; do
+    graph="bench-${run}-${size}"
+    node bench/load.mjs "$endpoint" "$graph" "$size"
+    node bench/cold.mjs "$endpoint" "$graph"
+    node bench/read.mjs "$endpoint" "$graph"
+    node bench/write.mjs "$endpoint" "$graph"
+  done
+)
 ```
 
 Each script prints JSON. Loads use seeded 4 KiB strings and 32-node JSON mutation
