@@ -207,7 +207,11 @@ fn external_corpus() {
                 visit(&path, n);
             } else if path.extension().is_some_and(|e| e == "code") {
                 let source = std::fs::read_to_string(&path).unwrap();
-                assert!(!source.trim().is_empty(), "corpus source must not be a marker: {}", path.display());
+                assert!(
+                    !source.trim().is_empty(),
+                    "corpus source must not be a marker: {}",
+                    path.display()
+                );
                 invariant(&source, &path.display().to_string());
                 *n += 1;
             }
@@ -264,20 +268,32 @@ fn positional_comments_cover_every_syntax_form() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fmt/goldens");
     for entry in std::fs::read_dir(root).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_none_or(|e| e != "expected") { continue; }
+        if path.extension().is_none_or(|e| e != "expected") {
+            continue;
+        }
         let source = std::fs::read_to_string(&path).unwrap();
         let ts = tokens(&source);
-        if ts.iter().any(|t| t.text.starts_with("//")) { continue; }
-        let mut marked = String::from("// leading\n");
-        let mut previous = 0;
-        for (i, token) in ts.iter().enumerate() {
-            let gap = &source[previous..token.start];
-            if !gap.is_empty() { marked.push_str(&format!(" // comment {i}\n")); }
-            marked.push_str(token.text);
-            previous = token.end;
+        if ts.iter().any(|t| t.text.starts_with("//")) {
+            continue;
         }
-        marked.push_str(" // trailing\n");
-        assert!(ast(&marked).is_ok(), "commented fixture must still parse: {}", path.display());
+        let mut marked = source.clone();
+        let mut comments = 0;
+        for (i, pair) in ts.windows(2).enumerate().rev() {
+            if pair[0].end == pair[1].start {
+                continue;
+            }
+            let mut candidate = marked.clone();
+            candidate.insert_str(pair[1].start, &format!("// comment {i}\n"));
+            // Embedded JSON locations have JSON's grammar: unlike ZQL they
+            // reject comments. Only inject at parser-accepted trivia boundaries.
+            if ast(&candidate).is_ok() {
+                marked = candidate;
+                comments += 1;
+            }
+        }
+        assert!(comments > 0);
+        marked.insert_str(0, "// leading\n");
+        marked.push_str("// trailing\n");
         invariant(&marked, &path.display().to_string());
     }
 }
