@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_zegawasm_free: (a: number, b: number) => void;
 export const format: (a: number, b: number) => [number, number, number, number];
+export const format_json: (a: number, b: number) => [number, number];
 export const zegawasm_apply: (a: number, b: number, c: number) => [number, number, number, number];
 export const zegawasm_apply_with_sources: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const zegawasm_check: (a: number, b: number, c: number, d: number, e: number) => [number, number];

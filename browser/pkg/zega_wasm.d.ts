@@ -72,12 +72,18 @@ export class ZegaWasm {
  */
 export function format(source: string): string;
 
+/**
+ * The canonical byte-faithful JSON layout (APS 12).
+ */
+export function format_json(source: string): string;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_zegawasm_free: (a: number, b: number) => void;
     readonly format: (a: number, b: number) => [number, number, number, number];
+    readonly format_json: (a: number, b: number) => [number, number];
     readonly zegawasm_apply: (a: number, b: number, c: number) => [number, number, number, number];
     readonly zegawasm_apply_with_sources: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_check: (a: number, b: number, c: number, d: number, e: number) => [number, number];
