@@ -213,6 +213,20 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     const a = from && drift(from);
     const b = to && drift(to);
     if (!a || !b) return;
+    if (rel.from === rel.to) {
+      const shape = geometry.get(from.id);
+      const start = shape.outline(-1, -1), end = shape.outline(1, -1);
+      const reach = shape.radius * 2;
+      const drawn = edges.get(rel.id);
+      const d = `M ${a.x + start.x} ${a.y + start.y} C ${a.x - reach} ${a.y - reach * 2} ${a.x + reach} ${a.y - reach * 2} ${a.x + end.x} ${a.y + end.y}`;
+      drawn.path.setAttribute('d', d);
+      drawn.hit.setAttribute('d', d);
+      drawn.label.setAttribute('x', a.x);
+      drawn.label.setAttribute('y', a.y - reach * 1.5);
+      dim(drawn.path, lit(from), 0.2);
+      dim(drawn.label, lit(from), 0.2);
+      return;
+    }
     const dx = b.x - a.x, dy = b.y - a.y;
     // Perpendicular is fixed for the node pair, so an edge in the opposite
     // direction does not fold back onto the same curve.

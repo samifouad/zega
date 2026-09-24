@@ -106,6 +106,21 @@ test('size scales the geometry and curved edges terminate on both outlines', asy
   expect(endpoints).toEqual([[true,false],[true,false]]);
 });
 
+test('self relationships loop outside a scaled page', async ({page}) => {
+  await fixture(page);
+  await page.evaluate(async () => {
+    const {renderGraph,stopSim} = await import('/graph.js');
+    const container=document.querySelector('#graph');stopSim(container);container._graph=null;
+    renderGraph(container,{nodes:[{id:1,labels:['Log'],name:'Self',fx:0,fy:0}],rels:[{id:1,from:1,to:1,type:'revises'}]},new Set(),null,{nodes:{Log:{shape:'document',size:3}}},[{name:'Log',fields:[{kind:'prop',name:'name'}]}]);
+    container._sim.stop();
+  });
+  const edge=page.locator('#graph .viewport > path[marker-end]');
+  await expect(edge).toHaveAttribute('d',/ C /);
+  const points=(await edge.getAttribute('d')).match(/-?[\d.]+/g).map(Number);
+  expect(points[0]).toBeLessThan(0);expect(points[6]).toBeGreaterThan(0);
+  expect(points[3]).toBeLessThan(-100);expect(points[5]).toBeLessThan(-100);
+});
+
 test('Space previews each shape with readable fields, focus trapping and all closing gestures', async ({ page }) => {
   await fixture(page);
   await node(page,1).locator('.node-plate').click();
