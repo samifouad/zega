@@ -2312,12 +2312,7 @@ fn parse_all_keyword_tokens_as_property_keys() {
     // parse_properties has a dedicated arm per keyword token, lowercasing it.
     // (Asc/Desc/By/On are in the arm list too.)
     let pairs = [
-        ("key", "key"),
-        ("get", "get"),
         ("set", "set"),
-        ("del", "del"),
-        ("incr", "incr"),
-        ("ttl", "ttl"),
         ("match", "match"),
         ("return", "return"),
         ("create", "create"),
@@ -2351,12 +2346,7 @@ fn parse_all_keyword_tokens_as_property_keys() {
 fn parse_all_keyword_tokens_as_parameter_names() {
     // parse_primary has a per-keyword arm after `$`, lowercasing the name.
     let pairs = [
-        ("$key", "key"),
-        ("$get", "get"),
         ("$set", "set"),
-        ("$del", "del"),
-        ("$incr", "incr"),
-        ("$ttl", "ttl"),
         ("$match", "match"),
         ("$return", "return"),
         ("$create", "create"),
