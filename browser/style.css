@@ -686,6 +686,15 @@ pre.result-json {
 [data-theme] .graph-wrap { background: var(--ground); }
 [data-theme] .graph-wrap .cap, [data-theme] .graph-wrap .rlab { fill: var(--ink); stroke: var(--ground); }
 [data-theme] .graph-tip, [data-theme] .graph-menu, [data-theme] .graph-physics { background: var(--panel); color: var(--ink); border-color: var(--rule); }
+/* Globe settings (zega#74): the graph's gear panel, inside a MapLibre control. */
+.globe-settings-ctrl { position: relative; }
+.globe-settings-ctrl .globe-gear { font-size: 15px; color: var(--ink); }
+.globe-settings { top: 0; right: 36px; background: var(--panel); color: var(--ink); font-family: inherit; }
+.globe-settings .ph-row:has(select), .globe-settings .ph-row:has([type=checkbox]) { grid-template-columns: 86px 1fr; }
+.globe-settings .ph-row:has(select) b, .globe-settings .ph-row:has([type=checkbox]) b { display: none; }
+.globe-settings select { width: 100%; font: inherit; color: inherit; background: var(--panel); }
+.globe-settings input[type=checkbox] { justify-self: start; margin: 0; accent-color: var(--accent); }
+.globe-settings .ph-row input[type=range] { accent-color: var(--accent); }
 .maplibregl-ctrl-group { background: var(--panel); }
 .maplibregl-ctrl-group button + button { border-top-color: var(--rule); }
 [data-theme="dark"] .maplibregl-ctrl-icon { filter: invert(1); }
