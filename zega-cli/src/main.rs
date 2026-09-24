@@ -31,7 +31,10 @@ enum Command {
     /// Format ZQL and JSON files with the canonical layout.
     Fmt {
         /// Files or directories to format recursively (*.zql, *.json).
-        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+        // `--lang` conflicts with paths rather than `requires = "stdin"`: clap
+        // counts a bool flag's implicit `false` as present, so `requires` never
+        // fired and `--lang` was ignored for files (zegadb/zega#67).
+        #[arg(required_unless_present = "stdin", conflicts_with_all = ["stdin", "lang"])]
         paths: Vec<PathBuf>,
         /// List files that would change and exit with code 1.
         #[arg(long)]
@@ -39,8 +42,8 @@ enum Command {
         /// Read source from stdin and write formatted source to stdout.
         #[arg(long)]
         stdin: bool,
-        /// Language for stdin (defaults to zql).
-        #[arg(long, value_enum, requires = "stdin")]
+        /// Language for stdin (defaults to zql). Files use their extension.
+        #[arg(long, value_enum)]
         lang: Option<fmt::Language>,
     },
     /// Serve the database over HTTP with ZQL.

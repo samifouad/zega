@@ -139,3 +139,29 @@ fn a_path_that_cannot_be_read_exits_2_and_names_it_not_1_like_check() {
         }
     }
 }
+#[test]
+fn lang_with_paths_is_an_argument_error_not_silently_ignored() {
+    // zegadb/zega#67: files take their language from the extension, so
+    // `--lang` only means something with `--stdin`.
+    let dir = tempfile::tempdir().unwrap();
+    let json = dir.path().join("data.json");
+    fs::write(&json, r#"{"a":1}"#).unwrap();
+    for args in [
+        vec!["fmt", "--lang", "zql"],
+        vec!["fmt", "--check", "--lang", "json"],
+    ] {
+        let output = Command::new(BIN).args(&args).arg(&json).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains("'--lang <LANG>' cannot be used with"),
+            "{stderr}"
+        );
+        assert_eq!(fs::read_to_string(&json).unwrap(), r#"{"a":1}"#);
+    }
+    let output = Command::new(BIN)
+        .args(["fmt", "--lang", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
