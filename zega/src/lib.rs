@@ -14,7 +14,6 @@ use crate::parser::{ast::*, BinaryOperator, Expr, OrderDirection, Parser, Statem
 #[cfg(not(target_arch = "wasm32"))]
 use crate::wal::{restore, snapshot};
 use crate::journal::{atomically, Journal};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::wal::Operation;
 use crate::wal::Wal;
 
@@ -32,6 +31,7 @@ pub mod policy;
 mod v2;
 mod validation;
 mod wal;
+pub use wal::AppendTarget;
 #[cfg(test)]
 mod wal_order_tests;
 
@@ -42,7 +42,7 @@ pub use config::{JwtConfig, JwtKey};
 pub use context::{ResolvedContext, ZegaContext};
 pub use parser::grammar::ParseError;
 pub use policy::{Expr as PolicyExpr, ExprValue, Policy, PolicyCondition, PolicyTargets};
-pub use v2::{check_zql, parse_import, zql_load_locations, ZqlEntryPoint};
+pub use v2::{ZqlProgram, check_zql, parse_import, zql_load_locations, ZqlEntryPoint};
 pub use lang::{Direction as SchemaDirection, DisplayConfig, DisplayView, EdgeField, Field, LoadFormat, Schema, Span, TypeDef, ViewKind};
 
 #[derive(Error, Debug)]
@@ -154,6 +154,7 @@ pub struct Zega {
     wal: Wal,
     #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
+    #[cfg(not(target_arch = "wasm32"))]
     in_memory: bool,
     jwt_config: Option<JwtConfig>,
     policies: Vec<Policy>,
@@ -290,7 +291,10 @@ impl Zega {
 
         #[cfg(not(target_arch = "wasm32"))]
         let snapshot_path = path.join("snapshot.bin");
+        #[cfg(not(target_arch = "wasm32"))]
         let wal_path = path.join("wal.bin");
+        #[cfg(target_arch = "wasm32")]
+        let _ = (path, builder.wal_flush_every, builder.in_memory);
 
         // Restore from snapshot if exists
         #[cfg(not(target_arch = "wasm32"))]
@@ -325,6 +329,7 @@ impl Zega {
             wal,
             #[cfg(not(target_arch = "wasm32"))]
             path,
+            #[cfg(not(target_arch = "wasm32"))]
             in_memory: builder.in_memory,
             jwt_config,
             policies,
@@ -877,6 +882,41 @@ impl Zega {
             snapshot(&graph, &snapshot_path)?;
             Ok(())
         }
+    }
+
+    /// Construct an engine whose journal appends to synchronous host storage.
+    /// The host owns transaction boundaries, recovery and the durability gate.
+    pub fn with_append_target(target: Box<dyn AppendTarget + Send>) -> Result<Self> {
+        let mut db = Self::in_memory().build()?;
+        db.wal = Wal::with_append_target(target);
+        Ok(db)
+    }
+
+    /// Replay one exact WAL frame without logging it again.
+    pub fn replay_wal_entry(&self, frame: &[u8]) -> Result<()> {
+        let op = crate::wal::decode_entry(frame)?;
+        let mut graph = self.graph.lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".into()))?;
+        apply_op_to_memory(&mut graph, &op);
+        Ok(())
+    }
+
+    /// Host checkpoint metadata: snapshots predate persistent id counters.
+    /// Store this alongside the snapshot, in the same transaction.
+    pub fn checkpoint_ids(&self) -> Result<(u64, u64)> {
+        Ok(self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".into()))?.next_ids())
+    }
+
+    /// Restore checkpoint metadata before replaying entries after a snapshot.
+    /// Refuse counters that could reuse a live id.
+    pub fn restore_checkpoint_ids(&self, ids: (u64, u64)) -> Result<()> {
+        let mut graph = self.graph.lock().map_err(|_| ZegaError::Execution("lock poisoned".into()))?;
+        let minimum = graph.next_ids();
+        if ids.0 < minimum.0 || ids.1 < minimum.1 {
+            return Err(ZegaError::Execution("checkpoint id counters precede live ids".into()));
+        }
+        graph.reset_next_ids(ids);
+        Ok(())
     }
 
     /// Serialize the full graph state to bytes. Platform-independent —
@@ -2971,7 +3011,6 @@ fn extreme_value(values: &[Value], desired: std::cmp::Ordering) -> Value {
         .unwrap_or(Value::Null)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn apply_op_to_memory(graph: &mut Graph, op: &Operation) {
     match op {
         Operation::InsertNode { id, labels, props } => {

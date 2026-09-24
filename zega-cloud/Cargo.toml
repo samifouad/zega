@@ -1,0 +1,24 @@
+[package]
+name = "zega-cloud"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+zega = { path = "../zega", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = "=0.8.6"
+wasm-bindgen = { workspace = true }
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

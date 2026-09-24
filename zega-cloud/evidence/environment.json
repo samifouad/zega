@@ -1,0 +1,73 @@
+{
+  "date": "2026-09-24",
+  "host": {
+    "model": "iMac20,2",
+    "architecture": "x86_64",
+    "physicalCores": 10,
+    "memoryBytes": 137438953472,
+    "macOS": "26.7"
+  },
+  "baseCommit": "67b556b355bc3ceb06e2551723dc7fb232d7388d",
+  "tools": {
+    "rust": "1.96.0",
+    "node": "26.3.1",
+    "worker": "0.8.6",
+    "worker-build": "0.8.6",
+    "wrangler": "4.137.0",
+    "miniflare": "5.20260921.0-alpha",
+    "workerd": "1.20260921.1"
+  },
+  "wasmSha256": "a3b278baba94e91b5a607e8f247c0ed28ed708120df8bc2e20d2a21fb1c5f91a",
+  "nativeTests": {
+    "passed": 917,
+    "failed": 0,
+    "ignored": 2,
+    "exit": 0
+  },
+  "checks": [
+    {
+      "command": "cargo check --locked --workspace --all-targets",
+      "exit": 0
+    },
+    {
+      "command": "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings",
+      "exit": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo clippy --locked -p zega-cloud --lib --target wasm32-unknown-unknown -- -D warnings",
+      "exit": 0,
+      "warnings": 0
+    },
+    {
+      "command": "npm --prefix zega-cloud test",
+      "exit": 0,
+      "reportedTests": 11,
+      "scenarios": 10
+    },
+    {
+      "command": "npm --prefix zega-cloud run corpus",
+      "exit": 0,
+      "passed": 263,
+      "skipped": 1
+    },
+    {
+      "command": "npm --prefix zega-cloud test (transactionSync bypassed temporarily)",
+      "exit": 1,
+      "expected": "snapshot replacement fault test fails"
+    },
+    {
+      "command": "node zega-cloud/bench/local.mjs",
+      "exit": 0,
+      "sizesMiB": [
+        10,
+        50,
+        100
+      ],
+      "readsPerSize": 10000,
+      "writesPerSize": 2000
+    }
+  ],
+  "cloudDeployed": false,
+  "cloudBillingMeasured": false
+}

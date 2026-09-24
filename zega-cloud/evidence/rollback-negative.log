@@ -1,0 +1,47 @@
+
+> test
+> node --test test/local.mjs
+
+▶ SQLite Durable Object integration
+  ✔ native JSON envelope; graph isolation; Request-Id required (90.581837ms)
+  ✔ eviction and SIGKILL/restart preserve acknowledged data and ids (1699.077474ms)
+  ✔ same Request-Id returns original result and writes no SQLite rows (166.842471ms)
+  ✔ fail after WAL INSERT and after engine success: rollback then abort; no phantom blocks (588.021933ms)
+  ✔ lost response after commit is resolved by retry without reapplying (66.560708ms)
+  ✔ separate blocks commit separately; failed block has no partial rows (71.36248ms)
+  ✖ snapshot chunks, rollback replacement, trim, cold replay and retry survive (596.273388ms)
+  ✔ log size triggers checkpoint and trim automatically (1452.907289ms)
+  ✔ parallel retries apply exactly one mutation block (93.095875ms)
+✖ SQLite Durable Object integration (6666.277152ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 8
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 11836.820975
+
+✖ failing tests:
+
+test at test/local.mjs:111:11
+✖ snapshot chunks, rollback replacement, trim, cold replay and retry survive (596.273388ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  500 !== 503
+
+      at TestContext.<anonymous> (file:///Volumes/Projects/codex/zega-wt-cloud/zega-cloud/test/local.mjs:127:12)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async TestContext.<anonymous> (file:///Volumes/Projects/codex/zega-wt-cloud/zega-cloud/test/local.mjs:111:3)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 500,
+    expected: 503,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+negative control exit=1

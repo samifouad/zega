@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 #[cfg(not(target_arch = "wasm32"))]
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
@@ -19,13 +19,18 @@ use thiserror::Error;
 use crate::graph::{Graph, Node, NodeId, RelId, Relationship};
 use crate::parser::Value;
 
+#[cfg(not(target_arch = "wasm32"))]
 const WAL_MAGIC: &[u8; 4] = b"ZWAL";
+#[cfg(not(target_arch = "wasm32"))]
 const WAL_VERSION: u16 = 2;
+#[cfg(not(target_arch = "wasm32"))]
 const WAL_FILE_HEADER: &[u8; 6] = b"ZWAL\x02\x00";
+#[cfg(not(target_arch = "wasm32"))]
 const WAL_FILE_HEADER_LEN: u64 = WAL_FILE_HEADER.len() as u64;
 const ENTRY_HEADER_LEN: u64 = 12;
 #[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_GROUP_COMMIT_INTERVAL: Duration = Duration::from_millis(5);
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_GROUP_COMMIT_BATCH_SIZE: usize = 64;
 
 #[derive(Error, Debug)]
@@ -95,6 +100,8 @@ struct GroupCommit {
 }
 
 pub struct Wal {
+    #[cfg(target_arch = "wasm32")]
+    target: std::sync::Mutex<Option<Box<dyn AppendTarget + Send>>>,
     #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
     #[cfg(not(target_arch = "wasm32"))]
@@ -104,10 +111,20 @@ pub struct Wal {
 }
 
 impl Wal {
+    /// A synchronous host target. The host must hold its output gate until
+    /// the transaction containing this append commits. No group-commit thread.
+    pub fn with_append_target(target: Box<dyn AppendTarget + Send>) -> Self {
+        #[cfg(target_arch = "wasm32")]
+        { Self { target: std::sync::Mutex::new(Some(target)) } }
+        #[cfg(not(target_arch = "wasm32"))]
+        { Self::from_target(Path::new(""), target, true,
+            DEFAULT_GROUP_COMMIT_INTERVAL, DEFAULT_GROUP_COMMIT_BATCH_SIZE) }
+    }
+
     pub fn in_memory() -> Self {
         #[cfg(target_arch = "wasm32")]
         {
-            Wal {}
+            Wal { target: std::sync::Mutex::new(None) }
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -141,7 +158,7 @@ impl Wal {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (path, flush_every);
-            Ok(Wal {})
+            Ok(Wal { target: std::sync::Mutex::new(None) })
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -166,7 +183,7 @@ impl Wal {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (path, flush_every, interval, batch_size);
-            Ok(Wal {})
+            Ok(Wal { target: std::sync::Mutex::new(None) })
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -236,7 +253,13 @@ impl Wal {
     pub fn append(&self, op: &Operation) -> Result<(), WalError> {
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = op;
+            let mut target = self.target.lock()
+                .map_err(|_| WalError::Durability("append target lock poisoned".into()))?;
+            if let Some(target) = target.as_mut() {
+                let bytes = bincode::serialize(op)?;
+                append_entry(target.as_mut(), bytes.len() as u64, crc32fast::hash(&bytes), &bytes)?;
+                target.sync()?;
+            }
             Ok(())
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -389,10 +412,7 @@ impl Wal {
                         ),
                     });
                 }
-                let op = bincode::deserialize(&payload).map_err(|error| WalError::Corruption {
-                    offset: entry_start,
-                    reason: format!("invalid operation payload: {error}"),
-                })?;
+                let op = decode_payload(&payload, entry_start)?;
                 ops.push(op);
                 valid_end = entry_end;
             }
@@ -569,8 +589,18 @@ fn open_wal_writer(path: &Path) -> io::Result<File> {
     OpenOptions::new().read(true).write(true).open(path)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-trait AppendTarget: Write {
+/// Synchronous append seam shared by files and host storage. `seek_end` returns
+/// a rollback checkpoint (a byte offset for files, a sequence for row stores).
+/// `write_entry` receives the native frame header and payload. A host must discard
+/// its engine after an uncertain durability error, just as it would reopen a file.
+pub trait AppendTarget: Write {
+    /// File targets keep their existing streaming writes. Row targets override
+    /// this to insert the header and payload as one opaque BLOB.
+    fn write_entry(&mut self, header: &[u8; 12], payload: &[u8]) -> io::Result<()> {
+        self.write_all(&header[..8])?;
+        self.write_all(&header[8..])?;
+        self.write_all(payload)
+    }
     fn seek_end(&mut self) -> io::Result<u64>;
     fn truncate(&mut self, len: u64) -> io::Result<()>;
     /// Makes every earlier write and truncate durable, including the file
@@ -597,7 +627,6 @@ impl AppendTarget for File {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 /// Writes one entry at the end of the file and returns the offset it starts
 /// at; on a failed write, nothing of it is left in the file.
 fn append_entry<T: AppendTarget + ?Sized>(
@@ -609,10 +638,10 @@ fn append_entry<T: AppendTarget + ?Sized>(
     // Seek for every append, including after rollback: set_len does not move
     // the cursor, and another handle may have truncated a torn tail.
     let offset = target.seek_end()?;
-    let result = target
-        .write_all(&len.to_le_bytes())
-        .and_then(|()| target.write_all(&crc.to_le_bytes()))
-        .and_then(|()| target.write_all(payload));
+    let mut header = [0; 12];
+    header[..8].copy_from_slice(&len.to_le_bytes());
+    header[8..].copy_from_slice(&crc.to_le_bytes());
+    let result = target.write_entry(&header, payload);
     if let Err(write_error) = result {
         // The rollback is only a rollback once it is durable: an unsynced
         // truncate can leave the torn tail on disk after a crash. Either
@@ -720,6 +749,27 @@ fn group_commit_worker(group: Arc<GroupCommit>) {
     }
 }
 
+/// Decode exactly one native `[u64 length][u32 CRC][bincode payload]` frame.
+/// SQL replay fails closed on any malformed row; it never silently trims a
+/// committed row. Native replay still repairs torn file tails before decoding.
+pub(crate) fn decode_entry(frame: &[u8]) -> Result<Operation, WalError> {
+    let corrupt = |reason: &str| WalError::Corruption { offset: 0, reason: reason.into() };
+    if frame.len() < ENTRY_HEADER_LEN as usize { return Err(corrupt("truncated entry header")); }
+    let len = u64::from_le_bytes(frame[..8].try_into().unwrap());
+    let crc = u32::from_le_bytes(frame[8..12].try_into().unwrap());
+    let payload = &frame[12..];
+    if len != payload.len() as u64 { return Err(corrupt("entry length mismatch")); }
+    if crc32fast::hash(payload) != crc { return Err(corrupt("checksum mismatch")); }
+    decode_payload(payload, 0)
+}
+
+fn decode_payload(payload: &[u8], offset: u64) -> Result<Operation, WalError> {
+    bincode::DefaultOptions::new().with_fixint_encoding().reject_trailing_bytes()
+        .with_limit(payload.len() as u64).deserialize(payload)
+        .map_err(|error| WalError::Corruption { offset,
+            reason: format!("invalid operation payload: {error}") })
+}
+
 // `Zega::open`/`Zega::snapshot` only call this on the native, file-backed
 // path (see the `cfg(not(target_arch = "wasm32"))` call sites in lib.rs);
 // the wasm32 build persists through `encode_snapshot`/`restore_bytes` instead.
@@ -762,9 +812,14 @@ pub fn restore(graph: &mut Graph, path: &Path) -> Result<bool, WalError> {
 /// Serialize the full graph state to bytes (platform-independent; the
 /// basis for the file-based snapshot and for wasm export/import).
 pub fn encode_snapshot(graph: &Graph) -> Result<Vec<u8>, WalError> {
-    let snapshot = Snapshot {
-        nodes: graph.all_nodes().clone(),
-        relationships: graph.all_relationships().clone(),
+    #[derive(Serialize)]
+    struct SnapshotRef<'a> {
+        nodes: &'a HashMap<NodeId, Node>,
+        relationships: &'a HashMap<RelId, Relationship>,
+    }
+    let snapshot = SnapshotRef {
+        nodes: graph.all_nodes(),
+        relationships: graph.all_relationships(),
     };
     let mut bytes = Vec::new();
     serialize_into(&mut bytes, &snapshot)?;

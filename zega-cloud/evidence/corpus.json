@@ -1,0 +1,1600 @@
+{
+  "corpus": "zegadb/testsuite",
+  "revision": "d9684641b3a77f772f920c47bb40cc7d5b0e2995",
+  "digest": "b0e247247ddfa20c9c65cf7a253fb46fe3622538c93bc52fec150dd3843d8353",
+  "endpoint": "http://127.0.0.1:8800",
+  "counts": {
+    "PASS": 263,
+    "FAIL": 0,
+    "XFAIL": 0,
+    "XPASS": 0,
+    "SKIP": 1,
+    "parity": 263
+  },
+  "total": 264,
+  "results": [
+    {
+      "id": "constraints/unique_distinct",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "constraints/unique_insert",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "constraints/unique_relationship",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "constraints/unique_second_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "constraints/unique_self_update",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "constraints/unique_unknown_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "constraints/unique_unknown_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "constraints/unique_update",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/bad_json",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/bad_string",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/bare_not",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/column_missing_dollar",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/column_outside_load",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/comma_condition",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/edge_field_at_root",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/edge_field_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/edge_set_in_query",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/equality_ambiguous",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_close_brace",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_close_paren",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_colon",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_name",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_name_eof",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_number",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_open_brace",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_range_separator",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_schema",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_string",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/expected_type_keyword",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/fractional_hops",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/hops_write",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/link_missing",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/load_empty_locations",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/load_empty_path",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/load_in_query_api",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/load_inline",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/load_missing_location",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/load_non_string",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/missing_comparison",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/mutation_comparison",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/mutation_hop_range",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/mutation_or",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/number_overflow",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/query_and_mutation",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/range_without_arrow",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/relationship_as_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/required_edge_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/reversed_hop_range",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/set_ambiguous",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/set_in_query",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/set_missing",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/single_and",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/single_or",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/unexpected_input",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/unknown_edge_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/unknown_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/unknown_filter_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/unknown_relationship",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/unknown_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/unknown_union_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/unterminated_string",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/wrong_direction",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/wrong_target",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "errors/zero_hop_range",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/and",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/angle_not_equal",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/boolean",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/case_sensitive",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/contains",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/ends_with",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/equality_and",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/greater",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/greater_equal",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/less",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/less_equal",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/negative_float",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/no_match",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/not_equal",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/or",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/parentheses",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/precedence",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "filter/starts_with",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/csv_no_header",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/csv_quoted",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/csv_types",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/empty_array",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/json_array",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/json_object",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/json_scalar",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/missing_column",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/multiple_files",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/path_escape",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/private_url",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "import/remote_url",
+      "status": "SKIP",
+      "reason": "remote import is opt-in in upstream corpus; local spike run is offline"
+    },
+    {
+      "id": "index/index_before_unique",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/index_duplicate_block",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/index_duplicate_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/index_follows_updates",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/index_range_not_orderable",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/index_range_on_unique",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/index_relationship",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/index_text_not_string",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/index_unknown_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/index_unknown_kind",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/index_unknown_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/range_bounds",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/range_equality",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/range_float_zero",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/range_mixed_kinds",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/range_or",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/range_string",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/text_operators",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "index/text_short_needle",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/antimeridian_box",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/csv_mapping",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/distance_projection",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/json_object",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/latitude_range",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/longitude_range",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/nearest",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/point_arity",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/point_value",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/radius",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/source_missing",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "location/source_not_numeric",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "mutation/create",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "mutation/edge_properties",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "mutation/empty",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "mutation/incoming_create",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "mutation/inverse_edge_properties",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "mutation/link_existing",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "mutation/multiple_labels",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "mutation/set_fields",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_distance",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_endsWith",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_findWith",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_hops",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_id",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_id_filter",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_incomplete_starts_with",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_near",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_path_cost",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_path_hops",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_point",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_score",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_similarity",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_startsWith",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_vector",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/old_within_box",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/user_cost_path_weight",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/user_hops_cost_shape",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/user_id_score",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "names/user_language_names",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/astar_km",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/astar_unit",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/cost_bound_exclusive",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/cost_bound_inclusive",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/dijkstra_km",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/fewest_edges",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/hops_bound",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/hops_bound_weighted",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/missing_unit",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/missing_weight",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/nearest_target",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/negative_weight",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/plain_float_dijkstra",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/start_is_target",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/start_needs_point",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/tie_lower_id",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/toward_needs_weight",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/unit_in_query",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/unit_mismatch",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/unit_on_string",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/unknown_unit",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/unreachable",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "path/weight_not_number",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/all_rows",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/empty_block",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/empty_scan",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/hop_minimum",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/hop_range",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/incoming",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/missing_equality",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/missing_many",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/missing_one",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/nested_filter",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/nested_round_trip",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/outgoing",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/root_hops",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/selected_fields",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "query/union_selection",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/comments",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/duplicate_edge_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/duplicate_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/edge_field_mismatch",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/empty_schema",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/empty_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/expected_arrow",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/optional_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/optional_missing_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/optional_relationship",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/primitive_fields",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/string_escapes",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/unicode_string",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/union_relationship",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "schema/unknown_edge_target",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/after_mutation",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/all_skipped",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/and_prunes_edges",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/bad_unit",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/common",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/common_across_types",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/ends_with",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/fanout_star",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/find_with",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/find_without",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/indexed_text",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/infix_without_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/near",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/near_exclusive",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/negative_distance",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/no_outside_pairs",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/outside_then",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/parentheses",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/precedence",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/regex",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/regex_backreference",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/regex_lookaround",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/scoped_text",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/similar",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/similar_exclusive",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/skip_alone",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/skip_chain",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/starts_with",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/two_conditions",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/unchanged_infix",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/unicode_text",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/union_deduplicates",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/unknown_common_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/unknown_field",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/without_query",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/wrong_point_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/wrong_text_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "then/wrong_vector_type",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/component",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/csv_mapping",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/dimension",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/dimension_range",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/dot",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/exact_filter",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/json_array",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/l2",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/metric",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/near_limit",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/near_order",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/nearest",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/optional_near",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/projection_groups",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/query_dimension",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/relationship",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/threshold",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/update",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/view_without_vector",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    },
+    {
+      "id": "vector/views",
+      "status": "PASS",
+      "differences": [],
+      "parity": true
+    }
+  ]
+}

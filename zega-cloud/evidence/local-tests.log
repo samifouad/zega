@@ -1,0 +1,27 @@
+
+> test
+> node --test test/local.mjs
+
+▶ SQLite Durable Object integration
+  ✔ native JSON envelope; graph isolation; Request-Id required (592.495269ms)
+  ✔ eviction and SIGKILL/restart preserve acknowledged data and ids (2726.391917ms)
+  ✔ same Request-Id returns original result and writes no SQLite rows (501.63456ms)
+  ✔ fail after WAL INSERT and after engine success: rollback then abort; no phantom blocks (2740.297451ms)
+  ✔ lost response after commit is resolved by retry without reapplying (72.929081ms)
+  ✔ separate blocks commit separately; failed block has no partial rows (82.391175ms)
+  ✔ snapshot chunks, rollback replacement, trim, cold replay and retry survive (714.515474ms)
+  ✔ log size triggers checkpoint and trim automatically (1573.569877ms)
+  ✔ evicted wasm instance survives GC during 10000 later reads (92914.446285ms)
+  ✔ parallel retries apply exactly one mutation block (161.877368ms)
+✔ SQLite Durable Object integration (105206.427474ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 110361.231889
+
+COMMAND: npm --prefix zega-cloud test
+EXIT CODE: 0

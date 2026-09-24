@@ -23,3 +23,9 @@ __pycache__/
 
 browser/.wrangler/
 browser/.tmp/
+
+# Cloud spike local build and SQLite state.
+zega-cloud/node_modules/
+zega-cloud/build/
+zega-cloud/.wrangler/
+zega-cloud/.tmp/

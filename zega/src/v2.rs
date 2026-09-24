@@ -52,6 +52,50 @@ pub fn check_zql(entry_point: ZqlEntryPoint, source: &str) -> std::result::Resul
     result.map_err(|error| crate::lang::render_error("schema", source, &error))
 }
 
+/// A parsed HTTP request, executable one block at a time by a transactional
+/// host. Uses the same parser, diagnostics and executor as the native server.
+pub struct ZqlProgram {
+    file: crate::lang::ZqlFile,
+    source: String,
+    source_name: &'static str,
+}
+
+impl ZqlProgram {
+    pub fn parse(schema: &str, source: &str, document: bool) -> Result<Self, ZegaError> {
+        let file = if document {
+            crate::lang::parse_zql(source).map_err(|e| explain(e, "schema", source))?
+        } else {
+            crate::lang::ZqlFile {
+                schema: crate::lang::parse_schema(schema).map_err(|e| explain(e, "schema", schema))?,
+                uniques: crate::lang::parse_uniques(schema).map_err(|e| explain(e, "schema", schema))?,
+                indexes: crate::lang::parse_indexes(schema).map_err(|e| explain(e, "schema", schema))?,
+                statements: vec![crate::lang::parse_statement(source).map_err(|e| explain(e, "query", source))?],
+            }
+        };
+        Ok(Self { file, source: source.into(), source_name: if document { "schema" } else { "query" } })
+    }
+
+    pub fn len(&self) -> usize { self.file.statements.len() }
+    pub fn is_empty(&self) -> bool { self.file.statements.is_empty() }
+    pub fn is_mutation(&self, block: usize) -> bool {
+        match self.file.statements.get(block) {
+            Some(Statement::Run(query)) => query.mutation,
+            Some(Statement::Load { .. }) => true,
+            None => false,
+        }
+    }
+    pub fn execute(&self, db: &Zega, block: usize, sources: &HashMap<String, String>) -> Result<Json, ZegaError> {
+        self.execute_with_loader(db, block, &|location| supplied_source(location, sources))
+    }
+    fn execute_with_loader(&self, db: &Zega, block: usize, loader: &dyn Fn(&str) -> Result<String, LangError>) -> Result<Json, ZegaError> {
+        let statement = self.file.statements.get(block)
+            .ok_or_else(|| ZegaError::Execution("block index out of range".into()))?;
+        db.execute(&self.file.schema,
+            Declared { uniques: &self.file.uniques, indexes: &self.file.indexes },
+            statement, self.source_name, &self.source, loader)
+    }
+}
+
 impl Zega {
     /// Parse and check the schema, including the explicit display contract.
     pub fn schema(&self, source: &str) -> Result<Schema, ZegaError> {
@@ -86,16 +130,7 @@ impl Zega {
         source: &str,
         loader: &dyn Fn(&str) -> Result<String, LangError>,
     ) -> Result<Json, ZegaError> {
-        let schema = crate::lang::parse_schema(schema_src)
-            .map_err(|error| explain(error, "schema", schema_src))?;
-        let uniques = crate::lang::parse_uniques(schema_src)
-            .map_err(|error| explain(error, "schema", schema_src))?;
-        let indexes = crate::lang::parse_indexes(schema_src)
-            .map_err(|error| explain(error, "schema", schema_src))?;
-        let statement = crate::lang::parse_statement(source)
-            .map_err(|error| explain(error, "query", source))?;
-        let declared = Declared { uniques: &uniques, indexes: &indexes };
-        self.execute(&schema, declared, &statement, "query", source, loader)
+        ZqlProgram::parse(schema_src, source, false)?.execute_with_loader(self, 0, loader)
     }
 
     /// Rows a ZQL filter has been tested on since this database opened. An
@@ -239,18 +274,10 @@ impl Zega {
         source: &str,
         loader: &dyn Fn(&str) -> Result<String, LangError>,
     ) -> Result<Json, ZegaError> {
-        let file =
-            crate::lang::parse_zql(source).map_err(|error| explain(error, "schema", source))?;
+        let program = ZqlProgram::parse("", source, true)?;
         let mut last = Json::Null;
-        for statement in &file.statements {
-            last = self.execute(
-                &file.schema,
-                Declared { uniques: &file.uniques, indexes: &file.indexes },
-                statement,
-                "schema",
-                source,
-                loader,
-            )?;
+        for block in 0..program.len() {
+            last = program.execute_with_loader(self, block, loader)?;
         }
         Ok(last)
     }
