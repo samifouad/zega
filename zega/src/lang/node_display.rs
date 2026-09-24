@@ -26,13 +26,13 @@ impl Default for NodeDisplay {
 }
 
 pub(super) struct DisplayAttribute {
-    name: String,
-    span: Span,
-    value: AttributeValue,
-    value_span: Span,
+    pub(super) name: String,
+    pub(super) span: Span,
+    pub(super) value: AttributeValue,
+    pub(super) value_span: Span,
 }
 
-enum AttributeValue {
+pub(super) enum AttributeValue {
     Name(String),
     Field(String),
     Literal(Json),
@@ -61,7 +61,7 @@ impl Parser<'_> {
             let start = self.i;
             let value = if self.eat("&") {
                 AttributeValue::Field(self.ident()?.0)
-            } else if self.looking_at_ident() {
+            } else if self.looking_at_ident() && !self.starts_call("point", "(") {
                 AttributeValue::Name(self.ident()?.0)
             } else {
                 AttributeValue::Literal(self.parse_value()?)
