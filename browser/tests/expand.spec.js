@@ -192,6 +192,11 @@ test('at 390px the modal fits the screen with nothing off its edges', async ({ p
   // than a phone with or without this change; the modal is fixed to the
   // viewport, so it does not depend on that.)
   expect(await graph(page).evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+  // It uses the modal's shape. Letterboxed in the old 800×480 frame, a
+  // drawing in this tall modal could be at most 0.6 of its width tall.
+  await settle(page);
+  const svg = await box(page.locator('#graph .graph-wrap > svg'));
+  await expect.poll(async () => (await nodeSpread(page)).height).toBeGreaterThan(svg.width * 480 / 800 + 20);
   await expandButton(page).click();
   await expect(graph(page)).not.toHaveClass(/graph-expanded/);
 });
