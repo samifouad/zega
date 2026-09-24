@@ -200,25 +200,29 @@ async function nearest(page, x, y, color) {
 test('a query lights up the routes it follows: focused arcs draw in the accent, the rest faint, until a query follows none', async ({ page }) => {
   const data = await sampleData();
   await loadFlights(page, data);
-  const accent = palettes.light.accent;
+  const { accent, water } = palettes.light;
+  // How far a pixel can be from the accent: the water under the arc, in the same measure as `nearest`.
+  const span = Math.max(...[1, 3, 5].map((i) => Math.abs(parseInt(accent.slice(i, i + 2), 16) - parseInt(water.slice(i, i + 2), 16))));
   // Out of Calgary is in focus on load: Calgary–Amsterdam at full strength.
   const lit = await arcIndex(page, data, 'YYC', 'AMS');
   const seen = await visiblePoint(page, lit);
   expect(seen).not.toBeNull();
   expect(await nearest(page, seen.point.x, seen.point.y, accent)).toBeLessThanOrEqual(48);
-  // A South Atlantic route is context: faint, far from the accent, and its midpoint is on the screen.
+  // A South Atlantic route is context: faint (10% ink), with its midpoint on the screen over water.
   const faint = await arcIndex(page, data, 'GRU', 'JNB').catch(() => arcIndex(page, data, 'JNB', 'GRU'));
   expect(await arcs(page, 'return arcs.records[arg].focus', faint)).toBe(false);
   const mid = await arcs(page, 'return arcs.screen(arg, 0.5)', faint);
   expect(mid).not.toBeNull();
   const faintDistance = await nearest(page, mid.x, mid.y, accent);
-  expect(faintDistance).toBeGreaterThan(80);
+  expect(faintDistance, 'faint: at most a tenth of the way from the water to the accent').toBeGreaterThan(0.7 * span);
   const focusedShot = await page.locator('.maplibregl-canvas').screenshot();
-  // Nearest to the Calgary Tower follows no relationship: the same route now draws at the network's strength.
+  // Nearest to the Calgary Tower follows no relationship: the same route now draws at the network's 55%.
   await page.locator('#tour-queries button').nth(3).click();
   await expect.poll(() => arcs(page, 'return arcs.focused')).toBe(false);
   await idle(page);
-  expect(await nearest(page, mid.x, mid.y, accent)).toBeLessThan(faintDistance - 30);
+  const networkDistance = await nearest(page, mid.x, mid.y, accent);
+  expect(networkDistance, 'network: about half way to the accent').toBeLessThan(0.65 * span);
+  expect(faintDistance - networkDistance, 'faint is clearly fainter than the network').toBeGreaterThan(0.2 * span);
   expect((await page.locator('.maplibregl-canvas').screenshot()).equals(focusedShot)).toBe(false);
   await page.screenshot({ path: `${SHOTS}/flights-focus-off-1440.png` });
 });
