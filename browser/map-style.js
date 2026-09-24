@@ -1,6 +1,9 @@
 import { layers, namedFlavor } from './vendor/basemaps/index.js';
 import { palettes } from './theme.js';
 export const TILE_ORIGIN = 'https://tiles.zega.dev';
+// One archive for every city the explorer's samples cover (scripts/cities.mjs,
+// docs/tiles.md), shared by the map and the globe.
+export const BASEMAP = `${TILE_ORIGIN}/cities.pmtiles`;
 export const ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>';
 /** The Protomaps flavor recoloured with the explorer's theme tokens. */
 export function basemapFlavor(theme) {
@@ -25,7 +28,7 @@ export function mapStyle(theme, data, basemap = true, credit = '') {
     version: 8,
     ...(basemap ? { glyphs: `${TILE_ORIGIN}/fonts/{fontstack}/{range}.pbf`, sprite: `${TILE_ORIGIN}/sprites/v4/${theme}` } : {}),
     sources: {
-      ...(basemap ? { basemap: { type: 'vector', url: `pmtiles://${TILE_ORIGIN}/calgary.pmtiles`, attribution: ATTRIBUTION } } : {}),
+      ...(basemap ? { basemap: { type: 'vector', url: `pmtiles://${BASEMAP}`, attribution: ATTRIBUTION } } : {}),
       'zega-nodes': { type: 'geojson', ...(credit ? { attribution: credit } : {}), data },
     },
     layers: [

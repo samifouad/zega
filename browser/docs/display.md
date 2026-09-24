@@ -58,7 +58,9 @@ relationship chips. Graph type filters also filter relationship endpoints. Maps
 plot coordinates projected by the current query; include `@id lat lon` to preserve
 identity even when two nodes share the same values. Clicking a map marker, table
 cell/chip, or graph node opens the same inspector. The Calgary button loads the
-committed OSM sample and selects its declared default; the Flights button loads
+committed OSM sample and selects its declared default; the Cities button loads
+eight cities, their places and the routes between them on the globe
+([tiles.md](tiles.md#samples)); the Flights button loads
 the OpenFlights sample (below). Light/dark theme preference
 persists across reloads.
 
@@ -197,7 +199,9 @@ code matches a node's first `String<iso2>` field are highlighted in the theme's
 accent colour. Clicking one opens that node in the shared inspector. `Point`
 fields (or `lat`/`lon`) plot as markers, which are also clickable. Water, land,
 borders and highlights follow the explorer's light and dark theme. The OSM
-basemap appears from zoom 5, as the globe flattens. If it fails, the countries
+basemap appears from zoom 5, as the globe flattens, and a highlighted
+country's fill fades out between zoom 5 and 9, so a city's streets are not
+drawn under the accent wash; its outline stays. If it fails, the countries
 and places still draw on plain ground. If the outlines fail, the places still
 draw and a notice says so. Terrain and relief are not part of this phase.
 
