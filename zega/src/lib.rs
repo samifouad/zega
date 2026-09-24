@@ -13,12 +13,16 @@ pub use crate::parser::Value;
 use crate::parser::{ast::*, BinaryOperator, Expr, OrderDirection, Parser, Statement};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::wal::{restore, snapshot};
-use crate::wal::{Operation, Wal};
+use crate::journal::{atomically, Journal};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::wal::Operation;
+use crate::wal::Wal;
 
 pub mod config;
 pub mod context;
 mod graph;
 mod index;
+mod journal;
 mod jwt;
 mod lang;
 mod parser;
@@ -28,6 +32,8 @@ pub mod policy;
 mod v2;
 mod validation;
 mod wal;
+#[cfg(test)]
+mod wal_order_tests;
 
 pub use crate::lang::diagnose;
 pub use crate::validation::{Diagnostic, Pane, Report, Severity};
@@ -580,104 +586,97 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let bindings = match write {
-            Statement::Create { pattern } => {
-                vec![create_pattern(
-                    &mut graph,
-                    &self.wal,
-                    pattern,
-                    params,
-                    Bindings::new(),
-                )?]
-            }
-            Statement::MatchCreate {
-                match_pattern,
-                where_clause,
-                create_pattern: create_elements,
-            } => {
-                let matched = resolve_match_bindings(
-                    &graph,
+        let mut graph = self.lock_graph()?;
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            let bindings = match write {
+                Statement::Create { pattern } => {
+                    vec![create_pattern(graph, journal, pattern, params, Bindings::new())?]
+                }
+                Statement::MatchCreate {
                     match_pattern,
-                    where_clause.as_ref(),
-                    params,
-                    traversal_budget,
-                )?;
-                let mut created = Vec::with_capacity(matched.len());
-                for binding in matched {
-                    created.push(create_pattern(
-                        &mut graph,
-                        &self.wal,
-                        create_elements,
+                    where_clause,
+                    create_pattern: create_elements,
+                } => {
+                    let matched = resolve_match_bindings(
+                        graph,
+                        match_pattern,
+                        where_clause.as_ref(),
                         params,
-                        binding,
-                    )?);
-                }
-                created
-            }
-            Statement::Merge {
-                pattern,
-                on_create,
-                on_match,
-            } => {
-                vec![merge_pattern(
-                    &mut graph, &self.wal, pattern, on_create, on_match, params,
-                )?]
-            }
-            Statement::MatchSet {
-                match_pattern,
-                where_clause,
-                assignments,
-            } => {
-                let matched = resolve_match_bindings(
-                    &graph,
-                    match_pattern,
-                    where_clause.as_ref(),
-                    params,
-                    traversal_budget,
-                )?;
-                for binding in &matched {
-                    set_pattern(&mut graph, &self.wal, assignments, params, binding)?;
-                }
-                matched
-            }
-            Statement::MatchDelete {
-                match_pattern,
-                where_clause,
-                detach,
-                identifiers,
-            } => {
-                let matched = resolve_match_bindings(
-                    &graph,
-                    match_pattern,
-                    where_clause.as_ref(),
-                    params,
-                    traversal_budget,
-                )?;
-                let mut deleted = std::collections::HashSet::new();
-                for binding in &matched {
-                    delete_pattern(
-                        &mut graph,
-                        &self.wal,
-                        *detach,
-                        identifiers,
-                        binding,
-                        &mut deleted,
+                        traversal_budget,
                     )?;
+                    let mut created = Vec::with_capacity(matched.len());
+                    for binding in matched {
+                        created.push(create_pattern(
+                            graph,
+                            journal,
+                            create_elements,
+                            params,
+                            binding,
+                        )?);
+                    }
+                    created
                 }
-                matched
-            }
-            Statement::Set { .. } | Statement::Delete { .. } => vec![Bindings::new()],
-            _ => {
-                return Err(ZegaError::Execution(
-                    "RETURN can only follow a graph write clause".to_string(),
-                ));
-            }
-        };
-        project_bound_rows(&graph, &bindings, return_clause, order_by, None, limit, params)
+                Statement::Merge {
+                    pattern,
+                    on_create,
+                    on_match,
+                } => {
+                    vec![merge_pattern(
+                        graph, journal, pattern, on_create, on_match, params,
+                    )?]
+                }
+                Statement::MatchSet {
+                    match_pattern,
+                    where_clause,
+                    assignments,
+                } => {
+                    let matched = resolve_match_bindings(
+                        graph,
+                        match_pattern,
+                        where_clause.as_ref(),
+                        params,
+                        traversal_budget,
+                    )?;
+                    for binding in &matched {
+                        set_pattern(graph, journal, assignments, params, binding)?;
+                    }
+                    matched
+                }
+                Statement::MatchDelete {
+                    match_pattern,
+                    where_clause,
+                    detach,
+                    identifiers,
+                } => {
+                    let matched = resolve_match_bindings(
+                        graph,
+                        match_pattern,
+                        where_clause.as_ref(),
+                        params,
+                        traversal_budget,
+                    )?;
+                    let mut deleted = std::collections::HashSet::new();
+                    for binding in &matched {
+                        delete_pattern(
+                            graph,
+                            journal,
+                            *detach,
+                            identifiers,
+                            binding,
+                            &mut deleted,
+                        )?;
+                    }
+                    matched
+                }
+                Statement::Set { .. } | Statement::Delete { .. } => vec![Bindings::new()],
+                _ => {
+                    return Err(ZegaError::Execution(
+                        "RETURN can only follow a graph write clause".to_string(),
+                    ));
+                }
+            };
+            project_bound_rows(graph, &bindings, return_clause, order_by, None, limit, params)
+        })
     }
 
     fn exec_create(
@@ -685,12 +684,10 @@ impl Zega {
         pattern: &[PatternElement],
         params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        create_pattern(&mut graph, &self.wal, pattern, params, Bindings::new())?;
-
+        let mut graph = self.lock_graph()?;
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            create_pattern(graph, journal, pattern, params, Bindings::new())
+        })?;
         Ok(vec![])
     }
 
@@ -702,22 +699,20 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let bindings = resolve_match_bindings(
-            &graph,
-            match_pattern,
-            where_clause,
-            params,
-            traversal_budget,
-        )?;
-        for binding in bindings {
-            create_pattern(&mut graph, &self.wal, create_elements, params, binding)?;
-        }
-
-        Ok(vec![])
+        let mut graph = self.lock_graph()?;
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            let bindings = resolve_match_bindings(
+                graph,
+                match_pattern,
+                where_clause,
+                params,
+                traversal_budget,
+            )?;
+            for binding in bindings {
+                create_pattern(graph, journal, create_elements, params, binding)?;
+            }
+            Ok(vec![])
+        })
     }
 
     fn exec_merge(
@@ -727,11 +722,10 @@ impl Zega {
         on_match: &[SetClause],
         params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        merge_pattern(&mut graph, &self.wal, pattern, on_create, on_match, params)?;
+        let mut graph = self.lock_graph()?;
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            merge_pattern(graph, journal, pattern, on_create, on_match, params)
+        })?;
         Ok(vec![])
     }
 
@@ -744,7 +738,6 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let _wal = &self.wal;
         for _clause in _assignments {
             if let Expr::PropertyAccess(ref _target, ref _prop) = _clause.target {
                 if let Expr::Identifier(ref _var) = **_target {
@@ -781,16 +774,20 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let bindings =
-            resolve_match_bindings(&graph, match_pattern, where_clause, params, traversal_budget)?;
-        for binding in &bindings {
-            set_pattern(&mut graph, &self.wal, assignments, params, binding)?;
-        }
-        Ok(vec![])
+        let mut graph = self.lock_graph()?;
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            let bindings = resolve_match_bindings(
+                graph,
+                match_pattern,
+                where_clause,
+                params,
+                traversal_budget,
+            )?;
+            for binding in &bindings {
+                set_pattern(graph, journal, assignments, params, binding)?;
+            }
+            Ok(vec![])
+        })
     }
 
     fn exec_match_delete(
@@ -802,24 +799,21 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let bindings =
-            resolve_match_bindings(&graph, match_pattern, where_clause, params, traversal_budget)?;
-        let mut deleted = std::collections::HashSet::new();
-        for binding in &bindings {
-            delete_pattern(
-                &mut graph,
-                &self.wal,
-                detach,
-                identifiers,
-                binding,
-                &mut deleted,
+        let mut graph = self.lock_graph()?;
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            let bindings = resolve_match_bindings(
+                graph,
+                match_pattern,
+                where_clause,
+                params,
+                traversal_budget,
             )?;
-        }
-        Ok(vec![])
+            let mut deleted = std::collections::HashSet::new();
+            for binding in &bindings {
+                delete_pattern(graph, journal, detach, identifiers, binding, &mut deleted)?;
+            }
+            Ok(vec![])
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -834,29 +828,34 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let mut graph = self
-            .graph
+        let mut graph = self.lock_graph()?;
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            // 1. resolve MATCH (+ OPTIONAL MATCH + WHERE)
+            let mut bindings = resolve_match_and_optional(
+                graph,
+                match_pattern,
+                optional_patterns,
+                where_clause,
+                params,
+                traversal_budget,
+            )?;
+            // 2. WITH boundary
+            if let Some(with) = with_clause {
+                bindings = stage_with(bindings, with, params, graph)?;
+            }
+            // 3. apply each write clause in order, threading bindings
+            for clause in writes {
+                bindings = apply_write_clause(graph, journal, clause, bindings, params)?;
+            }
+            // 4. RETURN
+            project_bound_rows(graph, &bindings, return_clause, None, None, None, params)
+        })
+    }
+
+    fn lock_graph(&self) -> Result<std::sync::MutexGuard<'_, Graph>> {
+        self.graph
             .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        // 1. resolve MATCH (+ OPTIONAL MATCH + WHERE)
-        let mut bindings = resolve_match_and_optional(
-            &graph,
-            match_pattern,
-            optional_patterns,
-            where_clause,
-            params,
-            traversal_budget,
-        )?;
-        // 2. WITH boundary
-        if let Some(with) = with_clause {
-            bindings = stage_with(bindings, with, params, &graph)?;
-        }
-        // 3. apply each write clause in order, threading bindings
-        for clause in writes {
-            bindings = apply_write_clause(&mut graph, &self.wal, clause, bindings, params)?;
-        }
-        // 4. RETURN
-        project_bound_rows(&graph, &bindings, return_clause, None, None, None, params)
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))
     }
 
     pub fn snapshot(&self) -> Result<()> {
@@ -1373,7 +1372,7 @@ fn traverse_relationship(
 
 fn create_pattern(
     graph: &mut Graph,
-    wal: &Wal,
+    journal: &mut Journal,
     pattern: &[PatternElement],
     params: &HashMap<String, Value>,
     mut bindings: Bindings,
@@ -1389,12 +1388,7 @@ fn create_pattern(
                 .iter()
                 .map(|(key, expr)| Ok((key.clone(), eval_expr(expr, params, &bindings, graph)?)))
                 .collect::<Result<HashMap<_, _>>>()?;
-            let id = graph.create_node(element.labels.clone(), props.clone());
-            wal.append(&Operation::InsertNode {
-                id,
-                labels: element.labels.clone(),
-                props,
-            })?;
+            let id = journal.create_node(graph, element.labels.clone(), props);
             if !element.variable.is_empty() {
                 bindings.insert(element.variable.clone(), BoundValue::Node(id));
             }
@@ -1412,14 +1406,7 @@ fn create_pattern(
                 Some(Direction::Incoming) => (id, from),
                 Some(Direction::Outgoing) | Some(Direction::Both) | None => (from, id),
             };
-            let rel_id = graph.create_relationship(kind.clone(), from, to, props.clone());
-            wal.append(&Operation::InsertRel {
-                id: rel_id,
-                kind,
-                from,
-                to,
-                props,
-            })?;
+            journal.create_relationship(graph, kind, from, to, props);
         }
 
         previous_id = Some(id);
@@ -1430,7 +1417,7 @@ fn create_pattern(
 
 fn merge_pattern(
     graph: &mut Graph,
-    wal: &Wal,
+    journal: &mut Journal,
     pattern: &[PatternElement],
     on_create: &[SetClause],
     on_match: &[SetClause],
@@ -1464,14 +1451,8 @@ fn merge_pattern(
         let id = if let Some(id) = existing {
             id
         } else {
-            let id = graph.create_node(element.labels.clone(), props.clone());
             created = true;
-            wal.append(&Operation::InsertNode {
-                id,
-                labels: element.labels.clone(),
-                props,
-            })?;
-            id
+            journal.create_node(graph, element.labels.clone(), props)
         };
         if !element.variable.is_empty() {
             bindings.insert(element.variable.clone(), BoundValue::Node(id));
@@ -1481,7 +1462,7 @@ fn merge_pattern(
     // ON CREATE SET when the node was just created; ON MATCH SET when it
     // already existed (Neo4j MERGE semantics).
     let clauses = if created { on_create } else { on_match };
-    set_pattern(graph, wal, clauses, params, &bindings)?;
+    set_pattern(graph, journal, clauses, params, &bindings)?;
 
     Ok(bindings)
 }
@@ -1598,7 +1579,7 @@ fn stage_with(
 /// body per list element (row set unchanged); UNWIND expands the row set.
 fn apply_write_clause(
     graph: &mut Graph,
-    wal: &Wal,
+    journal: &mut Journal,
     clause: &WriteClause,
     bindings: Vec<Bindings>,
     params: &HashMap<String, Value>,
@@ -1606,14 +1587,14 @@ fn apply_write_clause(
     match clause {
         WriteClause::Set(assignments) => {
             for binding in &bindings {
-                set_pattern(graph, wal, assignments, params, binding)?;
+                set_pattern(graph, journal, assignments, params, binding)?;
             }
             Ok(bindings)
         }
         WriteClause::Create(pattern) => {
             let mut out = Vec::with_capacity(bindings.len());
             for binding in bindings {
-                out.push(create_pattern(graph, wal, pattern, params, binding)?);
+                out.push(create_pattern(graph, journal, pattern, params, binding)?);
             }
             Ok(out)
         }
@@ -1631,7 +1612,7 @@ fn apply_write_clause(
                     scoped.insert(variable.clone(), BoundValue::Value(item));
                     let mut sub = vec![scoped];
                     for inner in body {
-                        sub = apply_write_clause(graph, wal, inner, sub, params)?;
+                        sub = apply_write_clause(graph, journal, inner, sub, params)?;
                     }
                 }
             }
@@ -1658,7 +1639,7 @@ fn apply_write_clause(
 /// evaluated first (immutable graph borrow), then written (mutable borrow).
 fn set_pattern(
     graph: &mut Graph,
-    wal: &Wal,
+    journal: &mut Journal,
     assignments: &[SetClause],
     params: &HashMap<String, Value>,
     binding: &Bindings,
@@ -1675,9 +1656,7 @@ fn set_pattern(
         }
     }
     for (node_id, prop, value) in updates {
-        let props = HashMap::from([(prop, value)]);
-        graph.update_node(node_id, props.clone());
-        wal.append(&Operation::UpdateNode { id: node_id, props })?;
+        journal.update_node(graph, node_id, HashMap::from([(prop, value)]));
     }
     Ok(())
 }
@@ -1688,7 +1667,7 @@ fn set_pattern(
 /// guards against double-deleting a node matched via multiple bindings.
 fn delete_pattern(
     graph: &mut Graph,
-    wal: &Wal,
+    journal: &mut Journal,
     detach: bool,
     identifiers: &[String],
     binding: &Bindings,
@@ -1707,16 +1686,11 @@ fn delete_pattern(
                         "Cannot delete node {node_id} because it still has relationships. Use DETACH DELETE."
                     )));
                 }
-                for rid in &rel_ids {
-                    wal.append(&Operation::DeleteRel { id: *rid })?;
-                }
-                graph.delete_node(node_id);
-                wal.append(&Operation::DeleteNode { id: node_id })?;
+                journal.delete_node(graph, node_id);
             }
             Some(BoundValue::Relationship(rel_id)) => {
                 let rel_id = *rel_id;
-                graph.delete_relationship(rel_id);
-                wal.append(&Operation::DeleteRel { id: rel_id })?;
+                journal.delete_relationship(graph, rel_id);
             }
             _ => {}
         }
@@ -3020,6 +2994,11 @@ fn apply_op_to_memory(graph: &mut Graph, op: &Operation) {
         }
         Operation::DeleteRel { id } => {
             graph.delete_relationship(*id);
+        }
+        Operation::Statement { ops } => {
+            for op in ops {
+                apply_op_to_memory(graph, op);
+            }
         }
     }
 }

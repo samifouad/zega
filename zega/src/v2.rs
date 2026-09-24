@@ -16,7 +16,7 @@ use crate::lang::{
     Statement,
 };
 use crate::parser::Value;
-use crate::wal::Operation;
+use crate::journal::{atomically, Journal};
 use serde_json::{json, Value as Json};
 
 use crate::{Zega, ZegaError};
@@ -123,13 +123,10 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        if graph.get_node(id).is_none() {
-            return Ok(());
-        }
-        graph.delete_node(id);
-        self.wal
-            .append(&Operation::DeleteNode { id })
-            .map_err(|error| ZegaError::Execution(error.to_string()))
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            journal.delete_node(graph, id);
+            Ok(())
+        })
     }
 
     pub fn delete_relationship(&self, id: u64) -> Result<(), ZegaError> {
@@ -137,13 +134,10 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        if graph.get_relationship(id).is_none() {
-            return Ok(());
-        }
-        graph.delete_relationship(id);
-        self.wal
-            .append(&Operation::DeleteRel { id })
-            .map_err(|error| ZegaError::Execution(error.to_string()))
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            journal.delete_relationship(graph, id);
+            Ok(())
+        })
     }
 
     /// Store one schema relationship from `from_id` to `to_id`.
@@ -197,26 +191,28 @@ impl Zega {
             },
         )
         .map_err(|error| explain(error, "schema", schema_src))?;
-        connect(
-            &mut graph,
-            &self.wal,
-            from_id,
-            to_id,
-            direction,
-            RelationshipSpec {
-                field,
-                kind: rel,
-                many,
-                span: Span {
-                    line: 0,
-                    column: 0,
-                    end_line: 0,
-                    end_column: 0,
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            connect(
+                graph,
+                journal,
+                from_id,
+                to_id,
+                direction,
+                RelationshipSpec {
+                    field,
+                    kind: rel,
+                    many,
+                    span: Span {
+                        line: 0,
+                        column: 0,
+                        end_line: 0,
+                        end_column: 0,
+                    },
                 },
-            },
-            props,
-        )
-            .map_err(|error| explain(error, "schema", schema_src))?;
+                props,
+            )
+            .map_err(|error| explain(error, "schema", schema_src))
+        })?;
         Ok(())
     }
 
@@ -288,51 +284,21 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        // The schema of this statement says which indexes exist. Staged writes
-        // below start from a clone, so the live graph carries them afterwards.
+        // The schema of this statement says which indexes exist; the writes
+        // below keep them current, and a rollback restores them with the rows.
         graph.sync_indexes(&crate::lang::effective_indexes(
             schema,
             declared.uniques,
             declared.indexes,
         ));
         let mut budget = self.traversal_work_budget;
-        let is_mutation = matches!(statement, Statement::Load { .. })
-            || matches!(statement, Statement::Run(query) if query.mutation);
-        if !is_mutation {
-            return run_statement(
-            &mut graph,
-            &self.wal,
-            schema,
-            uniques,
-            statement,
-            &mut budget,
-            &rows,
-        )
-            .map_err(|error| explain(error, source_name, source));
-        }
-
-        // Run writes against an isolated graph first. A validation failure in
-        // any nested selection or imported row must leave the live graph and
-        // its WAL untouched.
-        let mut staged = graph.clone();
-        let result = run_statement(
-            &mut staged,
-            &crate::Wal::in_memory(),
-            schema,
-            uniques,
-            statement,
-            &mut budget,
-            &rows,
-        )
-        .map_err(|error| explain(error, source_name, source))?;
-        let operations = graph_operations(&graph, &staged);
-        for operation in &operations {
-            self.wal
-                .append(operation)
-                .map_err(|error| ZegaError::Execution(error.to_string()))?;
-        }
-        *graph = staged;
-        Ok(result)
+        // A read logs nothing. A mutation or load is one statement: every row
+        // and nested selection is applied, or (on a validation error or a
+        // refused WAL append) none is, in memory and in the WAL alike.
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            run_statement(graph, journal, schema, uniques, statement, &mut budget, &rows)
+                .map_err(|error| explain(error, source_name, source))
+        })
     }
 
     pub fn graph_json(&self) -> Result<Json, ZegaError> {
@@ -366,52 +332,9 @@ fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
     Ok(())
 }
 
-fn graph_operations(before: &Graph, after: &Graph) -> Vec<Operation> {
-    let mut operations = Vec::new();
-    let mut nodes: Vec<_> = after.all_nodes().values().collect();
-    nodes.sort_by_key(|node| node.id);
-    for node in nodes {
-        match before.get_node(node.id) {
-            None => operations.push(Operation::InsertNode {
-                id: node.id,
-                labels: node.labels.clone(),
-                props: node.props.clone(),
-            }),
-            Some(previous) => {
-                let changed: HashMap<_, _> = node
-                    .props
-                    .iter()
-                    .filter(|(key, value)| previous.props.get(*key) != Some(*value))
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect();
-                if !changed.is_empty() {
-                    operations.push(Operation::UpdateNode {
-                        id: node.id,
-                        props: changed,
-                    });
-                }
-            }
-        }
-    }
-    let mut relationships: Vec<_> = after.all_relationships().values().collect();
-    relationships.sort_by_key(|rel| rel.id);
-    for rel in relationships {
-        if before.get_relationship(rel.id).is_none() {
-            operations.push(Operation::InsertRel {
-                id: rel.id,
-                kind: rel.kind.clone(),
-                from: rel.from,
-                to: rel.to,
-                props: rel.props.clone(),
-            });
-        }
-    }
-    operations
-}
-
 fn run_statement(
     graph: &mut Graph,
-    wal: &crate::Wal,
+    journal: &mut Journal,
     schema: &Schema,
     uniques: &[(String, String)],
     statement: &Statement,
@@ -424,7 +347,7 @@ fn run_statement(
                 return Ok(Json::Null);
             };
             if query.mutation {
-                mutate(graph, wal, schema, root, uniques)
+                mutate(graph, journal, schema, root, uniques)
             } else {
                 read(graph, schema, root, budget)
             }
@@ -445,7 +368,7 @@ fn run_statement(
                 let Some(root) = &query.root else {
                     continue;
                 };
-                out.push(mutate(graph, wal, schema, root, uniques)?);
+                out.push(mutate(graph, journal, schema, root, uniques)?);
             }
             Ok(Json::Array(out))
         }
@@ -778,18 +701,18 @@ fn read(
 
 fn mutate(
     graph: &mut Graph,
-    wal: &crate::Wal,
+    journal: &mut Journal,
     schema: &Schema,
     root: &Selection,
     uniques: &[(String, String)],
 ) -> Result<Json, LangError> {
-    apply_node(graph, wal, schema, root, None, uniques)
+    apply_node(graph, journal, schema, root, None, uniques)
 }
 
 /// Writes or finds this selection and returns only the rows this statement touched.
 fn apply_node(
     graph: &mut Graph,
-    wal: &crate::Wal,
+    journal: &mut Journal,
     schema: &Schema,
     sel: &Selection,
     parent: Option<(NodeId, Direction, String, String, bool, Span)>,
@@ -800,7 +723,7 @@ fn apply_node(
         lookup_one(graph, sel, uniques)?
     } else {
         require_points(schema, sel)?;
-        insert_node(graph, wal, schema, sel, uniques)?
+        insert_node(graph, journal, schema, sel, uniques)?
     };
     if !sel.sets.is_empty() {
         let props = sel
@@ -821,9 +744,7 @@ fn apply_node(
                 .unwrap_or(sel.type_span);
             return Err(unique_conflict(&ty, &field, span));
         }
-        graph.update_node(id, props.clone());
-        wal.append(&Operation::UpdateNode { id, props })
-            .map_err(|error| LangError::bare(error.to_string()))?;
+        journal.update_node(graph, id, props);
     }
     if let Some((parent_id, direction, field, rel, many, edge_span)) = &parent {
         let props = edge_sets(sel)?;
@@ -838,7 +759,7 @@ fn apply_node(
         require_edge_props(schema, rel, &props, props_span)?;
         connect(
             graph,
-            wal,
+            journal,
             *parent_id,
             id,
             *direction,
@@ -918,7 +839,7 @@ fn apply_node(
                     require_edge_props(schema, rel, &props, props_span)?;
                     connect(
                         graph,
-                        wal,
+                        journal,
                         id,
                         child_id,
                         *direction,
@@ -955,7 +876,7 @@ fn apply_node(
                 } else {
                     apply_node(
                         graph,
-                        wal,
+                        journal,
                         schema,
                         target,
                         Some((id, *direction, field.clone(), rel.to_string(), many, *span)),
@@ -1048,7 +969,7 @@ fn has_link(sel: &Selection) -> bool {
 
 fn insert_node(
     graph: &mut Graph,
-    wal: &crate::Wal,
+    journal: &mut Journal,
     schema: &Schema,
     sel: &Selection,
     uniques: &[(String, String)],
@@ -1063,10 +984,7 @@ fn insert_node(
     if let Some((ty, field)) = find_duplicate(graph, &labels, &props, uniques, None) {
         return Err(unique_conflict(&ty, &field, sel.type_span));
     }
-    let id = graph.create_node(labels.clone(), props.clone());
-    wal.append(&Operation::InsertNode { id, labels, props })
-        .map_err(|error| LangError::bare(error.to_string()))?;
-    Ok(id)
+    Ok(journal.create_node(graph, labels, props))
 }
 
 fn unique_conflict(ty: &str, field: &str, span: Span) -> LangError {
@@ -1190,7 +1108,7 @@ struct RelationshipSpec<'a> {
 
 fn connect(
     graph: &mut Graph,
-    wal: &crate::Wal,
+    journal: &mut Journal,
     parent: NodeId,
     child: NodeId,
     direction: Direction,
@@ -1230,16 +1148,7 @@ fn connect(
         Direction::Out => (parent, child),
         Direction::In => (child, parent),
     };
-    let id = graph.create_relationship(kind.to_string(), from, to, props.clone());
-    wal.append(&Operation::InsertRel {
-        id,
-        kind: kind.to_string(),
-        from,
-        to,
-        props,
-    })
-    .map_err(|error| LangError::bare(error.to_string()))?;
-    Ok(id)
+    Ok(journal.create_relationship(graph, kind.to_string(), from, to, props))
 }
 
 fn node_description(node: &Node) -> String {

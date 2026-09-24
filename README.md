@@ -207,7 +207,10 @@ JSON/CSV types and linking. The conformance corpus lives in
 
 Every write is appended to a CRC32-framed WAL (`wal.bin`) — with group
 commit by default (5 ms / 64-entry batches) or fsync-per-write if you ask
-for it. Torn writes and bad checksums are detected and truncated on replay.
+for it. A statement is all-or-nothing: its writes go to the WAL as one entry,
+and until the WAL accepts that entry no reader sees them; if the statement
+fails or the WAL refuses it, nothing of it stays in memory or on disk.
+Torn writes and bad checksums are detected and truncated on replay.
 `Zega::snapshot()` writes a full `snapshot.bin`; the next open restores the
 snapshot and replays only the WAL after it. Legacy WAL versions are migrated
 automatically.
