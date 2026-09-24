@@ -15,6 +15,7 @@ export const zegawasm_load_locations: (a: number, b: number, c: number, d: numbe
 export const zegawasm_new: () => [number, number, number];
 export const zegawasm_preview_import: (a: number, b: number, c: number) => [number, number, number, number];
 export const zegawasm_query: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const zegawasm_rows_examined: (a: number) => [number, number, number];
 export const zegawasm_run: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const zegawasm_run_with_sources: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const zegawasm_schema: (a: number, b: number, c: number) => [number, number, number, number];
