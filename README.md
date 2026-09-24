@@ -183,6 +183,8 @@ console.log(JSON.parse(db.run(schema, '{ Person { name } }')));
 `zega fmt --check paths…` lists every file that would change and exits 1;
 `zega fmt --stdin` reads source from stdin and writes the canonical layout.
 Invalid or incomplete input is left unchanged. There are no style options.
+[Formatting with zega fmt](docs/fmt.md) shows the layout rules on real
+before/after examples.
 
 The explorer uses the same formatter through WASM. Press ⌘S / Ctrl-S or
 **Format** to format and save the active schema or query pane. Formatting is
@@ -239,7 +241,11 @@ query {
 Use `run_lang(schema, statement)` for one operation or `apply_zql(document)` for
 an entire file; the server runs the same language on `POST /zql`. The
 [data-loading guide](docs/data-loading.md) covers raw sources, JSON/CSV types
-and linking. The conformance corpus lives in
+and linking. Each core concept has its own page: [schema](docs/schema.md),
+[mutations](docs/mutation.md), [queries](docs/query.md),
+[conditions](docs/conditions.md), [relationships](docs/relationships.md),
+[unique fields](docs/unique.md) and [errors](docs/errors.md). The conformance
+corpus lives in
 [zegadb/testsuite](https://github.com/zegadb/testsuite).
 
 ## How persistence works
