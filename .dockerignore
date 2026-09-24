@@ -1,0 +1,13 @@
+# Build context of zega-cloud/containers-bench/Dockerfile (the only image
+# built from the repository root). Keep it small: only the Rust workspace.
+.git
+.target
+.tmp
+target
+**/node_modules
+**/.wrangler
+browser/test-results
+browser/playwright-report
+browser/dist
+zega-cloud/containers-bench/evidence
+HANDOFF.md

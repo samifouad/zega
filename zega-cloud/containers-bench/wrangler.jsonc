@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "zega-containers-bench",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+  // One application per instance type, all from the same image. The build
+  // context is the repository root, because the image compiles the workspace.
+  "containers": [
+    { "class_name": "ZegaLite", "image": "./Dockerfile", "image_build_context": "../..", "instance_type": "lite", "max_instances": 3 },
+    { "class_name": "ZegaBasic", "image": "./Dockerfile", "image_build_context": "../..", "instance_type": "basic", "max_instances": 3 },
+    { "class_name": "ZegaStd1", "image": "./Dockerfile", "image_build_context": "../..", "instance_type": "standard-1", "max_instances": 3 }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "ZEGA_LITE", "class_name": "ZegaLite" },
+      { "name": "ZEGA_BASIC", "class_name": "ZegaBasic" },
+      { "name": "ZEGA_STD1", "class_name": "ZegaStd1" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ZegaLite", "ZegaBasic", "ZegaStd1"] }]
+}

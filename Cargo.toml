@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["zega","zega-bench","zega-server","zega-cli"]
+members = ["zega","zega-bench","zega-server","zega-cli","zega-cloud/containers-bench/server"]
 exclude = ["zega-wasm"]
 
 [workspace.package]
