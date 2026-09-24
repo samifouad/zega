@@ -27,13 +27,15 @@ async function place(page, pane, value, offset = value.length) {
   }, { pane, value, offset });
 }
 
-// Each pane: what is typed, where, and what it formats to.
+// Each pane: what is typed, where, and what it formats to. The query pane
+// types into a mutation so auto-run stays paused: only the format pipeline
+// can format it, never a run's format-first step.
 const panes = {
   query: {
-    start: 'query{Player{name}}', at: 17, typed: ' salary',
-    typedText: 'query{Player{name salary}}',
-    formatted: 'query {\n  Player { name salary }\n}\n',
-    invalid: 'query{Player{name',
+    start: 'mutation{Player(name: "Typed"){name}}', at: 35, typed: ' salary',
+    typedText: 'mutation{Player(name: "Typed"){name salary}}',
+    formatted: 'mutation {\n  Player(name: "Typed") { name salary }\n}\n',
+    invalid: 'mutation{Player(name: "Typed"){name',
   },
   schema: {
     start: 'type Player{name: String}', at: 24, typed: ' salary: Int',
@@ -53,7 +55,7 @@ test('both panes are formatted on load, including text restored from the last vi
   await page.reload();
   await expect(page.locator('#query .monaco-editor')).toBeVisible();
   await expect.poll(() => text(page, 'schema')).toBe(panes.schema.formatted);
-  await expect.poll(() => text(page, 'query')).toBe(panes.query.formatted);
+  await expect.poll(() => text(page, 'query')).toBe('query {\n  Player { name salary }\n}\n');
   // Load formatting is not an edit anyone made: there is nothing to undo.
   expect(await page.evaluate(`${find('query')}.getModel().canUndo()`)).toBe(false);
 });
@@ -90,7 +92,7 @@ for (const [pane, c] of Object.entries(panes)) {
 
 test('a space just typed is not removed when typing stops on it', async ({ page }) => {
   await ready(page);
-  await place(page, 'query', 'query{Player{name}}', 17);
+  await place(page, 'query', panes.query.start, panes.query.at);
   await page.keyboard.type(' ', { delay: 50 });
   await page.waitForTimeout(600);
   await page.keyboard.type('salary', { delay: 50 });
