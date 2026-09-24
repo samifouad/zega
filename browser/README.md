@@ -55,3 +55,23 @@ native-backend import/reload/restart test. `assets.json` is the shared static
 bundle inventory used by both `npm run build` and the CLI's build script; a
 normal Cargo build needs no Node installation. The build validates the vendored
 wasm hashes before embedding the bundle.
+
+## explorer2: remote mode
+
+`npm run build:remote` (the same as `npm run build -- --remote`) writes
+`dist-remote/`: the same bundle, with `remote/backend.js` as its `backend.js`.
+It speaks the native backend's protocol (`native.js` is `backend.js` with its
+class exported) to a remote zega server at
+`https://zega-containers-bench.deka.workers.dev/c/<size>/<graph>`
+(`--remote-base=URL` for another). The access token is never in the bundle:
+the page asks for it, keeps it in `localStorage`, sends it as a Bearer header,
+and "forget token" drops it. The bar under the top bar picks the container size
+and graph name (both remembered), shows each request's round trip and the
+running median, says when a container is waking, and loads the Calgary sample,
+since a sleeping container loses its graph. `npm run build` and `dist/` are
+unchanged. `wrangler.explorer2.jsonc` serves `dist-remote/` as the
+`zega-explorer2` Worker on explorer2.zega.dev.
+
+`npm run test:remote` runs it against a local `zega start --token-file` behind
+a stand-in for the containers Worker (`remote-tests/stand-in.js`); build the
+CLI first, as for `npm run test:cli`.

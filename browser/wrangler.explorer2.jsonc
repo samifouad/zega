@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // explorer2: the explorer against a remote zega in a Cloudflare container.
+  // Build with `npm run build:remote` (dist-remote/); explorer.zega.dev keeps
+  // wrangler.jsonc and the in-browser wasm build (dist/).
+  "name": "zega-explorer2",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-22",
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist-remote",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "none"
+  },
+  "dev": { "port": 8788 },
+  // Ava adds explorer2.zega.dev as a Custom Domain when ready to deploy.
+  "routes": [{ "pattern": "explorer2.zega.dev", "custom_domain": true }]
+}

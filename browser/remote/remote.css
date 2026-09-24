@@ -1,0 +1,62 @@
+/* explorer2 only (dist-remote/): the remote bar and the token prompt. */
+#topbar .conn { display: none; }
+
+#remote-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 6px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 12px;
+}
+#remote-bar .spacer { flex: 1; }
+.remote-where { display: flex; align-items: center; gap: 6px; color: var(--ink); }
+#remote-bar select, #remote-bar input {
+  font: inherit;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+}
+#remote-graph { width: 12ch; }
+#remote-latency {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+}
+#remote-status[data-kind="waking"] { color: var(--accent); font-weight: 600; }
+#remote-status[data-kind="cold"] { color: var(--accent); }
+#remote-status[data-kind="warn"] { color: #b3261e; font-weight: 600; }
+#remote-empty { color: var(--ink); }
+
+#remote-token {
+  width: min(460px, calc(100vw - 32px));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 16px 80px #0005;
+}
+#remote-token::backdrop { background: #0007; }
+#remote-token form { display: flex; flex-direction: column; gap: 10px; }
+#remote-token h2 { margin: 0; font-size: 16px; }
+#remote-token p { margin: 0; color: var(--dim); font-size: 13px; }
+#remote-token .remote-error { color: #b3261e; font-weight: 600; }
+#remote-token label { font-size: 12px; color: var(--dim); }
+#remote-token input {
+  font: inherit;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+}
+#remote-token footer { display: flex; justify-content: flex-end; }
