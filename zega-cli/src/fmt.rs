@@ -52,7 +52,10 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     // Never follow a directory link into another checkout (or a cycle).
     if metadata.file_type().is_symlink() {
-        return Ok(());
+        return Err(io::Error::other(format!(
+            "refusing to rewrite symbolic link: {}",
+            path.display()
+        )));
     }
     if metadata.is_file() {
         out.push(path.to_owned());
