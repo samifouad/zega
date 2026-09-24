@@ -83,17 +83,12 @@
       "passed": 35
     },
     {
-      "command": "node browser/scripts/check-wasm.mjs artifact .tmp/repro-before.wasm",
-      "exit": 1,
-      "expected": "reject ungated spike artifact"
-    },
-    {
-      "command": "node browser/scripts/check-wasm.mjs dependencies (durable-log injected temporarily)",
+      "command": "node browser/scripts/check-wasm.mjs (durable-log injected temporarily)",
       "exit": 1,
       "expected": "reject feature unification"
     },
     {
-      "command": "node browser/scripts/check-wasm.mjs dependencies (wasm32 worker dependency injected temporarily)",
+      "command": "node browser/scripts/check-wasm.mjs (wasm32 worker dependency injected temporarily)",
       "exit": 1,
       "expected": "reject Cloudflare crate in WASM target tree"
     },
@@ -111,14 +106,17 @@
   "cloudBillingMeasured": false,
   "testedCommit": "036e9a745b699bfb513aaad585cc521bbaf901ce",
   "regularWasm": {
-    "bytes": 2745640,
+    "comparison": "same-directory back-to-back build of main 7fa1b47 and the branch; see wasm-comparison.json",
+    "bytes": 2757992,
     "sizeGrowthBytes": 0,
+    "codeSectionIdentical": true,
     "differingBytes": 9,
-    "differenceKind": "only moved Rust panic source-line numbers",
-    "sha256": "b5c1e6a8bb29e369b64e44e153f7af86dcc53f78a35ea11a6227b77d36deef94",
-    "mainSha256": "ab1569e7908715c3e4da33295a148200ff71861d6877de8e94a59393b293fba0",
+    "differenceKind": "only moved Rust panic source-line numbers in the data section",
+    "sha256": "e4fefa5b07a5a8e2d747a50fca7ec85a0ca69a3e20058acb64a3d57f7bc5d02a",
+    "mainSha256": "aab5f8b42960598a8dc4fcb2fae29988355828a613241de515415ac029047eb3",
     "feature": "durable-log disabled",
-    "cloudflareDependencies": false
+    "cloudflareDependencies": false,
+    "browserPkg": "unchanged from main"
   },
   "benchmarkSummary": {
     "completedSizesMiB": [

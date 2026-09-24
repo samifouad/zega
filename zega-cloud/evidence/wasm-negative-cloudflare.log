@@ -306,7 +306,7 @@ quote v1.0.47 (*)
 syn v2.0.119 (*)
 url v2.5.8 (*)
 
-    at file:///Volumes/Projects/codex/zega-wt-cloud/browser/scripts/check-wasm.mjs:24:5
+    at file:///Volumes/Projects/codex/zega-wt-cloud/browser/scripts/check-wasm.mjs:13:3
     at ModuleJob.run (node:internal/modules/esm/module_job:439:25)
     at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:646:26)
     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
@@ -319,5 +319,4 @@ url v2.5.8 (*)
 }
 
 Node.js v26.3.1
-
 EXIT_CODE=1

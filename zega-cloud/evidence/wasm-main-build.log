@@ -1,6 +1,105 @@
 [INFO]: 🎯  Checking for the Wasm target...
 [INFO]: 🌀  Compiling to Wasm...
-   Compiling zega v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega)
+   Compiling unicode-ident v1.0.26
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling wasm-bindgen-shared v0.2.128
+   Compiling stable_deref_trait v1.2.1
+   Compiling rustversion v1.0.23
+   Compiling cfg-if v1.0.5
+   Compiling bumpalo v3.20.3
+   Compiling version_check v0.9.5
+   Compiling futures-core v0.3.34
+   Compiling once_cell v1.21.4
+   Compiling pin-project-lite v0.2.17
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.34
+   Compiling const-oid v0.9.6
+   Compiling typenum v1.20.1
+   Compiling autocfg v1.5.1
+   Compiling litemap v0.8.3
+   Compiling zerocopy v0.8.57
+   Compiling writeable v0.6.4
+   Compiling libm v0.2.16
+   Compiling smallvec v1.16.1
+   Compiling generic-array v0.14.7
+   Compiling futures-util v0.3.34
+   Compiling base64ct v1.8.3
+   Compiling zeroize v1.9.0
+   Compiling serde_core v1.0.229
+   Compiling icu_normalizer_data v2.3.0
+   Compiling icu_properties_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling memchr v2.8.3
+   Compiling num-traits v0.2.19
+   Compiling subtle v2.6.1
+   Compiling pem-rfc7468 v0.7.0
+   Compiling num-bigint-dig v0.8.6
+   Compiling spin v0.9.9
+   Compiling zmij v1.0.23
+   Compiling serde v1.0.229
+   Compiling der v0.7.10
+   Compiling aho-corasick v1.1.5
+   Compiling lazy_static v1.5.0
+   Compiling regex-syntax v0.8.11
+   Compiling percent-encoding v2.3.2
+   Compiling serde_json v1.0.151
+   Compiling itoa v1.0.18
+   Compiling spki v0.7.3
+   Compiling thiserror v1.0.69
+   Compiling crc32fast v1.5.2
+   Compiling pkcs8 v0.10.2
+   Compiling form_urlencoded v1.2.2
+   Compiling regex-automata v0.4.18
+   Compiling pkcs1 v0.7.5
+   Compiling csv-core v0.1.13
+   Compiling ryu v1.0.23
+   Compiling base64 v0.22.1
+   Compiling regex v1.13.1
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling wasm-bindgen v0.2.128
+   Compiling thiserror-impl v1.0.69
+   Compiling synstructure v0.14.0
+   Compiling wasm-bindgen-macro-support v0.2.128
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling serde_derive v1.0.229
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.3
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling wasm-bindgen-macro v0.2.128
+   Compiling sha2 v0.10.9
+   Compiling hmac v0.12.1
+   Compiling zerofrom v0.1.8
+   Compiling csv v1.4.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling num-integer v0.1.47
+   Compiling num-iter v0.1.46
+   Compiling yoke v0.8.3
+   Compiling bincode v1.3.3
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling js-sys v0.3.105
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_provider v2.3.1
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling getrandom v0.2.17
+   Compiling rand_core v0.6.4
+   Compiling rand_chacha v0.3.1
+   Compiling signature v2.2.0
+   Compiling rand v0.8.8
+   Compiling rsa v0.9.10
+   Compiling zega v0.1.2 (<cmp>/src/zega)
 warning: unused variable: `wal_path`
    --> /zega/zega/src/lib.rs:293:13
     |
@@ -74,11 +173,12 @@ warning: constant `DEFAULT_GROUP_COMMIT_BATCH_SIZE` is never used
    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 
-   Compiling zega-wasm v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-wasm)
-    Finished `release` profile [optimized] target(s) in 9.92s
+   Compiling zega-wasm v0.1.2 (<cmp>/src/zega-wasm)
+    Finished `release` profile [optimized] target(s) in 17.13s
 [INFO]: Optimizing wasm binaries with `wasm-opt`...
 [INFO]: Optional field missing from Cargo.toml: 'description'. This is not necessary, but recommended
 [INFO]: License key is set in Cargo.toml but no LICENSE file(s) were found; Please add the LICENSE file(s) to your project directory
-[INFO]: ✨   Done in 14.75s
-[INFO]: 📦   Your wasm pkg is ready to publish at /Volumes/Projects/codex/zega-wt-cloud/browser/.tmp/wasm-FfTGQM/pkg.
-Vendored wasm from engine 7fa1b47c836cd577d1371fdc84881ac6d7825881. Run npm test and commit pkg/ with wasm-source.json.
+[INFO]: ✨   Done in 21.92s
+[INFO]: 📦   Your wasm pkg is ready to publish at <cmp>/out/A.
+aab5f8b42960598a8dc4fcb2fae29988355828a613241de515415ac029047eb3  <cmp>/out/A/zega_wasm_bg.wasm
+ 2757992

@@ -156,33 +156,45 @@ feature-gated; ordinary browser parsing, snapshot allocation and WAL behavior
 stay as on `main`. These APIs use Rust types and synchronous `std::io`; no
 Cloudflare or async-JavaScript dependency enters the engine.
 
-From a clean checkout:
+The gate, run by the `Regular WASM isolation` CI job:
 
 ```sh
 node browser/scripts/check-wasm.mjs
 ```
 
-This checks native and wasm32 dependency trees, rejects `durable-log` feature
-unification, rebuilds with the repo's `rebuild-wasm.mjs`, and compares SHA-256
-against the **pre-build committed** `browser/pkg` hash. The dedicated CI job
-pins Rust 1.96.0 and wasm-pack 0.15.0, requires sccache, and needs no Cloudflare
-credentials. `rebuild-wasm.mjs` now remaps checkout/Cargo/sysroot source paths to
-`/zega`, `/cargo`, `/rust`; the prior artifact contained iMac worktree paths and
-could not be reproduced elsewhere. JS glue and declarations are unchanged.
+It reads Cargo's resolved graph (no build): the native and wasm32
+`cargo tree -p zega-wasm -e normal` contain no Cloudflare crate, `zega-wasm` does
+not get `zega/durable-log` through feature unification, and `zega` has no
+Cloudflare or `wasm-bindgen-futures` dependency. It is deterministic and needs no
+credentials. There is deliberately no committed-hash rebuild check: the
+`zega-wasm` binary depends on the checkout directory (the same `main` source built
+in two directories gave 2,757,992 B and 2,743,134 B),
+so an exact hash against a committed artifact cannot pass on another machine, and
+"unchanged" is a property of this PR, not an invariant for future engine changes.
+This PR leaves `browser/pkg`, `browser/wasm-source.json` and `rebuild-wasm.mjs` as
+on `main`.
 
-Both `origin/main` and the feature-gated branch were built at the same path with
-this script, toolchain and flags: **2,745,640 bytes each**. Every section except
-the data section is byte-identical, including all compiled code, imports and
-exports. The only nine different bytes encode eight moved Rust panic-location
-line numbers. [The comparison report](evidence/wasm-comparison.json) enumerates
-every byte offset, source line and old/new value. The following verifier rejects
-any other change or size growth:
+**What is proven about this PR:** `origin/main` (`7fa1b47`) and this branch, exported
+into the same directory and built back to back with Rust 1.96.0 and wasm-pack 0.15.0
+(`wasm-pack build zega-wasm --target web --release --locked`, with
+`--remap-path-prefix` for the checkout, Cargo home and sysroot), give **2,757,992 bytes
+each**; `main` rebuilt afterwards reproduces its first hash. Every section except
+`data` is byte-identical: the `code` section and all 2,170 function bodies, plus
+types, imports, exports, element and custom sections. The only nine differing bytes
+are eight Rust panic-location line numbers in `data` (seven in `lib.rs` shifted by
+five lines, one in `wal/mod.rs` from 231 to 261), each pointing at the identical
+source line. [The comparison report](evidence/wasm-comparison.json) enumerates every
+byte. The verifier rejects any other change or size growth:
 
 ```sh
 python3 zega-cloud/test/compare-wasm.py MAIN.wasm BRANCH.wasm MAIN_REV
 ```
 
-The ungated spike fails the artifact guard; injecting `durable-log` into
+Native WAL file replay is unchanged too: the stricter payload decoder (no trailing
+bytes, bounded) is compiled only with `durable-log` and used only for host rows;
+applying it to native replay is proposed separately in zegadb/zega#44.
+
+Injecting `durable-log` into
 `zega-wasm` fails the feature guard, and injecting a wasm32-only `worker`
 dependency fails the target dependency-tree guard. No compiled browser code has been added.
 `zega-wasm` remains the existing wasm-bindgen JavaScript-host target; this does

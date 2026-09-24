@@ -1,6 +1,6 @@
 [INFO]: 🎯  Checking for the Wasm target...
 [INFO]: 🌀  Compiling to Wasm...
-   Compiling zega v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega)
+   Compiling zega v0.1.2 (<cmp>/src/zega)
 warning: unused variable: `wal_path`
    --> /zega/zega/src/lib.rs:295:13
     |
@@ -32,13 +32,12 @@ warning: field `wal_flush_every` is never read
     |     ^^^^^^^^^^^^^^^
 
 
-   Compiling zega-wasm v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-wasm)
-    Finished `release` profile [optimized] target(s) in 11.12s
+   Compiling zega-wasm v0.1.2 (<cmp>/src/zega-wasm)
+    Finished `release` profile [optimized] target(s) in 10.06s
 [INFO]: Optimizing wasm binaries with `wasm-opt`...
 [INFO]: Optional field missing from Cargo.toml: 'description'. This is not necessary, but recommended
 [INFO]: License key is set in Cargo.toml but no LICENSE file(s) were found; Please add the LICENSE file(s) to your project directory
-[INFO]: ✨   Done in 16.44s
-[INFO]: 📦   Your wasm pkg is ready to publish at /Volumes/Projects/codex/zega-wt-cloud/browser/.tmp/wasm-tYw8rh/pkg.
-Vendored wasm from engine fafe68a9d444b317f0a4381ddf921f7ee09d0e30. Run npm test and commit pkg/ with wasm-source.json.
-
-EXIT_CODE=0
+[INFO]: ✨   Done in 15.00s
+[INFO]: 📦   Your wasm pkg is ready to publish at <cmp>/out/B.
+e4fefa5b07a5a8e2d747a50fca7ec85a0ca69a3e20058acb64a3d57f7bc5d02a  <cmp>/out/B/zega_wasm_bg.wasm
+ 2757992

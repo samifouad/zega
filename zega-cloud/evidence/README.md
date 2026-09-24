@@ -40,31 +40,33 @@ by the SIGKILL/restart integration test.
 
 ## Regular WASM comparison
 
-Baseline: `origin/main` at `7fa1b47c836cd577d1371fdc84881ac6d7825881`.
-Both builds used Rust 1.96.0, wasm-pack 0.15.0 and the same
-`browser/scripts/rebuild-wasm.mjs`, at the same worktree path. The revised script
-remaps machine source paths before compilation; the original committed artifact
-embedded the node-shape worktree's absolute paths. The refreshed committed binary
-is 10,724 bytes smaller than that artifact; JS glue and declarations are unchanged.
+Baseline: `origin/main` at `7fa1b47c836cd577d1371fdc84881ac6d7825881`; branch at the
+commit recorded in [wasm-comparison.json](wasm-comparison.json). Both trees were
+exported with `git archive` into the **same directory** and built back to back on the
+iMac with Rust 1.96.0 and wasm-pack 0.15.0 (`wasm-pack build zega-wasm --target web
+--release --locked`, `--remap-path-prefix` for checkout, Cargo home and sysroot, one
+fresh `CARGO_TARGET_DIR`), in the order main, branch, main.
 
 | Build | WASM bytes | SHA-256 |
 |---|---:|---|
-| Fresh main | 2,745,640 | `ab1569e7908715c3e4da33295a148200ff71861d6877de8e94a59393b293fba0` |
-| Feature-gated spike | 2,745,640 | `b5c1e6a8bb29e369b64e44e153f7af86dcc53f78a35ea11a6227b77d36deef94` |
-| Ungated spike (negative proof) | 2,772,469 | `3f7ec92346a443728c52e2e492f47c9e3a26c38b4276e1e07d83b00d0bdf4fcd` |
+| main | 2,757,992 | `aab5f8b42960598a8dc4fcb2fae29988355828a613241de515415ac029047eb3` |
+| branch | 2,757,992 | `e4fefa5b07a5a8e2d747a50fca7ec85a0ca69a3e20058acb64a3d57f7bc5d02a` |
+| main again | 2,757,992 | `aab5f8b42960598a8dc4fcb2fae29988355828a613241de515415ac029047eb3` |
+| main source, other directory | 2,743,134 | `ebcf6644ae8261f3e76c0161bc991311cc3d27ae982970e4b5f17f0680ea20e6` |
 
-**Zero size growth.** All non-data sections are byte-identical, including compiled
-code, imports and exports. Exactly nine bytes differ in the data section: seven
-panic locations in `lib.rs` move down five source lines, and one in `wal/mod.rs`
-moves from line 231 to 261. The [exhaustive JSON report](wasm-comparison.json)
-identifies every changed byte and source line. `test/compare-wasm.py` verifies
-that no other bytes differ and that each old/new source line is identical.
+**Zero size growth.** The `code` section is byte-identical (all 2,170 function bodies),
+as are type, import, function, table, memory, global, export, element, datacount and
+custom sections. Exactly nine bytes differ, all in `data`: seven panic locations in
+`lib.rs` move down five source lines and one in `wal/mod.rs` moves from line 231 to
+261. `test/compare-wasm.py` checks that no other byte differs and that each old/new
+line holds identical source. The last row shows why a committed hash is not a gate:
+the same source built in another directory is a different binary.
 
-The CI guard fully passed locally: it rebuilds the artifact, checks its committed
-hash, checks native and wasm32 dependency trees, and refuses feature unification.
-Negative checks each exited 1 as expected: the ungated spike binary, a temporarily
-enabled `zega/durable-log`, and a temporarily injected wasm32-only `worker` crate.
-All injections were removed. Regular WASM has no Cloudflare dependency.
+The CI gate (`node browser/scripts/check-wasm.mjs`) reads Cargo's resolved graph only:
+native and wasm32 dependency trees free of Cloudflare crates, and no `durable-log`
+through feature unification. Negative checks each exited 1 as expected: a temporarily
+enabled `zega/durable-log` in `zega-wasm`, and a temporarily injected wasm32-only
+`worker` crate. Both injections were reverted. `browser/pkg` is unchanged from `main`.
 
 ## Validation
 
@@ -78,8 +80,8 @@ All injections were removed. Regular WASM has no Cloudflare dependency.
 | `npm --prefix zega-cloud test` | exit 0; 10 scenarios, 11 Node-reported tests including parent |
 | `npm --prefix zega-cloud run corpus` | exit 0; 263 passed, 1 explicit offline skip; 263 exact native matches |
 | `node zega-cloud/bench/local.mjs` and `... 50` | initial invocation exit 1 (50 MiB connection loss); fresh 50 MiB rerun exit 0; all 12 requested phases measured |
-| `npm --prefix browser test` | exit 0; 35 passed |
-| `node browser/scripts/check-wasm.mjs` | exit 0; both dependency trees, feature check and rebuilt committed hash |
+| `npm --prefix browser test` | exit 0; 35 passed (run at `036e9a7` against a rebuilt `browser/pkg` since reverted to `main`; `browser/` is now unchanged) |
+| `node browser/scripts/check-wasm.mjs` | exit 0; both dependency trees and the feature check |
 | `python3 zega-cloud/test/compare-wasm.py MAIN.wasm BRANCH.wasm MAIN_REV` | exit 0; all nine byte differences explained; zero size growth |
 
 The integration suite verifies graph isolation, native JSON, retained retry IDs,
@@ -105,11 +107,11 @@ not measure Cloudflare replication or remote power-loss durability.
 ## Evidence files
 
 - [wasm-comparison.json](wasm-comparison.json): sizes, hashes, identical sections and every changed panic-location byte.
-- [wasm-ci-guard.log](wasm-ci-guard.log): complete successful CI guard reproduction.
+- [wasm-ci-guard.log](wasm-ci-guard.log): successful local run of the CI gate.
 - [wasm-dependencies.log](wasm-dependencies.log): native/wasm32 trees and disabled durable-log verification.
-- [wasm-negative-artifact.log](wasm-negative-artifact.log), [wasm-negative-feature.log](wasm-negative-feature.log), [wasm-negative-cloudflare.log](wasm-negative-cloudflare.log): expected guard failures.
-- [wasm-main-build.log](wasm-main-build.log), [wasm-branch-build.log](wasm-branch-build.log): same-toolchain rebuild logs.
-- [browser-tests.log](browser-tests.log): 35 passing browser tests against the rebuilt artifact.
+- [wasm-negative-feature.log](wasm-negative-feature.log), [wasm-negative-cloudflare.log](wasm-negative-cloudflare.log): expected guard failures.
+- [wasm-main-build.log](wasm-main-build.log), [wasm-branch-build.log](wasm-branch-build.log): same-directory rebuild logs for main and branch.
+- [browser-tests.log](browser-tests.log): 35 passing browser tests (earlier run; `browser/` is unchanged from `main`).
 - [workspace-check.log](workspace-check.log), [workspace-clippy.log](workspace-clippy.log), [cloud-clippy.log](cloud-clippy.log): passing native and feature-on wasm32 gates.
 - [bench.jsonl](bench.jsonl): 12 successful phases plus the retained failed load.
 - [bench-attempt-1.log](bench-attempt-1.log), [bench-retry-50.log](bench-retry-50.log), [bench-50-first-worker.log](bench-50-first-worker.log): complete attempts and the unexplained local connection loss.

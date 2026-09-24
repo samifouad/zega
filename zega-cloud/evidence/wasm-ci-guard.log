@@ -1,47 +1,4 @@
 cargo tree -p zega-wasm -e normal (native): no Cloudflare crates
 cargo tree -p zega-wasm -e normal (wasm32-unknown-unknown): no Cloudflare crates
 zega/durable-log is disabled; engine has no Cloudflare dependencies
-WASM SHA-256 b5c1e6a8bb29e369b64e44e153f7af86dcc53f78a35ea11a6227b77d36deef94; 2745640 bytes
-[INFO]: 🎯  Checking for the Wasm target...
-[INFO]: 🌀  Compiling to Wasm...
-warning: unused variable: `wal_path`
-   --> /zega/zega/src/lib.rs:295:13
-    |
-295 |         let wal_path = path.join("wal.bin");
-    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_wal_path`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-
-warning: field `in_memory` is never read
-   --> /zega/zega/src/lib.rs:158:5
-    |
-152 | pub struct Zega {
-    |            ---- field in this struct
-...
-158 |     in_memory: bool,
-    |     ^^^^^^^^^
-    |
-    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
-
-
-warning: field `wal_flush_every` is never read
-   --> /zega/zega/src/lib.rs:168:5
-    |
-165 | pub struct ZegaBuilder {
-    |            ----------- field in this struct
-...
-168 |     wal_flush_every: bool,
-    |     ^^^^^^^^^^^^^^^
-
-
-    Finished `release` profile [optimized] target(s) in 0.13s
-[INFO]: Optimizing wasm binaries with `wasm-opt`...
-[INFO]: Optional field missing from Cargo.toml: 'description'. This is not necessary, but recommended
-[INFO]: License key is set in Cargo.toml but no LICENSE file(s) were found; Please add the LICENSE file(s) to your project directory
-[INFO]: ✨   Done in 5.77s
-[INFO]: 📦   Your wasm pkg is ready to publish at /Volumes/Projects/codex/zega-wt-cloud/browser/.tmp/wasm-LUwITy/pkg.
-Vendored wasm from engine 036e9a745b699bfb513aaad585cc521bbaf901ce. Run npm test and commit pkg/ with wasm-source.json.
-WASM SHA-256 b5c1e6a8bb29e369b64e44e153f7af86dcc53f78a35ea11a6227b77d36deef94; 2745640 bytes
-
 EXIT_CODE=0

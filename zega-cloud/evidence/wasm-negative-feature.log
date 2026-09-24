@@ -5,7 +5,7 @@ node:internal/modules/run_main:107
     ^
 
 AssertionError [ERR_ASSERTION]: zega-wasm must not enable zega/durable-log
-    at file:///Volumes/Projects/codex/zega-wt-cloud/browser/scripts/check-wasm.mjs:30:3
+    at file:///Volumes/Projects/codex/zega-wt-cloud/browser/scripts/check-wasm.mjs:19:1
     at ModuleJob.run (node:internal/modules/esm/module_job:439:25)
     at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:646:26)
     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
@@ -18,5 +18,4 @@ AssertionError [ERR_ASSERTION]: zega-wasm must not enable zega/durable-log
 }
 
 Node.js v26.3.1
-
 EXIT_CODE=1

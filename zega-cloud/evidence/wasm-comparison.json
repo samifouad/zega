@@ -1,12 +1,32 @@
 {
+  "procedure": "Both trees exported with git archive into the SAME directory (/Volumes/Projects/claude/zega-wasm-compare/src), built back to back on samis-imac with rustc 1.96.0 (ac68faa20 2026-05-25), wasm-pack 0.15.0, wasm-pack build zega-wasm --target web --release --locked, --remap-path-prefix for checkout/cargo/sysroot, one fresh CARGO_TARGET_DIR. Order: main, branch, main again.",
+  "branchRevision": "b229cbaea8f72bbf1e8fe3c267518363d9e7fe90",
+  "reproducibility": {
+    "mainRebuiltAfterBranch": {
+      "sha256": "aab5f8b42960598a8dc4fcb2fae29988355828a613241de515415ac029047eb3",
+      "bytes": 2757992,
+      "matchesFirstMainBuild": true
+    },
+    "sameMainSourceAtAnotherPath": {
+      "sha256": "ebcf6644ae8261f3e76c0161bc991311cc3d27ae982970e4b5f17f0680ea20e6",
+      "bytes": 2743134,
+      "note": "Identical main source built at a different directory produces a different binary (code section and function order differ), most likely because Cargo package ids include the path and feed symbol hashes. A committed hash is therefore not a portable gate; compare same-path builds."
+    }
+  },
+  "codeSectionIdentical": true,
+  "functionBodies": {
+    "main": 2170,
+    "branch": 2170,
+    "differing": 0
+  },
   "mainRevision": "7fa1b47c836cd577d1371fdc84881ac6d7825881",
   "main": {
-    "bytes": 2745640,
-    "sha256": "ab1569e7908715c3e4da33295a148200ff71861d6877de8e94a59393b293fba0"
+    "bytes": 2757992,
+    "sha256": "aab5f8b42960598a8dc4fcb2fae29988355828a613241de515415ac029047eb3"
   },
   "branch": {
-    "bytes": 2745640,
-    "sha256": "b5c1e6a8bb29e369b64e44e153f7af86dcc53f78a35ea11a6227b77d36deef94"
+    "bytes": 2757992,
+    "sha256": "e4fefa5b07a5a8e2d747a50fca7ec85a0ca69a3e20058acb64a3d57f7bc5d02a"
   },
   "byteIdentical": false,
   "sizeGrowthBytes": 0,
@@ -33,7 +53,7 @@
       "source": "groups[group_index].1.push(binding);",
       "bytes": [
         {
-          "offset": 2190503,
+          "offset": 2202783,
           "main": 129,
           "branch": 134
         }
@@ -47,7 +67,7 @@
       "source": "let frac: String = s[20..].chars().take_while(|c| c.is_ascii_digit()).take(3).collect();",
       "bytes": [
         {
-          "offset": 2190519,
+          "offset": 2202799,
           "main": 170,
           "branch": 175
         }
@@ -61,7 +81,7 @@
       "source": "_ => unreachable!(),",
       "bytes": [
         {
-          "offset": 2190583,
+          "offset": 2202863,
           "main": 139,
           "branch": 144
         }
@@ -75,7 +95,7 @@
       "source": "Value::String(chars[start..end].iter().collect())",
       "bytes": [
         {
-          "offset": 2190809,
+          "offset": 2203089,
           "main": 18,
           "branch": 23
         }
@@ -89,7 +109,7 @@
       "source": "Rc::clone(relationship_variable.as_ref().unwrap()),",
       "bytes": [
         {
-          "offset": 2190825,
+          "offset": 2203105,
           "main": 31,
           "branch": 36
         }
@@ -103,7 +123,7 @@
       "source": "let retain_used_relationships = pattern[index + 1..]",
       "bytes": [
         {
-          "offset": 2190841,
+          "offset": 2203121,
           "main": 203,
           "branch": 208
         }
@@ -117,7 +137,7 @@
       "source": "Value::String(iso8601_from_millis(parse_iso8601(s).unwrap() + ms))",
       "bytes": [
         {
-          "offset": 2191045,
+          "offset": 2203325,
           "main": 242,
           "branch": 247
         }
@@ -131,29 +151,17 @@
       "source": "1 => self.append(&ops.remove(0)),",
       "bytes": [
         {
-          "offset": 2200345,
+          "offset": 2212701,
           "main": 231,
           "branch": 5
         },
         {
-          "offset": 2200346,
+          "offset": 2212702,
           "main": 0,
           "branch": 1
         }
       ]
     }
   ],
-  "differingBytes": 9,
-  "ungatedSpike": {
-    "revision": "bc5f93f1990118a7b236db7b7a52630ad0546cb4",
-    "bytes": 2772469,
-    "sha256": "3f7ec92346a443728c52e2e492f47c9e3a26c38b4276e1e07d83b00d0bdf4fcd",
-    "growthBytes": 26829
-  },
-  "branchRevision": "fafe68a9d444b317f0a4381ddf921f7ee09d0e30",
-  "toolchain": {
-    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
-    "wasmPack": "wasm-pack 0.15.0"
-  },
-  "flags": "wasm-pack --target web --release --locked; source prefixes remapped to /zega, /cargo, /rust"
+  "differingBytes": 9
 }
