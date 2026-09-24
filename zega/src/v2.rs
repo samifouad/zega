@@ -703,7 +703,11 @@ fn read(
     context: &mut ReadContext<'_>,
 ) -> Result<Json, LangError> {
     let mut ids = candidates(graph, root, context.work)?;
-    retain_matches(graph, &mut ids, root.condition.as_ref(), context.work)?;
+    // Candidates are in ascending id order, which is also the result order,
+    // so without a ranking (`near`, `order by`) the first `limit` matches are
+    // the answer and the rest need not be tested (zegadb/zega#82).
+    let enough = root.limit.filter(|_| root.near.is_none() && root.order.is_none());
+    retain_first_matches(graph, &mut ids, root.condition.as_ref(), enough, context.work)?;
     order_limit(graph, root, &mut ids, |id| *id, context.work)?;
     if equality_lookup(root) {
         return match ids.len() {
@@ -1753,21 +1757,42 @@ fn retain_matches(
     condition: Option<&BoolExpr>,
     work: &mut Work,
 ) -> Result<(), LangError> {
+    retain_first_matches(graph, ids, condition, None, work)
+}
+
+/// Like `retain_matches`, but stop once `enough` rows match: the rows after
+/// that are neither tested nor kept, nor counted as examined.
+fn retain_first_matches(
+    graph: &Graph,
+    ids: &mut Vec<NodeId>,
+    condition: Option<&BoolExpr>,
+    enough: Option<usize>,
+    work: &mut Work,
+) -> Result<(), LangError> {
+    let enough = enough.unwrap_or(usize::MAX);
     if condition.is_none() {
+        ids.truncate(enough);
         return Ok(());
     }
-    graph.note_examined(ids.len());
+    let mut kept = 0;
+    let mut tested = 0;
     let mut stopped = Ok(());
-    ids.retain(|id| {
-        if stopped.is_err() {
-            return false;
+    for i in 0..ids.len() {
+        if kept == enough {
+            break;
         }
         if let Err(error) = work.step() {
             stopped = Err(error);
-            return false;
+            break;
         }
-        node_matches(graph, *id, condition)
-    });
+        tested += 1;
+        if node_matches(graph, ids[i], condition) {
+            ids[kept] = ids[i];
+            kept += 1;
+        }
+    }
+    graph.note_examined(tested);
+    ids.truncate(kept);
     stopped
 }
 
