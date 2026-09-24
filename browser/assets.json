@@ -2,6 +2,7 @@
   "index.html",
   "style.css",
   "repl.js",
+  "zql-edit.js",
   "backend.js",
   "editor.js",
   "graph.js",

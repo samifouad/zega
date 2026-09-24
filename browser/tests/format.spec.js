@@ -11,31 +11,35 @@ async function setSource(page, text = source) {
   }, text);
 }
 for (const shortcut of ['Meta+s', 'Control+s']) {
-  test(`format on save (${shortcut}) keeps cursor line and persists source`, async ({ page }) => {
+  test(`format on save (${shortcut}) keeps the cursor on the same code and persists source`, async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45_000 });
     await expect(page.locator('#raw-count')).toContainText('50 nodes');
     await setSource(page);
     await page.keyboard.press(shortcut);
     await expect.poll(() => value(page)).toBe(formatted);
+    // The cursor was after `query{P`; that `P` now starts line 2.
     const position = await page.evaluate(() => window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest('#query')).getPosition());
-    expect(position.lineNumber).toBe(1);
+    expect(position).toEqual({ lineNumber: 2, column: 4 });
     await page.reload();
     await expect(page.locator('#query .monaco-editor')).toBeVisible();
     await expect.poll(() => value(page)).toBe(formatted);
   });
 }
-test('Format action uses WASM, preserves comments, incomplete source and undo', async ({ page }) => {
+test('format now uses WASM, preserves comments, incomplete source and undo', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45_000 });
   await expect(page.locator('#raw-count')).toContainText('50 nodes');
+  await expect(page.getByRole('button', { name: 'Format', exact: true })).toHaveCount(0);
   await setSource(page, '// retain me\n' + source);
-  await page.getByRole('button', { name: 'Format', exact: true }).click();
+  await page.keyboard.press('Control+s');
   await expect.poll(() => value(page)).toBe('// retain me\n' + formatted);
   await page.evaluate(() => window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest('#query')).trigger('test', 'undo'));
   await expect.poll(() => value(page)).toBe('// retain me\n' + source);
+  await page.waitForTimeout(600); // past the auto-format pause: the undo stays undone
+  expect(await value(page)).toBe('// retain me\n' + source);
   await setSource(page, 'query{');
-  await page.getByRole('button', { name: 'Format', exact: true }).click();
+  await page.keyboard.press('Control+s');
   expect(await value(page)).toBe('query{');
 });
 
