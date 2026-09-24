@@ -1,0 +1,45 @@
+== 20k
+  sqlite db 6.2 MB (324 B/node), load 2s, tables {'adj': 2.0, 'ixn': 0.2, 'ixs': 0.3, 'lbl': 0.2, 'meta': 0.0, 'names': 0.0, 'node': 2.5, 'rel': 1.0, 'spec': 0.0, 'sqlite_autoindex_names_1': 0.0, 'sqlite_autoindex_spec_1': 0.0, 'sqlite_schema': 0.0}
+  sqlite 16MB: rss 36.2 peak 36.2 open 3584us first query 2174us
+  sqlite 64MB: rss 41.2 peak 41.3
+  memory: rss 141.4 graph 140.1 MB peak 144.5 load 530ms
+  shape               mem p50/p99  parse    seam      sql16 p50/p99      sql64 p50/p99         syncFULL           memWAL  stmts     rows   hit
+  point                    24/113     13       4             20/120             20/113            13/50            22/71    1.6      1.6 0.376
+  point_hot                24/119     13       3               9/64              14/75             7/21            21/71    1.0      1.0 0.977
+  filter                   54/194     13      34            156/649             68/258          178/760            46/89   11.9     30.8 0.457
+  two_hop                  45/169     15      20             92/246             45/135          127/461            39/73    8.8     13.1  0.54
+  two_hop_hot              43/117     15      27             43/255              23/57           32/188            39/87    1.5      1.5 0.969
+  scan_limit           8909/19354     29     209          2345/7384          3134/8932       3804/22405       8283/16803    4.4   2233.6  None
+  scan_all            10357/18694     33    8557        56351/98998       60621/121682     81429/194311       7905/15228   80.0  40000.0  None
+  create                   47/186      -       -           117/5282            96/3738      2195/218843     51370/266032    3.0      0.0  None
+  link                     60/198      -       -           183/9711           143/6924      2566/192941     52917/268622    8.6      5.6 0.606
+== 200k
+  sqlite db 66.4 MB (347 B/node), load 255s, tables {'adj': 22.3, 'ixn': 2.5, 'ixs': 3.6, 'lbl': 1.9, 'meta': 0.0, 'names': 0.0, 'node': 25.2, 'rel': 10.7, 'spec': 0.0, 'sqlite_autoindex_names_1': 0.0, 'sqlite_autoindex_spec_1': 0.0, 'sqlite_schema': 0.0}
+  sqlite 16MB: rss 42.7 peak 42.8 open 6777us first query 11734us
+  sqlite 64MB: rss 101.5 peak 101.5
+  memory: rss 951.7 graph 950.6 MB peak 971.2 load 3063ms
+  shape               mem p50/p99  parse    seam      sql16 p50/p99      sql64 p50/p99         syncFULL           memWAL  stmts     rows   hit
+  point                     18/37     10       3            17/2891           18/14655         32/91593            18/36    2.0      2.0 0.043
+  point_hot                 18/50     10       3               7/25               7/28             8/34            17/36    1.1      1.1 0.896
+  filter                    42/91     10      28           179/2725           156/9202        340/16115            40/76   20.0     39.1 0.049
+  two_hop                   38/96     12      17          345/37477         4420/79645       5130/82101            35/72   17.0     24.4 0.061
+  two_hop_hot               38/95     12      16           210/1192            26/4200         151/6270            37/80   10.8     13.1 0.426
+  scan_limit         78960/105080     25     136          2215/5011          1885/4219        1892/4625     82724/131305    4.4   2233.6  None
+  scan_all            73963/80818     25   64650      382390/456309      321964/526337    391065/457717      74130/77680  783.0 400000.0  None
+  create                    24/59      -       -             74/582            70/8339      7353/421720     13735/142658    3.0      0.0  None
+  link                      31/68      -       -            129/805          120/15323      9344/406195     13695/155610    8.9      5.9 0.513
+== 2m
+  sqlite db 677.9 MB (355 B/node), load 2252s, tables {'adj': 226.9, 'ixn': 27.0, 'ixs': 38.8, 'lbl': 19.6, 'meta': 0.0, 'names': 0.0, 'node': 252.6, 'rel': 113.0, 'spec': 0.0, 'sqlite_autoindex_names_1': 0.0, 'sqlite_autoindex_spec_1': 0.0, 'sqlite_schema': 0.0}
+  sqlite 16MB: rss 36.6 peak 36.6 open 2883us first query 2395us
+  sqlite 64MB: rss 106.8 peak 106.9
+  memory: rss 6928.4 graph 6927.3 MB peak 8081.6 load 36113ms
+  shape               mem p50/p99  parse    seam      sql16 p50/p99      sql64 p50/p99         syncFULL           memWAL  stmts     rows   hit
+  point                     19/38     10       4            380/871            402/902          385/884            18/21    2.0      2.0 0.004
+  point_hot                 19/42     10       3             15/383             12/401           15/387            18/34    1.7      1.7 0.303
+  filter                   47/102     10      31          2398/6553          2500/7182        2395/6659            48/98   20.8     39.8 0.006
+  two_hop                   41/85     12      20          1638/3117          1680/3182        1645/3220            41/82   17.9     25.9 0.006
+  two_hop_hot               41/98     12      20           841/1951           871/2050         844/1958            40/44   17.1     24.1 0.053
+  scan_limit       927258/1107120     25     136          1687/3166          1686/3028        1579/3039   860038/1047919    4.4   2233.6  None
+  scan_all          829525/836698     26  673409    3176311/3397618    3210691/3259479  3302548/3454417    871495/957572 7814.0 4000000.0  None
+  create                    23/46      -       -             64/386             63/382         798/7318      20326/56986    3.0      0.0  None
+  link                      31/48      -       -         436/126908         437/128843       1211/33525      20355/57491    9.0      6.0   0.5

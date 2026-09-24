@@ -118,7 +118,19 @@ async function measureWrites(base, n, offset) {
 
 const log = (s) => console.error(s);
 
+// A fresh workers.dev host answers with error pages (1042/1104, HTML) for a
+// short while after deploy. Wait until the route answers JSON.
+async function ready(base) {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const r = await call(`${base}/stats`);
+    if (r.body?.ok) return;
+    await sleep(5000);
+  }
+  throw new Error(`${base} never answered JSON`);
+}
+
 async function seed(base, n, chunk) {
+  await ready(base);
   const t = performance.now();
   let written = 0;
   for (let lo = 1; lo <= n; lo += chunk) {
