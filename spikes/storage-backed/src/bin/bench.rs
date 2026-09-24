@@ -52,7 +52,7 @@ fn summary(mut ns: Vec<u64>) -> Json {
 /// first 1% of nodes (a skewed workload); otherwise uniform.
 fn node_for(k: u64, n: u64, hot: bool) -> u64 {
     let r = gen::mix(k ^ 0x5EED);
-    if hot && r % 10 != 0 {
+    if hot && !r.is_multiple_of(10) {
         1 + (r >> 8) % (n / 100).max(1)
     } else {
         1 + (r >> 8) % n

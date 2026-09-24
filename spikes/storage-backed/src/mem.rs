@@ -7,14 +7,21 @@ use std::sync::Arc;
 use crate::model::{index_key, Dir, Interval, Key, Node, NodeId, Op, Rel, RelId};
 use crate::store::{GraphStore, Result};
 
-#[derive(Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, PartialEq)]
 struct F(f64);
 impl Eq for F {}
+impl PartialOrd for F {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
 impl Ord for F {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.total_cmp(&other.0)
     }
 }
+
+type Adjacency = Arc<[(NodeId, RelId)]>;
 
 #[derive(Default)]
 struct Range {
@@ -27,7 +34,7 @@ pub struct MemStore {
     nodes: HashMap<NodeId, Arc<Node>>,
     rels: HashMap<RelId, Arc<Rel>>,
     labels: HashMap<String, BTreeSet<NodeId>>,
-    adj: HashMap<(NodeId, String, Dir), Arc<[(NodeId, RelId)]>>,
+    adj: HashMap<(NodeId, String, Dir), Adjacency>,
     ranges: HashMap<(String, String), Range>,
     next: (NodeId, RelId),
 }

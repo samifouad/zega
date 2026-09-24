@@ -111,13 +111,15 @@ struct Spec {
     field: String,
 }
 
+type Adjacency = Arc<[(NodeId, RelId)]>;
+
 pub struct SqlStore<D: Driver> {
     db: D,
     names: RefCell<Names>,
     specs: Vec<Spec>,
     nodes: RefCell<ByteLru<NodeId, Arc<Node>>>,
     rels: RefCell<ByteLru<RelId, Arc<Rel>>>,
-    adj: RefCell<ByteLru<(NodeId, i64), Arc<[(NodeId, RelId)]>>>,
+    adj: RefCell<ByteLru<(NodeId, i64), Adjacency>>,
     stats: StdCell<Stats>,
     next: StdCell<(NodeId, RelId)>,
 }
@@ -296,7 +298,7 @@ impl<D: Driver> SqlStore<D> {
     }
 
     fn specs_for<'a>(&'a self, labels: &'a [String]) -> impl Iterator<Item = &'a Spec> + 'a {
-        self.specs.iter().filter(move |spec| labels.iter().any(|l| *l == spec.ty))
+        self.specs.iter().filter(move |spec| labels.contains(&spec.ty))
     }
 
     fn insert_key(&self, spec: i64, value: &Value, id: NodeId) -> Result<()> {
