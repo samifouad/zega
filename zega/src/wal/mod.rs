@@ -430,7 +430,10 @@ impl Wal {
                         ),
                     });
                 }
-                let op = decode_payload(&payload, entry_start)?;
+                let op = bincode::deserialize(&payload).map_err(|error| WalError::Corruption {
+                    offset: entry_start,
+                    reason: format!("invalid operation payload: {error}"),
+                })?;
                 ops.push(op);
                 valid_end = entry_end;
             }
@@ -784,7 +787,9 @@ pub(crate) fn decode_entry(frame: &[u8]) -> Result<Operation, WalError> {
     decode_payload(payload, 0)
 }
 
-#[cfg(any(not(target_arch = "wasm32"), feature = "durable-log"))]
+// Strict (no trailing bytes, bounded) decode for host rows only. Native file
+// replay keeps its existing `bincode::deserialize`; tightening it is zegadb/zega#44.
+#[cfg(feature = "durable-log")]
 fn decode_payload(payload: &[u8], offset: u64) -> Result<Operation, WalError> {
     bincode::DefaultOptions::new().with_fixint_encoding().reject_trailing_bytes()
         .with_limit(payload.len() as u64).deserialize(payload)
