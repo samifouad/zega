@@ -46,7 +46,7 @@ async function call(url, method = "GET") {
     const text = await res.text();
     const ms = performance.now() - t;
     let body = null;
-    try { body = JSON.parse(text); } catch { body = { ok: false, error: text.slice(0, 200) }; }
+    try { body = JSON.parse(text); } catch { body = { ok: false, error: text.slice(0, 200), notJson: true }; }
     const server = Number(res.headers.get("x-do-ms") ?? res.headers.get("x-d1-ms") ?? NaN);
     const colo = (res.headers.get("cf-ray") ?? "").split("-")[1] ?? null;
     if (res.status >= 500 && attempt < 2 && !url.includes("/evict")) { await sleep(300); continue; }
@@ -123,7 +123,8 @@ const log = (s) => console.error(s);
 async function ready(base) {
   for (let attempt = 0; attempt < 60; attempt++) {
     const r = await call(`${base}/stats`);
-    if (r.body?.ok) return;
+    // Any JSON counts: an unseeded D1 graph answers stats with a JSON error.
+    if (r.body && !r.body.notJson) return;
     await sleep(5000);
   }
   throw new Error(`${base} never answered JSON`);
