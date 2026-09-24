@@ -21,6 +21,17 @@ struct Store {
     zega: Arc<Zega>,
     gate: Arc<SyncGate>,
     dir: TempDir,
+    _release: ReleaseOnDrop,
+}
+
+/// A test that fails with the gate held would otherwise hang: dropping the
+/// store joins a WAL worker waiting at the gate.
+struct ReleaseOnDrop(Arc<SyncGate>);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.release(false);
+    }
 }
 
 impl Store {
@@ -29,11 +40,13 @@ impl Store {
         let mut zega = Zega::open(dir.path().to_str().unwrap()).build().unwrap();
         let (wal, gate) = gated_wal(&dir.path().join("wal.bin"));
         zega.wal = wal;
-        Store { zega: Arc::new(zega), gate, dir }
+        let release = ReleaseOnDrop(Arc::clone(&gate));
+        Store { zega: Arc::new(zega), gate, dir, _release: release }
     }
 
     fn reopen(self) -> Zega {
         let path = self.dir.path().to_str().unwrap().to_string();
+        self.gate.release(false);
         drop(Arc::try_unwrap(self.zega).ok().expect("store still shared"));
         Zega::open(&path).build().unwrap()
     }

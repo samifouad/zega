@@ -103,6 +103,9 @@ struct GroupCommit {
     wake: Condvar,
     /// Wakes the worker: an entry is waiting, or the WAL is shutting down.
     work: Condvar,
+    /// `WalState::next_sequence`, readable without the lock: every read
+    /// takes it, and must not queue behind an append or the worker.
+    appended: std::sync::atomic::AtomicU64,
     interval: Duration,
     batch_size: usize,
     flush_every: bool,
@@ -141,6 +144,7 @@ impl Wal {
                     }),
                     wake: Condvar::new(),
                     work: Condvar::new(),
+                    appended: std::sync::atomic::AtomicU64::new(0),
                     interval: DEFAULT_GROUP_COMMIT_INTERVAL,
                     batch_size: DEFAULT_GROUP_COMMIT_BATCH_SIZE,
                     flush_every: false,
@@ -224,6 +228,7 @@ impl Wal {
             }),
             wake: Condvar::new(),
             work: Condvar::new(),
+            appended: std::sync::atomic::AtomicU64::new(0),
             interval,
             batch_size: batch_size.max(1),
             flush_every,
@@ -316,6 +321,7 @@ impl Wal {
             state.next_sequence += 1;
             let sequence = state.next_sequence;
             state.pending_entries += 1;
+            self.group.appended.store(sequence, std::sync::atomic::Ordering::SeqCst);
 
             if self.group.flush_every {
                 if let Err(error) = sync_pending(&mut state) {
@@ -324,6 +330,9 @@ impl Wal {
                     // and the graph matches the file again. Reads go on;
                     // writes stay refused until the store is reopened.
                     state.next_sequence = state.durable_sequence;
+                    self.group
+                        .appended
+                        .store(state.next_sequence, std::sync::atomic::Ordering::SeqCst);
                     return Err(error);
                 }
                 self.group.wake.notify_all();
@@ -342,11 +351,7 @@ impl Wal {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.group
-                .state
-                .lock()
-                .map(|state| state.next_sequence)
-                .unwrap_or(u64::MAX)
+            self.group.appended.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
