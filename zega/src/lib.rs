@@ -154,6 +154,7 @@ pub struct Zega {
     wal: Wal,
     #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
+    #[cfg(any(not(target_arch = "wasm32"), not(feature = "durable-log")))]
     in_memory: bool,
     jwt_config: Option<JwtConfig>,
     policies: Vec<Policy>,
@@ -290,7 +291,10 @@ impl Zega {
 
         #[cfg(not(target_arch = "wasm32"))]
         let snapshot_path = path.join("snapshot.bin");
+        #[cfg(any(not(target_arch = "wasm32"), not(feature = "durable-log")))]
         let wal_path = path.join("wal.bin");
+        #[cfg(all(target_arch = "wasm32", feature = "durable-log"))]
+        let _ = (path, builder.wal_flush_every, builder.in_memory);
 
         // Restore from snapshot if exists
         #[cfg(not(target_arch = "wasm32"))]
@@ -325,6 +329,7 @@ impl Zega {
             wal,
             #[cfg(not(target_arch = "wasm32"))]
             path,
+            #[cfg(any(not(target_arch = "wasm32"), not(feature = "durable-log")))]
             in_memory: builder.in_memory,
             jwt_config,
             policies,

@@ -1,0 +1,45 @@
+name: Regular WASM isolation
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  browser-wasm:
+    # Match the recorded artifact's host/toolchain; source paths are remapped by
+    # rebuild-wasm.mjs so the checkout and runner home do not enter the binary.
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: ${{ github.workspace }}/.tmp/sccache
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.target
+      TMPDIR: ${{ github.workspace }}/.tmp
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - run: mkdir -p .tmp && chmod 700 .tmp
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.96.0'
+          targets: wasm32-unknown-unknown
+      - uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+      - uses: actions/cache@v4
+        with:
+          path: .tmp/sccache
+          key: regular-wasm-${{ runner.os }}-${{ runner.arch }}-1.96.0-${{ hashFiles('zega-wasm/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: regular-wasm-${{ runner.os }}-${{ runner.arch }}-1.96.0-${{ hashFiles('zega-wasm/Cargo.lock') }}-
+      - name: Require compiler cache and install pinned wasm-pack
+        run: |
+          test "$RUSTC_WRAPPER" = sccache
+          sccache --version
+          cargo install wasm-pack --version 0.15.0 --locked
+      - name: Reject Cloudflare dependencies and durable-log in regular WASM
+        run: node browser/scripts/check-wasm.mjs dependencies
+      - name: Rebuild regular WASM and compare the committed browser/pkg hash
+        run: node browser/scripts/check-wasm.mjs

@@ -1,6 +1,6 @@
 use super::*;
 
-/// A parsed HTTP request, executable one block at a time by a transactional
+/// A parsed ZQL request, executable one block at a time by a transactional
 /// host. Uses the same parser, diagnostics and executor as the native server.
 pub struct ZqlProgram {
     file: crate::lang::ZqlFile,
