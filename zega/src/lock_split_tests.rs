@@ -18,10 +18,11 @@ use crate::wal::tests::{gated_wal, SyncGate};
 use crate::{Value, Zega};
 
 struct Store {
+    // First: fields drop in order, and this must run before the WAL does.
+    _release: ReleaseOnDrop,
     zega: Arc<Zega>,
     gate: Arc<SyncGate>,
     dir: TempDir,
-    _release: ReleaseOnDrop,
 }
 
 /// A test that fails with the gate held would otherwise hang: dropping the
