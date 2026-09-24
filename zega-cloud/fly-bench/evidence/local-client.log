@@ -1,0 +1,72 @@
+# client full plan (targets s1x only, --rounds 1 --idle-min 1.5), same setup. Local Docker has no Fly proxy, so nothing stops the server while idle: 'docker restart' ran 20 s into the idle to exercise the restart detection; the wake's first answer is therefore not a wake time.
+{"at":"2026-09-24T12:33:27.744Z","phase":"wipe","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":0,"serverMs":3.03,"roundTripMs":42.05,"before":{"peakRss":27967488,"rss":21790720,"rssAnon":15900672},"after":{"peakRss":21794816,"rss":21794816,"rssAnon":15904768},"disk":{"snapshotBytes":null,"walBytes":6}}
+{"at":"2026-09-24T12:33:27.753Z","phase":"machine","size":"s1x","vm":"shared-cpu-1x","budget":268435456,"baselineRss":21794816,"machine":{"cgroupMax":268435456,"memAvailable":5096271872,"memTotal":8324960256},"openMs":9.759981}
+{"at":"2026-09-24T12:33:36.618Z","phase":"load","size":"s1x","vm":"shared-cpu-1x","ok":true,"error":null,"done":true,"nodes":10000,"relationships":30000,"target":10000,"batches":{"samples":10,"p50Ms":896.78,"p99Ms":1294.32,"maxMs":1294.32,"minMs":494.55,"over2s":0},"elapsedMs":8943,"mem":{"rss":60383232,"peakRss":62832640,"machine":{"cgroupMax":268435456,"memAvailable":5033541632,"memTotal":8324960256},"disk":{"snapshotBytes":null,"walBytes":3187376},"openMs":9.759981,"startedAtMs":1790253183785}}
+{"at":"2026-09-24T12:33:37.416Z","phase":"step-snapshot","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":10000,"serverMs":742.6,"roundTripMs":749.51,"before":{"peakRss":62832640,"rss":60383232,"rssAnon":54493184},"after":{"peakRss":71090176,"rss":64577536,"rssAnon":58687488},"disk":{"snapshotBytes":3346906,"walBytes":3187376}}
+{"at":"2026-09-24T12:33:40.715Z","phase":"step-reload","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":10000,"serverMs":3296.27,"roundTripMs":3298.17,"before":{"peakRss":71090176,"rss":64577536,"rssAnon":58687488},"after":{"peakRss":72142848,"rss":72142848,"rssAnon":66252800},"disk":{"snapshotBytes":3346906,"walBytes":3187376}}
+{"at":"2026-09-24T12:33:40.715Z","phase":"step","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":10000,"peaks":{"load":62832640,"snapshot":71090176,"reload":72142848},"peak":72142848,"reloadMs":3296.27,"budget":268435456,"cap":50000}
+{"at":"2026-09-24T12:33:46.091Z","phase":"load","size":"s1x","vm":"shared-cpu-1x","ok":true,"error":null,"done":true,"nodes":13000,"relationships":39000,"target":13000,"batches":{"samples":3,"p50Ms":893.89,"p99Ms":896.89,"maxMs":896.89,"minMs":601.99,"over2s":0},"elapsedMs":2497,"mem":{"rss":72146944,"peakRss":72146944,"machine":{"cgroupMax":268435456,"memAvailable":5018488832,"memTotal":8324960256},"disk":{"snapshotBytes":3346906,"walBytes":4146920},"openMs":9.759981,"startedAtMs":1790253183785}}
+{"at":"2026-09-24T12:33:46.896Z","phase":"step-snapshot","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":13000,"serverMs":752.18,"roundTripMs":756.16,"before":{"peakRss":72146944,"rss":72146944,"rssAnon":66256896},"after":{"peakRss":83009536,"rss":72146944,"rssAnon":66256896},"disk":{"snapshotBytes":4354306,"walBytes":4146920}}
+{"at":"2026-09-24T12:33:50.989Z","phase":"step-reload","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":13000,"serverMs":4091.06,"roundTripMs":4093.07,"before":{"peakRss":83009536,"rss":72146944,"rssAnon":66256896},"after":{"peakRss":83447808,"rss":83447808,"rssAnon":77557760},"disk":{"snapshotBytes":4354306,"walBytes":4146920}}
+{"at":"2026-09-24T12:33:50.989Z","phase":"step","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":13000,"peaks":{"load":72146944,"snapshot":83009536,"reload":83447808},"peak":83447808,"reloadMs":4091.06,"budget":268435456,"cap":50000}
+{"at":"2026-09-24T12:33:56.164Z","phase":"load","size":"s1x","vm":"shared-cpu-1x","ok":true,"error":null,"done":true,"nodes":16000,"relationships":48000,"target":16000,"batches":{"samples":3,"p50Ms":700.09,"p99Ms":892.53,"maxMs":892.53,"minMs":598.82,"over2s":0},"elapsedMs":2297,"mem":{"rss":83447808,"peakRss":83447808,"machine":{"cgroupMax":268435456,"memAvailable":5003751424,"memTotal":8324960256},"disk":{"snapshotBytes":4354306,"walBytes":5106464},"openMs":9.759981,"startedAtMs":1790253183785}}
+{"at":"2026-09-24T12:33:57.166Z","phase":"step-snapshot","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":16000,"serverMs":906.39,"roundTripMs":952.75,"before":{"peakRss":83447808,"rss":83447808,"rssAnon":77557760},"after":{"peakRss":95297536,"rss":83578880,"rssAnon":77688832},"disk":{"snapshotBytes":5361706,"walBytes":5106464}}
+{"at":"2026-09-24T12:34:02.132Z","phase":"step-reload","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":16000,"serverMs":5093.27,"roundTripMs":5094.61,"before":{"peakRss":95297536,"rss":83578880,"rssAnon":77688832},"after":{"peakRss":86519808,"rss":86519808,"rssAnon":80629760},"disk":{"snapshotBytes":5361706,"walBytes":5106464}}
+{"at":"2026-09-24T12:34:02.132Z","phase":"step","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":16000,"peaks":{"load":83447808,"snapshot":95297536,"reload":86519808},"peak":95297536,"reloadMs":5093.27,"budget":268435456,"cap":50000}
+{"at":"2026-09-24T12:34:08.929Z","phase":"load","size":"s1x","vm":"shared-cpu-1x","ok":true,"error":null,"done":true,"nodes":20000,"relationships":60000,"target":20000,"batches":{"samples":4,"p50Ms":992.85,"p99Ms":1001.3,"maxMs":1001.3,"minMs":601.75,"over2s":0},"elapsedMs":3788,"mem":{"rss":117170176,"peakRss":132083712,"machine":{"cgroupMax":268435456,"memAvailable":4965060608,"memTotal":8324960256},"disk":{"snapshotBytes":5361706,"walBytes":6385856},"openMs":9.759981,"startedAtMs":1790253183785}}
+{"at":"2026-09-24T12:34:10.330Z","phase":"step-snapshot","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":20000,"serverMs":1309.22,"roundTripMs":1400.46,"before":{"peakRss":132083712,"rss":117170176,"rssAnon":111280128},"after":{"peakRss":149745664,"rss":136380416,"rssAnon":130490368},"disk":{"snapshotBytes":6704906,"walBytes":6385856}}
+{"at":"2026-09-24T12:34:16.803Z","phase":"step-reload","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":20000,"serverMs":6599.65,"roundTripMs":6602.47,"before":{"peakRss":149745664,"rss":136380416,"rssAnon":130490368},"after":{"peakRss":160722944,"rss":160722944,"rssAnon":154832896},"disk":{"snapshotBytes":6704906,"walBytes":6385856}}
+{"at":"2026-09-24T12:34:16.803Z","phase":"step","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":20000,"peaks":{"load":132083712,"snapshot":149745664,"reload":160722944},"peak":160722944,"reloadMs":6599.65,"budget":268435456,"cap":50000}
+{"at":"2026-09-24T12:34:23.569Z","phase":"load","size":"s1x","vm":"shared-cpu-1x","ok":true,"error":null,"done":true,"nodes":25000,"relationships":75000,"target":25000,"batches":{"samples":5,"p50Ms":698.92,"p99Ms":799.07,"maxMs":799.07,"minMs":601.32,"over2s":0},"elapsedMs":3892,"mem":{"rss":160722944,"peakRss":160722944,"machine":{"cgroupMax":268435456,"memAvailable":4921565184,"memTotal":8324960256},"disk":{"snapshotBytes":6704906,"walBytes":7985096},"openMs":9.759981,"startedAtMs":1790253183785}}
+{"at":"2026-09-24T12:34:24.781Z","phase":"step-snapshot","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":25000,"serverMs":1209.39,"roundTripMs":1211.83,"before":{"peakRss":160722944,"rss":160722944,"rssAnon":154832896},"after":{"peakRss":184815616,"rss":184815616,"rssAnon":178925568},"disk":{"snapshotBytes":8383906,"walBytes":7985096}}
+{"at":"2026-09-24T12:34:31.742Z","phase":"step-reload","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":25000,"serverMs":7000.42,"roundTripMs":7089.81,"before":{"peakRss":184815616,"rss":184815616,"rssAnon":178925568},"after":{"peakRss":198537216,"rss":198537216,"rssAnon":192647168},"disk":{"snapshotBytes":8383906,"walBytes":7985096}}
+{"at":"2026-09-24T12:34:31.742Z","phase":"step","size":"s1x","vm":"shared-cpu-1x","ok":true,"nodes":25000,"peaks":{"load":160722944,"snapshot":184815616,"reload":198537216},"peak":198537216,"reloadMs":7000.42,"budget":268435456,"cap":50000}
+{"at":"2026-09-24T12:34:34.747Z","phase":"shared-size","size":"s1x","nodes":25000,"relationships":75000}
+{"at":"2026-09-24T12:34:39.895Z","phase":"at-shared","size":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"read","nodes":25000,"samples":100,"p50Ms":1.97,"p99Ms":5.17,"maxMs":8.19,"minMs":1.21,"over2s":0,"errors":0,"firstError":null}
+{"at":"2026-09-24T12:34:47.774Z","phase":"at-shared","size":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"write","nodes":25000,"samples":100,"p50Ms":6.46,"p99Ms":13.42,"maxMs":21.07,"minMs":2.67,"over2s":0,"errors":0,"firstError":null}
+{"at":"2026-09-24T12:34:55.648Z","phase":"at-shared","size":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"hop2","nodes":25000,"samples":100,"p50Ms":1.78,"p99Ms":4.97,"maxMs":8.85,"minMs":1.17,"over2s":0,"errors":0,"firstError":null}
+{"at":"2026-09-24T12:35:06.750Z","phase":"at-shared","size":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"heavy","nodes":25000,"samples":10,"p50Ms":799.79,"p99Ms":1498.24,"maxMs":1498.24,"minMs":399.43,"over2s":0,"errors":0,"firstError":null}
+{"at":"2026-09-24T12:35:10.858Z","phase":"at-shared","size":"s1x","vm":"shared-cpu-1x","bench":"snapshot","ok":true,"nodes":25000,"serverMs":1103.14,"roundTripMs":1106.17,"before":{"peakRss":198045696,"rss":154873856,"rssAnon":148983808},"after":{"peakRss":162869248,"rss":154873856,"rssAnon":148983808},"disk":{"snapshotBytes":8401286,"walBytes":8003276}}
+{"at":"2026-09-24T12:35:21.319Z","phase":"at-shared","size":"s1x","vm":"shared-cpu-1x","bench":"reload","ok":true,"nodes":25000,"serverMs":7586.06,"roundTripMs":7587.56,"before":{"peakRss":162869248,"rss":154873856,"rssAnon":148983808},"after":{"peakRss":155131904,"rss":155131904,"rssAnon":149241856},"disk":{"snapshotBytes":8401286,"walBytes":8003276}}
+{"at":"2026-09-24T12:35:24.192Z","phase":"capacity-estimate","size":"s1x","vm":"shared-cpu-1x","measuredNodes":25000,"cap":50000,"bytesPerNode":7070,"at90":31090,"at100":34887,"note":"extrapolated from memory per node; an estimate, not a measurement"}
+{"at":"2026-09-24T12:35:25.587Z","phase":"wake-idle","size":"s1x","round":1,"idleMin":1.5,"startedAtMs":1790253183785,"awakeMs":49}
+{"at":"2026-09-24T12:36:55.932Z","phase":"wake","size":"s1x","vm":"shared-cpu-1x","ok":true,"round":1,"idleMin":1.5,"firstAnswerMs":389,"attempts":1,"restarted":true,"openMs":6648.328028,"warmReadMs":2.05,"nodes":25000,"graphIntact":true,"mem":{"rss":123801600,"peakRss":123801600,"machine":{"cgroupMax":268435456,"memAvailable":4856029184,"memTotal":8324960256},"disk":{"snapshotBytes":8401286,"walBytes":8003276},"openMs":6648.328028,"startedAtMs":1790253352439}}
+
+Timings: from a client Machine in the same region, through Fly's proxy over Flycast; 100 samples each (heavy 10), sequential, at most 20 requests/s.
+
+| | s1x |
+|---|---|
+| VM | shared-cpu-1x |
+| memory the process can use (MiB) | 256 |
+| cap for this run (nodes) | 50,000 |
+| measured capacity (nodes / relationships) | 25,000 / 75,000 |
+| peak RSS there: load / snapshot / reload (MiB) | 153 / 176 / 189 |
+| memory per node, with 3 relationships (bytes) | 7,070 |
+| **estimated** capacity at 90% / 100% of memory (nodes) | 31,090 / 34,887 |
+| **at shared size** (nodes) | 25,000 |
+| read p50 / p99 (ms) | 2 / 5.2 |
+| write p50 / p99 (ms) | 6.5 / 13.4 |
+| hop2 p50 / p99 (ms) | 1.8 / 5 |
+| heavy p50 / p99 (ms) | 799.8 / 1498.2 |
+| snapshot (ms, server) | 1103.1 |
+| reload from volume (ms, server) | 7586.1 |
+| **at own capacity** (nodes) | 25,000 |
+| read p50 / p99 (ms) | 2 / 5.2 |
+| write p50 / p99 (ms) | 6.5 / 13.4 |
+| hop2 p50 / p99 (ms) | 1.8 / 5 |
+| heavy p50 / p99 (ms) | 799.8 / 1498.2 |
+| snapshot (ms, server) | 1103.1 |
+| reload from volume (ms, server) | 7586.1 |
+
+Idle wake (s1x): left idle 1.5 min so Fly's proxy stops it, then the first query through Flycast (autostart, then the graph reloaded from the volume).
+
+| | round 1 |
+|---|---|
+| stopped by the proxy (process restarted) | true |
+| first answer (ms) | 389 |
+| of which: open graph from volume (ms, server) | 6648.3 |
+| next read (ms) | 2.1 |
+| graph intact (nodes) | true (25,000) |
+
+elapsed 208 s
+exit=0

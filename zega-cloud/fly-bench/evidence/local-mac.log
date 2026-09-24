@@ -1,0 +1,65 @@
+# mac.mjs against the same local server: --base http://127.0.0.1:18101 and --flyctl pointing at a Node stand-in that maps 'machine stop|start|update' to docker stop|start|update (not committed)
+## e2e --n 10 --gap-ms 100
+{"at":"2026-09-24T12:37:11.097Z","phase":"e2e","size":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"read","nodes":25000,"samples":10,"p50Ms":4.01,"p99Ms":10.43,"maxMs":10.43,"minMs":3.25,"over2s":0,"errors":0,"firstError":null}
+{"at":"2026-09-24T12:37:12.612Z","phase":"e2e","size":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"write","nodes":25000,"samples":10,"p50Ms":18.4,"p99Ms":91.91,"maxMs":91.91,"minMs":10.73,"over2s":0,"errors":0,"firstError":null}
+{"at":"2026-09-24T12:37:14.118Z","phase":"e2e","size":"s1x","vm":"shared-cpu-1x","ok":true,"bench":"hop2","nodes":25000,"samples":10,"p50Ms":4.6,"p99Ms":6.32,"maxMs":6.32,"minMs":3.44,"over2s":0,"errors":0,"firstError":null}
+
+End to end from this Mac to http://127.0.0.1:18101 (Fly proxy, TLS, pinned per Machine); 10 samples each, one every 100 ms.
+
+| | s1x |
+|---|---|
+| VM | shared-cpu-1x |
+| graph (nodes) | 25,000 |
+| read p50 / p99 (ms) | 4 / 10.4 |
+| write p50 / p99 (ms) | 18.4 / 91.9 |
+| hop2 p50 / p99 (ms) | 4.6 / 6.3 |
+
+## restart --rounds 1; resize --steps shared-cpu-2x:512,shared-cpu-1x:256; restart --rounds 1 --empty
+{"at":"2026-09-24T12:38:00.146Z","phase":"restart","size":"s1x","vm":"shared-cpu-1x","round":1,"ok":true,"stopMs":2282,"startCommandMs":751,"firstAnswerMs":7754,"openMs":7218.544441999999,"attempts":30,"graphIntact":true,"nodes":25000}
+
+Stop -> start -> first answer, timed from this Mac (graph reloaded from the volume); 1 rounds each.
+
+| | s1x |
+|---|---|
+| VM | shared-cpu-1x |
+| graph (nodes) | 25,000 |
+| `flyctl machine stop` (ms) | 2282 |
+| `flyctl machine start` returns (ms) | 751 |
+| start issued -> first answer (ms) | 7754 |
+| of which: open graph from volume (ms, server) | 7218.5 |
+| graph intact | true |
+
+exit=0
+{"at":"2026-09-24T12:38:16.338Z","phase":"resize-before","size":"s1x","nodes":25000,"found":22,"hash":"31d377184b0ecd53"}
+{"at":"2026-09-24T12:38:39.597Z","phase":"resize","size":"s1x","to":"shared-cpu-2x/512MB","ok":true,"updateCommandMs":2431,"firstAnswerMs":6535,"unavailableMs":6535,"openMs":4315.322034,"memTotal":8324960256,"graphIntact":true,"nodes":25000,"readAfter":{"p50Ms":3.2,"p99Ms":4.01}}
+{"at":"2026-09-24T12:39:05.105Z","phase":"resize","size":"s1x","to":"shared-cpu-1x/256MB","ok":true,"updateCommandMs":1485,"firstAnswerMs":8752,"unavailableMs":8752,"openMs":7324.690614,"memTotal":8324960256,"graphIntact":true,"nodes":25000,"readAfter":{"p50Ms":3.03,"p99Ms":3.92}}
+
+Resize of s1x (25,000 nodes on its volume), timed from this Mac; unavailable = longest run of failed polls (one every 250 ms).
+
+| | shared-cpu-2x/512MB | shared-cpu-1x/256MB |
+|---|---|---|
+| `flyctl machine update` returns (ms) | 2431 | 1485 |
+| update issued -> first answer (ms) | 6535 | 8752 |
+| unavailable (ms) | 6535 | 8752 |
+| of which: open graph from volume (ms, server) | 4315.3 | 7324.7 |
+| MemTotal after (MiB) | 7939.3 | 7939.3 |
+| graph intact | true | true |
+| read p50 / p99 after (ms) | 3.2 / 4 | 3 / 3.9 |
+
+exit=0
+{"at":"2026-09-24T12:39:11.835Z","phase":"wipe","size":"s1x","ok":true,"nodes":0,"serverMs":1053.27,"roundTripMs":1054.84,"before":{"peakRss":123473920,"rss":123473920,"rssAnon":118071296},"after":{"peakRss":123265024,"rss":92987392,"rssAnon":87392256},"disk":{"snapshotBytes":null,"walBytes":6}}
+{"at":"2026-09-24T12:39:12.859Z","phase":"restart","size":"s1x","vm":"shared-cpu-1x","round":1,"empty":true,"ok":true,"stopMs":383,"startCommandMs":635,"firstAnswerMs":635,"openMs":0.107212,"attempts":1,"graphIntact":true,"nodes":0}
+
+Stop -> start -> first answer, timed from this Mac (empty volume); 1 rounds each.
+
+| | s1x |
+|---|---|
+| VM | shared-cpu-1x |
+| graph (nodes) | 0 |
+| `flyctl machine stop` (ms) | 383 |
+| `flyctl machine start` returns (ms) | 635 |
+| start issued -> first answer (ms) | 635 |
+| of which: open graph from volume (ms, server) | 0.1 |
+| graph intact | true |
+
+exit=0

@@ -1,0 +1,7 @@
+# Fly app for the zega Machines benchmark. Used only to build and push the two
+# images (`flyctl deploy . --build-only --push`, run from the repository root
+# with --dockerfile); the Machines are created one at a time with
+# `flyctl machine run`, because each has its own size, volume, ports and
+# autostop setting. The commands are in the PR that added this directory.
+app = "zega-bench"
+primary_region = "yyz"
