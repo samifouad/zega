@@ -24,6 +24,9 @@ const WAL_VERSION: u16 = 2;
 const WAL_FILE_HEADER: &[u8; 6] = b"ZWAL\x02\x00";
 const WAL_FILE_HEADER_LEN: u64 = WAL_FILE_HEADER.len() as u64;
 const ENTRY_HEADER_LEN: u64 = 12;
+/// Snapshot files written since checkpoints existed start with this header;
+/// older snapshots are a bare bincode `LegacySnapshot` and still load.
+const SNAPSHOT_HEADER: &[u8; 6] = b"ZSNP\x01\x00";
 #[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_GROUP_COMMIT_INTERVAL: Duration = Duration::from_millis(5);
 const DEFAULT_GROUP_COMMIT_BATCH_SIZE: usize = 64;
@@ -70,6 +73,11 @@ pub enum Operation {
     Statement {
         ops: Vec<Operation>,
     },
+    /// The first entry of a log that a checkpoint emptied: every write before
+    /// it is in the snapshot with this generation. Replay changes nothing.
+    Checkpoint {
+        generation: u64,
+    },
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -83,6 +91,8 @@ struct WalState {
     pending_start: u64,
     durability_error: Option<String>,
     shutdown: bool,
+    /// Length of the log file, header included: what a restart would read.
+    len: u64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -122,6 +132,7 @@ impl Wal {
                         pending_start: 0,
                         durability_error: None,
                         shutdown: false,
+                        len: 0,
                     }),
                     wake: Condvar::new(),
                     interval: DEFAULT_GROUP_COMMIT_INTERVAL,
@@ -188,11 +199,13 @@ impl Wal {
     #[cfg(not(target_arch = "wasm32"))]
     fn from_target(
         path: &Path,
-        target: Box<dyn AppendTarget + Send>,
+        mut target: Box<dyn AppendTarget + Send>,
         flush_every: bool,
         interval: Duration,
         batch_size: usize,
     ) -> Self {
+        // Only a size estimate for `Wal::len` until replay has read the file.
+        let len = target.seek_end().unwrap_or(WAL_FILE_HEADER_LEN);
         let group = Arc::new(GroupCommit {
             state: Mutex::new(WalState {
                 file: Some(target),
@@ -202,6 +215,7 @@ impl Wal {
                 pending_start: 0,
                 durability_error: None,
                 shutdown: false,
+                len,
             }),
             wake: Condvar::new(),
             interval,
@@ -278,6 +292,7 @@ impl Wal {
             if state.pending_entries == 0 {
                 state.pending_start = offset;
             }
+            state.len = offset + ENTRY_HEADER_LEN + len;
             state.next_sequence += 1;
             let sequence = state.next_sequence;
             state.pending_entries += 1;
@@ -397,9 +412,118 @@ impl Wal {
                 valid_end = entry_end;
             }
             file.seek(SeekFrom::End(0))?;
+            if let Ok(mut state) = self.group.state.lock() {
+                state.len = valid_end;
+            }
             Ok(ops)
         }
     }
+
+    /// Bytes a restart would read from the log file, header included; 0 for
+    /// an in-memory log.
+    pub fn len(&self) -> u64 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            0
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.group.state.lock().map(|state| state.len).unwrap_or(0)
+        }
+    }
+
+    /// Empty the log down to one [`Operation::Checkpoint`] entry, once the
+    /// snapshot with `generation` is durable and holds every entry in it.
+    /// The caller holds the graph lock, so no write is between the two.
+    ///
+    /// A failure part-way leaves either the old log or a log with no entries
+    /// after the header, and replay reads both correctly next to the new
+    /// snapshot. But the log would then be behind the snapshot's generation,
+    /// and a later write appended to it would be skipped on replay as one the
+    /// snapshot already holds, so any failure poisons the log: it refuses
+    /// writes until the store is reopened, which reads the snapshot.
+    pub fn checkpoint(&self, generation: u64) -> Result<(), WalError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = generation;
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut state = self
+                .group
+                .state
+                .lock()
+                .map_err(|_| WalError::Durability("group commit lock poisoned".to_string()))?;
+            if let Some(error) = &state.durability_error {
+                return Err(WalError::Durability(error.clone()));
+            }
+            sync_pending(&mut state)?;
+            let Some(file) = state.file.as_mut() else {
+                return Ok(());
+            };
+            let result = (|| {
+                file.truncate(WAL_FILE_HEADER_LEN)?;
+                crash_point(CrashPoint::WalTruncated);
+                let bytes = bincode::serialize(&Operation::Checkpoint { generation })?;
+                let len = bytes.len() as u64;
+                let offset = append_entry(file.as_mut(), len, crc32fast::hash(&bytes), &bytes)?;
+                crash_point(CrashPoint::CheckpointWritten);
+                file.flush()?;
+                file.sync()?;
+                Ok::<u64, WalError>(offset + ENTRY_HEADER_LEN + len)
+            })();
+            match result {
+                Ok(len) => {
+                    state.len = len;
+                    Ok(())
+                }
+                Err(error) => {
+                    let message = format!(
+                        "WAL checkpoint failed ({error}) after snapshot generation {generation} \
+                         was written; the WAL refuses writes until the store is reopened"
+                    );
+                    state.durability_error = Some(message.clone());
+                    Err(WalError::Durability(message))
+                }
+            }
+        }
+    }
+}
+
+/// Where a checkpoint can stop: after each step that changes a file. Tests
+/// abort the process at one of these to check what a restart finds there;
+/// in other builds [`crash_point`] does nothing.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CrashPoint {
+    /// Part of the temporary snapshot is written.
+    SnapshotPartial = 1,
+    /// The whole temporary snapshot is written but not synced.
+    SnapshotWritten,
+    /// The temporary snapshot is synced but not renamed.
+    SnapshotSynced,
+    /// The snapshot is renamed into place; the directory is not synced.
+    SnapshotRenamed,
+    /// The rename is durable; the log is untouched.
+    SnapshotDurable,
+    /// The log is truncated to its header.
+    WalTruncated,
+    /// The checkpoint entry is written but not synced.
+    CheckpointWritten,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) static CRASH_AT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn crash_point(point: CrashPoint) {
+    #[cfg(test)]
+    if CRASH_AT.load(std::sync::atomic::Ordering::SeqCst) == point as u8 {
+        std::process::abort();
+    }
+    let _ = point;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -501,6 +625,7 @@ fn migrate_legacy_wal(path: &Path, file: File, file_len: u64) -> Result<(), WalE
 fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), WalError> {
     file.sync_all()?;
     drop(file);
+    crash_point(CrashPoint::SnapshotSynced);
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
@@ -553,6 +678,7 @@ fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), W
     #[cfg(not(windows))]
     {
         std::fs::rename(tmp_path, path)?;
+        crash_point(CrashPoint::SnapshotRenamed);
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -671,6 +797,7 @@ fn sync_pending(state: &mut WalState) -> Result<(), WalError> {
                 ),
             };
             state.pending_entries = 0;
+            state.len = start;
             state.durability_error = Some(message.clone());
             return Err(WalError::Durability(message));
         }
@@ -723,71 +850,109 @@ fn group_commit_worker(group: Arc<GroupCommit>) {
 // `Zega::open`/`Zega::snapshot` only call this on the native, file-backed
 // path (see the `cfg(not(target_arch = "wasm32"))` call sites in lib.rs);
 // the wasm32 build persists through `encode_snapshot`/`restore_bytes` instead.
+/// Write `graph` to `path` as the snapshot with `generation`: a temporary
+/// file, synced, then renamed over `path`, then the directory synced. A crash
+/// at any point leaves either the old snapshot or the new one at `path`.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub fn snapshot(graph: &Graph, path: &Path) -> Result<(), WalError> {
+pub fn snapshot(graph: &Graph, path: &Path, generation: u64) -> Result<(), WalError> {
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (graph, path);
+        let _ = (graph, path, generation);
         Ok(())
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let bytes = encode_snapshot(graph)?;
         let tmp_path = path.with_extension("bin.tmp");
-        let mut file = File::create(&tmp_path)?;
-        file.write_all(&bytes)?;
-        file.flush()?;
-        persist_replacement(file, &tmp_path, path)
+        // Streamed: the graph is not copied, so a snapshot costs no second
+        // copy of it in memory.
+        let mut out = io::BufWriter::new(File::create(&tmp_path)?);
+        out.write_all(SNAPSHOT_HEADER)?;
+        let (next_node_id, next_rel_id) = graph.next_ids();
+        let (nodes, relationships) = (graph.all_nodes(), graph.all_relationships());
+        serialize_into(&mut out, &(generation, next_node_id, next_rel_id, nodes))?;
+        out.flush()?;
+        crash_point(CrashPoint::SnapshotPartial);
+        serialize_into(&mut out, relationships)?;
+        let file = out.into_inner().map_err(|error| error.into_error())?;
+        crash_point(CrashPoint::SnapshotWritten);
+        persist_replacement(file, &tmp_path, path)?;
+        crash_point(CrashPoint::SnapshotDurable);
+        Ok(())
     }
 }
 
+/// Load the snapshot at `path` into `graph` and return its generation (0 for
+/// a snapshot written before generations existed), or `None` without one.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub fn restore(graph: &mut Graph, path: &Path) -> Result<bool, WalError> {
+pub fn restore(graph: &mut Graph, path: &Path) -> Result<Option<u64>, WalError> {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = (graph, path);
-        Ok(false)
+        Ok(None)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         if !path.exists() {
-            return Ok(false);
+            return Ok(None);
         }
         let bytes = std::fs::read(path)?;
-        restore_bytes(graph, &bytes)?;
-        Ok(true)
+        restore_snapshot(graph, &bytes).map(Some)
     }
 }
 
-/// Serialize the full graph state to bytes (platform-independent; the
-/// basis for the file-based snapshot and for wasm export/import).
+/// Serialize the full graph state to bytes (platform-independent; how the
+/// wasm build exports a database). The header-less layout, which
+/// [`restore_bytes`] and [`restore`] both read.
 pub fn encode_snapshot(graph: &Graph) -> Result<Vec<u8>, WalError> {
-    let snapshot = Snapshot {
-        nodes: graph.all_nodes().clone(),
-        relationships: graph.all_relationships().clone(),
-    };
     let mut bytes = Vec::new();
-    serialize_into(&mut bytes, &snapshot)?;
+    serialize_into(&mut bytes, &(graph.all_nodes(), graph.all_relationships()))?;
     Ok(bytes)
 }
 
-/// Restore the full graph state from [`encode_snapshot`] bytes.
+/// Restore the full graph state from [`encode_snapshot`] bytes, or from the
+/// bytes of a snapshot file.
 pub fn restore_bytes(graph: &mut Graph, bytes: &[u8]) -> Result<(), WalError> {
-    let snapshot: Snapshot = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .reject_trailing_bytes()
-        .with_limit(bytes.len() as u64)
-        .deserialize(bytes)
-        .map_err(|error| WalError::Corruption {
-            offset: 0,
-            reason: format!("invalid snapshot: {error}"),
-        })?;
-    graph.set_state(snapshot.nodes, snapshot.relationships);
-    Ok(())
+    restore_snapshot(graph, bytes).map(|_| ())
 }
 
-#[derive(Serialize, Deserialize)]
-struct Snapshot {
+fn restore_snapshot(graph: &mut Graph, bytes: &[u8]) -> Result<u64, WalError> {
+    let decode = |bytes: &[u8]| {
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .reject_trailing_bytes()
+            .with_limit(bytes.len() as u64)
+    };
+    let corrupt = |error: bincode::Error| WalError::Corruption {
+        offset: 0,
+        reason: format!("invalid snapshot: {error}"),
+    };
+    let Some(body) = bytes.strip_prefix(SNAPSHOT_HEADER.as_slice()) else {
+        let snapshot: LegacySnapshot = decode(bytes).deserialize(bytes).map_err(corrupt)?;
+        graph.set_state(snapshot.nodes, snapshot.relationships);
+        return Ok(0);
+    };
+    let snapshot: SnapshotV1 = decode(body).deserialize(body).map_err(corrupt)?;
+    graph.set_state(snapshot.nodes, snapshot.relationships);
+    // Deleted nodes and relationships leave no trace in the maps, so the
+    // counters come from the file: an id is never handed out twice.
+    let (node, rel) = graph.next_ids();
+    graph.reset_next_ids((node.max(snapshot.next_node_id), rel.max(snapshot.next_rel_id)));
+    Ok(snapshot.generation)
+}
+
+/// A snapshot from before generations: nothing but the two maps.
+#[derive(Deserialize)]
+struct LegacySnapshot {
+    nodes: HashMap<NodeId, Node>,
+    relationships: HashMap<RelId, Relationship>,
+}
+
+/// The body after [`SNAPSHOT_HEADER`], in the order [`snapshot`] writes it.
+#[derive(Deserialize)]
+struct SnapshotV1 {
+    generation: u64,
+    next_node_id: NodeId,
+    next_rel_id: RelId,
     nodes: HashMap<NodeId, Node>,
     relationships: HashMap<RelId, Relationship>,
 }
@@ -870,12 +1035,12 @@ pub(crate) mod tests {
         }
         std::fs::create_dir_all(&path).unwrap();
         let snap_path = path.join("snapshot-世界.bin");
-        snapshot(&Graph::new(), &snap_path).unwrap();
+        snapshot(&Graph::new(), &snap_path, 1).unwrap();
         let mut graph = Graph::new();
         graph.create_node(vec!["saved".to_string()], HashMap::new());
-        snapshot(&graph, &snap_path).unwrap();
+        snapshot(&graph, &snap_path, 1).unwrap();
         let mut restored = Graph::new();
-        assert!(restore(&mut restored, &snap_path).unwrap());
+        assert!(restore(&mut restored, &snap_path).unwrap().is_some());
         assert_eq!(restored.all_nodes().len(), 1);
         assert!(!snap_path.with_extension("bin.tmp").exists());
 
@@ -1441,7 +1606,7 @@ pub(crate) mod tests {
         props.insert("name".to_string(), Value::String("Alice".to_string()));
         graph.create_node(vec!["Person".to_string()], props);
 
-        snapshot(&graph, &snap_path).unwrap();
+        snapshot(&graph, &snap_path, 1).unwrap();
         assert!(!snap_path.with_extension("bin.tmp").exists());
 
         let mut graph2 = Graph::new();

@@ -105,7 +105,7 @@ fn assert_snapshot_corruption(path: &Path) {
     let mut graph = Graph::new();
     match restore(&mut graph, path) {
         Err(WalError::Corruption { .. }) => {}
-        Ok(restored) => panic!("expected snapshot corruption, got Ok({restored})"),
+        Ok(restored) => panic!("expected snapshot corruption, got Ok({restored:?})"),
         Err(other) => panic!("expected snapshot corruption, got {other:?}"),
     }
 }
@@ -1067,12 +1067,12 @@ fn snapshot_restore_roundtrips_graph() {
     let b = graph.create_node(vec!["B".to_string()], HashMap::new());
     let rid = graph.create_relationship("KNOWS".to_string(), a, b, HashMap::new());
 
-    snapshot(&graph, &snap).unwrap();
+    snapshot(&graph, &snap, 1).unwrap();
     // The temp file must be cleaned up by the atomic rename.
     assert!(!snap.with_extension("bin.tmp").exists());
 
     let mut g2 = Graph::new();
-    assert!(restore(&mut g2, &snap).unwrap());
+    assert!(restore(&mut g2, &snap).unwrap().is_some());
 
     assert_eq!(g2.all_nodes().len(), 3);
     assert_eq!(g2.all_relationships().len(), 1);
@@ -1088,7 +1088,7 @@ fn restore_missing_file_returns_false() {
     let dir = tempdir().unwrap();
     let missing = dir.path().join("nope.bin");
     let mut g = Graph::new();
-    assert!(!restore(&mut g, &missing).unwrap());
+    assert!(restore(&mut g, &missing).unwrap().is_none());
     assert!(g.all_nodes().is_empty());
 }
 
@@ -1099,14 +1099,14 @@ fn restore_overwrites_existing_state() {
 
     let mut graph = Graph::new();
     graph.create_node(vec!["Saved".to_string()], HashMap::new());
-    snapshot(&graph, &snap).unwrap();
+    snapshot(&graph, &snap, 1).unwrap();
 
     // Destination starts non-empty; restore must clear and replace it.
     let mut g2 = Graph::new();
     g2.create_node(vec!["Stale".to_string()], HashMap::new());
     g2.create_node(vec!["Stale".to_string()], HashMap::new());
 
-    assert!(restore(&mut g2, &snap).unwrap());
+    assert!(restore(&mut g2, &snap).unwrap().is_some());
     assert_eq!(g2.all_nodes().len(), 1, "stale nodes replaced");
     assert!(g2.nodes_by_label("Saved").is_some());
     assert!(g2.nodes_by_label("Stale").is_none());
@@ -1117,11 +1117,11 @@ fn snapshot_of_empty_db_restores_empty() {
     let dir = tempdir().unwrap();
     let snap = dir.path().join("snap.bin");
     let graph = Graph::new();
-    snapshot(&graph, &snap).unwrap();
+    snapshot(&graph, &snap, 1).unwrap();
 
     let mut g2 = Graph::new();
     g2.create_node(vec!["Will".to_string()], HashMap::new());
-    assert!(restore(&mut g2, &snap).unwrap());
+    assert!(restore(&mut g2, &snap).unwrap().is_some());
     assert!(g2.all_nodes().is_empty());
 }
 
@@ -1156,7 +1156,7 @@ fn restore_from_truncated_mid_record_snapshot_is_corruption() {
     for i in 0..100 {
         graph.create_node(vec![format!("L{i}")], HashMap::new());
     }
-    snapshot(&graph, &snap).unwrap();
+    snapshot(&graph, &snap, 1).unwrap();
     let bytes = fs::read(&snap).unwrap();
     fs::write(&snap, &bytes[..bytes.len() / 2]).unwrap();
 
@@ -1174,7 +1174,7 @@ fn snapshot_preserves_node_properties() {
     props.insert("score".to_string(), Value::from_f64(9.5));
     let id = graph.create_node(vec!["User".to_string()], props);
 
-    snapshot(&graph, &snap).unwrap();
+    snapshot(&graph, &snap, 1).unwrap();
 
     let mut g2 = Graph::new();
     restore(&mut g2, &snap).unwrap();
@@ -1756,14 +1756,14 @@ fn snapshot_overwrites_prior_snapshot_atomically() {
     // First snapshot: one node.
     let mut g1 = Graph::new();
     g1.create_node(vec!["First".to_string()], HashMap::new());
-    snapshot(&g1, &snap).unwrap();
+    snapshot(&g1, &snap, 1).unwrap();
 
     // Second snapshot to the SAME path: three nodes. Must fully replace.
     let mut g2 = Graph::new();
     for _ in 0..3 {
         g2.create_node(vec!["Second".to_string()], HashMap::new());
     }
-    snapshot(&g2, &snap).unwrap();
+    snapshot(&g2, &snap, 1).unwrap();
     assert!(!snap.with_extension("bin.tmp").exists(), "no tmp residue");
 
     let mut gr = Graph::new();
@@ -1785,10 +1785,10 @@ fn restored_relationship_endpoints_are_queryable_via_rebuilt_index() {
     let a = g.create_node(vec!["A".to_string()], HashMap::new());
     let b = g.create_node(vec!["B".to_string()], HashMap::new());
     let rid = g.create_relationship("LINKS".to_string(), a, b, HashMap::new());
-    snapshot(&g, &snap).unwrap();
+    snapshot(&g, &snap, 1).unwrap();
 
     let mut gr = Graph::new();
-    assert!(restore(&mut gr, &snap).unwrap());
+    assert!(restore(&mut gr, &snap).unwrap().is_some());
     assert!(
         gr.outgoing_rels(a).is_some_and(|set| set.contains(&rid)),
         "restored rel must be in the rebuilt outgoing index of its source"
@@ -1809,11 +1809,11 @@ fn snapshot_restore_snapshot_is_idempotent_in_counts() {
     let a = g.create_node(vec!["N".to_string()], HashMap::new());
     let b = g.create_node(vec!["N".to_string()], HashMap::new());
     g.create_relationship("E".to_string(), a, b, HashMap::new());
-    snapshot(&g, &snap1).unwrap();
+    snapshot(&g, &snap1, 1).unwrap();
 
     let mut g2 = Graph::new();
     restore(&mut g2, &snap1).unwrap();
-    snapshot(&g2, &snap2).unwrap();
+    snapshot(&g2, &snap2, 1).unwrap();
 
     let mut g3 = Graph::new();
     restore(&mut g3, &snap2).unwrap();
@@ -1847,7 +1847,7 @@ fn snapshot_with_unicode_and_extreme_values_roundtrips() {
     props.insert("空".to_string(), Value::List(vec![Value::Null, Value::Bool(false)]));
     let id = g.create_node(vec!["Ünïcödé".to_string()], props);
 
-    snapshot(&g, &snap).unwrap();
+    snapshot(&g, &snap, 1).unwrap();
     let mut gr = Graph::new();
     restore(&mut gr, &snap).unwrap();
     let node = gr.get_node(id).unwrap();

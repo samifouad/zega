@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use thiserror::Error;
 use crate::graph::{Graph, NodeId, RelId};
@@ -13,10 +14,10 @@ pub use crate::parser::Value;
 use crate::parser::{ast::*, BinaryOperator, Expr, OrderDirection, Parser, Statement};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::wal::{restore, snapshot};
-use crate::journal::{atomically, Journal};
+use crate::journal::Journal;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::wal::Operation;
-use crate::wal::Wal;
+use crate::wal::{Wal, WalError};
 
 pub mod config;
 pub mod context;
@@ -34,6 +35,8 @@ mod validation;
 mod wal;
 #[cfg(test)]
 mod wal_order_tests;
+#[cfg(test)]
+mod checkpoint_tests;
 
 pub use crate::lang::{diagnose, fmt};
 pub use crate::validation::{Diagnostic, Pane, Report, Severity};
@@ -159,6 +162,13 @@ pub struct Zega {
     policies: Vec<Policy>,
     traversal_work_budget: usize,
     allow_private_imports: bool,
+    /// Smallest log that triggers a checkpoint after a write; `None` never does.
+    checkpoint_min_bytes: Option<u64>,
+    /// Generation of the snapshot on disk; the next checkpoint writes the one after.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    generation: AtomicU64,
+    /// Log length at which the next write checkpoints (see [`Zega::checkpoint_if_due`]).
+    checkpoint_due: AtomicU64,
 }
 
 pub struct ZegaBuilder {
@@ -172,9 +182,12 @@ pub struct ZegaBuilder {
     policies: Vec<Policy>,
     traversal_work_budget: usize,
     allow_private_imports: bool,
+    checkpoint_min_bytes: Option<u64>,
 }
 
 const DEFAULT_TRAVERSAL_WORK_BUDGET: usize = 1_000_000;
+/// See [`ZegaBuilder::checkpoint_after`].
+pub const DEFAULT_CHECKPOINT_MIN_BYTES: u64 = 16 * 1024 * 1024;
 
 impl ZegaBuilder {
     pub fn wal_flush_every_write(self) -> Self {
@@ -237,6 +250,19 @@ impl ZegaBuilder {
         self
     }
 
+    /// Checkpoint after a write once the log holds `min_bytes`, or as many
+    /// bytes as the last snapshot if that is more: the graph is written to a
+    /// new snapshot and the log emptied, so a restart reads the snapshot and
+    /// a short log instead of every write ever made. Following the snapshot's
+    /// size keeps the cost of rewriting it proportional to the writes since
+    /// the last one. `None` leaves checkpoints to [`Zega::snapshot`]. The
+    /// default is [`DEFAULT_CHECKPOINT_MIN_BYTES`]; in-memory stores never
+    /// checkpoint.
+    pub fn checkpoint_after(mut self, min_bytes: Option<u64>) -> Self {
+        self.checkpoint_min_bytes = min_bytes;
+        self
+    }
+
     pub fn build(self) -> Result<Zega> {
         Zega::open_with_builder(self)
     }
@@ -255,6 +281,7 @@ impl Zega {
             policies: Vec::new(),
             traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
             allow_private_imports: false,
+            checkpoint_min_bytes: Some(DEFAULT_CHECKPOINT_MIN_BYTES),
         }
     }
 
@@ -270,6 +297,7 @@ impl Zega {
             policies: Vec::new(),
             traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
             allow_private_imports: false,
+            checkpoint_min_bytes: Some(DEFAULT_CHECKPOINT_MIN_BYTES),
         }
     }
 
@@ -294,9 +322,13 @@ impl Zega {
 
         // Restore from snapshot if exists
         #[cfg(not(target_arch = "wasm32"))]
-        if !builder.in_memory && snapshot_path.exists() {
-            restore(&mut graph, &snapshot_path)?;
-        }
+        let generation = if builder.in_memory {
+            0
+        } else {
+            restore(&mut graph, &snapshot_path)?.unwrap_or(0)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let generation = 0;
 
         // Replay WAL
         #[cfg(not(target_arch = "wasm32"))]
@@ -312,11 +344,35 @@ impl Zega {
         };
         #[cfg(target_arch = "wasm32")]
         let wal = Wal::in_memory();
+        // A log that a checkpoint emptied starts with its generation; one
+        // that never was is generation 0, like a snapshot from before them.
         #[cfg(not(target_arch = "wasm32"))]
         if !builder.in_memory && wal_path.exists() {
             let ops = wal.iter()?;
-            for op in ops {
-                apply_op_to_memory(&mut graph, &op);
+            let wal_generation = match ops.first() {
+                Some(Operation::Checkpoint { generation }) => *generation,
+                _ => 0,
+            };
+            if wal_generation > generation {
+                return Err(ZegaError::Wal(WalError::Corruption {
+                    offset: 0,
+                    reason: format!(
+                        "the WAL follows snapshot generation {wal_generation}, but the \
+                         snapshot is generation {generation}; snapshot.bin is missing or \
+                         older than the log, and opening would lose the writes it held"
+                    ),
+                }));
+            }
+            if wal_generation == generation {
+                for op in ops {
+                    apply_op_to_memory(&mut graph, &op);
+                }
+            } else {
+                // An older log is one a checkpoint wrote the snapshot for but
+                // did not get to empty: the snapshot holds every entry. Empty
+                // it now, before any write lands behind the old generation
+                // and is skipped by the next open as already in the snapshot.
+                wal.checkpoint(generation)?;
             }
         }
 
@@ -330,6 +386,9 @@ impl Zega {
             policies,
             traversal_work_budget,
             allow_private_imports: builder.allow_private_imports,
+            checkpoint_min_bytes: builder.checkpoint_min_bytes,
+            generation: AtomicU64::new(generation),
+            checkpoint_due: AtomicU64::new(0),
         })
     }
 
@@ -587,7 +646,7 @@ impl Zega {
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
         let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             let bindings = match write {
                 Statement::Create { pattern } => {
                     vec![create_pattern(graph, journal, pattern, params, Bindings::new())?]
@@ -685,7 +744,7 @@ impl Zega {
         params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
         let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             create_pattern(graph, journal, pattern, params, Bindings::new())
         })?;
         Ok(vec![])
@@ -700,7 +759,7 @@ impl Zega {
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
         let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             let bindings = resolve_match_bindings(
                 graph,
                 match_pattern,
@@ -723,7 +782,7 @@ impl Zega {
         params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
         let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             merge_pattern(graph, journal, pattern, on_create, on_match, params)
         })?;
         Ok(vec![])
@@ -775,7 +834,7 @@ impl Zega {
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
         let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             let bindings = resolve_match_bindings(
                 graph,
                 match_pattern,
@@ -800,7 +859,7 @@ impl Zega {
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
         let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             let bindings = resolve_match_bindings(
                 graph,
                 match_pattern,
@@ -829,7 +888,7 @@ impl Zega {
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
         let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             // 1. resolve MATCH (+ OPTIONAL MATCH + WHERE)
             let mut bindings = resolve_match_and_optional(
                 graph,
@@ -858,9 +917,54 @@ impl Zega {
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))
     }
 
+    /// Checkpoint: write the whole graph to `snapshot.bin` and empty the
+    /// WAL, so a restart reads the snapshot instead of replaying every write.
+    /// Writes wait until it is done. A crash at any step leaves a store that
+    /// reopens to exactly the acknowledged writes (see `Wal::checkpoint`).
+    /// Nothing to do in memory or on wasm32.
     pub fn snapshot(&self) -> Result<()> {
+        let graph = self.lock_graph()?;
+        self.checkpoint(&graph)
+    }
+
+    /// Run one statement's writes through `journal::atomically`, then
+    /// checkpoint if the log has grown enough (see [`ZegaBuilder::checkpoint_after`]).
+    fn atomically<T, E: From<WalError>>(
+        &self,
+        graph: &mut Graph,
+        statement: impl FnOnce(&mut Graph, &mut Journal) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let value = journal::atomically(graph, &self.wal, statement)?;
+        self.checkpoint_if_due(graph);
+        Ok(value)
+    }
+
+    /// The write that called this already succeeded, so a failed checkpoint
+    /// is not its error: the store is as durable as without one. Retry only
+    /// after as many bytes again, so a full disk does not rewrite the
+    /// snapshot on every write. A failure after the new snapshot is in place
+    /// poisons the WAL (see `Wal::checkpoint`), and the next write says so.
+    fn checkpoint_if_due(&self, graph: &Graph) {
+        let Some(min_bytes) = self.checkpoint_min_bytes else {
+            return;
+        };
+        if self.in_memory {
+            return;
+        }
+        let len = self.wal.len();
+        if len < self.checkpoint_due.load(Ordering::SeqCst).max(min_bytes) {
+            return;
+        }
+        if self.checkpoint(graph).is_err() {
+            self.checkpoint_due.store(len.saturating_add(min_bytes), Ordering::SeqCst);
+        }
+    }
+
+    /// The checkpoint itself; the caller holds the graph lock.
+    fn checkpoint(&self, graph: &Graph) -> Result<()> {
         #[cfg(target_arch = "wasm32")]
         {
+            let _ = graph;
             Ok(())
         }
 
@@ -869,12 +973,15 @@ impl Zega {
             if self.in_memory {
                 return Ok(());
             }
-            let graph = self
-                .graph
-                .lock()
-                .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+            let generation = self.generation.load(Ordering::SeqCst) + 1;
             let snapshot_path = self.path.join("snapshot.bin");
-            snapshot(&graph, &snapshot_path)?;
+            snapshot(graph, &snapshot_path, generation)?;
+            self.generation.store(generation, Ordering::SeqCst);
+            self.wal.checkpoint(generation)?;
+            // The next one is due when the log has grown to the snapshot's
+            // size, or the minimum if that is more.
+            let snapshot_len = std::fs::metadata(&snapshot_path).map_or(0, |meta| meta.len());
+            self.checkpoint_due.store(snapshot_len, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -3000,6 +3107,7 @@ fn apply_op_to_memory(graph: &mut Graph, op: &Operation) {
                 apply_op_to_memory(graph, op);
             }
         }
+        Operation::Checkpoint { .. } => {}
     }
 }
 

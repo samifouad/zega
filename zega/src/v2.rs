@@ -18,7 +18,7 @@ use crate::lang::{
     Statement,
 };
 use crate::parser::Value;
-use crate::journal::{atomically, Journal};
+use crate::journal::Journal;
 use serde_json::{json, Value as Json};
 
 use crate::{Zega, ZegaError};
@@ -125,7 +125,7 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             journal.delete_node(graph, id);
             Ok(())
         })
@@ -136,7 +136,7 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             journal.delete_relationship(graph, id);
             Ok(())
         })
@@ -193,7 +193,7 @@ impl Zega {
             },
         )
         .map_err(|error| explain(error, "schema", schema_src))?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             connect(
                 graph,
                 journal,
@@ -292,7 +292,7 @@ impl Zega {
         // A read logs nothing. A mutation or load is one statement: every row
         // and nested selection is applied, or (on a validation error or a
         // refused WAL append) none is, in memory and in the WAL alike.
-        atomically(&mut graph, &self.wal, |graph, journal| {
+        self.atomically(&mut graph, |graph, journal| {
             run_statement(graph, journal, schema, uniques, statement, &mut budget, &rows)
                 .map_err(|error| explain(error, source_name, source))
         })
