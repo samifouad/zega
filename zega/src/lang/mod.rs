@@ -209,6 +209,8 @@ pub enum Field {
         optional: bool,
         /// Explicit source column names, latitude then longitude, for loads.
         from: Option<Vec<String>>,
+        /// `Float<km>`: the distance unit a number is measured in.
+        unit: Option<DistanceUnit>,
     },
     Edge {
         /// Name used in a query.
@@ -233,6 +235,8 @@ pub struct EdgeField {
     pub ty: String,
     pub optional: bool,
     pub span: Span,
+    /// `km: Float<km>`: the distance unit, which A* reads.
+    pub unit: Option<DistanceUnit>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -323,15 +327,17 @@ pub enum PathBound {
 pub struct Toward {
     pub field: String,
     pub span: Span,
-    pub unit: DistanceUnit,
-    pub unit_span: Span,
 }
 
-/// The unit the weight of an A* path is measured in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The distance unit of an `Int` or `Float` field, declared in its type:
+/// `Float<km>`. A* reads it from the weight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum DistanceUnit {
+    #[serde(rename = "m")]
     Metres,
+    #[serde(rename = "km")]
     Kilometres,
+    #[serde(rename = "mi")]
     Miles,
 }
 
@@ -349,6 +355,15 @@ impl DistanceUnit {
             DistanceUnit::Metres => "m",
             DistanceUnit::Kilometres => "km",
             DistanceUnit::Miles => "mi",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "m" => Some(DistanceUnit::Metres),
+            "km" => Some(DistanceUnit::Kilometres),
+            "mi" => Some(DistanceUnit::Miles),
+            _ => None,
         }
     }
 }
@@ -664,7 +679,7 @@ fn same_edge_props(left: &[EdgeField], right: &[EdgeField]) -> bool {
     right.sort_by(|a, b| a.name.cmp(&b.name));
     left.iter()
         .zip(right)
-        .all(|(a, b)| a.name == b.name && a.ty == b.ty && a.optional == b.optional)
+        .all(|(a, b)| a.name == b.name && a.ty == b.ty && a.optional == b.optional && a.unit == b.unit)
 }
 
 pub fn parse_query(source: &str) -> Result<Query> {
@@ -1332,6 +1347,7 @@ impl<'a> Parser<'a> {
                 self.expect(">")?;
                 ty = format!("Vector<{n},{metric}>");
             }
+            let unit = self.parse_unit(&ty, ty_span)?;
             let from = if self.eat_word("from") {
                 if ty != "Point" && VectorSpec::parse(&ty).is_none() {
                     return Err(self.err_at(name_span, "from (...) is only valid on a Point or Vector field"));
@@ -1351,6 +1367,7 @@ impl<'a> Parser<'a> {
                 ty,
                 optional,
                 from,
+                unit,
             });
         }
         if optional {
@@ -1384,6 +1401,25 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// `<km>` after a type: the distance unit of an `Int` or `Float`.
+    fn parse_unit(&mut self, ty: &str, ty_span: Span) -> Result<Option<DistanceUnit>> {
+        if !self.eat("<") {
+            return Ok(None);
+        }
+        if ty != "Int" && ty != "Float" {
+            return Err(self
+                .err_at(ty_span, format!("a unit needs an Int or Float; {ty} has none"))
+                .with_help("declare a distance as `km: Float<km>` or `length: Int<m>`"));
+        }
+        let (name, span) = self.ident()?;
+        let unit = DistanceUnit::parse(&name).ok_or_else(|| {
+            self.err_at(span, format!("unknown distance unit {name}"))
+                .with_help("the unit is `m`, `km` or `mi`, as in `Float<km>`")
+        })?;
+        self.expect(">")?;
+        Ok(Some(unit))
+    }
+
     fn parse_edge_props(&mut self) -> Result<(Vec<EdgeField>, Option<Span>)> {
         self.skip();
         if !self.src[self.i..].starts_with('{') {
@@ -1400,7 +1436,8 @@ impl<'a> Parser<'a> {
             let (name, span) = self.ident()?;
             let optional = self.eat("?");
             self.expect(":")?;
-            let (ty, _) = self.ident()?;
+            let (ty, ty_span) = self.ident()?;
+            let unit = self.parse_unit(&ty, ty_span)?;
             if props.iter().any(|field| field.name == name) {
                 return Err(self
                     .err_at(span, format!("duplicate edge field {name}"))
@@ -1411,6 +1448,7 @@ impl<'a> Parser<'a> {
                 ty,
                 optional,
                 span,
+                unit,
             });
         }
         Ok((props, Some(self.span_bytes(start, self.i))))
@@ -1734,28 +1772,12 @@ impl<'a> Parser<'a> {
         };
         let toward = if self.eat_word("toward") {
             let (field, span) = self.ident()?;
-            if !self.eat_word("in") {
+            if self.starts_word("in") {
                 return Err(self
-                    .err("toward needs the unit of the weight")
-                    .with_help("write `toward at in km`, or `in m` or `in mi`"));
+                    .err("the unit is declared on the weight, not here")
+                    .with_help("declare `km: Float<km>` on the relationship and write `toward at`"));
             }
-            let (unit, unit_span) = self.ident()?;
-            let unit = match unit.as_str() {
-                "m" => DistanceUnit::Metres,
-                "km" => DistanceUnit::Kilometres,
-                "mi" => DistanceUnit::Miles,
-                _ => {
-                    return Err(self
-                        .err_at(unit_span, format!("unknown distance unit {unit}"))
-                        .with_help("the weight is in `m`, `km` or `mi`"))
-                }
-            };
-            Some(Toward {
-                field,
-                span,
-                unit,
-                unit_span,
-            })
+            Some(Toward { field, span })
         } else {
             None
         };
@@ -2435,6 +2457,7 @@ fn bind_points(
             ty,
             optional,
             from,
+            ..
         } = field
         else {
             continue;
@@ -3002,16 +3025,29 @@ impl Check<'_> {
             }
         }
         if let Some(toward) = &path.toward {
-            if path.weight.is_none() {
-                self.push(
+            match &path.weight {
+                None => self.push(
                     toward.span,
                     "toward needs a weight measured in a distance",
                     Some(format!(
-                        "A* guesses the rest of the route in {}; write `by &km toward {} in km`",
-                        toward.unit.as_str(),
+                        "A* guesses the rest of the route as a distance; write `by &km toward {}` with `km: Float<km>`",
                         toward.field
                     )),
-                );
+                ),
+                Some((name, _)) => {
+                    // A* compares the weight with metres, so it needs the unit.
+                    if let Some(prop) = props.iter().find(|prop| &prop.name == name) {
+                        if (prop.ty == "Int" || prop.ty == "Float") && prop.unit.is_none() {
+                            self.push(
+                                toward.span,
+                                format!("toward needs a unit on the weight: declare {name}: {}<km>", prop.ty),
+                                Some(format!(
+                                    "A* compares {field}.{name} with straight-line distances; the unit is `m`, `km` or `mi`"
+                                )),
+                            );
+                        }
+                    }
+                }
             }
             // The start's roads are checked against the straight line too,
             // so the start needs the Point as much as every node after it.

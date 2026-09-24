@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use zega::Zega;
 
 const SCHEMA: &str = "schema {
-  type Junction { n: Int at: Point road -> Junction[] { m?: Int km?: Float } }
+  type Junction { n: Int at: Point road -> Junction[] { m?: Int<m> km?: Float<km> mislabeled?: Float<m> } }
 }
 unique { Junction { n } }";
 
@@ -74,7 +74,7 @@ fn build_with(points: &[(f64, f64)], roads: &[Road], db: Zega) -> Zega {
     if !roads.is_empty() {
         db.run_lang_with_sources(
             SCHEMA,
-            "mutation json [\"roads.json\"] { Junction(n: $from) { road -> link Junction(n: $to) { &m: $m &km: $km } } }",
+            "mutation json [\"roads.json\"] { Junction(n: $from) { road -> link Junction(n: $to) { &m: $m &km: $km &mislabeled: $km } } }",
             &sources,
         )
         .unwrap();
@@ -211,9 +211,9 @@ fn all_three_agree_with_brute_force_on_random_graphs() {
         let before = db.nodes_expanded().unwrap();
         let dijkstra = route(&db, start, &target, " by &m");
         let middle = db.nodes_expanded().unwrap();
-        let astar = route(&db, start, &target, " by &m toward at in m");
+        let astar = route(&db, start, &target, " by &m toward at");
         let after = db.nodes_expanded().unwrap();
-        let astar_km = route(&db, start, &target, " by &km toward at in km");
+        let astar_km = route(&db, start, &target, " by &km toward at");
         match expected {
             None => {
                 unreachable += 1;
@@ -234,7 +234,7 @@ fn all_three_agree_with_brute_force_on_random_graphs() {
                 assert!((km - cost as f64 / 1000.0).abs() < 1e-9, "round {round}: {astar_km}");
                 // Bounds: exactly at the cost is in, just under it is out.
                 assert_eq!(route(&db, start, &target, &format!("(cost <= {cost}) by &m"))["cost"], json!(cost));
-                assert_eq!(route(&db, start, &target, &format!("(cost < {cost}) by &m toward at in m")), Json::Null);
+                assert_eq!(route(&db, start, &target, &format!("(cost < {cost}) by &m toward at")), Json::Null);
                 assert_eq!(route(&db, start, &target, &format!("(hops <= {hops})"))["hops"], json!(hops));
                 if hops > 0 {
                     assert_eq!(route(&db, start, &target, &format!("(hops < {hops})")), Json::Null);
@@ -288,7 +288,7 @@ fn astar_expands_fewer_nodes_than_dijkstra_on_a_grid() {
         (db.nodes_expanded().unwrap() - before, found)
     };
     let (dijkstra_expanded, dijkstra) = expanded(" by &m");
-    let (astar_expanded, astar) = expanded(" by &m toward at in m");
+    let (astar_expanded, astar) = expanded(" by &m toward at");
     let (fewest_expanded, fewest) = expanded("");
     println!("grid {side}x{side}: expanded Dijkstra {dijkstra_expanded}, A* {astar_expanded}, fewest edges {fewest_expanded}");
     assert_eq!(dijkstra["cost"], astar["cost"]);
@@ -315,7 +315,7 @@ fn ties_break_by_node_id_whatever_order_the_roads_were_stored() {
     let mut reversed_roads = roads.clone();
     reversed_roads.reverse();
     let reversed = build(&points, &reversed_roads);
-    for how in ["", " by &m", " by &m toward at in m"] {
+    for how in ["", " by &m", " by &m toward at"] {
         let a = route(&forward, 0, "n: 6", how);
         let b = route(&reversed, 0, "n: 6", how);
         assert_eq!(ns(&a), ns(&b), "{how}");
@@ -330,7 +330,7 @@ fn ties_break_by_node_id_whatever_order_the_roads_were_stored() {
 }
 
 const ROADS: &str = "schema {
-  type Junction { name: String at: Point road -> Junction[] { km: Float } }
+  type Junction { name: String at: Point road -> Junction[] { km: Float<km> } }
 }
 unique { Junction { name } }
 mutation { Junction(name: \"A\" && at: point(51.0, -114.0)) { name } }
@@ -359,7 +359,7 @@ fn a_route_returns_its_nodes_edges_and_cost() {
     let expected = r#"{"name":"A","road":{"cost":1.6,"edges":[{"from":1,"id":1,"props":{"km":0.8},"to":2,"type":"road"},{"from":2,"id":2,"props":{"km":0.8},"to":3,"type":"road"}],"hops":2,"nodes":[{"hops":0,"km":null,"name":"A"},{"hops":1,"km":0.8,"name":"B"},{"hops":2,"km":0.8,"name":"C"}]}}"#;
     assert_eq!(run("Junction(name: \"A\") { name road *path by &km -> Junction(name: \"C\") { name &km &hops } }"), expected);
     assert_eq!(
-        run("Junction(name: \"A\") { name road *path by &km toward at in km -> Junction(name: \"C\") { name &km &hops } }"),
+        run("Junction(name: \"A\") { name road *path by &km toward at -> Junction(name: \"C\") { name &km &hops } }"),
         expected
     );
     // Unreachable, and outside the bound, are null rather than errors.
@@ -387,23 +387,24 @@ fn bad_weights_are_errors_that_name_the_edge() {
     let db = build(&points, &[Road { from: 0, to: 1, m: Some(-5) }]);
     let error = try_route(&db, 0, "n: 1", " by &m").unwrap_err();
     assert!(error.contains("road#1 from Junction#1 to Junction#2 has m -5, and a path weight cannot be negative"), "{error}");
-    // A weight shorter than the straight line: km stored, metres declared.
+    // A weight shorter than the straight line: km stored in a Float<m> field.
     let db = build(&points, &[Road { from: 0, to: 1, m: Some(line) }]);
-    let error = try_route(&db, 0, "n: 1", " by &km toward at in m").unwrap_err();
+    let error = try_route(&db, 0, "n: 1", " by &mislabeled toward at").unwrap_err();
+    assert!(error.contains("has mislabeled 0."), "{error}");
     assert!(error.contains("shorter than the"), "{error}");
-    assert!(error.contains("check the unit"), "{error}");
-    assert_eq!(route(&db, 0, "n: 1", " by &km toward at in km")["hops"], json!(1));
+    assert!(error.contains("mislabeled is declared in m, so check that unit"), "{error}");
+    assert_eq!(route(&db, 0, "n: 1", " by &km toward at")["hops"], json!(1));
 }
 
 #[test]
 fn astar_needs_a_location_on_every_node_it_reaches() {
-    let schema = "type Stop { n: Int at?: Point next -> Stop[] { m: Int } }";
+    let schema = "type Stop { n: Int at?: Point next -> Stop[] { m: Int<m> } }";
     let db = Zega::in_memory().build().unwrap();
     db.run_lang(schema, "mutation { Stop(n: 1 && at: point(51.0, -114.0)) { n } }").unwrap();
     db.run_lang(schema, "mutation { Stop(n: 2) { n } }").unwrap();
     db.run_lang(schema, "mutation { Stop(n: 1) { next -> link Stop(n: 2) { &m: 5000 } } }").unwrap();
     let error = db
-        .run_lang(schema, "{ Stop(n: 1) { next *path by &m toward at in m -> Stop(n: 2) { n } } }")
+        .run_lang(schema, "{ Stop(n: 1) { next *path by &m toward at -> Stop(n: 2) { n } } }")
         .unwrap_err()
         .to_string();
     assert!(error.contains("Stop#2 has no at, and `toward at` needs a location on every node it reaches"), "{error}");
@@ -414,8 +415,8 @@ fn astar_needs_a_location_on_every_node_it_reaches() {
 #[test]
 fn astar_needs_a_location_on_the_start_too() {
     // A start type without the Point: the checker refuses before any search.
-    let schema = "type Depot { name: String road -> Junction[] { m: Int } }\ntype Junction { name: String at: Point road -> Junction[] { m: Int } }\n";
-    let query = "{ Depot { road *path by &m toward at in m -> Junction { name } } }";
+    let schema = "type Depot { name: String road -> Junction[] { m: Int<m> } }\ntype Junction { name: String at: Point road -> Junction[] { m: Int<m> } }\n";
+    let query = "{ Depot { road *path by &m toward at -> Junction { name } } }";
     let report = zega::diagnose(schema, query);
     let message = "Depot has no at, and `toward at` needs a location on every node it reaches";
     let diag = report
@@ -437,13 +438,13 @@ fn astar_needs_a_location_on_the_start_too() {
     // An optional Point missing on the start: the runtime refuses too, rather
     // than skipping the straight-line check on the roads leaving it (this
     // 1 m road is far shorter than its straight line).
-    let schema = "type Stop { n: Int at?: Point next -> Stop[] { m: Int } }";
+    let schema = "type Stop { n: Int at?: Point next -> Stop[] { m: Int<m> } }";
     let db = Zega::in_memory().build().unwrap();
     db.run_lang(schema, "mutation { Stop(n: 1) { n } }").unwrap();
     db.run_lang(schema, "mutation { Stop(n: 2 && at: point(51.0, -114.0)) { n } }").unwrap();
     db.run_lang(schema, "mutation { Stop(n: 1) { next -> link Stop(n: 2) { &m: 1 } } }").unwrap();
     let error = db
-        .run_lang(schema, "{ Stop(n: 1) { next *path by &m toward at in m -> Stop(n: 2) { n } } }")
+        .run_lang(schema, "{ Stop(n: 1) { next *path by &m toward at -> Stop(n: 2) { n } } }")
         .unwrap_err()
         .to_string();
     assert!(error.contains("Stop#1 has no at, and `toward at` needs a location on every node it reaches"), "{error}");
@@ -451,13 +452,14 @@ fn astar_needs_a_location_on_the_start_too() {
 
 #[test]
 fn the_checker_rejects_paths_it_cannot_run() {
-    let schema = "type Junction { name: String at: Point road -> Junction[] { km: Float label?: String } go -> Place[] }\ntype Place { name: String }\n";
+    let schema = "type Junction { name: String at: Point road -> Junction[] { km: Float<km> len: Float label?: String } go -> Place[] }\ntype Place { name: String }\n";
     let cases = [
         ("{ Junction { road *path by &kms -> Junction { name } } }", "road has no field kms", "&kms"),
         ("{ Junction { road *path by &label -> Junction { name } } }", "a path weight is a number; road.label is String", "&label"),
         ("{ Junction { road *path(hops <= 3) by &km -> Junction { name } } }", "a weighted path is bounded by cost", "hops <= 3"),
-        ("{ Junction { road *path toward at in km -> Junction { name } } }", "toward needs a weight measured in a distance", "at"),
-        ("{ Junction { road *path by &km toward name in km -> Junction { name } } }", "toward needs a Point; Junction.name is String", "name"),
+        ("{ Junction { road *path toward at -> Junction { name } } }", "toward needs a weight measured in a distance", "at"),
+        ("{ Junction { road *path by &km toward name -> Junction { name } } }", "toward needs a Point; Junction.name is String", "name"),
+        ("{ Junction { road *path by &len toward at -> Junction { name } } }", "toward needs a unit on the weight: declare len: Float<km>", "at"),
         ("{ Junction { go *path -> Place { name } } }", "a path keeps following go, and Place has no `go ->`", "go"),
         ("mutation { Junction(name: \"A\") { road *path -> Junction(name: \"B\") { name } } }", "a mutation cannot find a path", "path"),
         ("{ Junction { road *path -> Junction limit 1 { name } } }", "a path target takes a condition, not near, order or limit", "Junction"),
@@ -478,8 +480,7 @@ fn the_checker_rejects_paths_it_cannot_run() {
         assert!(error.contains(message), "{error}");
     }
     let parse = [
-        ("{ Junction { road *path by &km toward at -> Junction { name } } }", "toward needs the unit of the weight"),
-        ("{ Junction { road *path by &km toward at in feet -> Junction { name } } }", "unknown distance unit feet"),
+        ("{ Junction { road *path by &km toward at in km -> Junction { name } } }", "the unit is declared on the weight, not here"),
         ("{ Junction { road *path(depth <= 3) -> Junction { name } } }", "unknown path bound depth"),
         ("{ Junction { road *path(hops < 0) -> Junction { name } } }", "`hops < 0` allows no route"),
         ("{ Junction { road *path(cost <= -1) -> Junction { name } } }", "a cost bound is a non-negative number"),
@@ -494,6 +495,28 @@ fn the_checker_rejects_paths_it_cannot_run() {
             report.diagnostics
         );
     }
+    // Without `toward`, a weight needs no unit.
+    let report = zega::diagnose(schema, "{ Junction { road *path by &len -> Junction { name } } }");
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    // The unit is part of the type, and only a number has one.
+    for (bad, message, marked) in [
+        ("type Junction { road -> Junction[] { km: Float<feet> } }", "unknown distance unit feet", "feet"),
+        ("type Junction { road -> Junction[] { km: String<km> } }", "a unit needs an Int or Float; String has none", "String"),
+        ("type Junction { length: Point<m> }", "a unit needs an Int or Float; Point has none", "Point"),
+    ] {
+        let report = zega::diagnose(bad, "");
+        let diag = report
+            .diagnostics
+            .iter()
+            .find(|diag| diag.message == message)
+            .unwrap_or_else(|| panic!("{bad}: {:?}", report.diagnostics));
+        let start = diag.column as usize - 1;
+        assert_eq!(&bad[start..start + diag.underline_length as usize], marked, "{bad}");
+    }
+    let db = Zega::in_memory().build().unwrap();
+    let units = db.schema("type Junction { length: Int<m> road -> Junction[] { km: Float<km> } }").unwrap();
+    assert_eq!(serde_json::to_value(&units.types[0].fields[0]).unwrap()["unit"], json!("m"));
+    assert_eq!(serde_json::to_value(&units.types[0].fields[1]).unwrap()["props"][0]["unit"], json!("km"));
     // `*1..3` is unchanged beside `*path`.
     let report = zega::diagnose(schema, "{ Junction { road *1..3 -> Junction { name &hops } } }");
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);

@@ -8,7 +8,7 @@ schema {
   type Junction {
     name: String
     at: Point
-    road -> Junction[] { km: Float }
+    road -> Junction[] { km: Float<km> }
   }
 }
 unique { Junction { name } }
@@ -20,13 +20,13 @@ query { Junction(name: "A") { road *path -> Junction(name: "B") { name } } }
 query { Junction(name: "A") { road *path by &km -> Junction(name: "B") { name &km } } }
 
 // Fewest kilometres, searching toward B first (A*).
-query { Junction(name: "A") { road *path by &km toward at in km -> Junction(name: "B") { name &km } } }
+query { Junction(name: "A") { road *path by &km toward at -> Junction(name: "B") { name &km } } }
 ```
 
 - `*path` counts roads. It is a breadth-first search.
 - `by &km` adds up a number stored on the relationship. The field must be an
   `Int` or `Float` declared on it (`road -> Junction[] { km: Float }`).
-- `toward at in km` adds a guess: the straight-line distance from each
+- `toward at` adds a guess: the straight-line distance from each
   junction's `at` to the target's. The search then looks at the junctions
   toward the target first. It returns a route with the same cost as `by &km`
   alone, and it usually reads far fewer junctions.
@@ -78,7 +78,7 @@ browser.
 ```zql
 road *path(hops <= 20) -> Junction(name: "B") { name }
 road *path(cost <= 50) by &km -> Junction(name: "B") { name }
-road *path(cost < 50) by &km toward at in km -> Junction(name: "B") { name }
+road *path(cost < 50) by &km toward at -> Junction(name: "B") { name }
 ```
 
 A bound stops the search. A route outside it is `null`. A weighted path is
@@ -86,18 +86,30 @@ bounded by `cost`. Without a weight, `hops` and `cost` are the same.
 
 ## The unit for A*
 
-The guess is in metres, divided by the unit after `in`: `m`, `km` or `mi`. A*
-only returns the cheapest route if the guess never exceeds the real remaining
-cost. So the weight has to be a distance in that unit, at least as long as the
-straight line between the two ends of its road. Road lengths along the road
-meet this; travel times do not. Use `by &minutes` without `toward` for those.
+A number field can declare its distance unit in its type: `Float<km>`,
+`Int<m>`, `Float<mi>`. The unit is `m`, `km` or `mi`, and only `Int` and
+`Float` take one. A field without a unit is an ordinary number and works for
+`*path by &weight` and everywhere else.
+
+```zql
+type Junction { name: String at: Point road -> Junction[] { km: Float<km> } }
+```
+
+`toward` reads the unit from the weight's type: the guess is the
+straight-line distance in metres, divided by the unit. `toward` on a weight
+without a unit is a checker error: `toward needs a unit on the weight: declare
+km: Float<km>`. A* only returns the cheapest route if the guess never exceeds
+the real remaining cost. So the weight has to be a distance in its declared
+unit, at least as long as the straight line between the two ends of its road.
+Road lengths along the road meet this; travel times do not. Use
+`by &minutes` without `toward` for those.
 
 zega checks this on every road A* reads. A road shorter than 99% of its
 straight line is an error that names it:
 
 ```
 error: road#3 from Junction#1 to Junction#4 has km 1.25, shorter than the 1.314 km straight line between its ends
-  help: `toward` needs every km to be at least the straight-line distance in km; check the unit, or drop `toward`
+  help: `toward` needs every km to be at least the straight-line distance; km is declared in km, so check that unit, or drop `toward`
 ```
 
 The 1% margin exists because distances here are measured on a sphere. A road
@@ -111,12 +123,16 @@ The checker, at the name's span:
 
 - the weight is not a field of the relationship, or is not `Int` or `Float`
 - `hops` bound on a weighted path
-- `toward` without `by &weight`, or on a field that is not a `Point` on the
+- `toward` without `by &weight`, or on a weight whose type has no unit
+  (`km: Float` rather than `km: Float<km>`)
+- `toward` on a field that is not a `Point` on the
   start's type and every target type (the start's roads are checked against
   the straight line too)
 - a target type without the relationship
 - `*path` in a mutation, or a target with `near`, `order by` or `limit`
-- `toward at` without `in m`, `in km` or `in mi`
+- `toward at in km`: the unit belongs on the weight's type
+- in the schema: an unknown unit (`Float<feet>`), or a unit on a type other
+  than `Int` or `Float` (`String<km>`)
 
 At run time, naming the edge or node:
 

@@ -1273,8 +1273,7 @@ fn project(
                         crate::lang::Field::Edge { props, .. } => path
                             .weight
                             .as_ref()
-                            .and_then(|(name, _)| props.iter().find(|prop| &prop.name == name))
-                            .map(|prop| prop.ty.as_str()),
+                            .and_then(|(name, _)| props.iter().find(|prop| &prop.name == name)),
                         crate::lang::Field::Prop { .. } => None,
                     };
                     let walk = PathWalk {
@@ -1285,7 +1284,8 @@ fn project(
                         span: *span,
                         path,
                         target,
-                        weight_ty,
+                        weight_ty: weight_ty.map(|prop| prop.ty.as_str()),
+                        weight_unit: weight_ty.and_then(|prop| prop.unit),
                     };
                     let value = route(graph, schema, id, hops, walk, budget)?;
                     object.insert(field.clone(), value);
@@ -1404,6 +1404,8 @@ struct PathWalk<'a> {
     target: &'a Selection,
     /// The declared type of the weight field, `Int` or `Float`.
     weight_ty: Option<&'a str>,
+    /// Its declared distance unit, `Float<km>`, which A* needs.
+    weight_unit: Option<crate::lang::DistanceUnit>,
 }
 
 /// `field *path ... -> Target`: one route from `start` to the nearest node
@@ -1419,7 +1421,7 @@ fn route(
     use crate::lang::PathBound;
     use crate::path::{cheapest, fewest_edges, Limit, Step};
 
-    let PathWalk { field, rel, direction, targets, span, path, target, weight_ty } = walk;
+    let PathWalk { field, rel, direction, targets, span, path, target, weight_ty, weight_unit } = walk;
     let mut goals = candidates(graph, target);
     retain_matches(graph, &mut goals, target.condition.as_ref());
     let goal_set: HashSet<NodeId> = goals.iter().copied().collect();
@@ -1488,7 +1490,19 @@ fn route(
                 .into_iter()
                 .flatten()
                 .collect::<Vec<Point>>();
-            let unit = toward.map_or(1.0, |toward| toward.unit.metres());
+            // The checker requires the unit for `toward`; this is the backstop.
+            let unit = match (toward, weight_unit) {
+                (None, _) => crate::lang::DistanceUnit::Metres,
+                (Some(_), Some(unit)) => unit,
+                (Some(toward), None) => {
+                    return Err(LangError::at(
+                        toward.span,
+                        format!("toward needs a unit on the weight: declare {weight}: {}<km>", weight_ty.unwrap_or("Float")),
+                    ))
+                }
+            };
+            let unit_name = unit.as_str();
+            let unit = unit.metres();
             let straight = |from: Point, to: Point| from.portable_distance(to) / unit;
             let guess = |node: NodeId| -> Result<f64, LangError> {
                 if toward.is_none() || goal_points.is_empty() {
@@ -1536,16 +1550,15 @@ fn route(
                             let line = straight(from, to_point);
                             if weight_value < STRAIGHT_LINE_SHARE * line {
                                 return Err(LangError::at(
-                                    toward.unit_span,
+                                    toward.span,
                                     format!(
                                         "{} has {weight} {weight_value}, shorter than the {line:.3} {} straight line between its ends",
                                         edge(),
-                                        toward.unit.as_str()
+                                        unit_name
                                     ),
                                 )
                                 .with_help(format!(
-                                    "`toward` needs every {weight} to be at least the straight-line distance in {}; check the unit, or drop `toward`",
-                                    toward.unit.as_str()
+                                    "`toward` needs every {weight} to be at least the straight-line distance; {weight} is declared in {unit_name}, so check that unit, or drop `toward`"
                                 )));
                             }
                         }
