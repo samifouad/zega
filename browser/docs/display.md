@@ -57,7 +57,8 @@ relationship chips. Graph type filters also filter relationship endpoints. Maps
 plot coordinates projected by the current query; include `@id lat lon` to preserve
 identity even when two nodes share the same values. Clicking a map marker, table
 cell/chip, or graph node opens the same inspector. The Calgary button loads the
-committed OSM sample and selects its declared default. Light/dark theme preference
+committed OSM sample and selects its declared default; the Flights button loads
+the OpenFlights sample (below). Light/dark theme preference
 persists across reloads.
 
 MapLibre, its worker modules/CSS, PMTiles and the Protomaps layer generator are
@@ -252,3 +253,40 @@ The gear under the zoom buttons opens the globe's settings, kept in
 
 `scripts/bench-arcs.mjs` measures frame times with 500 and 5,000 animated
 arcs headless; the target is 60 fps with 5,000.
+
+### The Flights sample
+
+The **Flights** button loads a flight map: the busiest airport of the 45
+busiest countries, the 15 busiest airports overall and YYC (52 airports in 45
+countries), with every non-stop route among them (715). The data is
+OpenFlights' airports, routes and countries, made available under the
+[ODbL 1.0](https://openflights.org/data.php); the three CSV files in
+`browser/samples/` are a derived database under the same licence, and the map
+credits OpenFlights in its attribution while the sample is loaded.
+`browser/scripts/prepare-flights.mjs` rebuilds the files from the pinned
+source (jpatokal/openflights commit `7d1a611`) and checks each file's SHA-256
+first. The sample is 5.0 KB gzipped.
+
+Each route is stored once, from the smaller airport to the larger hub
+("busiest" is the number of distinct non-stop routes in the whole dataset), so
+Calgary's routes are its `route`s and Amsterdam's are its `inbound` ones. The
+schema declares both ends of the same `ROUTE` relationship on `Airport`, and
+`BASE` between an airport and its `Country` (`String<iso2>`).
+
+Its display opens the globe by default, tilted 40° over the Atlantic so
+routes rising over the limb are visible, with the arcs animated unless the
+reader prefers reduced motion. The example bar holds four queries: routes out
+of Calgary, routes into Amsterdam, Canada's airports with their routes, and the
+five airports nearest the Calgary Tower. The globe draws the stored graph, not
+a query's result, so running a query changes the output pane and leaves the
+globe where the reader put it; a change to the stored graph, the camera, the
+theme or the credit redraws it. Which sample is loaded persists with the panes,
+so the bar and the credit come back on reload and go with the data on clear.
+
+### Without WebGL2
+
+MapLibre draws with WebGL2 only. When a browser cannot provide it, the globe
+and the map say so in the view ("WebGL2 unavailable. This browser cannot draw
+the globe."), as they do for a failed basemap, and the query still answers in
+the output pane. The arc layer frees its shaders as soon as their programs are
+linked, so switching views does not accumulate them.

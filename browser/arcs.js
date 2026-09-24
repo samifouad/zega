@@ -235,15 +235,28 @@ void main() { fragColor = vec4(0.0); }`;
 
 function compile(gl, vertex, fragment) {
   const program = gl.createProgram();
-  for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
-    const shader = gl.createShader(type);
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(`arc shader: ${gl.getShaderInfoLog(shader)}`);
-    gl.attachShader(program, shader);
+  const shaders = [];
+  try {
+    for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
+      const shader = gl.createShader(type);
+      shaders.push({ shader, attached: false });
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(`arc shader: ${gl.getShaderInfoLog(shader)}`);
+      gl.attachShader(program, shader);
+      shaders[shaders.length - 1].attached = true;
+    }
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(`arc program: ${gl.getProgramInfoLog(program)}`);
+  } finally {
+    // Once linked, the program keeps its own copy: the shader objects are
+    // freed here rather than left attached, where a delete would wait for
+    // the program's and every view leaked six of them (zega#83).
+    for (const { shader, attached } of shaders) {
+      if (attached) gl.detachShader(program, shader);
+      gl.deleteShader(shader);
+    }
   }
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(`arc program: ${gl.getProgramInfoLog(program)}`);
   const uniforms = {};
   for (let i = 0; i < gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS); i++) {
     const name = gl.getActiveUniform(program, i).name;

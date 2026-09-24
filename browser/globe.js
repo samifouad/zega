@@ -11,6 +11,7 @@ const protocol = new Protocol();
 maplibre.addProtocol('pmtiles', protocol.tile);
 export const COUNTRIES_URL = new URL('./data/countries-110m.geojson', import.meta.url).href;
 const BASEMAP_MINZOOM = 5;
+export const NO_WEBGL2 = 'WebGL2 unavailable. This browser cannot draw the globe.';
 const NATURAL_EARTH = '<a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener">Natural Earth</a>';
 
 /** Globe inputs from the stored nodes of the view's types, and the relationships among them. */
@@ -104,7 +105,7 @@ class SettingsControl {
   onRemove() { this.container.remove(); }
 }
 
-function globeStyle(theme, codes, places, outlines, basemap) {
+function globeStyle(theme, codes, places, outlines, basemap, credit) {
   const c = palettes[theme];
   const matched = ['in', ['get', 'iso'], ['literal', codes]];
   return {
@@ -115,7 +116,7 @@ function globeStyle(theme, codes, places, outlines, basemap) {
     sources: {
       ...(basemap ? { basemap: { type: 'vector', url: `pmtiles://${TILE_ORIGIN}/calgary.pmtiles`, attribution: ATTRIBUTION } } : {}),
       countries: { type: 'geojson', data: outlines, attribution: NATURAL_EARTH },
-      'zega-nodes': { type: 'geojson', data: {
+      'zega-nodes': { type: 'geojson', ...(credit ? { attribution: credit } : {}), data: {
         type: 'FeatureCollection',
         features: places.map(({ node, lat, lon }) => ({ type: 'Feature', properties: { id: node.id }, geometry: { type: 'Point', coordinates: [lon, lat] } })),
       } },
@@ -138,7 +139,7 @@ function globeStyle(theme, codes, places, outlines, basemap) {
   };
 }
 
-export function renderGlobe(container, { countries, codes, places, rels = [] }, camera, theme, onNode, onEdge) {
+export function renderGlobe(container, { countries, codes, places, rels = [], credit = '' }, camera, theme, onNode, onEdge) {
   const root = document.createElement('div');
   root.className = 'map-view globe-view';
   const canvas = document.createElement('div');
@@ -156,15 +157,26 @@ export function renderGlobe(container, { countries, codes, places, rels = [] }, 
   let plain = false;
   let outlines = { type: 'FeatureCollection', features: [] };
   const show = (text) => { notice.textContent = text; notice.hidden = false; };
-  const map = new maplibre.Map({
-    container: canvas,
-    style: globeStyle(theme, codeList, places, outlines, true),
-    center: [camera.center.lon, camera.center.lat],
-    zoom: camera.zoom,
-    pitch: camera.tilt,
-    maxPitch: 85,
-    attributionControl: false,
-  });
+  let map;
+  try {
+    map = new maplibre.Map({
+      container: canvas,
+      style: globeStyle(theme, codeList, places, outlines, true, credit),
+      center: [camera.center.lon, camera.center.lat],
+      zoom: camera.zoom,
+      pitch: camera.tilt,
+      maxPitch: 85,
+      attributionControl: false,
+    });
+  } catch (error) {
+    // MapLibre draws with WebGL2 only. Without it the view says so, as it
+    // does for a failed basemap, instead of going blank and putting the
+    // error in the output pane (zega#83).
+    if (!/WebGL/.test(String(error?.message))) throw error;
+    count.remove();
+    show(NO_WEBGL2);
+    return () => {};
+  }
   map.addControl(new maplibre.AttributionControl({ compact: false, customAttribution: ATTRIBUTION }), 'bottom-right');
   map.addControl(new maplibre.NavigationControl({ showCompass: false }), 'top-right');
 
@@ -183,8 +195,8 @@ export function renderGlobe(container, { countries, codes, places, rels = [] }, 
     });
     arcs.setArcs(records);
     const n = countries.size, m = places.length, k = records.length;
-    count.textContent = `${n} ${n === 1 ? 'country' : 'countries'} · ${m} ${m === 1 ? 'place' : 'places'}`
-      + (k ? ` · ${k} ${k === 1 ? 'relationship' : 'relationships'}` : '');
+    count.textContent = [[n, 'country', 'countries'], [m, 'place', 'places'], [k, 'relationship', 'relationships']]
+      .filter(([value]) => value).map(([value, one, many]) => `${value} ${value === 1 ? one : many}`).join(' · ') || 'nothing to draw';
   }
   updateArcs();
   map.on('style.load', () => { if (!map.getLayer(arcs.id)) map.addLayer(arcs, 'zega-nodes'); });
@@ -232,7 +244,7 @@ export function renderGlobe(container, { countries, codes, places, rels = [] }, 
     if (plain) return;
     plain = true;
     show('Base map unavailable. Countries and places are still shown.');
-    map.setStyle(globeStyle(theme, codeList, places, outlines, false));
+    map.setStyle(globeStyle(theme, codeList, places, outlines, false, credit));
   });
   const nearest = (event) => [...event.features].sort((a, b) => {
     const distance = (feature) => { const p = map.project(feature.geometry.coordinates); return Math.hypot(p.x - event.point.x, p.y - event.point.y); };
