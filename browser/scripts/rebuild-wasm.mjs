@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { hashFiles } from './wasm-files.mjs';
 
@@ -22,10 +23,22 @@ const output = join(staging, 'pkg');
 try {
   const tool = (command) => execFileSync(command, ['--version'], { encoding: 'utf8' }).trim();
   const toolchain = { rustc: tool('rustc'), wasmPack: tool('wasm-pack') };
+  // Panic locations otherwise embed checkout, Cargo and host-toolchain paths.
+  // Remap at compilation, before wasm-bindgen/wasm-opt arrange the binary.
+  if (process.env.RUSTFLAGS || process.env.CARGO_ENCODED_RUSTFLAGS) {
+    throw new Error('WASM rebuild defines its own reproducible Rust flags; unset RUSTFLAGS and CARGO_ENCODED_RUSTFLAGS.');
+  }
+  const sysroot = execFileSync('rustc', ['--print', 'sysroot'], { encoding: 'utf8' }).trim();
+  const cargoHome = resolve(process.env.CARGO_HOME || join(homedir(), '.cargo'));
+  const rustflags = [
+    `--remap-path-prefix=${engine}=/zega`,
+    `--remap-path-prefix=${cargoHome}=/cargo`,
+    `--remap-path-prefix=${sysroot}=/rust`,
+  ];
   execFileSync('wasm-pack', ['build', join(engine, 'zega-wasm'), '--target', 'web', '--release', '--out-dir', output, '--locked'], {
     cwd: root,
     stdio: 'inherit',
-    env: { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(root, '../.target'), TMPDIR: process.env.TMPDIR || join(root, '.tmp') },
+    env: { ...process.env, CARGO_ENCODED_RUSTFLAGS: rustflags.join('\x1f'), CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(root, '../.target'), TMPDIR: process.env.TMPDIR || join(root, '.tmp') },
   });
   // wasm-pack ignores generated files by default; these files are vendored here.
   await rm(join(output, '.gitignore'), { force: true });
@@ -37,6 +50,7 @@ try {
     commit,
     provenance: 'Rebuilt from a clean local engine checkout with wasm-pack --target web --release --locked.',
     toolchain,
+    sourcePaths: { engine: '/zega', cargo: '/cargo', sysroot: '/rust' },
     sha256: await hashFiles(output),
   };
   await writeFile(join(staging, 'wasm-source.json'), JSON.stringify(metadata, null, 2) + '\n');
