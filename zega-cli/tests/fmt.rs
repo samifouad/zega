@@ -109,13 +109,22 @@ fn a_path_that_cannot_be_read_exits_2_and_names_it_not_1_like_check() {
     // job must be able to tell a missing or refused path apart from it.
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("missing.zql");
-    let link = dir.path().join("link.zql");
-    fs::write(dir.path().join("real.zql"), OUTPUT).unwrap();
-    std::os::unix::fs::symlink(dir.path().join("real.zql"), &link).unwrap();
-    for (path, reason) in [
-        (&missing, "No such file or directory"),
-        (&link, "refusing to rewrite symbolic link"),
-    ] {
+    // The OS words the missing-file reason; Windows says "cannot find the file".
+    let not_found = if cfg!(windows) {
+        "cannot find the file"
+    } else {
+        "No such file or directory"
+    };
+    #[allow(unused_mut)] // only pushed to where symlinks can be made without privileges
+    let mut cases = vec![(missing, not_found)];
+    #[cfg(unix)]
+    {
+        let link = dir.path().join("link.zql");
+        fs::write(dir.path().join("real.zql"), OUTPUT).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real.zql"), &link).unwrap();
+        cases.push((link, "refusing to rewrite symbolic link"));
+    }
+    for (path, reason) in &cases {
         for check in [true, false] {
             let mut command = Command::new(BIN);
             command.arg("fmt");
