@@ -23,3 +23,5 @@ __pycache__/
 
 browser/.wrangler/
 browser/.tmp/
+
+/evidence/node-shapes/

@@ -1,6 +1,9 @@
 //! The v2 schema and query language. Users write this. The engine walks the
 //! graph it already stores; this crate does not parse ZQL.
 
+mod node_display;
+pub use node_display::{NodeDisplay, NodeShape};
+use node_display::DisplayAttribute;
 mod discovery;
 pub(crate) use discovery::{check_pipeline, DiscoveryExpr, Primitive, TextOp};
 use discovery::ThenStage;
@@ -91,6 +94,8 @@ pub struct DisplayView {
     pub kind: ViewKind,
     /// None means all types; a declared list is always nonempty.
     pub types: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub nodes: std::collections::BTreeMap<String, NodeDisplay>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,7 +111,7 @@ pub enum ViewKind {
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        Self { views: vec![DisplayView { kind: ViewKind::Graph, types: None }], default: ViewKind::Graph }
+        Self { views: vec![DisplayView { kind: ViewKind::Graph, types: None, nodes: Default::default() }], default: ViewKind::Graph }
     }
 }
 
@@ -114,6 +119,7 @@ struct DisplayEntry {
     view: DisplayView,
     span: Span,
     type_spans: Vec<Span>,
+    attributes: Vec<Vec<DisplayAttribute>>,
     default_span: Option<Span>,
 }
 
@@ -129,7 +135,7 @@ fn check_display(schema: &Schema, block: DisplayBlock) -> Result<DisplayConfig> 
     }
     let mut default = None;
     let mut views: Vec<DisplayView> = Vec::new();
-    for entry in block.entries {
+    for mut entry in block.entries {
         let kind = entry.view.kind;
         if views.iter().any(|view| view.kind == kind) {
             return Err(Error::at(entry.span, "duplicate display view")
@@ -162,10 +168,12 @@ fn check_display(schema: &Schema, block: DisplayBlock) -> Result<DisplayConfig> 
             ViewKind::Graph | ViewKind::Table => true,
         };
         if let Some(names) = &entry.view.types {
-            for (name, span) in names.iter().zip(&entry.type_spans) {
+            for ((name, span), attributes) in names.iter().zip(&entry.type_spans).zip(&entry.attributes) {
                 let ty = schema.types.iter().find(|ty| ty.name == *name).ok_or_else(||
                     Error::at(*span, format!("display refers to unknown type {name}"))
                         .with_help(type_help(schema, name)))?;
+                let config = node_display::check_attributes(ty, attributes)?;
+                if !attributes.is_empty() { entry.view.nodes.insert(name.clone(), config); }
                 if !eligible(ty) {
                     let (view, needs, fields) = requirement.unwrap();
                     return Err(Error::at(*span, format!("display `{view}` needs {needs} on type {name}"))
@@ -659,6 +667,26 @@ fn unify_edge_props(types: &mut [TypeDef]) -> Result<()> {
     Ok(())
 }
 
+pub(crate) const URL_HELP: &str = "write an absolute http:// or https:// URL with a host and no userinfo, e.g. `https://example.com/image.png`";
+
+pub(crate) fn valid_url(value: &str) -> bool {
+    !value.chars().any(|c| c.is_whitespace() || c.is_control())
+        // Require an authority and reject even empty userinfo, which URL parsing normalizes away.
+        && value.split_once("://").is_some_and(|(_, rest)| {
+            !rest
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap_or_default()
+                .contains('@')
+        })
+        && url::Url::parse(value).is_ok_and(|url| {
+            matches!(url.scheme(), "http" | "https")
+                && url.has_host()
+                && url.username().is_empty()
+                && url.password().is_none()
+        })
+}
+
 fn json_matches(ty: &str, value: &Json) -> bool {
     if value
         .as_object()
@@ -668,6 +696,7 @@ fn json_matches(ty: &str, value: &Json) -> bool {
     }
     match ty {
         "String" => value.is_string(),
+        "String<url>" => value.as_str().is_some_and(valid_url),
         "Int" => value.as_i64().is_some(),
         "Float" => value.is_number(),
         "Bool" => value.is_boolean(),
@@ -819,7 +848,7 @@ pub fn effective_indexes(
 
 /// Types a range index can order.
 fn orderable(ty: &str) -> bool {
-    matches!(ty, "Int" | "Float" | "String")
+    matches!(ty, "Int" | "Float" | "String" | "String<url>")
 }
 
 struct Parser<'a> {
@@ -1032,7 +1061,7 @@ impl<'a> Parser<'a> {
                         .with_help(prop_help(schema, &type_name, &field)));
                 };
                 match kind {
-                    IndexKind::Text if field_ty != "String" => {
+                    IndexKind::Text if !matches!(field_ty, "String" | "String<url>") => {
                         return Err(self
                             .err_at(
                                 field_span,
@@ -1343,6 +1372,7 @@ impl<'a> Parser<'a> {
                     .with_help("use `graph`, `table`, `map`, `timeline`, `vector2d`, or `vector3d`")),
             };
             let mut type_spans = Vec::new();
+            let mut attributes = Vec::new();
             let types = if self.eat("{") {
                 if self.eat("}") {
                     return Err(Error::at(view_span, "display type list is empty")
@@ -1351,10 +1381,15 @@ impl<'a> Parser<'a> {
                 let mut names = Vec::new();
                 loop {
                     let (name, span) = self.ident()?;
+                    if names.contains(&name) {
+                        return Err(Error::at(span, format!("duplicate display type {name}"))
+                            .with_help("list each type once per view"));
+                    }
                     names.push(name);
                     type_spans.push(span);
+                    attributes.push(self.parse_display_attributes()?);
                     if self.eat("}") { break; }
-                    self.expect(",")?;
+                    self.eat(",");
                 }
                 Some(names)
             } else { None };
@@ -1365,7 +1400,7 @@ impl<'a> Parser<'a> {
                 }
                 Some(span)
             } else { None };
-            entries.push(DisplayEntry { view: DisplayView { kind, types }, span: view_span, type_spans, default_span });
+            entries.push(DisplayEntry { view: DisplayView { kind, types, nodes: Default::default() }, span: view_span, type_spans, attributes, default_span });
         }
         Ok(DisplayBlock { entries, span })
     }
@@ -1402,7 +1437,7 @@ impl<'a> Parser<'a> {
                 self.expect(">")?;
                 ty = format!("Vector<{n},{metric}>");
             }
-            let unit = self.parse_unit(&ty, ty_span)?;
+            let unit = self.parse_unit(&mut ty, ty_span)?;
             let from = if self.starts_call("from", "(") {
                 self.expect_word("from")?;
                 if ty != "Point" && VectorSpec::parse(&ty).is_none() {
@@ -1458,8 +1493,14 @@ impl<'a> Parser<'a> {
     }
 
     /// `<km>` after a type: the distance unit of an `Int` or `Float`.
-    fn parse_unit(&mut self, ty: &str, ty_span: Span) -> Result<Option<DistanceUnit>> {
+    fn parse_unit(&mut self, ty: &mut String, ty_span: Span) -> Result<Option<DistanceUnit>> {
         if !self.eat("<") {
+            return Ok(None);
+        }
+        if ty == "String" && self.starts_word("url") {
+            self.expect_word("url")?;
+            self.expect(">")?;
+            *ty = "String<url>".into();
             return Ok(None);
         }
         if ty != "Int" && ty != "Float" {
@@ -1492,8 +1533,8 @@ impl<'a> Parser<'a> {
             let (name, span) = self.ident()?;
             let optional = self.eat("?");
             self.expect(":")?;
-            let (ty, ty_span) = self.ident()?;
-            let unit = self.parse_unit(&ty, ty_span)?;
+            let (mut ty, ty_span) = self.ident()?;
+            let unit = self.parse_unit(&mut ty, ty_span)?;
             if props.iter().any(|field| field.name == name) {
                 return Err(self
                     .err_at(span, format!("duplicate edge field {name}"))
@@ -3206,6 +3247,10 @@ impl Check<'_> {
         }
         for type_name in selection_types(sel) {
             if let Ok(Field::Prop { ty, optional, .. }) = self.schema.prop(type_name, name) {
+                if self.mutation && ty == "String<url>" && !(value.is_null() && *optional) && !json_matches(ty, value) {
+                    self.push(span, format!("{type_name}.{name} must be String<url>"),
+                        Some(URL_HELP.into()));
+                }
                 if let Some(spec) = VectorSpec::parse(ty) {
                     if !(value.is_null() && *optional) { if let Err(m) = spec.value(value) { self.push(span, m, Some("write `@vector[0.1, 0.2, ...]` with the declared dimension".into())); } }
                 } else if value.is_array() { self.push(span, format!("{type_name}.{name} is {ty}, not Vector"), None);
