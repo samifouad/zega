@@ -277,7 +277,7 @@ fn syntax_goldens() {
         invariant(&source, &path.display().to_string());
         count += 1;
     }
-    assert_eq!(count, 20);
+    assert_eq!(count, 22);
 }
 
 /// CRLF input (a Windows editor, or a checkout with core.autocrlf) formats to
@@ -300,7 +300,7 @@ fn crlf_input_emits_lf() {
         invariant(&source, &path.display().to_string());
         count += 1;
     }
-    assert_eq!(count, 20);
+    assert_eq!(count, 22);
     let literal = "query { A(name = \"one\r\ntwo\") { name } }";
     let output = format_zql(literal).unwrap();
     assert!(output.contains("\"one\r\ntwo\""), "{output:?}");

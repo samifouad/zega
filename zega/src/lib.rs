@@ -43,7 +43,7 @@ pub use context::{ResolvedContext, ZegaContext};
 pub use parser::grammar::ParseError;
 pub use policy::{Expr as PolicyExpr, ExprValue, Policy, PolicyCondition, PolicyTargets};
 pub use v2::{check_zql, parse_import, zql_load_locations, ZqlEntryPoint};
-pub use lang::{Direction as SchemaDirection, DisplayConfig, DisplayView, NodeDisplay, NodeShape, EdgeField, Field, LoadFormat, Schema, Span, TypeDef, ViewKind};
+pub use lang::{Direction as SchemaDirection, DisplayConfig, DisplayView, GlobeCamera, GlobeCenter, NodeDisplay, NodeShape, EdgeField, Field, LoadFormat, Schema, Span, TypeDef, ViewKind};
 
 #[derive(Error, Debug)]
 pub enum ZegaError {
@@ -61,6 +61,17 @@ pub enum ZegaError {
     Execution(String),
     #[error("relationship traversal work budget exceeded (limit: {limit})")]
     TraversalWorkBudgetExceeded { limit: usize },
+    /// A ZQL statement ran past the time limit set with
+    /// [`ZegaBuilder::query_time_limit`]. It stopped where it was; a
+    /// mutation's writes were rolled back.
+    #[error("query exceeded the {} limit", seconds(*limit))]
+    QueryTimeLimit { limit: std::time::Duration },
+}
+
+/// `2 s`, `1.5 s`, `0.05 s`: a limit as a person would write it.
+fn seconds(limit: std::time::Duration) -> String {
+    let text = format!("{:.3}", limit.as_secs_f64());
+    format!("{} s", text.trim_end_matches('0').trim_end_matches('.'))
 }
 
 pub type Result<T> = std::result::Result<T, ZegaError>;
@@ -158,6 +169,7 @@ pub struct Zega {
     jwt_config: Option<JwtConfig>,
     policies: Vec<Policy>,
     traversal_work_budget: usize,
+    query_time_limit: Option<std::time::Duration>,
     allow_private_imports: bool,
 }
 
@@ -171,6 +183,7 @@ pub struct ZegaBuilder {
     jwt_issuer: Option<String>,
     policies: Vec<Policy>,
     traversal_work_budget: usize,
+    query_time_limit: Option<std::time::Duration>,
     allow_private_imports: bool,
 }
 
@@ -230,6 +243,16 @@ impl ZegaBuilder {
         self
     }
 
+    /// Stop any one ZQL statement (`run_lang`, or each statement `apply_zql`
+    /// runs) that is still working after `limit`, with
+    /// [`ZegaError::QueryTimeLimit`]; a mutation's writes are rolled back.
+    /// Off by default, so an embedded or in-browser database has no limit
+    /// unless its host sets one. `zega start` sets two seconds.
+    pub fn query_time_limit(mut self, limit: std::time::Duration) -> Self {
+        self.query_time_limit = Some(limit);
+        self
+    }
+
     /// Permit HTTP imports from private/loopback hosts. Off by default; only
     /// enable for trusted ZQL callers that may access this machine's network.
     pub fn allow_private_imports(mut self, allow: bool) -> Self {
@@ -254,6 +277,7 @@ impl Zega {
             jwt_issuer: None,
             policies: Vec::new(),
             traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
+            query_time_limit: None,
             allow_private_imports: false,
         }
     }
@@ -269,6 +293,7 @@ impl Zega {
             jwt_issuer: None,
             policies: Vec::new(),
             traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
+            query_time_limit: None,
             allow_private_imports: false,
         }
     }
@@ -329,6 +354,7 @@ impl Zega {
             jwt_config,
             policies,
             traversal_work_budget,
+            query_time_limit: builder.query_time_limit,
             allow_private_imports: builder.allow_private_imports,
         })
     }

@@ -57,6 +57,10 @@ enum Command {
         /// Allow ZQL imports from private/loopback URLs for trusted callers.
         #[arg(long)]
         allow_private_imports: bool,
+        /// Stop any ZQL statement still running after this many seconds, and
+        /// roll back its writes. 0 turns the limit off.
+        #[arg(long, value_name = "SECONDS", default_value_t = zega_server::DEFAULT_QUERY_TIME_LIMIT.as_secs_f64())]
+        query_time_limit: f64,
     },
     /// Serve the embedded explorer against a local database. Prints a URL; opens nothing.
     Explorer {
@@ -83,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let (data, host, port, token_file, allow_private, explorer) = match cli.command {
+    let (data, host, port, token_file, allow_private, explorer, time_limit) = match cli.command {
         Command::Fmt { .. } => unreachable!("fmt runs without a server runtime"),
         Command::Start {
             data,
@@ -91,7 +95,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             port,
             token_file,
             allow_private_imports,
-        } => (data, host, port, token_file, allow_private_imports, false),
+            query_time_limit,
+        } => {
+            let limit = std::time::Duration::try_from_secs_f64(query_time_limit)
+                .map_err(|_| "--query-time-limit must be a number of seconds, 0 or more")?;
+            let limit = (!limit.is_zero()).then_some(limit);
+            (data, host, port, token_file, allow_private_imports, false, limit)
+        }
         Command::Explorer {
             data,
             port,
@@ -103,6 +113,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             None,
             allow_private_imports,
             true,
+            // The explorer is one person's local database; nothing to share.
+            None,
         ),
     };
     let token = token_file.map(std::fs::read_to_string).transpose()?;
@@ -129,10 +141,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
     let path = data.to_str().ok_or("data path must be UTF-8")?;
-    let db = Zega::open(path)
-        .allow_private_imports(allow_private)
-        .build()
-        .map_err(io::Error::other)?;
+    let mut db = Zega::open(path).allow_private_imports(allow_private);
+    if let Some(limit) = time_limit {
+        db = db.query_time_limit(limit);
+    }
+    let db = db.build().map_err(io::Error::other)?;
     let state = AppState::new(db, token);
     let listener = TcpListener::bind((host, port)).await?;
     let address = listener.local_addr()?;
@@ -178,6 +191,7 @@ async fn embedded(uri: Uri) -> Response {
         Some("css") => "text/css; charset=utf-8",
         Some("wasm") => "application/wasm",
         Some("json") => "application/json",
+        Some("geojson") => "application/geo+json",
         Some("ttf") => "font/ttf",
         _ => "text/plain; charset=utf-8",
     };

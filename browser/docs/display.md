@@ -139,3 +139,72 @@ contrast. Edges intersect the actual circle or rounded, folded page outline.
 Visible edge labels try the curve midpoint, then positions at 0.35, 0.65,
 0.25 and 0.75, then bounded perpendicular offsets to avoid caption and node
 boxes. Text metrics are cached, and placement is deterministic.
+
+## Globe (APS 9)
+
+```zql
+schema {
+  type Country {
+    name: String
+    iso: String<iso2>
+  }
+
+  type City {
+    name: String
+    at: Point
+  }
+
+  display {
+    globe(@zoom: 1.4, @tilt: 20, @center: @point(51.05, -114.07)) { Country } : Default
+    map { City }
+  }
+}
+```
+
+[APS 9](https://github.com/zegadb/aps/issues/9) adds a `globe` view. It uses
+MapLibre's globe projection, the same stack as `map`, and becomes the flat
+(Mercator) map as you zoom in: the sphere blends into Mercator between zoom 10
+and 12.
+
+Settings follow the view name. Every setting is optional:
+
+- `@zoom`: a number from 0 to 22 (default 1.5).
+- `@tilt`: degrees from straight down, 0 to 85 (default 0).
+- `@center`: `@point(latitude, longitude)` (default `@point(20, 0)`).
+
+The checker fills in the defaults, so `Zega::schema` and `ZegaWasm.schema`
+always return a complete camera on the globe view, e.g.
+`{ "kind": "globe", "types": ["Country"], "globe": { "zoom": 1.4, "tilt": 20.0, "center": { "lat": 51.05, "lon": -114.07 } } }`.
+Other views have no settings; `map(@zoom: 2)` is an error at the settings.
+Unknown or repeated settings, out-of-range numbers, a `@center` that is not a
+`@point(...)`, and a bare `point(...)` are diagnosed at their source spans.
+
+Each listed type needs a country code or coordinates: a `String<iso2>` field,
+a `Point` field, or the `lat: Float` + `lon: Float` pair. Without braces, at
+least one schema type must have one.
+
+`String<iso2>` is a unit-typed string, like `String<url>`. It stores one of the
+249 assigned ISO 3166-1 alpha-2 codes, in capitals (`CA`, `GB`, `JP`). Writes,
+updates, CSV/JSON imports and relationship fields reject anything else,
+including lowercase codes and user-assigned codes such as `XK`. Optional
+fields may be null. Filters and text/range indexes work as they do on `String`.
+
+The globe draws the stored nodes of its listed types. Country outlines whose
+code matches a node's first `String<iso2>` field are highlighted in the theme's
+accent colour. Clicking one opens that node in the shared inspector. `Point`
+fields (or `lat`/`lon`) plot as markers, which are also clickable. Water, land,
+borders and highlights follow the explorer's light and dark theme. The OSM
+basemap appears from zoom 5, as the globe flattens. If it fails, the countries
+and places still draw on plain ground. If the outlines fail, the places still
+draw and a notice says so. Terrain and relief are not part of this phase.
+
+Country outlines are Natural Earth's 1:110m Admin 0 countries (v5.1.2,
+public domain), bundled with the explorer as `browser/data/countries-110m.geojson`.
+The file is 193,714 bytes (64,910 gzipped). It has 177 outlines, and each keeps
+only `iso` and `name`, with coordinates rounded to three decimals.
+`browser/scripts/prepare-countries.mjs` rebuilds the file from the pinned
+source and checks the source's SHA-256 first. `iso` comes from Natural Earth's
+`ISO_A2_EH`, which fills the gaps for France and Norway. Kosovo (`XK`, not an
+ISO assignment), Northern Cyprus and Somaliland have no code, so they are never
+highlighted. The bundled file is a static asset, so the globe needs no tile
+server for its outlines.

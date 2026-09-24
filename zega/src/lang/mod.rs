@@ -3,6 +3,8 @@
 
 #[path = "../fmt/mod.rs"]
 pub mod fmt;
+mod globe;
+pub use globe::{GlobeCamera, GlobeCenter};
 mod node_display;
 pub use node_display::{NodeDisplay, NodeShape};
 use node_display::DisplayAttribute;
@@ -85,19 +87,22 @@ pub struct Schema {
 }
 
 /// The ordered, explicit view contract. Absence of a block means graph only.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DisplayConfig {
     pub views: Vec<DisplayView>,
     pub default: ViewKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DisplayView {
     pub kind: ViewKind,
     /// None means all types; a declared list is always nonempty.
     pub types: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub nodes: std::collections::BTreeMap<String, NodeDisplay>,
+    /// The globe's starting camera; present exactly when `kind` is `globe`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub globe: Option<GlobeCamera>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +111,7 @@ pub enum ViewKind {
     Graph,
     Table,
     Map,
+    Globe,
     Timeline,
     Vector2d,
     Vector3d,
@@ -113,13 +119,14 @@ pub enum ViewKind {
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        Self { views: vec![DisplayView { kind: ViewKind::Graph, types: None, nodes: Default::default() }], default: ViewKind::Graph }
+        Self { views: vec![DisplayView { kind: ViewKind::Graph, types: None, nodes: Default::default(), globe: None }], default: ViewKind::Graph }
     }
 }
 
 struct DisplayEntry {
     view: DisplayView,
     span: Span,
+    settings: Option<globe::ViewSettings>,
     type_spans: Vec<Span>,
     attributes: Vec<Vec<DisplayAttribute>>,
     default_span: Option<Span>,
@@ -150,21 +157,18 @@ fn check_display(schema: &Schema, block: DisplayBlock) -> Result<DisplayConfig> 
             }
             default = Some(kind);
         }
+        entry.view.globe = globe::check_settings(kind, entry.settings.take())?;
         let requirement = match kind {
             ViewKind::Map => Some(("map", "coordinates", "`lat: Float` and `lon: Float`")),
+            ViewKind::Globe => Some(("globe", "a country code or coordinates", "`iso: String<iso2>` or `at: Point`")),
             ViewKind::Timeline => Some(("timeline", "a year/date field", "`year: Int` or `date: String`")),
             ViewKind::Vector2d => Some(("vector2d", "a Vector field", "`embedding: Vector<384>`")),
             ViewKind::Vector3d => Some(("vector3d", "a Vector field", "`embedding: Vector<384>`")),
             ViewKind::Graph | ViewKind::Table => None,
         };
         let eligible = |ty: &TypeDef| match kind {
-            ViewKind::Map => ty.fields.iter().any(|field| {
-                matches!(field, Field::Prop { ty, .. } if ty == "Point")
-            }) || ["lat", "lon"].iter().all(|coordinate| {
-                ty.fields.iter().any(|field| {
-                    matches!(field, Field::Prop { name, ty, .. } if name == coordinate && ty == "Float")
-                })
-            }),
+            ViewKind::Map => globe::has_coordinates(ty),
+            ViewKind::Globe => globe::eligible(ty),
             ViewKind::Timeline => ty.timeline_field.is_some(),
             ViewKind::Vector2d | ViewKind::Vector3d => ty.fields.iter().any(|f| matches!(f, Field::Prop { ty, .. } if VectorSpec::parse(ty).is_some())),
             ViewKind::Graph | ViewKind::Table => true,
@@ -692,6 +696,32 @@ fn unify_edge_props(types: &mut [TypeDef]) -> Result<()> {
 
 pub(crate) const URL_HELP: &str = "write an absolute http:// or https:// URL with a host and no userinfo, e.g. `https://example.com/image.png`";
 
+/// A string checked against a unit on every write: `String<url>`, `String<iso2>`.
+pub(crate) fn is_unit_string(ty: &str) -> bool {
+    matches!(ty, "String<url>" | "String<iso2>")
+}
+
+/// `String` or a unit-typed string; both index and filter as text.
+pub(crate) fn is_string(ty: &str) -> bool {
+    ty == "String" || is_unit_string(ty)
+}
+
+pub(crate) fn unit_string_help(ty: &str) -> &'static str {
+    if ty == "String<iso2>" {
+        globe::ISO2_HELP
+    } else {
+        URL_HELP
+    }
+}
+
+pub(crate) fn valid_unit_string(ty: &str, value: &str) -> bool {
+    match ty {
+        "String<url>" => valid_url(value),
+        "String<iso2>" => globe::valid_iso2(value),
+        _ => true,
+    }
+}
+
 pub(crate) fn valid_url(value: &str) -> bool {
     !value.chars().any(|c| c.is_whitespace() || c.is_control())
         // Require an authority and reject even empty userinfo, which URL parsing normalizes away.
@@ -719,7 +749,7 @@ fn json_matches(ty: &str, value: &Json) -> bool {
     }
     match ty {
         "String" => value.is_string(),
-        "String<url>" => value.as_str().is_some_and(valid_url),
+        "String<url>" | "String<iso2>" => value.as_str().is_some_and(|text| valid_unit_string(ty, text)),
         "Int" => value.as_i64().is_some(),
         "Float" => value.is_number(),
         "Bool" => value.is_boolean(),
@@ -871,7 +901,7 @@ pub fn effective_indexes(
 
 /// Types a range index can order.
 fn orderable(ty: &str) -> bool {
-    matches!(ty, "Int" | "Float" | "String" | "String<url>")
+    matches!(ty, "Int" | "Float") || is_string(ty)
 }
 
 pub(crate) fn unsupported_comment(source: &str) -> Option<&'static str> {
@@ -1138,7 +1168,7 @@ impl<'a> Parser<'a> {
                         .with_help(prop_help(schema, &type_name, &field)));
                 };
                 match kind {
-                    IndexKind::Text if !matches!(field_ty, "String" | "String<url>") => {
+                    IndexKind::Text if !is_string(field_ty) => {
                         return Err(self
                             .err_at(
                                 field_span,
@@ -1461,12 +1491,14 @@ impl<'a> Parser<'a> {
                 "graph" => ViewKind::Graph,
                 "table" => ViewKind::Table,
                 "map" => ViewKind::Map,
+                "globe" => ViewKind::Globe,
                 "timeline" => ViewKind::Timeline,
                 "vector2d" => ViewKind::Vector2d,
                 "vector3d" => ViewKind::Vector3d,
                 _ => return Err(Error::at(view_span, format!("unknown display view {name}"))
-                    .with_help("use `graph`, `table`, `map`, `timeline`, `vector2d`, or `vector3d`")),
+                    .with_help("use `graph`, `table`, `map`, `globe`, `timeline`, `vector2d`, or `vector3d`")),
             };
+            let settings = self.parse_view_settings()?;
             let mut type_spans = Vec::new();
             let mut attributes = Vec::new();
             let types = if self.eat("{") {
@@ -1496,7 +1528,7 @@ impl<'a> Parser<'a> {
                 }
                 Some(span)
             } else { None };
-            entries.push(DisplayEntry { view: DisplayView { kind, types, nodes: Default::default() }, span: view_span, type_spans, attributes, default_span });
+            entries.push(DisplayEntry { view: DisplayView { kind, types, nodes: Default::default(), globe: None }, span: view_span, settings, type_spans, attributes, default_span });
         }
         Ok(DisplayBlock { entries, span })
     }
@@ -1588,15 +1620,25 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn starts_distance_unit(&self) -> bool {
+        let mut lookahead = self.fork();
+        lookahead.ident().is_ok_and(|(name, _)| DistanceUnit::parse(&name).is_some())
+    }
+
     /// `<km>` after a type: the distance unit of an `Int` or `Float`.
     fn parse_unit(&mut self, ty: &mut String, ty_span: Span) -> Result<Option<DistanceUnit>> {
         if !self.eat("<") {
             return Ok(None);
         }
-        if ty == "String" && self.starts_word("url") {
-            self.expect_word("url")?;
+        if ty == "String" && !self.starts_distance_unit() {
+            let (name, span) = self.ident()?;
+            if !matches!(name.as_str(), "url" | "iso2") {
+                return Err(self
+                    .err_at(span, format!("unknown string unit {name}"))
+                    .with_help("a String unit is `url` or `iso2`, as in `String<iso2>`"));
+            }
             self.expect(">")?;
-            *ty = "String<url>".into();
+            *ty = format!("String<{name}>");
             return Ok(None);
         }
         if ty != "Int" && ty != "Float" {
@@ -3488,9 +3530,9 @@ impl Check<'_> {
         }
         for type_name in selection_types(sel) {
             if let Ok(Field::Prop { ty, optional, .. }) = self.schema.prop(type_name, name) {
-                if self.mutation && ty == "String<url>" && !(value.is_null() && *optional) && !json_matches(ty, value) {
-                    self.push(span, format!("{type_name}.{name} must be String<url>"),
-                        Some(URL_HELP.into()));
+                if self.mutation && is_unit_string(ty) && !(value.is_null() && *optional) && !json_matches(ty, value) {
+                    self.push(span, format!("{type_name}.{name} must be {ty}"),
+                        Some(unit_string_help(ty).into()));
                 }
                 if let Some(spec) = VectorSpec::parse(ty) {
                     if !(value.is_null() && *optional) { if let Err(m) = spec.value(value) { self.push(span, m, Some("write `@vector[0.1, 0.2, ...]` with the declared dimension".into())); } }
@@ -4002,3 +4044,5 @@ mod tests {
 mod display_tests;
 #[cfg(test)]
 mod depth_tests;
+#[cfg(test)]
+mod globe_tests;

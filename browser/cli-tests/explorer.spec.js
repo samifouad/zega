@@ -195,3 +195,33 @@ test('native storage and WASM checker agree on URL documents and Space preview',
     await page.reload();await expect(page.locator('g[data-shape="document"]')).toHaveCount(1);
   } finally { await server.stop();await rm(directory,{recursive:true,force:true}); }
 });
+
+test('native explorer serves the country outlines and highlights String<iso2> nodes on the globe', async ({ page, request }) => {
+  await tileFixture(page);
+  await mkdir('.tmp', { recursive: true, mode: 0o700 });
+  const directory = await mkdtemp(resolve('.tmp/cli-globe-'));
+  const server = await start(directory);
+  const schema = 'type Country { name: String iso: String<iso2> } display { globe(@zoom: 2, @center: @point(58, -100)) { Country } }';
+  try {
+    const outlines = await request.get(`${server.url}/data/countries-110m.geojson`);
+    expect(outlines.headers()['content-type']).toBe('application/geo+json');
+    expect((await outlines.json()).features).toHaveLength(177);
+    const inserted = await request.post(`${server.url}/zql`, { data: { schema, query: 'mutation { Country(name: "Canada" && iso: "CA") { name } }' } });
+    expect(inserted.ok()).toBe(true);
+    const rejected = await request.post(`${server.url}/zql`, { data: { schema, query: 'mutation { Country(name: "Nowhere" && iso: "QQ") }' } });
+    expect((await rejected.json()).error).toContain('must be String<iso2>');
+    await page.goto(server.url);
+    await expect(page.locator('#query .monaco-editor')).toBeVisible();
+    await page.evaluate((schema) => {
+      const editor = (pane) => window.monaco.editor.getEditors().find((e) => e.getDomNode()?.closest(`#${pane}`));
+      editor('schema').setValue(schema); editor('query').setValue('{ Country { @id name iso } }');
+    }, schema);
+    await page.locator('#btn-run').click();
+    await expect(page.getByRole('tab', { name: 'Globe' })).toHaveAttribute('aria-selected', 'true');
+    await page.evaluate(() => document.querySelector('#graph')._outlines);
+    await expect.poll(() => page.evaluate(() => {
+      const map = document.querySelector('#graph')._map;
+      return map?.loaded() ? map.queryRenderedFeatures(map.project([-100, 58]), { layers: ['globe-countries'] })[0]?.properties.iso ?? null : null;
+    })).toBe('CA');
+  } finally { await server.stop(); await rm(directory, { recursive: true, force: true }); }
+});

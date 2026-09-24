@@ -1,6 +1,7 @@
 import init, { ZegaWasm, format, format_json } from './pkg/zega_wasm.js';
 import { renderGraph, stopSim } from './graph.js';
 import { renderMap } from './map.js';
+import { globeData, renderGlobe } from './globe.js';
 import { renderVector } from './vector.js';
 import { renderTable } from './table.js';
 import { applyTheme } from './theme.js';
@@ -858,6 +859,9 @@ function drawGraph() {
   } else if (activeView === 'map') {
     disposeView?.();
     disposeView = renderMap(graphEl, mapResults(lastValue, nodes, types), theme, inspectNode);
+  } else if (activeView === 'globe') {
+    disposeView?.();
+    disposeView = renderGlobe(graphEl, globeData(nodes, types), view.globe, theme, inspectNode);
   } else if (activeView === 'vector2d' || activeView === 'vector3d') {
     disposeView?.();
     const analyze = async (selected, k, threshold) => {
