@@ -51,6 +51,7 @@ body {
 .conn { color: var(--dim); font-size: 12px; display: flex; align-items: center; gap: 5px; }
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; }
 .spacer { flex: 1; }
+.autorun-note { color: var(--dim); font-size: 12px; white-space: nowrap; }
 
 #panes {
   display: flex;

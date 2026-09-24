@@ -7,6 +7,7 @@ import { applyTheme } from './theme.js';
 import { createEditors } from './editor.js';
 import { openCsv, parseSchema } from './csv.js';
 import { connectDatabase } from './backend.js';
+import { formatEditor, hasMutation, typingAfterSpace } from './zql-edit.js';
 
 const LS_DB = 'zega.v2.since';
 const LS_SCHEMA = 'zega.v2.schema';
@@ -240,33 +241,97 @@ window.__zega = db;
 
 const { schema: schemaEditor, query: queryEditor, output: outputEditor, raw: rawEditor, monaco } = await editorsReady;
 
-// The CLI and both explorer backends use this same WASM formatter.
-let formatEditor = queryEditor;
-function formatSource(editor) {
-  const source = editor.getValue();
-  const formatted = format(source);
-  if (formatted !== source) {
-    const position = editor.getPosition();
-    const scroll = editor.getScrollTop();
-    editor.pushUndoStop();
-    editor.executeEdits('zega.format', [{ range: editor.getModel().getFullModelRange(), text: formatted }]);
-    editor.pushUndoStop();
-    editor.setPosition(position); // Monaco clamps a line/column that no longer exists.
-    editor.setScrollTop(scroll);
+function schemaText() { return schemaEditor.getValue(); }
+function queryText() { return queryEditor.getValue(); }
+
+// Text the page puts in a pane (a tour step, a sample, an import) arrives
+// formatted and starts a fresh undo history; it is not an edit to react to.
+let suppress = 0;
+function setQuiet(editor, value) {
+  suppress += 1;
+  editor.setValue(value);
+  formatPane(editor, { history: false });
+  suppress -= 1;
+}
+function saveSources() {
+  localStorage.setItem(LS_SCHEMA, schemaText());
+  localStorage.setItem(LS_QUERY, queryText());
+}
+
+// Formatting is its own pipeline, apart from running (zegadb/zega#46). Each
+// ZQL pane formats itself a pause after its last edit, when its text parses,
+// and never runs anything. The CLI and both explorer backends use this same
+// WASM formatter.
+const FORMAT_DEBOUNCE_MS = 350;
+const formatTimers = new Map();
+const composing = new Set();
+let selfFormatting = 0; // Our own edits are not someone typing.
+
+function formatPane(editor, options) {
+  clearTimeout(formatTimers.get(editor));
+  selfFormatting += 1;
+  try { return formatEditor(editor, format, options); } finally { selfFormatting -= 1; }
+}
+
+/**
+ * A space or new line just typed at a focused cursor is where the next word
+ * goes. Formatting would remove it, and the next word would join the last.
+ */
+function typingSpace(editor) {
+  const model = editor.getModel();
+  const position = editor.getPosition();
+  return editor.hasTextFocus() && Boolean(position) && typingAfterSpace(model.getValue(), model.getOffsetAt(position));
+}
+
+/**
+ * Formats both panes now, where they parse: on load, and before every run.
+ * `spareTyping` leaves a pane alone while `typingSpace` holds; the auto-run
+ * fires on the same pause as the auto-format and must not undo its care.
+ */
+function formatSources(options, { spareTyping = false } = {}) {
+  for (const editor of [schemaEditor, queryEditor]) {
+    if (!(spareTyping && typingSpace(editor))) formatPane(editor, options);
   }
-  persist();
+  saveSources();
 }
+
+function scheduleFormat(editor) {
+  clearTimeout(formatTimers.get(editor));
+  formatTimers.set(editor, setTimeout(() => autoformat(editor), FORMAT_DEBOUNCE_MS));
+}
+
+function autoformat(editor) {
+  // Wait out an IME composition or an open suggestion list rather than
+  // rewrite the text under it.
+  if (composing.has(editor) || editor.getDomNode()?.querySelector('.suggest-widget.visible')) {
+    scheduleFormat(editor);
+    return;
+  }
+  // Leave just-typed whitespace until the cursor moves on or the pane loses focus.
+  if (typingSpace(editor)) return;
+  if (formatPane(editor)) saveSources();
+}
+
+let formatTarget = queryEditor;
 for (const editor of [schemaEditor, queryEditor]) {
-  editor.onDidFocusEditorText(() => { formatEditor = editor; });
+  editor.onDidFocusEditorText(() => { formatTarget = editor; });
+  editor.onDidBlurEditorText(() => scheduleFormat(editor));
+  editor.onDidCompositionStart(() => composing.add(editor));
+  editor.onDidCompositionEnd(() => { composing.delete(editor); scheduleFormat(editor); });
+  // Undo and redo put back text on purpose; formatting it again would make
+  // the undo impossible to keep. The next typed edit formats as usual.
+  editor.onDidChangeModelContent((event) => {
+    if (!selfFormatting && !suppress && !event.isUndoing && !event.isRedoing) scheduleFormat(editor);
+  });
   editor.addAction({ id: 'zega.format', label: 'Format ZQL', contextMenuGroupId: '1_modification',
-    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS], run: () => formatSource(editor) });
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS], run: () => { if (formatPane(editor)) saveSources(); } });
 }
-$('#btn-format').onclick = () => { formatSource(formatEditor); formatEditor.focus(); };
+// Cmd/Ctrl+S formats now, and never opens the browser's save dialog.
 document.addEventListener('keydown', event => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
     event.preventDefault();
     event.stopPropagation();
-    formatSource(formatEditor);
+    if (formatPane(formatTarget)) saveSources();
   }
 }, true);
 
@@ -282,14 +347,6 @@ $('#btn-theme').onclick = () => {
   drawGraph();
 };
 
-let suppress = 0;
-function setQuiet(editor, value) {
-  suppress += 1;
-  editor.setValue(value);
-  suppress -= 1;
-}
-function schemaText() { return schemaEditor.getValue(); }
-function queryText() { return queryEditor.getValue(); }
 
 async function clearDatabase() {
   if (db.native) await db.clear();
@@ -389,14 +446,17 @@ async function loadSources(source, document = false, provided = {}) {
   return sources;
 }
 
+// `options.current`, when given, says whether the text this run started from
+// is still what the panes hold; a result for older text is not shown.
 async function run(source, options = {}) {
-  localStorage.setItem(LS_SCHEMA, schemaText());
-  localStorage.setItem(LS_QUERY, queryText());
+  const current = options.current || (() => true);
+  saveSources();
   if (options.apply && looksLikeZqlFile(schemaText())) {
     try {
       const sources = db.native ? options.sources : await loadSources(schemaText(), true, options.sources);
       const raw = await db.apply_with_sources(schemaText(), sources === undefined ? undefined : JSON.stringify(sources));
       const applied = JSON.parse(raw);
+      if (!current()) return null;
       if (!String(source || '').trim()) {
         showJson(applied, raw);
         return applied;
@@ -417,6 +477,7 @@ async function run(source, options = {}) {
   try {
     const sources = db.native ? options.sources : await loadSources(source, false, options.sources);
     const raw = await db.run_with_sources(schemaText(), source, sources === undefined ? undefined : JSON.stringify(sources));
+    if (!current()) return null;
     const elapsedUs = (performance.now() - started) * 1000;
     queryTime.textContent = elapsedUs < 1000
       ? `${Math.round(elapsedUs)} µs`
@@ -435,7 +496,6 @@ async function run(source, options = {}) {
   }
 }
 
-$('#btn-run').onclick = () => run(queryText(), { apply: true });
 $('#btn-csv').onclick = () => {
   pauseAutoplay();
   openCsv({
@@ -460,7 +520,7 @@ $('#btn-calgary').onclick = async () => {
     await clearDatabase();
     setQuiet(schemaEditor, source);
     setQuiet(queryEditor, source.slice(source.lastIndexOf('query {')).trim());
-    await run(queryText(), { apply: true, sources });
+    await execute({ apply: true, sources });
     persist();
   } catch (error) { showThrown(error); }
 };
@@ -473,7 +533,7 @@ $('#btn-tickets').onclick = async () => {
     hideTour(); await clearDatabase();
     setQuiet(schemaEditor, source);
     setQuiet(queryEditor, source.slice(source.lastIndexOf('query {')).trim());
-    await run(queryText(), { apply: true }); persist();
+    await execute({ apply: true }); persist();
   } catch (error) { showThrown(error); }
 };
 $('#btn-clear').onclick = async () => {
@@ -490,36 +550,89 @@ $('#btn-clear').onclick = async () => {
   drawGraph();
 };
 
-let pending = null;
-function isMutation(source) {
-  return /^mutation\b/.test(source.replace(/\/\/.*$/gm, '').trim());
+/**
+ * Every run of the panes, auto or explicit, goes through here: format both
+ * panes where they parse, then run what they now say. The auto-run passes
+ * `format: 'auto'`, which spares whitespace being typed, or `false` after an
+ * undo or redo (see sourceEdited).
+ */
+function execute({ format: formatFirst = true, ...options } = {}) {
+  if (formatFirst) formatSources(undefined, { spareTyping: formatFirst === 'auto' });
+  return run(queryText(), options);
 }
-function scheduleRun() {
-  if (suppress) return;
+
+// Running is the deka tour's autorun (dekaruntime/website TourLayout): one
+// debounce, a version per edit so a result for older text is dropped, and a
+// single rerun for edits made while a run is going instead of a pile-up.
+// It pauses while the query pane holds a mutation: the graph is not reset
+// between runs, so the write would repeat after every pause. Run and
+// Cmd/Ctrl+Enter always run.
+const AUTORUN_DEBOUNCE_MS = 350;
+const autorunNote = $('#autorun-note');
+let sourceVersion = 0;
+let autorunTimer = null;
+let autorunning = false;
+let rerunRequested = false;
+
+function autorunPaused() {
+  const paused = hasMutation(queryText());
+  autorunNote.hidden = !paused;
+  return paused;
+}
+
+async function autorunOnce() {
+  const report = review();
+  mark(report.diagnostics);
+  if (report.diagnostics.length || report.failed) {
+    drawGraph();
+    queryTime.textContent = '';
+    showReport(report);
+    return;
+  }
+  if (!queryText().trim() || autorunPaused()) { drawGraph(); return; }
+  const version = sourceVersion;
+  await execute({ format: undoneLast ? false : 'auto', current: () => version === sourceVersion });
+}
+
+async function autorun() {
+  if (autorunning) { rerunRequested = true; return; }
+  autorunning = true;
+  try {
+    do {
+      rerunRequested = false;
+      await autorunOnce();
+    } while (rerunRequested);
+  } finally {
+    autorunning = false;
+  }
+}
+
+function scheduleAutorun() {
+  clearTimeout(autorunTimer);
+  autorunTimer = setTimeout(autorun, AUTORUN_DEBOUNCE_MS);
+}
+
+// An edit to either pane reruns the query: the schema changes the result too.
+// After an undo or redo the rerun leaves the text as it is: formatting it
+// would push a new step onto the undo stack, so the next Cmd+Z would undo
+// that instead of going further back, and redo would be lost.
+let undoneLast = false;
+function sourceEdited(event) {
+  if (suppress || selfFormatting) return;
+  undoneLast = event.isUndoing || event.isRedoing;
+  sourceVersion += 1;
   pauseAutoplay();
-  localStorage.setItem(LS_SCHEMA, schemaText());
-  localStorage.setItem(LS_QUERY, queryText());
-  clearTimeout(pending);
-  pending = setTimeout(() => {
-    const source = queryText().trim();
-    const report = review();
-    mark(report.diagnostics);
-    if (report.diagnostics.length || report.failed) {
-      drawGraph();
-      queryTime.textContent = '';
-      showReport(report);
-      return;
-    }
-    if (!source || isMutation(source)) { drawGraph(); return; }
-    run(source);
-  }, 350);
+  saveSources();
+  scheduleAutorun();
 }
-schemaEditor.onDidChangeModelContent(scheduleRun);
-queryEditor.onDidChangeModelContent(scheduleRun);
+schemaEditor.onDidChangeModelContent(sourceEdited);
+queryEditor.onDidChangeModelContent(sourceEdited);
+queryEditor.onDidChangeModelContent(autorunPaused);
 const runNow = () => {
-  clearTimeout(pending);
-  run(queryText(), { apply: true });
+  clearTimeout(autorunTimer);
+  return execute({ apply: true });
 };
+$('#btn-run').onclick = runNow;
 const chord = monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter;
 schemaEditor.addCommand(chord, runNow);
 queryEditor.addCommand(chord, runNow);
@@ -546,11 +659,14 @@ function markTour() {
   });
 }
 
-function showTour(index) {
+// A click on a tour step is an explicit run; autoplay is a timer, so it obeys
+// the same mutation pause as auto-run and never writes on its own.
+function showTour(index, { auto = false } = {}) {
   tourIndex = index;
   setQuiet(queryEditor, TOUR[index][1]);
   markTour();
-  run(TOUR[index][1]);
+  if (auto && autorunPaused()) { drawGraph(); return; }
+  execute();
 }
 
 function pauseAutoplay() {
@@ -565,7 +681,7 @@ function startAutoplay() {
   playBtn.textContent = 'pause';
   clearInterval(tourTimer);
   tourTimer = setInterval(() => {
-    showTour((tourIndex + 1) % TOUR.length);
+    showTour((tourIndex + 1) % TOUR.length, { auto: true });
   }, 5000);
 }
 
@@ -819,7 +935,7 @@ function nodesOf(typeName) {
 function refreshGraph() {
   if (!db.native) { try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); } }
   const source = queryText().trim();
-  if (source && !isMutation(source)) run(source);
+  if (source && !hasMutation(source)) execute();
   else {
     lastValue = null;
     drawGraph();
@@ -926,13 +1042,19 @@ dragSplit(document.getElementById('split-rows'), (ev) => {
   applySplits();
 });
 
-const defaultSchema = schemaText().trim() === SCHEMA.trim();
+// Read what was stored before formatting saves the panes over it.
+const firstVisit = !saved && !localStorage.getItem(LS_SCHEMA);
+// Both panes are formatted before anything runs, including text restored
+// from the last visit.
+formatSources({ history: false });
+autorunPaused();
+const defaultSchema = schemaText().trim() === format(SCHEMA).trim();
 if (db.native) {
   // Opening an existing data directory must never reseed or clear its graph.
   hideTour();
   drawGraph();
-  if (queryText().trim() && !isMutation(queryText())) await run(queryText());
-} else if (!saved && !localStorage.getItem(LS_SCHEMA)) {
+  if (queryText().trim() && !hasMutation(queryText())) await execute();
+} else if (firstVisit) {
   await reseed();
 } else if (defaultSchema && !savedQuery) {
   showTour(0);
@@ -940,5 +1062,5 @@ if (db.native) {
 } else {
   hideTour();
   drawGraph();
-  if (queryText().trim() && !isMutation(queryText())) await run(queryText());
+  if (queryText().trim() && !hasMutation(queryText())) await execute();
 }
