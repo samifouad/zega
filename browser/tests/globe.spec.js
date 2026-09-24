@@ -45,6 +45,16 @@ test('globe renders a sphere at the checked camera and highlights countries by I
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('Natural Earth');
 });
 
+test('a regional globe keeps the schema camera: zoom 5 over Calgary, tilted, with no padding', async ({ page }) => {
+  await globe(page, SCHEMA.replace('globe(@zoom: 2, @tilt: 20, @center: @point(50, -60))', 'globe(@zoom: 5, @tilt: 40, @center: @point(51.05, -114.07))'));
+  expect(await map(page, 'const c = map.getCenter(); return [map.getZoom(), map.getPitch(), +c.lat.toFixed(4), +c.lng.toFixed(4)]')).toEqual([5, 40, 51.05, -114.07]);
+  await page.waitForTimeout(300); // a frame or two: the planet view's padding, if it were applied, lands after the first render
+  expect(await map(page, 'return map.getPadding()')).toEqual({ top: 0, bottom: 0, left: 0, right: 0 });
+  const { point, canvas } = await map(page, 'const p = map.project([-114.07, 51.05]); const c = map.getCanvas(); return { point: [p.x, p.y], canvas: [c.clientWidth, c.clientHeight] }');
+  expect(Math.abs(point[0] - canvas[0] / 2)).toBeLessThan(2);
+  expect(Math.abs(point[1] - canvas[1] / 2)).toBeLessThan(2);
+});
+
 test('clicking a highlighted country or a place opens the node inspector; other countries do nothing', async ({ page }) => {
   await globe(page);
   const click = async (lon, lat) => {

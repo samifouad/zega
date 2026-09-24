@@ -220,13 +220,14 @@ export function renderGlobe(container, { countries, codes, places, rels = [], cr
     if (!container._map) return;
     const planet = arcs.planetCenter(), radius = arcs.planetRadius();
     const pane = { width: canvas.clientWidth, height: canvas.clientHeight };
-    if (!planet || !radius || !pane.height) {
+    // A region's camera is exactly the schema's: no fit, and no padding.
+    if (camera.zoom > PLANET_ZOOM || !planet || !radius || !pane.height) {
       if (map.getPadding().bottom) map.setPadding({ top: 0, left: 0, right: 0, bottom: 0 });
       return;
     }
     const room = Math.min(pane.width, pane.height) / 2 - PLANET_MARGIN;
     const zoom = Math.min(camera.zoom, map.getZoom() + Math.log2(room / radius));
-    if (camera.zoom <= PLANET_ZOOM && map.getZoom() === fitted && Math.abs(zoom - fitted) > 0.005) {
+    if (map.getZoom() === fitted && Math.abs(zoom - fitted) > 0.005) {
       // One step, then the padding for the new size; our own zoomend is not a reader's.
       fitted = zoom;
       settling = true;
