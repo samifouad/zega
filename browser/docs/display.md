@@ -49,8 +49,9 @@ Wasm's `ZegaWasm.schema(source)` returns the same JSON contract:
 
 The JSON above is the `display` member. `types` also carries parsed fields,
 relationship direction/targets and the checker's `timeline_field` for each type.
-Both APIs reject invalid displays using the normal schema diagnostics. This base
-revision's server exposes `/health` and `/cql`; it has no schema endpoint.
+Both APIs reject invalid displays using the normal schema diagnostics. The server
+has no schema endpoint; its routes are `/health`, `/zql`, `/vector-view` and
+`/graph`.
 
 Table sections use stored nodes and declared fields, with sortable values and
 relationship chips. Graph type filters also filter relationship endpoints. Maps

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use crate::index::{DeclaredIndexes, IndexKind, IndexSpec, Interval, TextPattern};
-use crate::parser::Value;
+use crate::value::Value;
 
 pub type NodeId = u64;
 pub type RelId = u64;

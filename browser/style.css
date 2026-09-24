@@ -35,8 +35,11 @@ body {
 
 #topbar {
   display: flex;
+  /* The controls wrap onto a second row when they do not fit, instead of
+     pushing the page wider than a phone (zegadb/zega#57, #71). */
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   padding: 8px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
