@@ -168,9 +168,61 @@ query {
 
 ## Deleting
 
-ZQL has no statement that deletes a node or a relationship yet
-([zegadb/zega#73](https://github.com/zegadb/zega/issues/73)). From Rust,
-`Zega::delete_node(id)` removes a node and its relationships.
+`delete` deletes every node its condition matches. The condition is a query's
+filter, and a delete needs one, so it cannot empty a type by accident. A node
+that still has relationships is not deleted, and neither is anything else in the
+mutation:
+
+```zql error
+mutation {
+  delete Player(name = "Dana")
+}
+```
+
+```text
+execution error: error: Player 5 has 1 relationship
+  query:2:10
+    delete Player(name = "Dana")
+           ^^^^^^
+  help: add `@detach` to remove them with it; nothing was deleted
+```
+
+`@detach` deletes the node's relationships with it. The result counts what was
+deleted, and returns `@id` and any fields you select, read before the delete:
+
+```zql
+mutation {
+  delete Player(name = "Dana") {
+    @detach
+    @id
+    name
+  }
+}
+```
+
+```json
+{
+  "deleted": 1,
+  "rows": [
+    { "id": 5, "name": "Dana" }
+  ]
+}
+```
+
+```zql
+query {
+  Team(name = "Oilers") {
+    players <- Player { name }
+  }
+}
+```
+
+```json
+{ "players": [] }
+```
+
+There is no statement yet that removes one relationship and keeps both nodes
+([zegadb/zega#87](https://github.com/zegadb/zega/issues/87)).
 
 ## Loading JSON and CSV
 
