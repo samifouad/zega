@@ -35,10 +35,10 @@ pub(super) fn pipeline(
     graph: &Graph,
     schema: &Schema,
     query: &Query,
-    budget: &mut usize,
+    work: &mut Work,
 ) -> Result<Json, LangError> {
     let mut context = ReadContext {
-        budget,
+        work,
         trace: Some(ReadTrace::default()),
     };
     if let Some(root) = &query.root {
@@ -63,7 +63,7 @@ pub(super) fn pipeline(
             schema,
             &selected.nodes,
             &then.condition,
-            context.budget,
+            context.work,
         )?;
         selected.normalize();
         if !then.skip {
@@ -111,7 +111,7 @@ fn evaluate(
     schema: &Schema,
     input: &BTreeSet<NodeId>,
     expr: &DiscoveryExpr,
-    budget: &mut usize,
+    work: &mut Work,
 ) -> Result<Matches, LangError> {
     match expr {
         DiscoveryExpr::And(terms) | DiscoveryExpr::Or(terms) => {
@@ -120,9 +120,9 @@ fn evaluate(
             let Some(first) = terms.next() else {
                 return Ok(Matches::default());
             };
-            let mut left = evaluate(graph, schema, input, first, budget)?;
+            let mut left = evaluate(graph, schema, input, first, work)?;
             for term in terms {
-                let right = evaluate(graph, schema, input, term, budget)?;
+                let right = evaluate(graph, schema, input, term, work)?;
                 if and {
                     left.nodes.retain(|id| right.nodes.contains(id));
                 } else {
@@ -134,7 +134,7 @@ fn evaluate(
             Ok(left)
         }
         DiscoveryExpr::Test(primitive) => {
-            primitive_matches(graph, schema, input, primitive, budget)
+            primitive_matches(graph, schema, input, primitive, work)
         }
     }
 }
@@ -144,7 +144,7 @@ fn primitive_matches(
     schema: &Schema,
     input: &BTreeSet<NodeId>,
     primitive: &Primitive,
-    budget: &mut usize,
+    work: &mut Work,
 ) -> Result<Matches, LangError> {
     let mut out = Matches::default();
     match primitive {
@@ -189,7 +189,7 @@ fn primitive_matches(
                         let Some(Value::String(value)) = node.props.get(name) else {
                             continue;
                         };
-                        charge(budget, 1)?;
+                        work.charge(1)?;
                         graph.note_examined(1);
                         let yes = match op {
                             TextOp::FindWith | TextOp::FindWithout => value.contains(text),
@@ -223,7 +223,7 @@ fn primitive_matches(
                     if !node.labels.contains(ty) {
                         continue;
                     }
-                    charge(budget, fields.len())?;
+                    work.charge(fields.len())?;
                     let values: Option<Vec<Json>> = fields
                         .iter()
                         .map(|(field, _)| {
@@ -255,7 +255,7 @@ fn primitive_matches(
                 let mut ids = members.into_iter();
                 let Some(first) = ids.next() else { continue };
                 for id in ids {
-                    charge(budget, 1)?;
+                    work.charge(1)?;
                     out.pair(
                         first,
                         id,
@@ -279,7 +279,7 @@ fn primitive_matches(
                 // A threshold is not top-k: ask for the complete allowed set.
                 // HNSW traverses its index and falls back to its exact scan;
                 // omitted entries are scored directly (also covers no index).
-                charge(budget, input.len())?;
+                work.charge(input.len())?;
                 let mut scores: BTreeMap<_, _> = graph
                     .vector_nearest(field, vector, input.len(), false, |other| {
                         input.contains(&other) && other > *id
@@ -289,6 +289,7 @@ fn primitive_matches(
                 for other in
                     input.range((std::ops::Bound::Excluded(*id), std::ops::Bound::Unbounded))
                 {
+                    work.step()?;
                     if scores.contains_key(other) {
                         continue;
                     }
@@ -329,7 +330,7 @@ fn primitive_matches(
                     if other <= *id || !input.contains(&other) {
                         continue;
                     }
-                    charge(budget, 1)?;
+                    work.charge(1)?;
                     let Some(target) = graph.get_node(other).and_then(|n| point_prop(n, field))
                     else {
                         continue;

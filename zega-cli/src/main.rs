@@ -63,6 +63,10 @@ enum Command {
         /// checkpoints only on shutdown.
         #[arg(long, default_value_t = zega::DEFAULT_CHECKPOINT_MIN_BYTES / MIB)]
         checkpoint_mb: u64,
+        /// Stop any ZQL statement still running after this many seconds, and
+        /// roll back its writes. 0 turns the limit off.
+        #[arg(long, value_name = "SECONDS", default_value_t = zega_server::DEFAULT_QUERY_TIME_LIMIT.as_secs_f64())]
+        query_time_limit: f64,
     },
     /// Serve the embedded explorer against a local database. Prints a URL; opens nothing.
     Explorer {
@@ -89,39 +93,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let (data, host, port, token_file, allow_private, checkpoint_after, explorer) = match cli.command
-    {
-        Command::Fmt { .. } => unreachable!("fmt runs without a server runtime"),
-        Command::Start {
-            data,
-            host,
-            port,
-            token_file,
-            allow_private_imports,
-            checkpoint_mb,
-        } => (
-            data,
-            host,
-            port,
-            token_file,
-            allow_private_imports,
-            (checkpoint_mb > 0).then(|| checkpoint_mb.saturating_mul(MIB)),
-            false,
-        ),
-        Command::Explorer {
-            data,
-            port,
-            allow_private_imports,
-        } => (
-            data,
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port,
-            None,
-            allow_private_imports,
-            Some(zega::DEFAULT_CHECKPOINT_MIN_BYTES),
-            true,
-        ),
-    };
+    let (data, host, port, token_file, allow_private, checkpoint_after, explorer, time_limit) =
+        match cli.command {
+            Command::Fmt { .. } => unreachable!("fmt runs without a server runtime"),
+            Command::Start {
+                data,
+                host,
+                port,
+                token_file,
+                allow_private_imports,
+                checkpoint_mb,
+                query_time_limit,
+            } => {
+                let limit = std::time::Duration::try_from_secs_f64(query_time_limit)
+                    .map_err(|_| "--query-time-limit must be a number of seconds, 0 or more")?;
+                let limit = (!limit.is_zero()).then_some(limit);
+                let checkpoint_after = (checkpoint_mb > 0).then(|| checkpoint_mb.saturating_mul(MIB));
+                (data, host, port, token_file, allow_private_imports, checkpoint_after, false, limit)
+            }
+            Command::Explorer {
+                data,
+                port,
+                allow_private_imports,
+            } => (
+                data,
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port,
+                None,
+                allow_private_imports,
+                Some(zega::DEFAULT_CHECKPOINT_MIN_BYTES),
+                true,
+                // The explorer is one person's local database; nothing to share.
+                None,
+            ),
+        };
     let token = token_file.map(std::fs::read_to_string).transpose()?;
     let token = token.as_deref().map(str::trim);
     if token.is_some_and(|token| token.is_empty() || token.chars().any(char::is_whitespace)) {
@@ -146,11 +151,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
     let path = data.to_str().ok_or("data path must be UTF-8")?;
-    let db = Zega::open(path)
+    let mut db = Zega::open(path)
         .allow_private_imports(allow_private)
-        .checkpoint_after(checkpoint_after)
-        .build()
-        .map_err(io::Error::other)?;
+        .checkpoint_after(checkpoint_after);
+    if let Some(limit) = time_limit {
+        db = db.query_time_limit(limit);
+    }
+    let db = db.build().map_err(io::Error::other)?;
     let state = AppState::new(db, token);
     let db = state.zega.clone();
     let listener = TcpListener::bind((host, port)).await?;
@@ -224,6 +231,7 @@ async fn embedded(uri: Uri) -> Response {
         Some("css") => "text/css; charset=utf-8",
         Some("wasm") => "application/wasm",
         Some("json") => "application/json",
+        Some("geojson") => "application/geo+json",
         Some("ttf") => "font/ttf",
         _ => "text/plain; charset=utf-8",
     };

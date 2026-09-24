@@ -10,6 +10,7 @@ mod discovery;
 use crate::location::{Bounds, Point, EARTH_RADIUS};
 use crate::vector::{Vector, VectorSpec, Metric};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use crate::graph::{Graph, Node, NodeId, RelId};
 use crate::index::{IndexKind, Interval, TextPattern};
@@ -288,14 +289,19 @@ impl Zega {
             declared.uniques,
             declared.indexes,
         ));
-        let mut budget = self.traversal_work_budget;
+        let mut work = Work::new(self.traversal_work_budget, self.query_time_limit);
         // A read logs nothing. A mutation or load is one statement: every row
-        // and nested selection is applied, or (on a validation error or a
-        // refused WAL append) none is, in memory and in the WAL alike.
-        self.atomically(&mut graph, |graph, journal| {
-            run_statement(graph, journal, schema, uniques, statement, &mut budget, &rows)
+        // and nested selection is applied, or (on a validation error, a
+        // refused WAL append, or the time limit) none is, in memory and in the
+        // WAL alike.
+        let result = self.atomically(&mut graph, |graph, journal| {
+            run_statement(graph, journal, schema, uniques, statement, &mut work, &rows)
                 .map_err(|error| explain(error, source_name, source))
-        })
+        });
+        match (result, self.query_time_limit) {
+            (Err(_), Some(limit)) if work.expired() => Err(ZegaError::QueryTimeLimit { limit }),
+            (result, _) => result,
+        }
     }
 
     pub fn graph_json(&self) -> Result<Json, ZegaError> {
@@ -338,21 +344,21 @@ fn run_statement(
     schema: &Schema,
     uniques: &[(String, String)],
     statement: &Statement,
-    budget: &mut usize,
+    work: &mut Work,
     rows: &[HashMap<String, Json>],
 ) -> Result<Json, LangError> {
     match statement {
         Statement::Run(query) => {
             if !query.mutation && (!query.then.is_empty() || query.skip) {
-                return discovery::pipeline(graph, schema, query, budget);
+                return discovery::pipeline(graph, schema, query, work);
             }
             let Some(root) = &query.root else {
                 return Ok(Json::Null);
             };
             if query.mutation {
-                mutate(graph, journal, schema, root, uniques)
+                mutate(graph, journal, schema, root, uniques, work)
             } else {
-                read(graph, schema, root, &mut ReadContext { budget, trace: None })
+                read(graph, schema, root, &mut ReadContext { work, trace: None })
             }
         }
         Statement::Load { template, .. } => {
@@ -371,7 +377,8 @@ fn run_statement(
                 let Some(root) = &query.root else {
                     continue;
                 };
-                out.push(mutate(graph, journal, schema, root, uniques)?);
+                work.step()?;
+                out.push(mutate(graph, journal, schema, root, uniques, work)?);
             }
             Ok(Json::Array(out))
         }
@@ -682,7 +689,7 @@ struct ReadTrace {
 }
 
 struct ReadContext<'a> {
-    budget: &'a mut usize,
+    work: &'a mut Work,
     trace: Option<ReadTrace>,
 }
 
@@ -692,9 +699,9 @@ fn read(
     root: &Selection,
     context: &mut ReadContext<'_>,
 ) -> Result<Json, LangError> {
-    let mut ids = candidates(graph, root);
-    retain_matches(graph, &mut ids, root.condition.as_ref());
-    order_limit(graph, root, &mut ids, |id| *id);
+    let mut ids = candidates(graph, root, context.work)?;
+    retain_matches(graph, &mut ids, root.condition.as_ref(), context.work)?;
+    order_limit(graph, root, &mut ids, |id| *id, context.work)?;
     if equality_lookup(root) {
         return match ids.len() {
             0 => Ok(Json::Null),
@@ -719,8 +726,9 @@ fn mutate(
     schema: &Schema,
     root: &Selection,
     uniques: &[(String, String)],
+    work: &mut Work,
 ) -> Result<Json, LangError> {
-    apply_node(graph, journal, schema, root, None, uniques)
+    apply_node(graph, journal, schema, root, None, uniques, work)
 }
 
 /// Writes or finds this selection and returns only the rows this statement touched.
@@ -731,10 +739,12 @@ fn apply_node(
     sel: &Selection,
     parent: Option<(NodeId, Direction, String, String, bool, Span)>,
     uniques: &[(String, String)],
+    work: &mut Work,
 ) -> Result<Json, LangError> {
+    work.step()?;
     let lookup = !sel.sets.is_empty() || has_link(sel);
     let id = if lookup {
-        lookup_one(graph, sel, uniques)?
+        lookup_one(graph, sel, uniques, work)?
     } else {
         require_points(schema, sel)?;
         insert_node(graph, journal, schema, sel, uniques)?
@@ -841,7 +851,7 @@ fn apply_node(
                     )));
                 }
                 let child = if *link {
-                    let child_id = lookup_one(graph, target, uniques)?;
+                    let child_id = lookup_one(graph, target, uniques, work)?;
                     let props = edge_sets(target)?;
                     let props_span = target
                         .items
@@ -897,6 +907,7 @@ fn apply_node(
                         target,
                         Some((id, *direction, field.clone(), rel.to_string(), many, *span)),
                         uniques,
+                        work,
                     )?
                 };
                 let key = field.clone();
@@ -918,9 +929,13 @@ fn lookup_one(
     graph: &Graph,
     sel: &Selection,
     uniques: &[(String, String)],
+    work: &mut Work,
 ) -> Result<NodeId, LangError> {
-    let mut ids = unique_candidates(graph, sel, uniques).unwrap_or_else(|| candidates(graph, sel));
-    retain_matches(graph, &mut ids, sel.condition.as_ref());
+    let mut ids = match unique_candidates(graph, sel, uniques) {
+        Some(ids) => ids,
+        None => candidates(graph, sel, work)?,
+    };
+    retain_matches(graph, &mut ids, sel.condition.as_ref(), work)?;
     match ids.len() {
         1 => Ok(ids[0]),
         0 => Err(
@@ -1080,8 +1095,8 @@ fn require_edge_props(
             if !edge_value_matches(&field.ty, value) {
                 return Err(
                     LangError::at(span, format!("&{} is not {}", field.name, field.ty))
-                        .with_help(if field.ty == "String<url>" {
-                            crate::lang::URL_HELP.into()
+                        .with_help(if crate::lang::is_unit_string(&field.ty) {
+                            crate::lang::unit_string_help(&field.ty).into()
                         } else {
                             format!("`{}` is {}", field.name, field.ty)
                         }),
@@ -1100,7 +1115,9 @@ fn require_edge_props(
 fn edge_value_matches(ty: &str, value: &Value) -> bool {
     match ty {
         "String" => matches!(value, Value::String(_)),
-        "String<url>" => matches!(value, Value::String(text) if crate::lang::valid_url(text)),
+        "String<url>" | "String<iso2>" => {
+            matches!(value, Value::String(text) if crate::lang::valid_unit_string(ty, text))
+        }
         "Int" => matches!(value, Value::Int(_)),
         "Float" => matches!(value, Value::Float(_) | Value::Int(_)),
         "Bool" => matches!(value, Value::Bool(_)),
@@ -1219,6 +1236,7 @@ fn project(
     arrived: Option<RelId>,
     context: &mut ReadContext<'_>,
 ) -> Result<Json, LangError> {
+    context.work.step()?;
     let node = graph
         .get_node(id)
         .ok_or_else(|| LangError::bare(format!("missing node {id}")))?;
@@ -1328,13 +1346,13 @@ fn project(
                             single_valued: !many,
                             span: *span,
                         },
-                        context.budget,
+                        context.work,
                     )?
                 } else {
                     if !many {
                         ensure_single_valued(graph, id, rel, field, *direction, *span)?;
                     }
-                    charge(context.budget, 1)?;
+                    context.work.charge(1)?;
                     neighbors(graph, id, rel, *direction)
                         .into_iter()
                         .filter(|(next, _)| node_has_any_label(graph, *next, targets))
@@ -1343,7 +1361,7 @@ fn project(
                 };
                 let mut reached = reached;
                 reached.retain(|(next, ..)| node_matches(graph, *next, target.condition.as_ref()));
-                order_limit(graph, target, &mut reached, |(id, ..)| *id);
+                order_limit(graph, target, &mut reached, |(id, ..)| *id, context.work)?;
                 let mut rows = Vec::new();
                 for (next, depth, rel_id) in reached {
                     rows.push(project(
@@ -1446,20 +1464,20 @@ fn route(
     use crate::path::{cheapest, fewest_edges, Limit, Step};
 
     let PathWalk { field, rel, direction, targets, span, path, target, weight_ty, weight_unit } = walk;
-    let mut goals = candidates(graph, target);
-    retain_matches(graph, &mut goals, target.condition.as_ref());
+    let mut goals = candidates(graph, target, context.work)?;
+    retain_matches(graph, &mut goals, target.condition.as_ref(), context.work)?;
     let goal_set: HashSet<NodeId> = goals.iter().copied().collect();
     let is_goal = |id: NodeId| goal_set.contains(&id);
     let describe = |id: NodeId| {
         graph.get_node(id).map_or_else(|| format!("node#{id}"), node_description)
     };
     // Every node after the start is one the target selection can read.
-    let next = |node: NodeId, budget: &mut usize| -> Result<Vec<(NodeId, RelId)>, LangError> {
+    let next = |node: NodeId, work: &mut Work| -> Result<Vec<(NodeId, RelId)>, LangError> {
         let out: Vec<_> = neighbors(graph, node, rel, direction)
             .into_iter()
             .filter(|(to, _)| node_has_any_label(graph, *to, targets))
             .collect();
-        charge(budget, out.len())?;
+        work.charge(out.len())?;
         Ok(out)
     };
     let found = match &path.weight {
@@ -1477,7 +1495,7 @@ fn route(
                     Some(most as usize)
                 }
             };
-            fewest_edges(start, is_goal, max_hops, |node| next(node, context.budget))?
+            fewest_edges(start, is_goal, max_hops, |node| next(node, context.work))?
         }
         Some((weight, _)) => {
             let limit = match path.bound {
@@ -1539,9 +1557,9 @@ fn route(
                     .fold(f64::INFINITY, f64::min);
                 Ok(STRAIGHT_LINE_SHARE * nearest)
             };
-            let steps = |node: NodeId, budget: &mut usize| -> Result<Vec<Step>, LangError> {
+            let steps = |node: NodeId, work: &mut Work| -> Result<Vec<Step>, LangError> {
                 let mut out = Vec::new();
-                for (to, rel_id) in next(node, budget)? {
+                for (to, rel_id) in next(node, work)? {
                     let edge = || format!("{field}#{rel_id} from {} to {}", describe(node), describe(to));
                     let stored = graph.get_relationship(rel_id).and_then(|r| r.props.get(weight));
                     let weight_value = match stored {
@@ -1591,7 +1609,7 @@ fn route(
                 }
                 Ok(out)
             };
-            cheapest(start, is_goal, limit, |node| steps(node, context.budget), guess)?
+            cheapest(start, is_goal, limit, |node| steps(node, context.work), guess)?
         }
     };
     graph.note_expanded(found.expanded);
@@ -1653,7 +1671,7 @@ fn walk_range(
     graph: &Graph,
     start: NodeId,
     spec: WalkSpec<'_>,
-    budget: &mut usize,
+    work: &mut Work,
 ) -> Result<Vec<(NodeId, usize, RelId)>, LangError> {
     let WalkSpec {
         rel,
@@ -1679,7 +1697,7 @@ fn walk_range(
             continue;
         }
         for (next, rel_id) in neighbors(graph, node, rel, direction) {
-            charge(budget, 1)?;
+            work.charge(1)?;
             if seen.insert(next) {
                 queue.push_back((next, depth + 1, rel_id));
             }
@@ -1721,12 +1739,30 @@ fn neighbors(
     out
 }
 
-/// Keep the rows whose condition holds, and count each row tested.
-fn retain_matches(graph: &Graph, ids: &mut Vec<NodeId>, condition: Option<&BoolExpr>) {
-    if condition.is_some() {
-        graph.note_examined(ids.len());
+/// Keep the rows whose condition holds, and count each row tested. A scan
+/// is where a query spends its time, so each row tested is a step of work.
+fn retain_matches(
+    graph: &Graph,
+    ids: &mut Vec<NodeId>,
+    condition: Option<&BoolExpr>,
+    work: &mut Work,
+) -> Result<(), LangError> {
+    if condition.is_none() {
+        return Ok(());
     }
-    ids.retain(|id| node_matches(graph, *id, condition));
+    graph.note_examined(ids.len());
+    let mut stopped = Ok(());
+    ids.retain(|id| {
+        if stopped.is_err() {
+            return false;
+        }
+        if let Err(error) = work.step() {
+            stopped = Err(error);
+            return false;
+        }
+        node_matches(graph, *id, condition)
+    });
+    stopped
 }
 
 /// A condition on one field that a range index can answer.
@@ -1829,7 +1865,7 @@ fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSe
     }
 }
 
-fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
+fn candidates(graph: &Graph, sel: &Selection, work: &mut Work) -> Result<Vec<NodeId>, LangError> {
     let has_label = |id: &NodeId| {
         graph.get_node(*id).is_some_and(|node| {
             node.labels
@@ -1848,7 +1884,7 @@ fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
     // point outside is farther than the kth match, so early stopping is exact.
     if let Some(order) = &sel.order {
         if sel.limit == Some(0) {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let maximum = std::f64::consts::PI * EARTH_RADIUS;
         let mut radius = if sel.limit.is_some() { 1000.0 } else { maximum };
@@ -1859,14 +1895,14 @@ fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
                 .filter(has_label)
                 .filter(|id| indexed.as_ref().is_none_or(|set| set.contains(id)))
                 .collect();
-            retain_matches(graph, &mut ids, sel.condition.as_ref());
+            retain_matches(graph, &mut ids, sel.condition.as_ref(), work)?;
             let mut ids: Vec<_> = ids
                 .into_iter()
                 .filter(|id| node_distance(graph, *id, order).is_some_and(|d| d <= radius))
                 .collect();
             if radius >= maximum || sel.limit.is_some_and(|k| ids.len() >= k) {
                 ids.sort_unstable();
-                return ids;
+                return Ok(ids);
             }
             radius = (radius * 2.0).min(maximum);
         }
@@ -1882,7 +1918,7 @@ fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
     };
     ids.sort_unstable();
     ids.dedup();
-    ids
+    Ok(ids)
 }
 fn point_prop(node: &Node, field: &str) -> Option<Point> {
     match node.props.get(field) {
@@ -1893,7 +1929,13 @@ fn point_prop(node: &Node, field: &str) -> Option<Point> {
 fn node_distance(graph: &Graph, id: NodeId, distance: &crate::lang::Distance) -> Option<f64> {
     Some(point_prop(graph.get_node(id)?, &distance.field)?.distance(distance.origin))
 }
-fn order_limit<T>(graph: &Graph, sel: &Selection, ids: &mut Vec<T>, id: impl Fn(&T) -> NodeId) {
+fn order_limit<T>(
+    graph: &Graph,
+    sel: &Selection,
+    ids: &mut Vec<T>,
+    id: impl Fn(&T) -> NodeId,
+    work: &mut Work,
+) -> Result<(), LangError> {
     if let Some(near) = &sel.near {
         let allowed: HashSet<_> = ids.iter().map(&id).collect();
         // A union may contain different metrics. Search each compatible index,
@@ -1909,17 +1951,22 @@ fn order_limit<T>(graph: &Graph, sel: &Selection, ids: &mut Vec<T>, id: impl Fn(
         ids.sort_by_key(|row| ranks[&id(row)]);
     }
     if let Some(order) = &sel.order {
-        ids.retain(|row| node_distance(graph, id(row), order).is_some());
-        ids.sort_by(|a, b| {
-            node_distance(graph, id(a), order)
-                .unwrap()
-                .total_cmp(&node_distance(graph, id(b), order).unwrap())
-                .then(id(a).cmp(&id(b)))
-        });
+        // Each distance is computed once, as a step of work, rather than twice
+        // per comparison inside a sort that cannot be stopped part way.
+        let mut keyed = Vec::with_capacity(ids.len());
+        for row in ids.drain(..) {
+            work.step()?;
+            if let Some(distance) = node_distance(graph, id(&row), order) {
+                keyed.push((distance, row));
+            }
+        }
+        keyed.sort_by(|(a, x), (b, y)| a.total_cmp(b).then(id(x).cmp(&id(y))));
+        ids.extend(keyed.into_iter().map(|(_, row)| row));
     }
     if let Some(limit) = sel.limit {
         ids.truncate(limit);
     }
+    Ok(())
 }
 fn require_points(schema: &Schema, sel: &Selection) -> Result<(), LangError> {
     let tests = sel
@@ -2141,14 +2188,70 @@ fn json_to_value(value: &Json) -> Result<Value, LangError> {
     }
 }
 
-fn charge(budget: &mut usize, n: usize) -> Result<(), LangError> {
-    if *budget < n {
-        return Err(LangError::bare(
-            "relationship traversal work budget exceeded",
-        ));
+/// What one statement may still spend: relationships read, against the
+/// traversal budget, and, when the host set a query time limit, time. The
+/// clock is read as the work is done, so a statement over its time stops
+/// where it is and its writes roll back; it does not run on unseen after its
+/// caller has given up. With no limit the clock is never read, which keeps
+/// wasm32 (where there is no clock to read) out of it.
+pub(crate) struct Work {
+    left: usize,
+    deadline: Option<Deadline>,
+}
+
+struct Deadline {
+    at: Instant,
+    steps: u32,
+    expired: bool,
+}
+
+/// Steps between readings of the clock. A step is one row tested, projected,
+/// sorted or written, or one relationship read: far under a millisecond.
+const STEPS_PER_CLOCK_READ: u32 = 256;
+
+impl Work {
+    pub(crate) fn new(relationships: usize, limit: Option<Duration>) -> Self {
+        Work {
+            left: relationships,
+            deadline: limit.map(|limit| Deadline {
+                at: Instant::now() + limit,
+                steps: 0,
+                expired: false,
+            }),
+        }
     }
-    *budget -= n;
-    Ok(())
+
+    /// Read `n` relationships: spend them from the budget, and take a step.
+    pub(crate) fn charge(&mut self, n: usize) -> Result<(), LangError> {
+        if self.left < n {
+            return Err(LangError::bare(
+                "relationship traversal work budget exceeded",
+            ));
+        }
+        self.left -= n;
+        self.step()
+    }
+
+    /// One unit of work. Fails once the deadline has passed.
+    pub(crate) fn step(&mut self) -> Result<(), LangError> {
+        let Some(deadline) = &mut self.deadline else {
+            return Ok(());
+        };
+        deadline.steps += 1;
+        if deadline.steps >= STEPS_PER_CLOCK_READ {
+            deadline.steps = 0;
+            deadline.expired = Instant::now() >= deadline.at;
+        }
+        if deadline.expired {
+            return Err(LangError::bare("query time limit exceeded"));
+        }
+        Ok(())
+    }
+
+    /// Whether this statement stopped because it ran out of time.
+    pub(crate) fn expired(&self) -> bool {
+        self.deadline.as_ref().is_some_and(|deadline| deadline.expired)
+    }
 }
 
 #[cfg(test)]
@@ -2569,14 +2672,18 @@ mod tests {
                     panic!("expected mutation statement");
                 };
                 let selection = query.root.unwrap();
-                let mut scan = candidates(&graph, &selection);
+                let mut work = Work::new(usize::MAX, None);
+                let mut scan = candidates(&graph, &selection, &mut work).unwrap();
                 scan.retain(|id| node_matches(&graph, *id, selection.condition.as_ref()));
                 assert_eq!(scan, vec![expected]);
                 assert_eq!(
                     unique_candidates(&graph, &selection, &uniques),
                     Some(scan.clone())
                 );
-                assert_eq!(lookup_one(&graph, &selection, &uniques).unwrap(), scan[0]);
+                assert_eq!(
+                    lookup_one(&graph, &selection, &uniques, &mut work).unwrap(),
+                    scan[0]
+                );
             }
         }
     }

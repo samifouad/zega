@@ -1,0 +1,8 @@
+type Country { iso: String<iso2>   former?:String<iso2> }
+type Place { at: Point }
+display {
+  // where the camera starts
+  globe( @zoom : 3 , @center : @point( -33.87 , 151.21 ) ) { Country , Place } : Default
+  table
+  graph
+}
