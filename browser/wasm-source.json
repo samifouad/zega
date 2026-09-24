@@ -1,14 +1,14 @@
 {
   "repository": "https://github.com/zegadb/zega",
-  "commit": "aab137a92d9bbdfc990a0e0677ac511b0e133efa",
+  "commit": "3b4db221d3094184eb9e6c3177b36210d99b071f",
   "provenance": "Rebuilt from a clean local engine checkout with wasm-pack --target web --release --locked.",
   "toolchain": {
     "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
     "wasmPack": "wasm-pack 0.15.0"
   },
   "sha256": {
-    "package.json": "979022c88a2f1d3a9641808bece7366e4520d695f1aca764cd434e80014313a9",
-    "zega_wasm_bg.wasm": "07401c5258ed3dfb4411b5c2d0acfd8c6fbc2de5c1885327bf9a7021a5136445",
+    "package.json": "017ee4664a7e22bd99745c4500cc65560c5244a74c280d809a311aa7310ad988",
+    "zega_wasm_bg.wasm": "6e82635b5ac907a066e10f81f9ca5a815afcda56115a30fe6536e39ece2a71ba",
     "zega_wasm_bg.wasm.d.ts": "f344f66f24b8ef7f0ab07bdd373633de3e5682dc051b9eb058d2e1e1ff3fdb68",
     "zega_wasm.d.ts": "39c617462e7206636c058d43b3dcb53fe12ab95f249aef8f511f595a8a9a483d",
     "zega_wasm.js": "21d5c553f2fe49698291d412ead47c52db82f66b59c12e2c489da392bc2b1afd"
