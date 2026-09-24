@@ -147,7 +147,7 @@ jobs:
           npm run test:cli
       - name: Build CLI with embedded explorer
         run: cargo build --locked --release -p zega-cli
-      - name: Check canonical ZQL files and embedded samples
+      - name: Check canonical ZQL/JSON files and embedded samples
         run: |
           ".target/release/zega${EXTENSION}" fmt --check .
           python scripts/fmt-samples.py ".target/release/zega${EXTENSION}" --check --extract .tmp/samples
@@ -155,7 +155,7 @@ jobs:
         if: needs.resolve.outputs.tag == '' && matrix.platform == 'linux-x64'
         with:
           repository: zegadb/testsuite
-          ref: 95682a5594f12e9a5bb10a5f3e7f66cb588c4b87
+          ref: d9684641b3a77f772f920c47bb40cc7d5b0e2995
           path: .tmp/testsuite
           persist-credentials: false
       - name: Prove formatter AST equality and idempotence across the corpus and samples

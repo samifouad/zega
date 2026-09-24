@@ -9,17 +9,11 @@ schema {
 }
 
 mutation csv ["./players.csv"] {
-  Player(name: $Name && salary: $Salary) {
-    name
-    salary
-  }
+  Player(name: $Name && salary: $Salary) { name salary }
 }
 
 mutation json ["https://example.com/players.json"] {
-  Player(name: $Name && salary: $Salary) {
-    name
-    salary
-  }
+  Player(name: $Name && salary: $Salary) { name salary }
 }
 ```
 

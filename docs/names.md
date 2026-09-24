@@ -26,8 +26,9 @@ schema {
       shape: String
     }
   }
+
   display {
-    graph: Default
+    graph : Default
     table
   }
 }

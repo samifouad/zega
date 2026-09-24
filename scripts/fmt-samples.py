@@ -1,4 +1,4 @@
-"""Apply/check canonical ZQL in Markdown and the explorer's static examples.
+"""Apply/check canonical ZQL and JSON in Markdown and the explorer's static examples.
 
 All formatting goes through `zega fmt --stdin`; this script only extracts source
 from its host document. Interpolated JS templates are formatted at generation.
@@ -17,16 +17,16 @@ binary = str(args.zega.resolve())
 changed = []
 count = 0
 
-def format_sample(source, label):
+def format_sample(source, label, lang="zql"):
     global count
     count += 1
-    result = subprocess.run([binary, "fmt", "--stdin"], input=source, text=True, capture_output=True, check=True)
+    result = subprocess.run([binary, "fmt", "--stdin", "--lang", lang], input=source, text=True, capture_output=True, check=True)
     formatted = result.stdout
     if args.extract:
         args.extract.mkdir(parents=True, exist_ok=True)
-        (args.extract / f"sample-{count}.zql").write_text(source)
+        (args.extract / f"sample-{count}.{lang}").write_text(source)
     if args.check:
-        checked = subprocess.run([binary, "fmt", "--stdin", "--check"], input=source, text=True, capture_output=True)
+        checked = subprocess.run([binary, "fmt", "--stdin", "--lang", lang, "--check"], input=source, text=True, capture_output=True)
         if checked.returncode not in (0, 1):
             raise RuntimeError(f"{label}: {checked.stderr}")
         if checked.returncode:
@@ -37,10 +37,10 @@ files = sorted(set(Path('.').glob('*.md')) | set(Path('docs').glob('*.md')) | se
 for path in files:
     original = path.read_text()
     def fence(match):
-        if match[2].strip().lower() not in ('', 'zql'):
+        if match[2].strip().lower() not in ('', 'zql', 'json'):
             return match[0]
         line = original[:match.start()].count('\n') + 1
-        return match[1] + format_sample(match[3], f"{path}:{line}") + match[4]
+        return match[1] + format_sample(match[3], f"{path}:{line}", match[2].strip().lower() or "zql") + match[4]
     updated = re.sub(r'(^```([^\n]*)\n)(.*?)(^```[ \t]*(?=\n|$))', fence, original, flags=re.M | re.S)
     if not args.check and updated != original:
         path.write_text(updated)
@@ -58,7 +58,7 @@ def template(match):
 updated = re.sub(r'`([^`\\]*)`', template, original)
 if not args.check and updated != original:
     path.write_text(updated)
-print(f'checked {count} embedded ZQL samples')
+print(f'checked {count} embedded ZQL/JSON samples')
 for label in changed:
     print(f'{label} would be reformatted')
 raise SystemExit(bool(changed))

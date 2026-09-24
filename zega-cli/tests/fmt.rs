@@ -5,13 +5,19 @@ use std::{
 };
 const BIN: &str = env!("CARGO_BIN_EXE_zega");
 const INPUT: &str = "query{Player{name salary}}";
-const OUTPUT: &str = "query {\n  Player {\n    name\n    salary\n  }\n}\n";
+const OUTPUT: &str = "query {\n  Player { name salary }\n}\n";
 #[test]
 fn stdin_and_check_exit_codes() {
     for (source, args, status, stdout) in [
         (INPUT, vec!["fmt", "--stdin"], 0, OUTPUT),
         (INPUT, vec!["fmt", "--stdin", "--check"], 1, ""),
         (OUTPUT, vec!["fmt", "--stdin", "--check"], 0, ""),
+        (
+            r#"{"x":1e3,"y":0.10}"#,
+            vec!["fmt", "--stdin", "--lang", "json"],
+            0,
+            "{ \"x\": 1e3, \"y\": 0.10 }\n",
+        ),
         ("query{", vec!["fmt", "--stdin"], 0, "query{"),
     ] {
         let mut child = Command::new(BIN)
@@ -39,6 +45,7 @@ fn recursive_check_lists_every_change_and_rewrite_is_idempotent() {
     for file in ["one.zql", "nested/two.zql", "ignore.txt"] {
         fs::write(dir.path().join(file), INPUT).unwrap();
     }
+    fs::write(dir.path().join("data.json"), r#"{"a":1e3,"b":0.10}"#).unwrap();
     let check = || {
         Command::new(BIN)
             .args(["fmt", "--check"])
@@ -51,6 +58,7 @@ fn recursive_check_lists_every_change_and_rewrite_is_idempotent() {
     let stdout = String::from_utf8(before.stdout).unwrap();
     assert!(stdout.contains("one.zql") && stdout.contains("two.zql"));
     assert!(!stdout.contains("ignore.txt"));
+    assert!(stdout.contains("data.json"));
     assert_eq!(
         fs::read_to_string(dir.path().join("one.zql")).unwrap(),
         INPUT
@@ -63,6 +71,10 @@ fn recursive_check_lists_every_change_and_rewrite_is_idempotent() {
         .status
         .success());
     assert!(check().status.success());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("data.json")).unwrap(),
+        "{ \"a\": 1e3, \"b\": 0.10 }\n"
+    );
     assert_eq!(
         fs::read_to_string(dir.path().join("nested/two.zql")).unwrap(),
         OUTPUT

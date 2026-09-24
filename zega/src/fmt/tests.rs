@@ -126,11 +126,42 @@ fn ast(source: &str) -> Result<Parsed> {
             }
         }
     }
+    fn discovery(expr: &mut DiscoveryExpr) {
+        match expr {
+            DiscoveryExpr::And(a, b) | DiscoveryExpr::Or(a, b) => {
+                discovery(a);
+                discovery(b);
+            }
+            DiscoveryExpr::Test(p) => match p {
+                Primitive::Text {
+                    fields, span: s, ..
+                } => {
+                    span(s);
+                    for (_, s) in fields {
+                        span(s);
+                    }
+                }
+                Primitive::Common { types, span: s } => {
+                    span(s);
+                    for (_, fields, s) in types {
+                        span(s);
+                        for (_, s) in fields {
+                            span(s);
+                        }
+                    }
+                }
+                Primitive::Similar { span: s, .. } | Primitive::Near { span: s, .. } => span(s),
+            },
+        }
+    }
     fn statements(statements: &mut [Statement]) {
         for stmt in statements {
             let query = match stmt {
                 Statement::Run(q) | Statement::Load { template: q, .. } => q,
             };
+            for stage in &mut query.then {
+                discovery(&mut stage.condition);
+            }
             if let Some(root) = &mut query.root {
                 selection(root);
             }
@@ -214,6 +245,11 @@ fn external_corpus() {
                 );
                 invariant(&source, &path.display().to_string());
                 *n += 1;
+            } else if path.extension().is_some_and(|e| e == "json") {
+                json_invariant(
+                    &std::fs::read_to_string(&path).unwrap(),
+                    &path.display().to_string(),
+                );
             }
         }
     }
@@ -243,7 +279,7 @@ fn syntax_goldens() {
         invariant(&source, &path.display().to_string());
         count += 1;
     }
-    assert_eq!(count, 18);
+    assert_eq!(count, 19);
 }
 
 #[test]
@@ -253,10 +289,13 @@ fn every_embedded_sample() {
     let mut count = 0;
     for entry in std::fs::read_dir(root).expect("extract documentation samples first") {
         let path = entry.unwrap().path();
-        invariant(
-            &std::fs::read_to_string(&path).unwrap(),
-            &path.display().to_string(),
-        );
+        let source = std::fs::read_to_string(&path).unwrap();
+        let label = path.display().to_string();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            json_invariant(&source, &label);
+        } else {
+            invariant(&source, &label);
+        }
         count += 1;
     }
     assert!(count > 20);
@@ -307,4 +346,245 @@ fn future_syntax_is_conservative_until_the_ast_supports_it() {
         assert!(Parsed::parse(source).is_err());
         assert_eq!(format_zql(source).unwrap(), source);
     }
+}
+
+#[test]
+fn r1_selections() {
+    let source = "query{Team{name country}}query{Player{name salary position}}query{Team{name players->Player{name}}}";
+    let expected = "query {\n  Team { name country }\n}\n\nquery {\n  Player {\n    name\n    salary\n    position\n  }\n}\n\nquery {\n  Team {\n    name\n    players -> Player { name }\n  }\n}\n";
+    assert_eq!(format_zql(source).unwrap(), expected);
+    for width in [80, 81] {
+        let name = "a".repeat(width - "  Team {  b }".len());
+        let input = format!("query{{Team{{{name} b}}}}");
+        let output = format_zql(&input).unwrap();
+        let selection = if width == 80 {
+            format!("  Team {{ {name} b }}")
+        } else {
+            format!("  Team {{\n    {name}\n    b\n  }}")
+        };
+        assert_eq!(output, format!("query {{\n{selection}\n}}\n"));
+        invariant(&input, "R1 width");
+    }
+    invariant(source, "R1");
+}
+#[test]
+fn r2_top_level_blocks() {
+    let source = "schema{type A{x:Int}}unique{A{x}}index{}mutation{A(x:1)}query{A{x}}display{skip}then{findWith{\"a\"}}display{skip}";
+    let expected = "schema {\n  type A { x: Int }\n}\n\nunique {\n  A { x }\n}\n\nindex {\n}\n\nmutation {\n  A(x: 1)\n}\n\nquery {\n  A { x }\n}\n\ndisplay {\n  skip\n}\n\nthen {\n  findWith { \"a\" }\n}\n\ndisplay {\n  skip\n}\n";
+    assert_eq!(format_zql(source).unwrap(), expected);
+    invariant(source, "R2");
+}
+#[test]
+fn r3_schema_fields() {
+    let source = "schema{type Country{name:String}type Team{name:String country:String}}";
+    let expected = "schema {\n  type Country { name: String }\n\n  type Team {\n    name: String\n    country: String\n  }\n}\n";
+    assert_eq!(format_zql(source).unwrap(), expected);
+    assert_eq!(
+        format_zql("type Country{name:String}").unwrap(),
+        "type Country { name: String }\n"
+    );
+    assert_eq!(
+        format_zql("schema{type A{b:REL->B{since:Int}}type B{x:Int}}").unwrap(),
+        "schema {\n  type A { b: REL -> B { since: Int } }\n\n  type B { x: Int }\n}\n"
+    );
+    invariant(source, "R3");
+}
+#[test]
+fn r4_spacing() {
+    let source = "schema{type A{x:Int longer:String b:REL->B}type B{a:REL<-A}}";
+    let expected = "schema {\n  type A {\n    x: Int\n    longer: String\n    b: REL -> B\n  }\n\n  type B { a: REL <- A }\n}\n";
+    assert_eq!(format_zql(source).unwrap(), expected);
+    invariant(source, "R4");
+}
+#[test]
+fn r5_parentheses() {
+    for width in [80, 81] {
+        let value = "x".repeat(width - "  A(name: \"\" && age: 1)".len());
+        let source = format!("query{{A(name:\"{value}\"&&age:1)}}");
+        let expected = if width == 80 {
+            format!("query {{\n  A(name: \"{value}\" && age: 1)\n}}\n")
+        } else {
+            format!("query {{\n  A(\n    name: \"{value}\" &&\n    age: 1\n  )\n}}\n")
+        };
+        assert_eq!(format_zql(&source).unwrap(), expected);
+        invariant(&source, "R5 width");
+    }
+}
+#[test]
+fn r6_blank_lines() {
+    let source = "schema{type A{x:Int}type B{y:Int}}query{A{x\n\nx\n\nx}}";
+    let expected = "schema {\n  type A { x: Int }\n\n  type B { y: Int }\n}\n\nquery {\n  A {\n    x\n    x\n    x\n  }\n}\n";
+    assert_eq!(format_zql(source).unwrap(), expected);
+    invariant(source, "R6");
+}
+#[test]
+fn r7_display() {
+    let source = "schema{type A{x:Int}type B{x:Int}display{graph{A,B}:Default table{A}}}";
+    let expected = "schema {\n  type A { x: Int }\n\n  type B { x: Int }\n\n  display {\n    graph {\n      A,\n      B\n    } : Default\n    table {\n      A\n    }\n  }\n}\n";
+    assert_eq!(format_zql(source).unwrap(), expected);
+    invariant(source, "R7");
+    // APS 6 per-type attributes are not in this parser yet. Keep 2 and 3
+    // attributes untouched until the AST acquires the syntax (zega#39).
+    for attrs in [
+        "@shape: document, @image: &scan",
+        "@shape: document, @image: &scan, @size: &size",
+    ] {
+        let input =
+            format!("schema{{type A{{scan:String size:Int}}display{{graph{{A({attrs})}}}}}}");
+        assert!(Parsed::parse(&input).is_err());
+        assert_eq!(format_zql(&input).unwrap(), input);
+    }
+}
+#[test]
+fn r8_comments_and_rejections() {
+    let source = "// heading\nquery{A{name // name\nx}} // end\n";
+    assert_eq!(
+        format_zql(source).unwrap(),
+        "// heading\nquery {\n  A {\n    name // name\n    x\n  }\n} // end\n"
+    );
+    invariant(source, "R8");
+    for marker in [
+        "/* nope */",
+        "# nope",
+        "-- nope",
+        "<!-- nope -->",
+        "(* nope *)",
+        "*/",
+    ] {
+        for prefix in [
+            "",
+            "query { ",
+            "query { A { name ",
+            "query { A(name: 1 ",
+            "query { A { name } } ",
+        ] {
+            let source = format!("{prefix}{marker}\n");
+            let error = Parsed::parse(&source).unwrap_err();
+            assert!(error.message.contains("//"), "{source}: {error}");
+            assert_eq!((error.line, error.column), (1, prefix.len() as u32 + 1));
+            assert!(error.end_column > error.column);
+            assert_eq!(format_zql(&source).unwrap(), source);
+        }
+    }
+    invariant(
+        "query{A(name:\"/* # -- */\"){name}}",
+        "comment-looking string",
+    );
+}
+#[test]
+fn r9_json() {
+    let source = r#"{"b":1e3,"a":0.10,"nested":{"a":1,"b":{"c":"\u0041"}},"array":[true,false,null,-0,1.00e+02],"objects":[{"a":1}]}"#;
+    let expected = "{\n  \"b\": 1e3,\n  \"a\": 0.10,\n  \"nested\": { \"a\": 1, \"b\": { \"c\": \"\\u0041\" } },\n  \"array\": [true, false, null, -0, 1.00e+02],\n  \"objects\": [\n    { \"a\": 1 }\n  ]\n}\n";
+    assert_eq!(format_json(source), expected);
+    assert_eq!(format_json(expected), expected);
+    assert_eq!(format_json(r#"{"a":1,"b":2}"#), "{ \"a\": 1, \"b\": 2 }\n");
+    assert_eq!(
+        format_json(r#"{"a":1,"b":2,"c":3}"#),
+        "{\n  \"a\": 1,\n  \"b\": 2,\n  \"c\": 3\n}\n"
+    );
+    for width in [80, 81] {
+        for object in [false, true] {
+            let prefix = if object { "{ \"a\": \"" } else { "[\"" };
+            let suffix = if object { "\" }" } else { "\"]" };
+            let line = format!(
+                "{prefix}{}{suffix}",
+                "x".repeat(width - prefix.len() - suffix.len())
+            );
+            let output = format_json(&line);
+            if width == 80 {
+                assert_eq!(output, format!("{line}\n"));
+            } else {
+                assert_eq!(output.lines().count(), 3);
+            }
+            assert_eq!(format_json(&output), output);
+        }
+    }
+}
+#[test]
+fn json_literal_bytes_and_invalid_input() {
+    let input = r#"{"z":-0,"a":1e400,"z":123456789012345678901234567890,"q":"\"\\\/\b\f\n\r\t\uabcd\uD834\uDD1Eé","last":0.10e-009}"#;
+    let output = format_json(input);
+    let literals = |s: &str| {
+        tokens(s)
+            .into_iter()
+            .map(|t| t.text.to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(literals(input), literals(&output));
+    assert_eq!(format_json(&output), output);
+    for invalid in [
+        "",
+        "{",
+        "[1,]",
+        "{\"a\":1,}",
+        "01",
+        "1.",
+        "1e",
+        "--1",
+        "+1",
+        "NaN",
+        "true false",
+        "[// hi\n1]",
+        "\"\\x41\"",
+        "\"\\u12\"",
+        "\"new\nline\"",
+        "\u{a0}1",
+        "{a:1}",
+    ] {
+        assert_eq!(format_json(invalid), invalid, "{invalid}");
+    }
+}
+#[test]
+fn every_repository_json() {
+    fn visit(path: &std::path::Path, count: &mut usize) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap().to_str().unwrap();
+                if !name.starts_with('.')
+                    && !matches!(
+                        name,
+                        "node_modules" | "target" | "dist" | "test-results" | "playwright-report"
+                    )
+                {
+                    visit(&path, count);
+                }
+            } else if path.extension().is_some_and(|e| e == "json") {
+                let input = std::fs::read_to_string(&path).unwrap();
+                json_invariant(&input, &path.display().to_string());
+                *count += 1;
+            }
+        }
+    }
+    let mut count = 0;
+    visit(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."),
+        &mut count,
+    );
+    eprintln!("verified {count} JSON files");
+    assert!(count > 10);
+}
+
+fn json_invariant(input: &str, label: &str) {
+    let output = format_json(input);
+    assert_eq!(format_json(&output), output, "idempotence: {label}");
+    match serde_json::from_str::<serde_json::Value>(input) {
+        Ok(before) => assert_eq!(
+            before,
+            serde_json::from_str::<serde_json::Value>(&output).unwrap(),
+            "parse: {label}"
+        ),
+        Err(_) => assert_eq!(input, output, "invalid: {label}"),
+    }
+    let literals = |s: &str| {
+        tokens(s)
+            .into_iter()
+            .map(|t| t.text.to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(literals(input), literals(&output), "literal bytes: {label}");
 }

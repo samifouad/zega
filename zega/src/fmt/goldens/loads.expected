@@ -1,8 +1,5 @@
 mutation json ["./one.json", "./two.json"] {
-  Player(name: $Name && salary: $"Annual Salary") {
-    name
-    salary
-  }
+  Player(name: $Name && salary: $"Annual Salary") { name salary }
 }
 
 mutation csv "./players.csv" {

@@ -9,10 +9,16 @@ schema {
     lat: Float
     lon: Float
   }
+
   type Review { title: String }
+
   display {
-    map { Place }: Default
-    table { Review }
+    map {
+      Place
+    } : Default
+    table {
+      Review
+    }
     graph
   }
 }
@@ -35,7 +41,14 @@ Rust's `Zega::schema(source)` returns the parsed `Schema`, including `display`.
 Wasm's `ZegaWasm.schema(source)` returns the same JSON contract:
 
 ```json
-{"views":[{"kind":"map","types":["Place"]},{"kind":"table","types":["Review"]},{"kind":"graph","types":null}],"default":"map"}
+{
+  "views": [
+    { "kind": "map", "types": ["Place"] },
+    { "kind": "table", "types": ["Review"] },
+    { "kind": "graph", "types": null }
+  ],
+  "default": "map"
+}
 ```
 
 The JSON above is the `display` member. `types` also carries parsed fields,

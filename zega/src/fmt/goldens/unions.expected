@@ -3,7 +3,9 @@ schema {
     out: REL -> (B | C)[]
     back <- A
   }
+
   type B { value: Bool }
+
   type C { value: Float }
 }
 

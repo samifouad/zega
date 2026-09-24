@@ -1,7 +1,7 @@
 import { test, expect } from './offline.js';
 
 const source = 'query{Player{name salary}}';
-const formatted = 'query {\n  Player {\n    name\n    salary\n  }\n}\n';
+const formatted = 'query {\n  Player { name salary }\n}\n';
 const value = page => page.evaluate(() => window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest('#query')).getValue());
 async function setSource(page, text = source) {
   await page.evaluate(text => {
@@ -36,4 +36,26 @@ test('Format action uses WASM, preserves comments, incomplete source and undo', 
   await setSource(page, 'query{');
   await page.getByRole('button', { name: 'Format', exact: true }).click();
   expect(await value(page)).toBe('query{');
+});
+
+test('JSON import preview keeps source bytes and result panes use canonical WASM layout', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45_000 });
+  await expect(page.locator('#raw-count')).toContainText('50 nodes');
+  const raw = '[{"name":"\\u0041","salary":1e3},{"name":"B","salary":0.10}]';
+  const expected = '[\n  { "name": "\\u0041", "salary": 1e3 },\n  { "name": "B", "salary": 0.10 }\n]\n';
+  await page.locator('#btn-csv').click();
+  await page.locator('#csv-file').setInputFiles({ name: 'literal.json', mimeType: 'application/json', buffer: Buffer.from(raw) });
+  await expect(page.locator('#csv-status')).toContainText('2 rows');
+  const pane = id => page.evaluate(id => window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest(`#${id}`))?.getValue(), id);
+  await expect.poll(() => pane('csv-json')).toBe(expected);
+  const wasm = await page.evaluate(async raw => (await import('/pkg/zega_wasm.js')).format_json(raw), raw);
+  expect(wasm).toBe(expected);
+  await page.locator('#csv-close').click();
+  await setSource(page, 'query{Player{name salary}}');
+  await page.locator('#btn-run').click();
+  await expect.poll(() => pane('output')).toContain('salary');
+  const output = await pane('output');
+  expect(output).toMatch(/\{ "name": "[^"]+", "salary": \d+ \}/);
+  expect(output).toBe(await page.evaluate(async text => (await import('/pkg/zega_wasm.js')).format_json(text), output));
 });

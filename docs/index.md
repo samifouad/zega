@@ -18,10 +18,7 @@ unique {
 }
 
 index {
-  range Player {
-    salary
-    rating
-  }
+  range Player { salary rating }
   text Player { name }
 }
 ```

@@ -3,16 +3,14 @@ type A {
   child -> B
 }
 
-type B {
-  name: String
-}
+type B { name: String }
 
 display {
   graph
   table {
     A,
     B
-  }: Default
+  } : Default
 }
 
 unique {

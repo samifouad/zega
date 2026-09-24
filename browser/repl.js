@@ -1,4 +1,4 @@
-import init, { ZegaWasm, format } from './pkg/zega_wasm.js';
+import init, { ZegaWasm, format, format_json } from './pkg/zega_wasm.js';
 import { renderGraph, stopSim } from './graph.js';
 import { renderMap } from './map.js';
 import { renderVector } from './vector.js';
@@ -71,10 +71,7 @@ const TOUR = [
   ['Oilers or Avalanche', `{
   Team(name = "Oilers" || name = "Avalanche") {
     name
-    playsFor -> Player {
-      name
-      &since
-    }
+    playsFor -> Player { name &since }
   }
 }`],
   ['Golden Knights', `{
@@ -102,10 +99,7 @@ const TOUR = [
     born -> Player {
       name
       @hops
-      playsFor <- Team {
-        name
-        @hops
-      }
+      playsFor <- Team { name @hops }
     }
   }
 }`],
@@ -360,8 +354,8 @@ function mark(diags) {
   }
 }
 
-function showJson(value) {
-  const text = JSON.stringify(value, null, 2);
+function showJson(value, raw) {
+  const text = format_json(raw);
   monaco.editor.setModelLanguage(outputEditor.getModel(), 'json');
   outputEditor.setValue(text);
   const kb = new TextEncoder().encode(text).length / 1024;
@@ -401,9 +395,10 @@ async function run(source, options = {}) {
   if (options.apply && looksLikeZqlFile(schemaText())) {
     try {
       const sources = db.native ? options.sources : await loadSources(schemaText(), true, options.sources);
-      const applied = JSON.parse(await db.apply_with_sources(schemaText(), sources === undefined ? undefined : JSON.stringify(sources)));
+      const raw = await db.apply_with_sources(schemaText(), sources === undefined ? undefined : JSON.stringify(sources));
+      const applied = JSON.parse(raw);
       if (!String(source || '').trim()) {
-        showJson(applied);
+        showJson(applied, raw);
         return applied;
       }
     } catch (e) {
@@ -428,7 +423,7 @@ async function run(source, options = {}) {
       : `${(elapsedUs / 1000).toFixed(2)} ms`;
     const value = JSON.parse(raw);
     if (!db.native) { try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); } }
-    if (!options.quiet) showJson(value);
+    if (!options.quiet) showJson(value, raw);
     return value;
   } catch (e) {
     const failedUs = (performance.now() - started) * 1000;
@@ -674,7 +669,7 @@ function inspectNode(node) {
     const term = document.createElement('dt');
     const detail = document.createElement('dd');
     term.textContent = key;
-    detail.textContent = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    detail.textContent = typeof value === 'object' ? format_json(JSON.stringify(value)).trimEnd() : String(value);
     props.append(term, detail);
   }
   panel.append(close, title, props);

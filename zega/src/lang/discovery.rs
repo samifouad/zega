@@ -165,7 +165,7 @@ impl Parser<'_> {
         }
         Ok(left)
     }
-    fn discovery_atom(&mut self) -> Result<DiscoveryExpr> {
+    pub(super) fn discovery_atom(&mut self) -> Result<DiscoveryExpr> {
         if self.eat("(") {
             let inner = self.discovery_or()?;
             self.expect(")")?;

@@ -28,17 +28,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Format ZQL files with the canonical layout.
+    /// Format ZQL and JSON files with the canonical layout.
     Fmt {
-        /// Files or directories to format recursively (*.zql).
+        /// Files or directories to format recursively (*.zql, *.json).
         #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
         paths: Vec<PathBuf>,
         /// List files that would change and exit with code 1.
         #[arg(long)]
         check: bool,
-        /// Read ZQL from stdin and write formatted source to stdout.
+        /// Read source from stdin and write formatted source to stdout.
         #[arg(long)]
         stdin: bool,
+        /// Language for stdin (defaults to zql).
+        #[arg(long, value_enum, requires = "stdin")]
+        lang: Option<fmt::Language>,
     },
     /// Serve the database over HTTP with ZQL.
     Start {
@@ -68,8 +71,8 @@ enum Command {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    if let Command::Fmt { paths, check, stdin } = cli.command {
-        if !fmt::run(paths, check, stdin)? { std::process::exit(1); }
+    if let Command::Fmt { paths, check, stdin, lang } = cli.command {
+        if !fmt::run(paths, check, stdin, lang)? { std::process::exit(1); }
         return Ok(());
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()

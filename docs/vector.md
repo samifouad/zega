@@ -13,9 +13,14 @@ schema {
     embedding: Vector<384>
     related -> Ticket[]
   }
+
   display {
-    vector2d { Ticket }: Default
-    vector3d { Ticket }
+    vector2d {
+      Ticket
+    } : Default
+    vector3d {
+      Ticket
+    }
     table
   }
 }
@@ -49,7 +54,9 @@ mutation {
 JSON loads accept arrays under the declared field name, or explicit bindings:
 
 ```json
-[{"title":"Reset password","embedding":[0.8,0.2,0.1]}]
+[
+  { "title": "Reset password", "embedding": [0.8, 0.2, 0.1] }
+]
 ```
 
 ```zql
@@ -69,10 +76,7 @@ schema {
 }
 
 mutation csv ["tickets.csv"] {
-  Ticket(title: $title) {
-    @id
-    embedding
-  }
+  Ticket(title: $title) { @id embedding }
 }
 ```
 
@@ -91,10 +95,7 @@ query {
     @id
     title
     @score
-    related -> Ticket {
-      @id
-      title
-    }
+    related -> Ticket { @id title }
   }
 }
 

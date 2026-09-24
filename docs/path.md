@@ -26,20 +26,14 @@ query {
 // Fewest kilometres (Dijkstra).
 query {
   Junction(name: "A") {
-    road *path by &km -> Junction(name: "B") {
-      name
-      &km
-    }
+    road *path by &km -> Junction(name: "B") { name &km }
   }
 }
 
 // Fewest kilometres, searching toward B first (A*).
 query {
   Junction(name: "A") {
-    road *path by &km toward at -> Junction(name: "B") {
-      name
-      &km
-    }
+    road *path by &km toward at -> Junction(name: "B") { name &km }
   }
 }
 ```
@@ -71,8 +65,20 @@ same relationship, so each target type declares it too.
       { "name": "C", "km": 0.8 }
     ],
     "edges": [
-      { "id": 1, "type": "road", "from": 1, "to": 2, "props": { "km": 0.8 } },
-      { "id": 2, "type": "road", "from": 2, "to": 3, "props": { "km": 0.8 } }
+      {
+        "id": 1,
+        "type": "road",
+        "from": 1,
+        "to": 2,
+        "props": { "km": 0.8 }
+      },
+      {
+        "id": 2,
+        "type": "road",
+        "from": 2,
+        "to": 3,
+        "props": { "km": 0.8 }
+      }
     ]
   }
 }

@@ -155,7 +155,7 @@ test('native explorer formats both editor panes through the shared WASM export',
     await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45000 });
     for (const [pane, source, expected] of [
       ['schema', 'type Person{name:String age:Int}', 'type Person {\n  name: String\n  age: Int\n}\n'],
-      ['query', 'query{Person{name age}}', 'query {\n  Person {\n    name\n    age\n  }\n}\n'],
+      ['query', 'query{Person{name age}}', 'query {\n  Person { name age }\n}\n'],
     ]) {
       await page.evaluate(({ pane, source }) => {
         const editor = window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest(`#${pane}`));

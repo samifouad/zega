@@ -8,6 +8,7 @@ schema {
       km: Float<km>
     }
   }
+
   type Team {
     name: String
     members: MEMBER <- Player[]

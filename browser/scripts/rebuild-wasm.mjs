@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { hashFiles } from './wasm-files.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -32,6 +32,9 @@ try {
   for (const name of ['package.json', 'zega_wasm.js', 'zega_wasm_bg.wasm', 'zega_wasm.d.ts', 'zega_wasm_bg.wasm.d.ts']) await access(join(output, name));
   await WebAssembly.compile(await readFile(join(output, 'zega_wasm_bg.wasm')));
   if (git('rev-parse', 'HEAD') !== commit || git('status', '--porcelain')) throw new Error('Engine changed during the build; pkg/ was not replaced.');
+  const { default: init, format_json } = await import(pathToFileURL(join(output, 'zega_wasm.js')));
+  await init({ module_or_path: await readFile(join(output, 'zega_wasm_bg.wasm')) });
+  await writeFile(join(output, 'package.json'), format_json(await readFile(join(output, 'package.json'), 'utf8')));
   const metadata = {
     repository: 'https://github.com/zegadb/zega',
     commit,
@@ -39,7 +42,7 @@ try {
     toolchain,
     sha256: await hashFiles(output),
   };
-  await writeFile(join(staging, 'wasm-source.json'), JSON.stringify(metadata, null, 2) + '\n');
+  await writeFile(join(staging, 'wasm-source.json'), format_json(JSON.stringify(metadata)));
   await rename(join(root, 'pkg'), join(staging, 'previous-pkg'));
   try {
     await rename(output, join(root, 'pkg'));

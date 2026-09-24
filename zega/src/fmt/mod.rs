@@ -4,7 +4,9 @@
 //! supplies the AST and item boundaries. Leaves retain original literal tokens;
 //! comments are reattached positionally, never reconstructed from the AST.
 use super::*;
+mod json;
 mod layout;
+pub use json::format_json;
 use layout::{fragment, join, tokens, Doc, Token};
 
 /// Format a file, schema pane, or query pane with two-space indentation and an
@@ -85,6 +87,13 @@ impl<'a> Printer<'a> {
         while self.cursor < self.tokens.len() && self.tokens[self.cursor].start < end {
             self.cursor += 1;
         }
+        while self
+            .tokens
+            .get(self.cursor)
+            .is_some_and(|t| t.inline_comment)
+        {
+            self.cursor += 1;
+        }
         fragment(&self.tokens[start..self.cursor], types)
     }
     fn token(&mut self) -> Doc {
@@ -97,7 +106,7 @@ impl<'a> Printer<'a> {
             false,
         )
     }
-    fn block(&mut self, header: Doc, items: Vec<Node>, top: bool) -> Node {
+    fn block(&mut self, header: Doc, items: Vec<Node>, style: Block) -> Node {
         // Closing-brace trivia stays inside the block, including an empty one.
         let start = self.cursor;
         while self.cursor < self.tokens.len() && self.tokens[self.cursor].text.starts_with("//") {
@@ -108,15 +117,33 @@ impl<'a> Printer<'a> {
         let close = self.token();
         if items.is_empty() && !has_comments {
             return Node {
-                doc: Doc::seq([header, if top { Doc::Hard } else { Doc::text("") }, close]),
+                doc: Doc::seq([
+                    header,
+                    if style == Block::Top {
+                        Doc::Hard
+                    } else {
+                        Doc::text("")
+                    },
+                    close,
+                ]),
                 block: true,
             };
         }
-        let multiline =
-            top || items.len() > 1 || items.iter().any(|item| item.block) || has_comments;
+        let multiline = matches!(style, Block::Top | Block::Schema | Block::Display)
+            || items.len() > if style == Block::Selection { 2 } else { 1 }
+            || (style == Block::Selection && items.iter().any(|item| item.block))
+            || has_comments
+            || header.width() == usize::MAX;
         let sep = if multiline { Doc::Hard } else { Doc::Line(" ") };
-        let body = join(items.into_iter().map(|n| n.doc).collect(), sep.clone());
-        let mut parts = vec![header];
+        let body = join(
+            items.into_iter().map(|n| n.doc).collect(),
+            if style == Block::Schema {
+                Doc::Blank
+            } else {
+                sep.clone()
+            },
+        );
+        let mut parts = Vec::new();
         if has_comments {
             parts.push(Doc::seq([sep.clone(), body, Doc::Hard, comments]).nest());
             parts.push(close);
@@ -127,7 +154,7 @@ impl<'a> Printer<'a> {
         }
         let doc = Doc::seq(parts);
         Node {
-            doc: if multiline { doc } else { doc.group() },
+            doc: Doc::seq([header, if multiline { doc } else { doc.group() }]),
             block: true,
         }
     }
@@ -192,7 +219,6 @@ impl<'a> Printer<'a> {
                     types
                         .next()
                         .ok_or_else(|| Error::bare("missing type AST"))?,
-                    !wrapped,
                 )?
             };
             if wrapped {
@@ -202,14 +228,14 @@ impl<'a> Printer<'a> {
             }
         }
         if let Some(header) = header {
-            blocks.push(self.block(header, items, true).doc);
+            blocks.push(self.block(header, items, Block::Schema).doc);
         }
         while matches!(self.peek(), "unique" | "index") {
             blocks.push(self.constraints(schema)?.doc);
         }
         Ok(())
     }
-    fn type_def(&mut self, ty: &TypeDef, top: bool) -> Result<Node> {
+    fn type_def(&mut self, ty: &TypeDef) -> Result<Node> {
         let TypeDef {
             name: _,
             span: _,
@@ -225,7 +251,7 @@ impl<'a> Printer<'a> {
         for field in fields {
             items.push(self.field(field)?);
         }
-        Ok(self.block(header, items, top))
+        Ok(self.block(header, items, Block::Fields))
     }
     fn field(&mut self, field: &Field) -> Result<Node> {
         let mut p = self.parser();
@@ -292,7 +318,7 @@ impl<'a> Printer<'a> {
                     let end = self.before_comments(end);
                     items.push(Node::leaf(self.until(end, true)));
                 }
-                Ok(self.block(header, items, false))
+                Ok(self.block(header, items, Block::Fields))
             }
         }
     }
@@ -356,7 +382,7 @@ impl<'a> Printer<'a> {
                     }
                     names.push(Node::leaf(self.until(p.i, false)));
                 }
-                self.block(h, names, false)
+                self.block(h, names, Block::Display)
             } else {
                 Node::leaf(self.until(p.i, false))
             };
@@ -364,11 +390,11 @@ impl<'a> Printer<'a> {
                 let mut p = self.parser();
                 p.expect(":")?;
                 p.ident()?;
-                node.doc = Doc::seq([node.doc, self.until(p.i, false)]);
+                node.doc = Doc::seq([node.doc, Doc::text(" "), self.until(p.i, false)]);
             }
             items.push(node);
         }
-        Ok(self.block(header, items, true))
+        Ok(self.block(header, items, Block::Top))
     }
     fn constraints(&mut self, schema: &Schema) -> Result<Node> {
         let index = self.peek() == "index";
@@ -409,9 +435,9 @@ impl<'a> Printer<'a> {
                 p.ident()?;
                 fields.push(Node::leaf(self.until(p.i, false)));
             }
-            groups.push(self.block(h, fields, false));
+            groups.push(self.block(h, fields, Block::Selection));
         }
-        Ok(self.block(header, groups, true))
+        Ok(self.block(header, groups, Block::Top))
     }
     fn statement(&mut self, statement: &Statement) -> Result<Node> {
         let (query, columns) = match statement {
@@ -427,7 +453,12 @@ impl<'a> Printer<'a> {
                 (template, true)
             }
         };
-        let Query { mutation: _, root } = query;
+        let Query {
+            mutation: _,
+            root,
+            skip,
+            then,
+        } = query;
         let open = self.tokens[self.cursor..]
             .iter()
             .find(|t| t.text == "{")
@@ -439,7 +470,127 @@ impl<'a> Printer<'a> {
         } else {
             Vec::new()
         };
-        Ok(self.block(header, items, true))
+        let mut stages = vec![self.block(header, items, Block::Top).doc];
+        if *skip {
+            stages.push(self.stage_display()?.doc);
+        }
+        for ThenStage { condition, skip } in then {
+            let header = Doc::seq([self.token(), Doc::text(" "), self.token()]);
+            let condition = self.discovery(condition)?;
+            stages.push(self.block(header, vec![condition], Block::Top).doc);
+            if *skip {
+                stages.push(self.stage_display()?.doc);
+            }
+        }
+        Ok(Node {
+            doc: join(stages, Doc::Blank),
+            block: true,
+        })
+    }
+    fn stage_display(&mut self) -> Result<Node> {
+        let header = Doc::seq([self.token(), Doc::text(" "), self.token()]);
+        let skip = Node::leaf(self.token());
+        Ok(self.block(header, vec![skip], Block::Top))
+    }
+    fn discovery(&mut self, expr: &DiscoveryExpr) -> Result<Node> {
+        // The parser has already checked precedence; retain written parentheses.
+        if self.peek() == "(" && self.parser().discovery_atom()? == *expr {
+            let open = self.token();
+            let inner = self.discovery(expr)?;
+            let close = self.token();
+            return Ok(Node {
+                doc: Doc::seq([
+                    open,
+                    Doc::seq([Doc::Line(""), inner.doc]).nest(),
+                    Doc::Line(""),
+                    close,
+                ])
+                .group(),
+                block: inner.block,
+            });
+        }
+        match expr {
+            DiscoveryExpr::And(left, right) | DiscoveryExpr::Or(left, right) => {
+                let left = self.discovery(left)?;
+                let op = self.token();
+                let right = self.discovery(right)?;
+                Ok(Node {
+                    doc: Doc::seq([left.doc, Doc::text(" "), op, Doc::Line(" "), right.doc])
+                        .group(),
+                    block: true,
+                })
+            }
+            DiscoveryExpr::Test(primitive) => {
+                let header = Doc::seq([self.token(), Doc::text(" "), self.token()]);
+                let mut items = Vec::new();
+                match primitive {
+                    Primitive::Common { types, span: _ } => {
+                        for (_, fields, _) in types {
+                            let h = Doc::seq([self.token(), Doc::text(" "), self.token()]);
+                            let mut names = Vec::new();
+                            for _ in fields {
+                                let mut p = self.parser();
+                                p.ident()?;
+                                names.push(Node::leaf(self.until(p.i, false)));
+                            }
+                            items.push(self.block(h, names, Block::Selection));
+                        }
+                    }
+                    Primitive::Text {
+                        op,
+                        text: _,
+                        fields,
+                        pattern: _,
+                        span: _,
+                    } => {
+                        match op {
+                            TextOp::FindWith
+                            | TextOp::FindWithout
+                            | TextOp::StartsWith
+                            | TextOp::EndsWith
+                            | TextOp::Regex => {}
+                        }
+                        if fields.is_empty() {
+                            items.push(self.discovery_leaf());
+                        } else {
+                            let mut p = self.parser();
+                            p.string()?;
+                            p.expect_word("in")?;
+                            p.expect("{")?;
+                            let h = self.until(p.i, false);
+                            let mut names = Vec::new();
+                            for _ in fields {
+                                let mut p = self.parser();
+                                p.ident()?;
+                                names.push(Node::leaf(self.until(p.i, false)));
+                            }
+                            items.push(self.block(h, names, Block::Selection));
+                        }
+                    }
+                    Primitive::Similar {
+                        field: _,
+                        threshold: _,
+                        inclusive: _,
+                        span: _,
+                    }
+                    | Primitive::Near {
+                        field: _,
+                        metres: _,
+                        inclusive: _,
+                        span: _,
+                    } => items.push(self.discovery_leaf()),
+                }
+                Ok(self.block(header, items, Block::Selection))
+            }
+        }
+    }
+    fn discovery_leaf(&mut self) -> Node {
+        let end = self.tokens[self.cursor..]
+            .iter()
+            .find(|t| t.text == "}")
+            .unwrap()
+            .start;
+        Node::leaf(self.until(self.before_comments(end), false))
     }
     fn selection(&mut self, selection: &Selection, columns: bool) -> Result<Node> {
         let Selection {
@@ -483,7 +634,7 @@ impl<'a> Printer<'a> {
             for item in items {
                 children.push(self.item(item, columns)?);
             }
-            Ok(self.block(header, children, false))
+            Ok(self.block(header, children, Block::Selection))
         } else {
             Ok(Node::leaf(self.until(self.before_comments(end), false)))
         }
@@ -534,7 +685,7 @@ impl<'a> Printer<'a> {
                 let target = self.selection(target, columns)?;
                 Ok(Node {
                     doc: Doc::seq([header, Doc::text(" "), target.doc]),
-                    block: target.block,
+                    block: true,
                 })
             }
             Item::Similarity(_, similarity) => {
@@ -554,6 +705,15 @@ impl<'a> Printer<'a> {
         }
     }
 }
+#[derive(Clone, Copy, PartialEq)]
+enum Block {
+    Top,
+    Schema,
+    Fields,
+    Selection,
+    Display,
+}
+
 struct Node {
     doc: Doc,
     block: bool,

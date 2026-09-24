@@ -4,16 +4,31 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum Language {
+    Zql,
+    Json,
+}
+impl Language {
+    fn format(self, source: &str) -> Result<String, String> {
+        match self {
+            Self::Zql => zega::fmt::format_zql(source),
+            Self::Json => Ok(zega::fmt::format_json(source)),
+        }
+    }
+}
+
 /// Returns whether every input was already formatted in check mode.
 pub fn run(
     paths: Vec<PathBuf>,
     check: bool,
     stdin: bool,
+    lang: Option<Language>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     if stdin {
         let mut source = String::new();
         io::stdin().read_to_string(&mut source)?;
-        let formatted = zega::fmt::format_zql(&source)?;
+        let formatted = lang.unwrap_or(Language::Zql).format(&source)?;
         if check {
             if formatted != source {
                 eprintln!("stdin would be reformatted");
@@ -32,7 +47,12 @@ pub fn run(
     let mut clean = true;
     for path in &files {
         let source = fs::read_to_string(path)?;
-        let formatted = zega::fmt::format_zql(&source)?;
+        let language = if path.extension().is_some_and(|ext| ext == "json") {
+            Language::Json
+        } else {
+            Language::Zql
+        };
+        let formatted = language.format(&source)?;
         if formatted == source {
             continue;
         }
@@ -44,7 +64,7 @@ pub fn run(
             println!("formatted {}", path.display());
         }
     }
-    eprintln!("checked {} ZQL file(s)", files.len());
+    eprintln!("checked {} ZQL/JSON file(s)", files.len());
     Ok(!check || clean)
 }
 
@@ -75,7 +95,11 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
                 continue;
             }
             collect(&entry.path(), out)?;
-        } else if entry.path().extension().is_some_and(|ext| ext == "zql") {
+        } else if entry
+            .path()
+            .extension()
+            .is_some_and(|ext| ext == "zql" || ext == "json")
+        {
             out.push(entry.path());
         }
     }

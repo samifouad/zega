@@ -11,8 +11,11 @@ schema {
     name: String
     at: Point
   }
+
   display {
-    map { Place }: Default
+    map {
+      Place
+    } : Default
     table
     graph
   }
@@ -22,10 +25,7 @@ mutation {
   Place(
     name: "Calgary Tower" &&
     at: @point(51.044299581787385, -114.06313508749008)
-  ) {
-    name
-    at
-  }
+  ) { name at }
 }
 ```
 
@@ -104,15 +104,17 @@ JSON objects may supply a Point directly under its field name. An explicit
 binding also works:
 
 ```json
-[{"name":"Calgary Tower","at":{"lat":51.044299581787385,"lon":-114.06313508749008}}]
+[
+  {
+    "name": "Calgary Tower",
+    "at": { "lat": 51.044299581787385, "lon": -114.06313508749008 }
+  }
+]
 ```
 
 ```zql
 mutation json ["./places.json"] {
-  Place(name: $name && at: $at) {
-    name
-    at
-  }
+  Place(name: $name && at: $at) { name at }
 }
 ```
 
@@ -128,10 +130,7 @@ schema {
 }
 
 mutation csv ["./places.csv"] {
-  Place(name: $name) {
-    name
-    at
-  }
+  Place(name: $name) { name at }
 }
 ```
 

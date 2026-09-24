@@ -5,12 +5,19 @@ schema {
     year: Int
     embedding: Vector<3>
   }
+
   display {
-    graph { Place }: Default
+    graph {
+      Place
+    } : Default
     table
-    map { Place }
+    map {
+      Place
+    }
     timeline
-    vector2d { Place }
+    vector2d {
+      Place
+    }
     vector3d
   }
 }

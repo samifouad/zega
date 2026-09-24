@@ -1,0 +1,32 @@
+query {
+  Person {
+    name
+    bio
+    country
+  }
+}
+
+display {
+  skip
+}
+
+then {
+  (
+    findWith {
+      "a" in { name bio }
+    } ||
+    findWithout { "b" }
+  ) &&
+  common {
+    Person { country name }
+    Other { x }
+  }
+}
+
+then {
+  similar { &v > 0.9 } || near { &at < 10 km }
+}
+
+display {
+  skip
+}

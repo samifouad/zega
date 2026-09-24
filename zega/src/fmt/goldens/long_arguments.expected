@@ -7,7 +7,5 @@ mutation json [
     number: $AccountNumber &&
     email: $EmailAddress &&
     address: $StreetAddress
-  ) {
-    name
-  }
+  ) { name }
 }

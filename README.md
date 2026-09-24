@@ -176,7 +176,7 @@ console.log(JSON.parse(db.run(schema, '{ Person { name } }')));
 
 ```
 
-## Formatting ZQL
+## Formatting ZQL and JSON
 
 `zega fmt paths…` formats files or directories recursively (`*.zql`).
 `zega fmt --check paths…` lists every file that would change and exits 1;
@@ -186,6 +186,15 @@ Invalid or incomplete input is left unchanged. There are no style options.
 The explorer uses the same formatter through WASM. Press ⌘S / Ctrl-S or
 **Format** to format and save the active schema or query pane. Formatting is
 undoable and preserves the cursor line (clamped when lines are removed).
+
+The locked layout in [APS 12](https://github.com/zegadb/aps/issues/12) keeps
+1–2 plain selection fields inline, opens schema types with 2+ fields, separates
+types and top-level blocks with one blank line, and uses only `//` comments.
+JSON objects with 1–2 members and scalar arrays stay inline when they fit 80
+columns. JSON key order, number spelling and string escapes are preserved;
+invalid input is returned unchanged. Directories include both `.zql` and `.json`.
+Use `zega fmt --stdin --lang json` for JSON on standard input. The explorer uses
+the same WASM formatter for its JSON import preview and result views.
 
 ## The query language
 
@@ -197,6 +206,7 @@ schema {
     name: String
     players -> Player[]
   }
+
   type Player {
     name: String
     salary: Int
@@ -205,20 +215,14 @@ schema {
 
 mutation csv ["./players.csv"] {
   Team(name: $Team) {
-    players -> Player(name: $Name && salary: $Salary) {
-      name
-      salary
-    }
+    players -> Player(name: $Name && salary: $Salary) { name salary }
   }
 }
 
 query {
   Team {
     name
-    players -> Player(salary > 10000000) {
-      name
-      salary
-    }
+    players -> Player(salary > 10000000) { name salary }
   }
 }
 ```

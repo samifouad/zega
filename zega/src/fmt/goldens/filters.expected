@@ -8,7 +8,5 @@ query {
     name startsWith "A" &&
     name endsWith "B" &&
     name findWith "C"
-  ) {
-    name
-  }
+  ) { name }
 }

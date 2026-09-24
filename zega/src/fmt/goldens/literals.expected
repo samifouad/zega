@@ -6,7 +6,5 @@ mutation {
     d: null &&
     e: false &&
     f: "quote \" slash \\ unknown \r"
-  ) {
-    a
-  }
+  ) { a }
 }

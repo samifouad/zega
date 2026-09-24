@@ -8,9 +8,14 @@ schema {
     kind: String
     at: Point from (lat, lon)
   }
+
   display {
-    map { Place }: Default
-    table { Place }
+    map {
+      Place
+    } : Default
+    table {
+      Place
+    }
     graph
   }
 }

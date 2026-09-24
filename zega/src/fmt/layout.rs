@@ -3,6 +3,7 @@
 #[derive(Clone)]
 pub(super) enum Doc {
     Text(String),
+    Comment(String, bool),
     Line(&'static str),
     Hard,
     Blank,
@@ -23,7 +24,7 @@ impl Doc {
     pub fn group(self) -> Self {
         Self::Group(Box::new(self))
     }
-    fn width(&self) -> usize {
+    pub(super) fn width(&self) -> usize {
         match self {
             Self::Text(s) => {
                 if s.contains('\n') {
@@ -33,7 +34,7 @@ impl Doc {
                 }
             }
             Self::Line(s) => s.len(),
-            Self::Hard | Self::Blank => usize::MAX,
+            Self::Hard | Self::Blank | Self::Comment(..) => usize::MAX,
             Self::Seq(items) => items
                 .iter()
                 .fold(0usize, |n, d| n.saturating_add(d.width())),
@@ -51,6 +52,21 @@ impl Doc {
                         out.push_str(&"  ".repeat(indent));
                     }
                     out.push_str(s);
+                }
+                Doc::Comment(s, inline) => {
+                    while out.ends_with([' ', '\t']) {
+                        out.pop();
+                    }
+                    if *inline && !out.is_empty() && !out.ends_with('\n') {
+                        out.push(' ');
+                    } else {
+                        if !out.is_empty() && !out.ends_with('\n') {
+                            out.push('\n');
+                        }
+                        out.push_str(&"  ".repeat(indent));
+                    }
+                    out.push_str(s);
+                    out.push('\n');
                 }
                 Doc::Line(s) if flat => out.push_str(s),
                 Doc::Line(_) | Doc::Hard => {
@@ -100,12 +116,13 @@ pub(super) struct Token<'a> {
     pub text: &'a str,
     pub start: usize,
     pub end: usize,
+    pub inline_comment: bool,
 }
 
 // ZQL only has double-quoted strings and // comments. Keep both opaque: a URL
 // or escaped quote must never turn into comment trivia or get re-escaped.
 pub(super) fn tokens(source: &str) -> Vec<Token<'_>> {
-    let mut out = Vec::new();
+    let mut out: Vec<Token<'_>> = Vec::new();
     let mut i = 0;
     while i < source.len() {
         let start = i;
@@ -158,10 +175,15 @@ pub(super) fn tokens(source: &str) -> Vec<Token<'_>> {
         } else {
             i += c.len_utf8();
         }
+        let inline_comment = source[start..i].starts_with("//")
+            && out
+                .last()
+                .is_some_and(|last| !source[last.end..start].contains('\n'));
         out.push(Token {
             text: &source[start..i],
             start,
             end: i,
+            inline_comment,
         });
     }
     out
@@ -179,7 +201,7 @@ pub(super) fn join(items: Vec<Doc>, separator: Doc) -> Doc {
 }
 
 /// Source leaves, including parentheses/arguments. Comments remain attached to
-/// the next token, on their own line, so a second pass uses the same anchor.
+/// their written line, including end-of-line comments.
 pub(super) fn fragment(ts: &[Token<'_>], types: bool) -> Doc {
     fn spaced(prev: &str, next: &str, types: bool) -> bool {
         if prev.is_empty()
@@ -206,11 +228,7 @@ pub(super) fn fragment(ts: &[Token<'_>], types: bool) -> Doc {
         while i < ts.len() {
             let t = ts[i].text;
             if t.starts_with("//") {
-                if !docs.is_empty() {
-                    docs.push(Doc::Hard);
-                }
-                docs.push(Doc::text(t.trim_end()));
-                docs.push(Doc::Hard);
+                docs.push(Doc::Comment(t.trim_end().to_owned(), ts[i].inline_comment));
                 prev = "";
                 i += 1;
                 continue;
@@ -251,7 +269,9 @@ pub(super) fn fragment(ts: &[Token<'_>], types: bool) -> Doc {
                 }
             }
             docs.push(Doc::text(t));
-            if matches!(t, "," | "&&" | "||") {
+            if matches!(t, "," | "&&" | "||")
+                && ts.get(i + 1).is_some_and(|next| !next.inline_comment)
+            {
                 docs.push(Doc::Line(" "));
                 prev = "";
             } else {

@@ -2,9 +2,7 @@
   "name": "zega-package-tools",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=22.14.0"
-  },
+  "engines": { "node": ">=22.14.0" },
   "scripts": {
     "build": "node npm/build.mjs",
     "pack:package": "node npm/pack.mjs",

@@ -2,6 +2,12 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use zega::{Value, Zega};
 
+/// The canonical byte-faithful JSON layout (APS 12).
+#[wasm_bindgen]
+pub fn format_json(source: &str) -> String {
+    zega::fmt::format_json(source)
+}
+
 /// Format a ZQL file or editor pane using the canonical Rust formatter.
 #[wasm_bindgen]
 pub fn format(source: &str) -> Result<String, JsValue> {
