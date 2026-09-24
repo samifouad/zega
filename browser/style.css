@@ -185,7 +185,7 @@ body {
 }
 #csv-table-drop[hidden] { display: none; }
 #csv-file { display: none; }
-.csv-preset.active { background: var(--ink); color: #fff; }
+.csv-preset.active { background: var(--ink); color: var(--panel); }
 .csv-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .csv-schema-pane, .csv-table-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .csv-schema-pane { border-top: 1px solid var(--border); }
@@ -302,7 +302,7 @@ body {
 #tour-queries button { flex: 0 0 auto; white-space: nowrap; }
 #tour-queries button.active {
   background: var(--ink);
-  color: #fff;
+  color: var(--panel);
   border-color: var(--ink);
 }
 .pane {
@@ -472,7 +472,7 @@ button.mini { padding: 0 6px; font-size: 11px; }
 
 .tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
 .tabs button { border: none; border-radius: 0; padding: 3px 12px; font-size: 12px; background: transparent; }
-.tabs button.active { background: var(--ink); color: #fff; }
+.tabs button.active { background: var(--ink); color: var(--panel); }
 
 .frame-actions { display: flex; gap: 4px; }
 .frame-actions button { font-size: 11px; padding: 2px 8px; }
