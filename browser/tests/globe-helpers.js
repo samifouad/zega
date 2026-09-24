@@ -34,6 +34,9 @@ export async function patch(page, x, y, r = 6) {
   await page.locator('.maplibregl-canvas').scrollIntoViewIfNeeded();
   const box = await page.locator('.maplibregl-canvas').boundingBox();
   const clip = { x: Math.round(box.x + x - r), y: Math.round(box.y + y - r), width: 2 * r + 1, height: 2 * r + 1 };
+  const viewport = page.viewportSize();
+  // Off the viewport there are no pixels: a point drawn a world away is simply not seen.
+  if (clip.x < 0 || clip.y < 0 || clip.x + clip.width > viewport.width || clip.y + clip.height > viewport.height) return [];
   const png = (await page.screenshot({ clip })).toString('base64');
   return page.evaluate(async (png) => {
     const image = new Image();
