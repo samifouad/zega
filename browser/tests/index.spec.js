@@ -21,9 +21,9 @@ test('WASM index block narrows rows tested and answers like a scan', async ({ pa
     for (const [condition, most] of [
       ['salary >= 395', 5],
       ['salary > 100 && salary < 106', 7],
-      ['name CONTAINS "McDavid"', 100],
-      ['name STARTS WITH "Leon"', 100],
-      ['name ENDS WITH "399"', 1],
+      ['name findWith "McDavid"', 100],
+      ['name startsWith "Leon"', 100],
+      ['name endsWith "399"', 1],
     ]) {
       const query = `{ Player(${condition}) { n name salary } }`;
       const before = [a.rows_examined(), b.rows_examined()];

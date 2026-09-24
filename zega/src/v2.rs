@@ -778,6 +778,7 @@ fn apply_node(
             Item::Prop(name, _) => {
                 object.insert(name.clone(), prop_json(&node, name));
             }
+            Item::Id(alias) => { object.insert(alias.clone(), json!(node.id)); }
             Item::Score(alias, _) => { object.insert(alias.clone(), score_json(&node, sel)); }
             Item::Similarity(alias, sim) => { object.insert(alias.clone(), similarity_json(&node, sim)); }
             Item::Distance(alias, distance) => {
@@ -788,8 +789,8 @@ fn apply_node(
                         .unwrap_or(Json::Null),
                 );
             }
-            Item::Hops => {
-                object.insert("hops".into(), json!(0));
+            Item::Hops(alias) => {
+                object.insert(alias.clone(), json!(0));
             }
             Item::EdgeProp(name, _) | Item::EdgeSet(name, _, _) => {
                 let value = sel
@@ -853,6 +854,7 @@ fn apply_node(
                             Item::Prop(name, _) => {
                                 child_object.insert(name.clone(), prop_json(&saved, name));
                             }
+                            Item::Id(alias) => { child_object.insert(alias.clone(), json!(saved.id)); }
                             Item::Score(alias, _) => { child_object.insert(alias.clone(), score_json(&saved, target)); }
                             Item::Similarity(alias, sim) => { child_object.insert(alias.clone(), similarity_json(&saved, sim)); }
                             Item::Distance(alias, distance) => {
@@ -1210,6 +1212,7 @@ fn project(
                 ensure_prop(schema, sel, name)?;
                 object.insert(name.clone(), prop_json(node, name));
             }
+            Item::Id(alias) => { object.insert(alias.clone(), json!(node.id)); }
             Item::Score(alias, _) => { object.insert(alias.clone(), score_json(node, sel)); }
             Item::Similarity(alias, sim) => { object.insert(alias.clone(), similarity_json(node, sim)); }
             Item::Distance(alias, distance) => {
@@ -1220,8 +1223,8 @@ fn project(
                         .unwrap_or(Json::Null),
                 );
             }
-            Item::Hops => {
-                object.insert("hops".into(), json!(hops));
+            Item::Hops(alias) => {
+                object.insert(alias.clone(), json!(hops));
             }
             Item::EdgeSet(name, _, _) => {
                 return Err(LangError::bare(format!(
@@ -1361,7 +1364,7 @@ fn node_type<'a>(node: &'a Node, sel: &'a Selection) -> Result<&'a str, LangErro
 }
 
 fn ensure_prop(schema: &Schema, sel: &Selection, name: &str) -> Result<(), LangError> {
-    if name == "id" {
+    if name == "@id" {
         return Ok(());
     }
     let types = std::iter::once(sel.type_name.as_str()).chain(sel.also.iter().map(String::as_str));
@@ -1714,7 +1717,7 @@ fn range_interval(pred: &Pred) -> Option<(&str, Interval)> {
         _ => return None,
     };
     // `id` reads the node id, not a stored field.
-    (field != "id").then_some((field.as_str(), interval))
+    (field != "@id").then_some((field.as_str(), interval))
 }
 
 fn and_terms<'a>(expr: &'a BoolExpr, out: &mut Vec<&'a BoolExpr>) {
@@ -1959,7 +1962,7 @@ fn assign_props(
             assign_props(left, sel, schema, props)?;
             assign_props(right, sel, schema, props)
         }
-        BoolExpr::Test(Pred::Eq(field, value, _)) if field != "id" => {
+        BoolExpr::Test(Pred::Eq(field, value, _)) if field != "@id" => {
             props.insert(field.clone(), json_to_prop(schema, sel, field, value)?);
             Ok(())
         }
@@ -2036,7 +2039,7 @@ fn equality_lookup(sel: &Selection) -> bool {
 }
 
 fn prop_json(node: &Node, name: &str) -> Json {
-    if name == "id" {
+    if name == "@id" {
         return json!(node.id);
     }
     node.props
@@ -2337,7 +2340,7 @@ mod tests {
                 schema,
                 r#"{
                     Person(name: "Ada") {
-                      manages *1..3 -> Person { name &hops }
+                      manages *1..3 -> Person { name @hops }
                     }
                 }"#,
             )

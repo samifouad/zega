@@ -57,6 +57,6 @@ for(const kind of ['vector2d','vector3d'])test(`${kind} renders the sample, rank
   await page.reload();
   await expect(page.locator('.vector-count')).toHaveText('200 points');
   // Query-result scope, not the full database, drives projection.
-  await page.evaluate(()=>window.monaco.editor.getEditors().find(e=>e.getDomNode()?.closest('#query')).setValue('{ Ticket(topic = "Billing") limit 10 { id title } }'));
+  await page.evaluate(()=>window.monaco.editor.getEditors().find(e=>e.getDomNode()?.closest('#query')).setValue('{ Ticket(topic = "Billing") limit 10 { @id title } }'));
   await expect(page.locator('.vector-count')).toHaveText('10 points');
 });

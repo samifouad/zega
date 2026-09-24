@@ -95,8 +95,8 @@ const TOUR = [
   Country(name = "Canada") {
     born -> Player {
       name
-      &hops
-      playsFor <- Team { name &hops }
+      @hops
+      playsFor <- Team { name @hops }
     }
   }
 }`],

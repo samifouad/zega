@@ -41,6 +41,8 @@ function registerLanguages(monaco) {
     tokenizer: {
       root: [
         [/\/\/.*$/, 'comment'],
+        [/@[A-Za-z_][\w]*/, 'predefined'],
+        [/&[A-Za-z_][\w]*/, 'variable'],
         [/\b(schema|display|map|table|graph|timeline|Default|from|unique|index|range|text)\b/, 'keyword'],
         [/\btype\b/, { token: 'keyword', next: '@typeName' }],
         [/\s+/, 'white'],
@@ -90,8 +92,9 @@ function registerLanguages(monaco) {
       root: [
         [/\/\/.*$/, 'comment'],
         [/"([^"\\]|\\.)*"/, 'string'],
-        [/\b(query|mutation|link|set|true|false|null|order|by|limit|distance|within_box|point|vector|near|similarity|score|exact|toward)\b/, 'keyword'],
-        [/\b(CONTAINS|STARTS|WITH|ENDS)\b/, 'keyword'],
+        [/\b(query|mutation|link|set|true|false|null|order|by|limit|exact|toward)\b/, 'keyword'],
+        [/\b(findWith|startsWith|endsWith)\b/, 'keyword'],
+        [/@[A-Za-z_][\w]*/, 'predefined'],
         [/->|<-|>=|<=|<>|!=|&&|\|\|/, 'operator'],
         [/[<>]/, 'operator'],
         [/&[A-Za-z_][\w]*/, 'variable'],
@@ -103,6 +106,21 @@ function registerLanguages(monaco) {
         [/[a-z_][\w]*/, 'identifier'],
         [/\s+/, 'white'],
       ],
+    },
+  });
+
+  monaco.languages.registerCompletionItemProvider('zega-query', {
+    triggerCharacters: ['@'],
+    provideCompletionItems(model, position) {
+      const word = model.getWordUntilPosition(position);
+      const before = model.getLineContent(position.lineNumber).slice(0, word.startColumn - 1);
+      const hasAt = before.endsWith('@');
+      const range = { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber,
+        startColumn: word.startColumn - (hasAt ? 1 : 0), endColumn: word.endColumn };
+      const names = ['@hops', '@cost', '@id', '@score', '@point', '@vector', '@distance', '@similarity', '@within_box', '@near'];
+      if (!hasAt) names.push('findWith', 'startsWith', 'endsWith');
+      return { suggestions: names.map((name) => ({ label: name, insertText: name, range,
+        kind: monaco.languages.CompletionItemKind.Keyword })) };
     },
   });
 

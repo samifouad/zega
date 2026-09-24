@@ -22,8 +22,8 @@ node ID. No model is run by the index: text and embeddings are separate fields.
 
 ```zql
 schema { type Ticket { title: String embedding: Vector<3> } }
-mutation { Ticket(title: "Reset password" && embedding: vector[0.8, 0.2, 0.1]) { id } }
-mutation { Ticket(title: "Reset password") set embedding: vector[1, 0, 0] { embedding } }
+mutation { Ticket(title: "Reset password" && embedding: @vector[0.8, 0.2, 0.1]) { @id } }
+mutation { Ticket(title: "Reset password") set embedding: @vector[1, 0, 0] { embedding } }
 ```
 
 JSON loads accept arrays under the declared field name, or explicit bindings:
@@ -33,14 +33,14 @@ JSON loads accept arrays under the declared field name, or explicit bindings:
 ```
 
 ```zql
-mutation json ["tickets.json"] { Ticket(title: $title && embedding: $embedding) { id } }
+mutation json ["tickets.json"] { Ticket(title: $title && embedding: $embedding) { @id } }
 ```
 
 CSV requires an explicit mapping of exactly N numeric columns:
 
 ```zql
 schema { type Ticket { title: String embedding: Vector<3> from (x, y, z) } }
-mutation csv ["tickets.csv"] { Ticket(title: $title) { id embedding } }
+mutation csv ["tickets.csv"] { Ticket(title: $title) { @id embedding } }
 ```
 
 No coordinate or embedding columns are guessed. The mapping also works with
@@ -49,38 +49,38 @@ columns. All rows are bound and checked before a load writes any of them.
 
 ## Nearest and threshold queries
 
-These use the existing selection syntax. `near` follows the optional filter,
-and precedes the fields. Select `score` or alias it as `relevance: score`.
+These use the existing selection syntax. `@near` follows the optional filter,
+and precedes the fields. Select `@score` or alias it as `relevance: @score`.
 
 ```zql
 query {
-  Ticket(status = "Open") near(embedding, vector[1, 0, 0], 10) {
-    id title score related -> Ticket { id title }
+  Ticket(status = "Open") @near(embedding, @vector[1, 0, 0], 10) {
+    @id title @score related -> Ticket { @id title }
   }
 }
 
 // Explicit exact scan, including all matching vectors.
-query { Ticket near(embedding, vector[1, 0, 0], 10, exact) { id title score } }
+query { Ticket @near(embedding, @vector[1, 0, 0], 10, exact) { @id title @score } }
 
 // Full-vector threshold, combinable with && and ||.
 query {
-  Ticket(similarity(embedding, vector[1, 0, 0]) >= 0.8 && status = "Open") {
-    id title relevance: similarity(embedding, vector[1, 0, 0])
+  Ticket(@similarity(embedding, @vector[1, 0, 0]) >= 0.8 && status = "Open") {
+    @id title relevance: @similarity(embedding, @vector[1, 0, 0])
   }
 }
 
 // Nearest within the nodes reached by a real relationship.
 query {
   Ticket(title = "Reset password") {
-    related -> Ticket near(embedding, vector[1, 0, 0], 5) { id title score }
+    related -> Ticket @near(embedding, @vector[1, 0, 0], 5) { @id title @score }
   }
 }
 ```
 
 The query vector must have the field's dimension. The examples above use
 `Vector<3>`; a `Vector<384>` query needs 384 components. ZQL's `$name` syntax
-remains an import binding, so queries write `vector[...]` literals. Nearest
-selections return arrays, including with equality filters. `near` is read-only
+remains an import binding, so queries write `@vector[...]` literals. Nearest
+selections return arrays, including with equality filters. `@near` is read-only
 and cannot be combined with distance ordering. Missing optional vectors are
 excluded. An additional `limit` can truncate the nearest result.
 
@@ -150,7 +150,7 @@ for every dataset.
 Only explicitly declared views are offered. Every type in a vector view must
 have a Vector field. With no type list, every declared type must qualify.
 The first Vector field in schema order supplies that type's points. Optional
-missing values have no point. Select `id` in the query: the engine projects
+missing values have no point. Select `@id` in the query: the engine projects
 exactly the result IDs, including nested relationship results, and fetches
 their stored vectors. Unselected nodes do not participate.
 

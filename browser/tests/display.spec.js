@@ -53,7 +53,7 @@ test('Calgary map draws query markers, attribution, theme, and the shared inspec
   await page.locator('#btn-calgary').click();
   await expect(page.getByRole('tab')).toHaveText(['Map', 'Table', 'Graph']);
   await expect(page.getByRole('tab', { name: 'Map', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await setEditor(page, 'query', '{ Place { id name kind at } }');
+  await setEditor(page, 'query', '{ Place { @id name kind at } }');
   await expect(page.locator('.map-count')).toHaveText('30 places');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('© OpenStreetMap contributors');
   await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).length || 0)).toBe(30);
@@ -69,7 +69,7 @@ test('Calgary map draws query markers, attribution, theme, and the shared inspec
   await page.locator('#btn-theme').click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).length || 0)).toBe(30);
-  await setEditor(page, 'query', '{ Place(kind CONTAINS "cafe") { id name kind at } }');
+  await setEditor(page, 'query', '{ Place(kind findWith "cafe") { @id name kind at } }');
   await expect(page.locator('.map-count')).toHaveText('4 places');
   await page.reload();
   await expect(page.locator('.map-count')).toHaveText('4 places');
@@ -81,7 +81,7 @@ test('failed tiles keep the GeoJSON markers and permanent attribution on plain g
   await ready(page);
   await page.locator('#btn-calgary').click();
   await expect(page.locator('.map-count')).toBeVisible();
-  await setEditor(page, 'query', '{ Place { id name kind at } }');
+  await setEditor(page, 'query', '{ Place { @id name kind at } }');
   await expect(page.locator('.map-count')).toHaveText('30 places');
   await expect(page.locator('.map-notice')).toHaveText('Base map unavailable. Your places are still shown.');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('© OpenStreetMap contributors');
@@ -108,7 +108,7 @@ test('timeline uses the checked year field and shares the node inspector', async
   }
   mutation { Event(name: "Later" && year: 2024) { name year } }
   mutation { Event(name: "Earlier" && year: 1988) { name year } }`);
-  await setEditor(page, 'query', '{ Event { id name year } }');
+  await setEditor(page, 'query', '{ Event { @id name year } }');
   await page.locator('#btn-run').click();
   await expect(page.getByRole('tab')).toHaveText(['Timeline', 'Table']);
   await expect(page.locator('.timeline-view button')).toHaveText(['1988 · Earlier', '2024 · Later']);
@@ -156,7 +156,7 @@ test('map still plots the legacy Float coordinate pair', async ({ page }) => {
   await page.locator('#btn-clear').click();
   await setEditor(page, 'schema', `schema { type Place { name: String lat: Float lon: Float } display { map: Default } }
     mutation { Place(name: "Legacy" && lat: 51.04 && lon: -114.06) { name } }`);
-  await setEditor(page, 'query', '{ Place { id name lat lon } }');
+  await setEditor(page, 'query', '{ Place { @id name lat lon } }');
   await page.locator('#btn-run').click();
   await expect(page.locator('.map-count')).toHaveText('1 places');
   await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).map((feature) => feature.properties.name) || [])).toEqual(['Legacy']);

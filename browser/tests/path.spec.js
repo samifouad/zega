@@ -6,10 +6,10 @@ const ROADS = `schema {
   type Junction { name: String at: Point road -> Junction[] { km: Float<km> } }
 }
 unique { Junction { name } }
-mutation { Junction(name: "A" && at: point(51.0, -114.0)) { name } }
-mutation { Junction(name: "B" && at: point(51.0, -113.99)) { name } }
-mutation { Junction(name: "C" && at: point(51.0, -113.98)) { name } }
-mutation { Junction(name: "D" && at: point(51.01, -113.99)) { name } }
+mutation { Junction(name: "A" && at: @point(51.0, -114.0)) { name } }
+mutation { Junction(name: "B" && at: @point(51.0, -113.99)) { name } }
+mutation { Junction(name: "C" && at: @point(51.0, -113.98)) { name } }
+mutation { Junction(name: "D" && at: @point(51.01, -113.99)) { name } }
 mutation { Junction(name: "A") { road -> link Junction(name: "B") { &km: 0.8 } } }
 mutation { Junction(name: "B") { road -> link Junction(name: "C") { &km: 0.8 } } }
 mutation { Junction(name: "A") { road -> link Junction(name: "D") { &km: 1.4 } } }
@@ -34,9 +34,9 @@ test('WASM path finding returns the native routes and A* expands fewer nodes', a
       }
     };
     const routes = {
-      fewest: run('Junction(name: "A") { name road *path -> Junction(name: "C") { name &km &hops } }'),
-      dijkstra: run('Junction(name: "A") { name road *path by &km -> Junction(name: "C") { name &km &hops } }'),
-      astar: run('Junction(name: "A") { name road *path by &km toward at -> Junction(name: "C") { name &km &hops } }'),
+      fewest: run('Junction(name: "A") { name road *path -> Junction(name: "C") { name &km @hops } }'),
+      dijkstra: run('Junction(name: "A") { name road *path by &km -> Junction(name: "C") { name &km @hops } }'),
+      astar: run('Junction(name: "A") { name road *path by &km toward at -> Junction(name: "C") { name &km @hops } }'),
       unreachable: run('Junction(name: "C") { road *path by &km -> Junction(name: "A") { name } }'),
     };
 
