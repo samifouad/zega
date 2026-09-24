@@ -1438,7 +1438,7 @@ fn delete_rel_field_survives_roundtrip() {
 // `migrate_legacy_wal` deserializes every legacy entry as an Operation while
 // reframing it. The author covered the happy path and a torn tail, but NOT:
 //   * a complete legacy entry whose payload fails to deserialize (the
-//     migration's `bincode::deserialize::<Operation>(...)?` Corruption branch),
+//     migration's `decode_exact::<Operation>(...)` Corruption branch),
 //   * a legacy length prefix that overflows past EOF mid-stream,
 //   * that migration leaves no `.wal.migrate.tmp` scratch file behind,
 //   * a legacy file that is exactly a single torn length prefix (< 8 bytes).
