@@ -130,6 +130,54 @@ fn start_loads_local_json_and_persists_across_process_restart() {
     assert_eq!(server.request("POST", "/cql", None, None).0, 404);
 }
 
+/// zega#52: `docker stop` sends SIGTERM. The server stops cleanly and
+/// checkpoints, so the next start reads a snapshot and a log that holds
+/// nothing but the checkpoint entry.
+#[cfg(unix)]
+#[test]
+fn sigterm_checkpoints_and_the_next_start_reads_the_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut server = Running::start("start", directory.path(), &[]);
+    for (name, salary) in [("Ada", 42), ("Grace", 7)] {
+        server.zql(&format!(
+            "mutation {{ Player(name: \"{name}\" && salary: {salary}) {{ name }} }}"
+        ));
+    }
+    let wal = directory.path().join("db/wal.bin");
+    let before = std::fs::metadata(&wal).unwrap().len();
+    assert!(!directory.path().join("db/snapshot.bin").exists());
+    let killed = Command::new("kill")
+        .args(["-TERM", &server.child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let mut status = None;
+    for _ in 0..300 {
+        status = server.child.try_wait().unwrap();
+        if status.is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let status = status.expect("the server was still running 30 s after SIGTERM");
+    assert!(status.success(), "SIGTERM should stop the server cleanly: {status}");
+    assert!(directory.path().join("db/snapshot.bin").exists());
+    let after = std::fs::metadata(&wal).unwrap().len();
+    assert!(after < 64, "log is {after} bytes after shutdown (was {before})");
+    drop(server);
+
+    let server = Running::start("start", directory.path(), &[]);
+    let mut players = server.zql("{ Player { name salary } }");
+    players
+        .as_array_mut()
+        .unwrap()
+        .sort_by_key(|player| player["name"].to_string());
+    assert_eq!(
+        players,
+        json!([{"name":"Ada","salary":42},{"name":"Grace","salary":7}])
+    );
+}
+
 #[test]
 fn token_file_requires_bearer_and_bad_configuration_fails() {
     let directory = tempfile::tempdir().unwrap();
@@ -270,6 +318,7 @@ fn help_version_and_defaults_are_available_without_starting_a_server() {
                 help.contains("9342")
                     && help.contains("127.0.0.1")
                     && help.contains("--token-file")
+                    && help.contains("--checkpoint-mb")
             );
         }
         if args[0] == "explorer" {

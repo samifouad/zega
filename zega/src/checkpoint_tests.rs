@@ -356,3 +356,33 @@ fn a_failed_log_rewrite_after_the_snapshot_refuses_writes_until_reopen() {
         reference(&[writes_a, writes_b, writes_c])
     );
 }
+
+#[test]
+fn a_log_older_than_the_snapshot_is_not_replayed_over_it() {
+    // A checkpoint that stopped after the rename leaves the log it was about
+    // to empty; every entry in it is already in the snapshot. Replaying one
+    // over the snapshot is only harmless while every operation happens to be
+    // idempotent, so the snapshot wins. The entry here is one the snapshot
+    // does not hold, which shows whether it was replayed.
+    let dir = tempdir().unwrap();
+    let zega = open(dir.path());
+    writes_a(&zega);
+    zega.snapshot().unwrap();
+    drop(zega);
+    let path = dir.path().join("wal.bin");
+    std::fs::remove_file(&path).unwrap();
+    let old = Wal::new(&path, true).unwrap();
+    old.append(&Operation::InsertNode {
+        id: 99,
+        labels: vec!["Ghost".to_string()],
+        props: HashMap::new(),
+    })
+    .unwrap();
+    drop(old);
+    assert_eq!(wal_generation(dir.path()), 0);
+
+    let zega = open(dir.path());
+    assert_eq!(state(&zega), reference(&[writes_a]));
+    drop(zega);
+    assert_eq!(wal_generation(dir.path()), 1, "the old log was not emptied");
+}

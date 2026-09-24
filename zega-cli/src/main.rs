@@ -18,6 +18,7 @@ use zega::Zega;
 use zega_server::AppState;
 
 static EXPLORER: Dir<'_> = include_dir!("$OUT_DIR/explorer");
+const MIB: u64 = 1024 * 1024;
 
 #[derive(Parser)]
 #[command(name = "zega", version, about = "Zega graph database and explorer")]
@@ -57,6 +58,11 @@ enum Command {
         /// Allow ZQL imports from private/loopback URLs for trusted callers.
         #[arg(long)]
         allow_private_imports: bool,
+        /// Checkpoint (write a snapshot and empty the log) once the log holds
+        /// this many MiB, or as much as the last snapshot if that is more; 0
+        /// checkpoints only on shutdown.
+        #[arg(long, default_value_t = zega::DEFAULT_CHECKPOINT_MIN_BYTES / MIB)]
+        checkpoint_mb: u64,
     },
     /// Serve the embedded explorer against a local database. Prints a URL; opens nothing.
     Explorer {
@@ -83,7 +89,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let (data, host, port, token_file, allow_private, explorer) = match cli.command {
+    let (data, host, port, token_file, allow_private, checkpoint_after, explorer) = match cli.command
+    {
         Command::Fmt { .. } => unreachable!("fmt runs without a server runtime"),
         Command::Start {
             data,
@@ -91,7 +98,16 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             port,
             token_file,
             allow_private_imports,
-        } => (data, host, port, token_file, allow_private_imports, false),
+            checkpoint_mb,
+        } => (
+            data,
+            host,
+            port,
+            token_file,
+            allow_private_imports,
+            (checkpoint_mb > 0).then(|| checkpoint_mb.saturating_mul(MIB)),
+            false,
+        ),
         Command::Explorer {
             data,
             port,
@@ -102,6 +118,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             port,
             None,
             allow_private_imports,
+            Some(zega::DEFAULT_CHECKPOINT_MIN_BYTES),
             true,
         ),
     };
@@ -131,9 +148,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let path = data.to_str().ok_or("data path must be UTF-8")?;
     let db = Zega::open(path)
         .allow_private_imports(allow_private)
+        .checkpoint_after(checkpoint_after)
         .build()
         .map_err(io::Error::other)?;
     let state = AppState::new(db, token);
+    let db = state.zega.clone();
     let listener = TcpListener::bind((host, port)).await?;
     let address = listener.local_addr()?;
     println!("http://{address}");
@@ -152,6 +171,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             .with_graceful_shutdown(shutdown())
             .await?;
     }
+    // Every request has finished. Checkpoint so the next start reads the
+    // snapshot instead of replaying the log; the log is already durable, so a
+    // failure here costs restart time, not data.
+    let db = db.lock().map_err(|_| "database lock poisoned")?;
+    if let Err(error) = db.snapshot() {
+        eprintln!("checkpoint on shutdown failed: {error}");
+    }
     Ok(())
 }
 
@@ -159,7 +185,27 @@ fn serde_config() -> std::collections::HashMap<&'static str, &'static str> {
     std::collections::HashMap::from([("backend", "native")])
 }
 
+/// Ctrl-C, or SIGTERM, which is how a container is stopped.
 async fn shutdown() {
+    #[cfg(unix)]
+    {
+        use std::{future::Future, pin::pin, task::Poll};
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut ctrl_c = pin!(tokio::signal::ctrl_c());
+        let Ok(mut term) = signal(SignalKind::terminate()) else {
+            let _ = ctrl_c.await;
+            return;
+        };
+        std::future::poll_fn(|cx| {
+            if ctrl_c.as_mut().poll(cx).is_ready() || term.poll_recv(cx).is_ready() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+    #[cfg(not(unix))]
     let _ = tokio::signal::ctrl_c().await;
 }
 
