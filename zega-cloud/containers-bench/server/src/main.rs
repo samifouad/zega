@@ -11,14 +11,30 @@
 //!   peak RSS.
 //! - `POST /reload` drops the database and opens the data directory again, the
 //!   path a restarted process takes, and reports the time and peak RSS.
+//! - `POST /wipe` drops the database, deletes the data directory and opens it
+//!   empty, so the next restart starts from an empty disk (the Fly volume
+//!   survives restarts; this is how that run gets an empty one).
 //!
-//! The container is reachable only through its Durable Object, which checks
-//! the admin token, so the server runs without its own token by default.
+//! `/mem` also reports how long the startup open took (`openMs`: the reload
+//! from disk a restarted process pays before it answers) and the memory the
+//! machine actually offers (`MemTotal`/`MemAvailable` and the cgroup limit),
+//! because a Fly VM's kernel takes part of its nominal size.
+//!
+//! On Cloudflare the container is reachable only through its Durable Object,
+//! which checks the admin token, so the server runs without its own token by
+//! default. On Fly it is reached directly and runs with `--token-file`.
+//!
+//! `--cors-origin ORIGIN` (repeatable; `http://localhost` also allows
+//! `http://localhost:<port>` and `127.0.0.1`) lets those browser origins call
+//! it, for explorer2. A preflight (OPTIONS) is answered before the token
+//! check: it carries no Authorization header and grants nothing but the right
+//! to send the real request, which still needs the token.
 //! Configuration is flags; no environment variables.
 
 use axum::{
-    extract::{Query, State},
-    http::{HeaderMap, StatusCode},
+    extract::{Query, Request, State},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -39,10 +55,11 @@ struct Options {
     host: IpAddr,
     port: u16,
     token_file: Option<PathBuf>,
+    cors_origins: Vec<String>,
 }
 
 fn usage() -> ! {
-    eprintln!("usage: zega-bench-server --data DIR [--host 0.0.0.0] [--port 8080] [--token-file FILE]");
+    eprintln!("usage: zega-bench-server --data DIR [--host 0.0.0.0] [--port 8080] [--token-file FILE] [--cors-origin ORIGIN]...");
     std::process::exit(2)
 }
 
@@ -52,6 +69,7 @@ fn parse() -> Options {
         host: IpAddr::from([0, 0, 0, 0]),
         port: 8080,
         token_file: None,
+        cors_origins: Vec::new(),
     };
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -61,6 +79,7 @@ fn parse() -> Options {
             "--host" => options.host = value.parse().unwrap_or_else(|_| usage()),
             "--port" => options.port = value.parse().unwrap_or_else(|_| usage()),
             "--token-file" => options.token_file = Some(PathBuf::from(value)),
+            "--cors-origin" => options.cors_origins.push(value.trim_end_matches('/').to_string()),
             _ => usage(),
         }
     }
@@ -89,6 +108,23 @@ fn memory() -> Value {
     json!({"rss": field("VmRSS:"), "peakRss": field("VmHWM:"), "rssAnon": field("RssAnon:")})
 }
 
+/// What the machine offers: `/proc/meminfo` and, in a container, the cgroup
+/// v2 limit. A Fly VM's kernel and init take part of its nominal memory.
+fn machine_memory() -> Value {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let field = |name: &str| {
+        meminfo
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+            .map(|kb| kb * 1024)
+    };
+    let cgroup_max = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    json!({"memTotal": field("MemTotal:"), "memAvailable": field("MemAvailable:"), "cgroupMax": cgroup_max})
+}
+
 fn reset_peak() {
     let _ = std::fs::write("/proc/self/clear_refs", "5");
 }
@@ -102,6 +138,7 @@ struct Bench {
     state: AppState,
     data: PathBuf,
     started_at_ms: u128,
+    open_ms: f64,
 }
 
 impl Bench {
@@ -150,7 +187,9 @@ async fn mem(
         "ok": true,
         "engine": "native",
         "startedAtMs": bench.started_at_ms,
+        "openMs": bench.open_ms,
         "memory": memory(),
+        "machine": machine_memory(),
         "disk": bench.disk(),
     });
     if query.contains_key("reset") {
@@ -214,6 +253,70 @@ async fn reload(State(bench): State<Bench>, headers: HeaderMap) -> Response {
     .await
 }
 
+async fn wipe(State(bench): State<Bench>, headers: HeaderMap) -> Response {
+    if !allowed(&bench, &headers) {
+        return denied();
+    }
+    measured(bench, |db, bench| {
+        *db = Zega::in_memory().build().map_err(|e| e.to_string())?;
+        std::fs::remove_dir_all(&bench.data).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&bench.data).map_err(|e| e.to_string())?;
+        *db = open(&bench.data)?;
+        Ok(())
+    })
+    .await
+}
+
+/// The browser origins allowed to call this server.
+#[derive(Clone)]
+struct Cors {
+    origins: Vec<String>,
+}
+
+impl Cors {
+    /// The request's Origin if it is allowed: listed exactly, or a listed
+    /// `http://localhost` / `http://127.0.0.1` with any port.
+    fn allowed(&self, headers: &HeaderMap) -> Option<HeaderValue> {
+        let origin = headers.get(header::ORIGIN)?;
+        let text = origin.to_str().ok()?;
+        let ok = self.origins.iter().any(|allowed| {
+            text == allowed
+                || (matches!(allowed.as_str(), "http://localhost" | "http://127.0.0.1")
+                    && text
+                        .strip_prefix(allowed.as_str())
+                        .and_then(|rest| rest.strip_prefix(':'))
+                        .is_some_and(|port| {
+                            !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit())
+                        }))
+        });
+        ok.then(|| origin.clone())
+    }
+}
+
+async fn cors(State(cors): State<Cors>, request: Request, next: Next) -> Response {
+    let origin = cors.allowed(request.headers());
+    let mut response = if request.method() == Method::OPTIONS {
+        let status = if origin.is_some() { StatusCode::NO_CONTENT } else { StatusCode::FORBIDDEN };
+        let mut response = status.into_response();
+        if origin.is_some() {
+            let headers = response.headers_mut();
+            headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, DELETE"));
+            headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("authorization, content-type"));
+            // Chrome caps this at 2 h; without it every call pays a second round trip.
+            headers.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("7200"));
+        }
+        response
+    } else {
+        next.run(request).await
+    };
+    let headers = response.headers_mut();
+    headers.append(header::VARY, HeaderValue::from_static("Origin"));
+    if let Some(origin) = origin {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+    }
+    response
+}
+
 fn open(data: &std::path::Path) -> Result<Zega, String> {
     let path = data.to_str().ok_or("data path must be UTF-8")?;
     Zega::open(path).build().map_err(|e| e.to_string())
@@ -249,6 +352,7 @@ async fn run(options: Options, started_at_ms: u128) -> Result<(), Box<dyn std::e
         state: state.clone(),
         data: options.data.clone(),
         started_at_ms,
+        open_ms,
     };
     let listener = TcpListener::bind((options.host, options.port)).await?;
     println!(
@@ -259,16 +363,23 @@ async fn run(options: Options, started_at_ms: u128) -> Result<(), Box<dyn std::e
             "openMs": open_ms,
             "readyAtMs": unix_ms(),
             "memory": memory(),
+            "machine": machine_memory(),
             "disk": bench.disk(),
             "listen": listener.local_addr()?.to_string(),
+            "corsOrigins": options.cors_origins,
         })
     );
     let measurement = Router::new()
         .route("/mem", get(mem))
         .route("/snapshot", post(snapshot))
         .route("/reload", post(reload))
+        .route("/wipe", post(wipe))
         .with_state(bench);
-    let app = zega_server::routes::app(state).merge(measurement);
+    let mut app = zega_server::routes::app(state).merge(measurement);
+    if !options.cors_origins.is_empty() {
+        let cors_state = Cors { origins: options.cors_origins.clone() };
+        app = app.layer(middleware::from_fn_with_state(cors_state, cors));
+    }
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
         .await?;
@@ -277,11 +388,45 @@ async fn run(options: Options, started_at_ms: u128) -> Result<(), Box<dyn std::e
 
 /// Cloudflare stops a container with SIGTERM, and PID 1 ignores any signal it
 /// has no handler for, so SIGTERM needs one (`zega start` handles only Ctrl-C).
+/// Fly stops a Machine with SIGINT by default, which `ctrl_c` covers.
 async fn shutdown() {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("install SIGTERM handler");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn origin(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, HeaderValue::from_str(value).unwrap());
+        headers
+    }
+
+    #[test]
+    fn cors_allows_listed_origins_and_local_ports_only() {
+        let cors = Cors {
+            origins: vec!["https://explorer2.zega.dev".into(), "http://localhost".into()],
+        };
+        for ok in ["https://explorer2.zega.dev", "http://localhost", "http://localhost:8788"] {
+            assert!(cors.allowed(&origin(ok)).is_some(), "{ok}");
+        }
+        for no in [
+            "https://explorer2.zega.dev.evil.com",
+            "http://explorer2.zega.dev",
+            "https://explorer.zega.dev",
+            "http://localhost:",
+            "http://localhost:87a8",
+            "http://localhost.evil.com",
+            "http://127.0.0.1:8788",
+        ] {
+            assert!(cors.allowed(&origin(no)).is_none(), "{no}");
+        }
+        assert!(cors.allowed(&HeaderMap::new()).is_none());
     }
 }

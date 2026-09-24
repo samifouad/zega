@@ -1,0 +1,50 @@
+# explorer2.zega.dev's backend: one shared-cpu-1x/256MB Machine running
+# zega-bench-server (zega-server's router) over a 1 GB volume, stopped by
+# Fly's proxy when idle and started by the next request. Separate from the
+# zega-bench app, so tearing the bench down never touches it.
+#
+# Deploy from the repository root (the build context is the whole workspace):
+#   flyctl deploy . --config zega-cloud/explorer2-api/fly.toml \
+#     --dockerfile zega-cloud/fly-bench/server.Dockerfile --ha=false
+app = "zega-explorer2-api"
+primary_region = "yyz"
+
+# The image's own command plus the browser origins allowed to call it.
+[experimental]
+  entrypoint = [
+    "/usr/local/bin/zega-bench-server",
+    "--data", "/data/zega",
+    "--host", "0.0.0.0",
+    "--port", "8080",
+    "--token-file", "/etc/zega/admin-token",
+    "--cors-origin", "https://explorer2.zega.dev",
+    "--cors-origin", "http://localhost",
+    "--cors-origin", "http://127.0.0.1",
+  ]
+
+# The bearer token: Fly secret ADMIN_TOKEN_B64 (base64 of the token), written
+# to this file at boot. Never committed.
+[[files]]
+  guest_path = "/etc/zega/admin-token"
+  secret_name = "ADMIN_TOKEN_B64"
+
+[[mounts]]
+  source = "explorer2_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
