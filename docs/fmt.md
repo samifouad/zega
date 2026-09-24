@@ -36,7 +36,9 @@ engine or the explorer to find syntax errors; `zega fmt` only lays out valid
 code.
 
 Format standard input to standard output, for editors. The language is ZQL
-unless you say otherwise.
+unless you say otherwise with `--lang`. `--lang` only goes with `--stdin`;
+files and directories take their language from the extension, so
+`zega fmt --lang json data.json` is an argument error (exit `2`).
 
 ```sh
 zega fmt --stdin < query.zql
