@@ -145,15 +145,15 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
   // The drawable area in SVG units: the 800×480 box, widened or deepened to
   // the element's shape and centred on it, so the closed pane draws exactly as
   // before and a larger element (the expanded modal) has more room, not bars.
-  const box = { x: 0, y: 0, w: 800, h: 480 };
-  function sizeBox() {
+  const area = { x: 0, y: 0, w: 800, h: 480 };
+  function sizeArea() {
     const { width, height } = svg.getBoundingClientRect();
     if (!width || !height) return;
-    box.w = Math.max(800, 480 * width / height);
-    box.h = Math.max(480, 800 * height / width);
-    box.x = (800 - box.w) / 2;
-    box.y = (480 - box.h) / 2;
-    svg.setAttribute('viewBox', `${box.x} ${box.y} ${box.w} ${box.h}`);
+    area.w = Math.max(800, 480 * width / height);
+    area.h = Math.max(480, 800 * height / width);
+    area.x = (800 - area.w) / 2;
+    area.y = (480 - area.h) / 2;
+    svg.setAttribute('viewBox', `${area.x} ${area.y} ${area.w} ${area.h}`);
   }
   const apply = () => { vp.setAttribute('transform', `translate(${state.tx},${state.ty}) scale(${state.scale})`); };
   const lit = (node) => active != null && (active.size === 0 || active.has(nodeCaption(node)));
@@ -166,9 +166,9 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     const minX = Math.min(...xs) - 70, maxX = Math.max(...xs) + 70;
     const minY = Math.min(...ys) - 70, maxY = Math.max(...ys) + 70;
     const w = maxX - minX || 1, h = maxY - minY || 1;
-    state.scale = Math.min(box.w / w, box.h / h, 1.4);
-    state.tx = box.x + (box.w - w * state.scale) / 2 - minX * state.scale;
-    state.ty = box.y + (box.h - h * state.scale) / 2 - minY * state.scale;
+    state.scale = Math.min(area.w / w, area.h / h, 1.4);
+    state.tx = area.x + (area.w - w * state.scale) / 2 - minX * state.scale;
+    state.ty = area.y + (area.h - h * state.scale) / 2 - minY * state.scale;
     state.fitted = true;
     apply();
   }
@@ -228,8 +228,8 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
 
   const intersects = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
   const inView = (box) => intersects(box, {
-    x: (box.x - state.tx) / state.scale, y: (box.y - state.ty) / state.scale,
-    width: box.w / state.scale, height: box.h / state.scale,
+    x: (area.x - state.tx) / state.scale, y: (area.y - state.ty) / state.scale,
+    width: area.w / state.scale, height: area.h / state.scale,
   });
 
   function placeLabel(drawn, pointAt, obstacles) {
@@ -421,7 +421,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
         const box = entry.captionBox;
         block({ x: at.x + box.x, y: at.y + box.y, width: box.width, height: box.height });
         const x = at.x * state.scale + state.tx, y = at.y * state.scale + state.ty;
-        const visible = x + shape.width * state.scale >= box.x && x - shape.width * state.scale <= box.x + box.w && y + shape.height * state.scale >= box.y && y - shape.height * state.scale <= box.y + box.h;
+        const visible = x + shape.width * state.scale >= area.x && x - shape.width * state.scale <= area.x + area.w && y + shape.height * state.scale >= area.y && y - shape.height * state.scale <= area.y + area.h;
         entry.visual.update(visible, state.scale);
       }
     }
@@ -558,9 +558,13 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
   expand.onclick = () => setExpanded(!container.classList.contains('graph-expanded'));
   setExpanded(expanded, { focus: false });
 
-  sizeBox();
+  sizeArea();
+  // Only a real change of size re-fits: the observer's first call, and a
+  // re-render that restored the previous view, keep the view they have.
   container._resize = new ResizeObserver(() => {
-    sizeBox();
+    const { w, h } = area;
+    sizeArea();
+    if (area.w === w && area.h === h) return;
     if (!userInteracted) fit();
     place();
   });
@@ -635,8 +639,8 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
 
   function toSvg(event) {
     const rect = svg.getBoundingClientRect();
-    const x = box.x + ((event.clientX - rect.left) / rect.width) * box.w;
-    const y = box.y + ((event.clientY - rect.top) / rect.height) * box.h;
+    const x = area.x + ((event.clientX - rect.left) / rect.width) * area.w;
+    const y = area.y + ((event.clientY - rect.top) / rect.height) * area.h;
     return { x: (x - state.tx) / state.scale, y: (y - state.ty) / state.scale };
   }
 
