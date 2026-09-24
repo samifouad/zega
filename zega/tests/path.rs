@@ -495,6 +495,11 @@ fn the_checker_rejects_paths_it_cannot_run() {
             report.diagnostics
         );
     }
+    // The misplaced unit is underlined where it was written.
+    let query = "{ Junction { road *path by &km toward at in km -> Junction { name } } }";
+    let diag = &zega::diagnose(schema, query).diagnostics[0];
+    let start = diag.column as usize - 1;
+    assert_eq!(&query[start..start + diag.underline_length as usize], "in");
     // Without `toward`, a weight needs no unit.
     let report = zega::diagnose(schema, "{ Junction { road *path by &len -> Junction { name } } }");
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);

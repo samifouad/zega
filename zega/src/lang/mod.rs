@@ -1772,6 +1772,7 @@ impl<'a> Parser<'a> {
         };
         let toward = if self.eat_word("toward") {
             let (field, span) = self.ident()?;
+            self.skip();
             if self.starts_word("in") {
                 return Err(self
                     .err("the unit is declared on the weight, not here")
