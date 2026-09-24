@@ -383,7 +383,9 @@ impl Wal {
         }
     }
 
-    /// Make every entry appended so far durable now.
+    /// Make every entry appended so far durable now. Only `Zega::snapshot`
+    /// calls it, which does nothing on wasm32.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn flush(&self) -> Result<(), WalError> {
         #[cfg(target_arch = "wasm32")]
         {
