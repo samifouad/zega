@@ -270,9 +270,18 @@ async fn run(options: Options, started_at_ms: u128) -> Result<(), Box<dyn std::e
         .with_state(bench);
     let app = zega_server::routes::app(state).merge(measurement);
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())
+}
+
+/// Cloudflare stops a container with SIGTERM, and PID 1 ignores any signal it
+/// has no handler for, so SIGTERM needs one (`zega start` handles only Ctrl-C).
+async fn shutdown() {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
 }

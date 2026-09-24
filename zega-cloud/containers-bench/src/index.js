@@ -89,8 +89,15 @@ class ZegaBench extends Container {
     const stopStart = performance.now();
     await this.stop();
     let state = await this.getState();
+    let killed = false;
     while (!['stopped', 'stopped_with_code'].includes(state.status)) {
-      if (performance.now() - stopStart > 60000) throw new Error(`container still ${state.status} after 60 s`);
+      const waited = performance.now() - stopStart;
+      if (waited > 60000) throw new Error(`container still ${state.status} after 60 s`);
+      if (waited > 10000 && !killed) {
+        // SIGTERM ignored: fall back to SIGKILL, and say so in the result.
+        await this.destroy();
+        killed = true;
+      }
       await new Promise(resolve => setTimeout(resolve, 50));
       state = await this.getState();
     }
@@ -98,7 +105,7 @@ class ZegaBench extends Container {
     await this.ctx.storage.put('loaded', 0);
     const first = await bench.firstAnswer();
     const mem = await bench.mem();
-    return { ok: true, bench: 'cold', stopMs, firstAnswerMs: first.ms, attempts: first.attempts, mem };
+    return { ok: true, bench: 'cold', stopMs, killed, firstAnswerMs: first.ms, attempts: first.attempts, mem };
   }
 }
 
