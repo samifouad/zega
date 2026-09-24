@@ -10,6 +10,7 @@
   "vector.js",
   "map.js",
   "globe.js",
+  "arcs.js",
   "data",
   "map-style.js",
   "table.js",
