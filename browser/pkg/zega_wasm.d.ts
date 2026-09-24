@@ -45,7 +45,6 @@ export class ZegaWasm {
      * Preview metadata and cells come from the same Rust parser as insertion.
      */
     preview_import(text: string): string;
-    query(zql: string, params_json: string): string;
     /**
      * Rows a ZQL filter has been tested on since this database was created.
      * An `index { }` block lowers it; results never change.
@@ -97,7 +96,6 @@ export interface InitOutput {
     readonly zegawasm_new: () => [number, number, number];
     readonly zegawasm_nodes_expanded: (a: number) => [number, number, number];
     readonly zegawasm_preview_import: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly zegawasm_query: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_rows_examined: (a: number) => [number, number, number];
     readonly zegawasm_run: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_run_with_sources: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];

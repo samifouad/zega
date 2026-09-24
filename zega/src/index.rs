@@ -20,7 +20,7 @@ use std::ops::Bound;
 use serde_json::Value as Json;
 
 use crate::graph::{Node, NodeId};
-use crate::parser::Value;
+use crate::value::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum IndexKind {
