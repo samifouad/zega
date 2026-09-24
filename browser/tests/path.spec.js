@@ -3,7 +3,7 @@ import { test, expect } from './offline.js';
 // The same road net and expected JSON as zega/tests/path.rs, so the browser
 // build must return byte-identical routes.
 const ROADS = `schema {
-  type Junction { name: String at: Point road -> Junction[] { km: Float } }
+  type Junction { name: String at: Point road -> Junction[] { km: Float<km> } }
 }
 unique { Junction { name } }
 mutation { Junction(name: "A" && at: point(51.0, -114.0)) { name } }
@@ -36,12 +36,12 @@ test('WASM path finding returns the native routes and A* expands fewer nodes', a
     const routes = {
       fewest: run('Junction(name: "A") { name road *path -> Junction(name: "C") { name &km &hops } }'),
       dijkstra: run('Junction(name: "A") { name road *path by &km -> Junction(name: "C") { name &km &hops } }'),
-      astar: run('Junction(name: "A") { name road *path by &km toward at in km -> Junction(name: "C") { name &km &hops } }'),
+      astar: run('Junction(name: "A") { name road *path by &km toward at -> Junction(name: "C") { name &km &hops } }'),
       unreachable: run('Junction(name: "C") { road *path by &km -> Junction(name: "A") { name } }'),
     };
 
     // A 30 x 30 grid about 100 m apart; each road is its straight line in metres.
-    const schema = 'schema { type Junction { n: Int at: Point road -> Junction[] { m: Int } } }\nunique { Junction { n } }';
+    const schema = 'schema { type Junction { n: Int at: Point road -> Junction[] { m: Int<m> } } }\nunique { Junction { n } }';
     const side = 30;
     const db = new ZegaWasm();
     const points = [];
@@ -71,8 +71,8 @@ test('WASM path finding returns the native routes and A* expands fewer nodes', a
       return { expanded: db.nodes_expanded() - before, cost: result.road.cost, hops: result.road.hops };
     };
     const dijkstra = measure(' by &m');
-    const astar = measure(' by &m toward at in m');
-    const diagnostic = JSON.parse(db.check(schema, '{ Junction { road *path toward at in m -> Junction { n } } }')).diagnostics[0]?.message;
+    const astar = measure(' by &m toward at');
+    const diagnostic = JSON.parse(db.check(schema, '{ Junction { road *path toward at -> Junction { n } } }')).diagnostics[0]?.message;
     db.free();
     return { routes, dijkstra, astar, diagnostic };
   }, { ROADS });
