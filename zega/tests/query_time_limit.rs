@@ -56,6 +56,25 @@ fn a_slow_read_stops_at_the_limit_with_its_own_error() {
     assert_eq!(count(&db, ALL), 2000);
 }
 
+/// One scan: every stop tested against a thousand names, none of them
+/// indexed, none matching. Seconds of work inside a single filter.
+fn one_long_scan() -> String {
+    let names: Vec<String> = (0..1000).map(|i| format!("name = \"x{i}\"")).collect();
+    format!("query {{ Stop({}) {{ name }} }}", names.join(" || "))
+}
+
+#[test]
+fn a_single_long_scan_stops_at_the_limit() {
+    let limit = Duration::from_millis(200);
+    let db = Zega::in_memory().query_time_limit(limit).build().unwrap();
+    load_stops(&db, 4000);
+    let started = Instant::now();
+    let error = db.run_lang(SCHEMA, &one_long_scan()).unwrap_err();
+    let took = started.elapsed();
+    assert!(matches!(error, ZegaError::QueryTimeLimit { .. }), "{error}");
+    assert!(took >= limit && took < limit * 5, "stopped after {took:?}");
+}
+
 #[test]
 fn a_mutation_that_hits_the_limit_writes_nothing_in_memory_or_on_disk() {
     let data = tempfile::tempdir().unwrap();
@@ -97,3 +116,4 @@ fn a_limit_that_is_not_reached_changes_nothing() {
     db.run_lang_with_sources(SCHEMA, VISITS, &visits(300)).unwrap();
     assert_eq!(count(&db, SEEN), 300);
 }
+
