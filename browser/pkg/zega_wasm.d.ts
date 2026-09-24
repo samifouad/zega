@@ -67,11 +67,17 @@ export class ZegaWasm {
     vector_view(schema: string, result: string, kind: string, selected: number | null | undefined, k: number, threshold: number): string;
 }
 
+/**
+ * Format a ZQL file or editor pane using the canonical Rust formatter.
+ */
+export function format(source: string): string;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_zegawasm_free: (a: number, b: number) => void;
+    readonly format: (a: number, b: number) => [number, number, number, number];
     readonly zegawasm_apply: (a: number, b: number, c: number) => [number, number, number, number];
     readonly zegawasm_apply_with_sources: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_check: (a: number, b: number, c: number, d: number, e: number) => [number, number];

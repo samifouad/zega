@@ -11,9 +11,9 @@ async function setSource(page, text = source) {
 }
 for (const shortcut of ['Meta+s', 'Control+s']) {
   test(`format on save (${shortcut}) keeps cursor line and persists source`, async ({ page }) => {
-    
     await page.goto('/');
     await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45_000 });
+    await expect(page.locator('#raw-count')).toContainText('50 nodes');
     await setSource(page);
     await page.keyboard.press(shortcut);
     await expect.poll(() => value(page)).toBe(formatted);
@@ -25,8 +25,9 @@ for (const shortcut of ['Meta+s', 'Control+s']) {
   });
 }
 test('Format action uses WASM, preserves comments, incomplete source and undo', async ({ page }) => {
-   await page.goto('/');
+  await page.goto('/');
   await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45_000 });
+  await expect(page.locator('#raw-count')).toContainText('50 nodes');
   await setSource(page, '// retain me\n' + source);
   await page.getByRole('button', { name: 'Format', exact: true }).click();
   await expect.poll(() => value(page)).toBe('// retain me\n' + formatted);

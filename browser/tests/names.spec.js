@@ -7,6 +7,7 @@ const query = 'query { Stop(name: "A") { hops cost shape road -> Stop { &hops &c
 test('editor runs user fields beside built-ins, highlights them, and completes @ names', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45_000 });
+  await expect(page.locator('#raw-count')).toContainText('50 nodes');
   if (await page.locator('#btn-play').textContent() === 'pause') await page.locator('#btn-play').click();
   await page.locator('#btn-clear').click();
   await page.evaluate(({ schema, setup, query }) => {

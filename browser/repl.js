@@ -228,9 +228,10 @@ applyTheme(theme);
 let activeView = null, displayKey = '', disposeView = null;
 
 
+const savedQuery = localStorage.getItem(LS_QUERY);
 const editorsReady = createEditors({
   schema: localStorage.getItem(LS_SCHEMA) || SCHEMA,
-  query: localStorage.getItem(LS_QUERY) || QUERY,
+  query: savedQuery || QUERY,
 });
 
 await init();
@@ -938,7 +939,7 @@ if (db.native) {
   if (queryText().trim() && !isMutation(queryText())) await run(queryText());
 } else if (!saved && !localStorage.getItem(LS_SCHEMA)) {
   await reseed();
-} else if (defaultSchema) {
+} else if (defaultSchema && !savedQuery) {
   showTour(0);
   startAutoplay();
 } else {
