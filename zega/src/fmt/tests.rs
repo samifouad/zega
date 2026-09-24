@@ -59,9 +59,8 @@ fn ast(source: &str) -> Result<Parsed> {
     }
     fn expr(e: &mut BoolExpr) {
         match e {
-            BoolExpr::And(a, b) | BoolExpr::Or(a, b) => {
-                expr(a);
-                expr(b);
+            BoolExpr::And(terms) | BoolExpr::Or(terms) => {
+                terms.iter_mut().for_each(expr);
             }
             BoolExpr::Test(p) => match p {
                 Pred::Similarity(sim, _, _) => span(&mut sim.span),
@@ -128,9 +127,8 @@ fn ast(source: &str) -> Result<Parsed> {
     }
     fn discovery(expr: &mut DiscoveryExpr) {
         match expr {
-            DiscoveryExpr::And(a, b) | DiscoveryExpr::Or(a, b) => {
-                discovery(a);
-                discovery(b);
+            DiscoveryExpr::And(terms) | DiscoveryExpr::Or(terms) => {
+                terms.iter_mut().for_each(discovery);
             }
             DiscoveryExpr::Test(p) => match p {
                 Primitive::Text {

@@ -320,6 +320,18 @@ pub enum Item {
     },
 }
 
+/// An item read up to its arrow: either finished, or a walk whose target
+/// selection the caller parses one nesting level deeper.
+enum ItemHead {
+    Done(Item),
+    Walk {
+        field: String,
+        span: Span,
+        range: Option<(usize, usize)>,
+        path: Option<PathSpec>,
+    },
+}
+
 /// `road *path(@cost <= 50) by &km toward at in km -> Junction(...)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PathSpec {
@@ -399,11 +411,16 @@ pub enum Pred {
 }
 
 /// A condition, read like the test in an `if`.
+///
+/// `&&` and `||` are n-ary: a chain `a || b || c` is one `Or` with three
+/// operands, not a nested tree, so a long flat chain costs no stack in any pass
+/// over it. Only written parentheses nest, and the parser bounds those by
+/// [`MAX_NESTING`]. The parser builds `And`/`Or` with at least two operands.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BoolExpr {
     Test(Pred),
-    And(Box<BoolExpr>, Box<BoolExpr>),
-    Or(Box<BoolExpr>, Box<BoolExpr>),
+    And(Vec<BoolExpr>),
+    Or(Vec<BoolExpr>),
 }
 
 impl BoolExpr {
@@ -416,9 +433,10 @@ impl BoolExpr {
     fn collect_tests<'a>(&'a self, out: &mut Vec<&'a Pred>) {
         match self {
             BoolExpr::Test(pred) => out.push(pred),
-            BoolExpr::And(left, right) | BoolExpr::Or(left, right) => {
-                left.collect_tests(out);
-                right.collect_tests(out);
+            BoolExpr::And(terms) | BoolExpr::Or(terms) => {
+                for term in terms {
+                    term.collect_tests(out);
+                }
             }
         }
     }
@@ -428,15 +446,18 @@ impl BoolExpr {
     pub fn is_equality_and(&self) -> bool {
         match self {
             BoolExpr::Test(Pred::Eq(_, _, _)) => true,
-            BoolExpr::And(left, right) => left.is_equality_and() && right.is_equality_and(),
-            BoolExpr::Or(_, _) | BoolExpr::Test(_) => false,
+            BoolExpr::And(terms) => terms.iter().all(BoolExpr::is_equality_and),
+            BoolExpr::Or(_) | BoolExpr::Test(_) => false,
         }
     }
 
     pub fn span(&self) -> Span {
         match self {
             BoolExpr::Test(pred) => pred.span(),
-            BoolExpr::And(left, _) | BoolExpr::Or(left, _) => left.span(),
+            BoolExpr::And(terms) | BoolExpr::Or(terms) => match terms.first() {
+                Some(first) => first.span(),
+                None => Span { line: 0, column: 0, end_line: 0, end_column: 0 },
+            },
         }
     }
 }
@@ -857,11 +878,25 @@ pub(crate) fn unsupported_comment(source: &str) -> Option<&'static str> {
     ["/*", "*/", "#", "--", "<!--", "(*", "*)"].into_iter().find(|marker| source.starts_with(marker))
 }
 
+/// The deepest ZQL nesting the parser accepts: parentheses in a condition or a
+/// `then` stage, plus selections nested by `->`/`<-`, counted together. Every
+/// later pass (check, bind, execute, format) recurses once per level, so this
+/// bound is what keeps them all off the end of the stack. Real queries nest a
+/// handful of levels; 128 is far above that and runs comfortably on a 2 MiB
+/// worker-thread stack in a debug build.
+pub const MAX_NESTING: usize = 128;
+
 struct Parser<'a> {
     src: &'a str,
     i: usize,
     /// `$Name` in a load template reads a column or a JSON key.
     columns: bool,
+    /// Levels of [`MAX_NESTING`] entered at the current position.
+    depth: usize,
+    /// The last `(byte, line, column)` that [`Self::loc`] resolved. Spans are
+    /// asked for mostly in source order, so resuming from here keeps a long
+    /// query linear instead of rescanning from byte 0 for every span.
+    last_loc: std::cell::Cell<(usize, u32, u32)>,
 }
 
 impl<'a> Parser<'a> {
@@ -870,7 +905,43 @@ impl<'a> Parser<'a> {
             src,
             i: 0,
             columns: false,
+            depth: 0,
+            last_loc: std::cell::Cell::new((0, 1, 1)),
         }
+    }
+
+    /// A lookahead parser at the same position and nesting depth.
+    fn fork(&self) -> Self {
+        Self {
+            src: self.src,
+            i: self.i,
+            columns: self.columns,
+            depth: self.depth,
+            last_loc: self.last_loc.clone(),
+        }
+    }
+
+    /// Run `inner` one nesting level deeper, or fail at `start` (the byte that
+    /// opens the level) when that would pass [`MAX_NESTING`].
+    fn nested<T>(&mut self, start: usize, inner: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth >= MAX_NESTING {
+            return Err(self.too_deep(start));
+        }
+        self.depth += 1;
+        let result = inner(self);
+        self.depth -= 1;
+        result
+    }
+
+    /// Out of line: this frame is on the recursive path of every level.
+    #[cold]
+    #[inline(never)]
+    fn too_deep(&self, start: usize) -> Error {
+        self.err_at(
+            self.span_bytes(start, self.peek_token_end(start)),
+            format!("nested too deeply (limit {MAX_NESTING})"),
+        )
+        .with_help("split the query, or drop parentheses that group nothing")
     }
 
     fn starts_word(&self, word: &str) -> bool {
@@ -1167,11 +1238,24 @@ impl<'a> Parser<'a> {
 
     /// Line and column of a byte offset. The column counts UTF-16 code units.
     fn loc(&self, byte: usize) -> (u32, u32) {
-        let byte = byte.min(self.src.len());
-        let mut line = 1u32;
-        let mut column = 1u32;
-        for (i, ch) in self.src.char_indices() {
-            if i >= byte {
+        let mut byte = byte.min(self.src.len());
+        while !self.src.is_char_boundary(byte) {
+            byte += 1;
+        }
+        let (at, at_line, at_column) = self.last_loc.get();
+        let (from, mut line, mut column) = if at <= byte {
+            (at, at_line, at_column)
+        } else if !self.src[byte..at].contains('\n') {
+            // A step back on the same line, such as a span's start after its
+            // end was resolved.
+            let back = self.src[byte..at].encode_utf16().count() as u32;
+            self.last_loc.set((byte, at_line, at_column - back));
+            return (at_line, at_column - back);
+        } else {
+            (0, 1, 1)
+        };
+        for (i, ch) in self.src[from..].char_indices() {
+            if from + i >= byte {
                 break;
             }
             if ch == '\n' {
@@ -1181,6 +1265,7 @@ impl<'a> Parser<'a> {
                 column += ch.len_utf16() as u32;
             }
         }
+        self.last_loc.set((byte, line, column));
         (line, column)
     }
 
@@ -1326,7 +1411,7 @@ impl<'a> Parser<'a> {
     }
 
     fn starts_call(&self, name: &str, delimiter: &str) -> bool {
-        let mut lookahead = Self { src: self.src, i: self.i, columns: self.columns };
+        let mut lookahead = self.fork();
         let _ = lookahead.eat("@");
         lookahead.eat_word(name) && lookahead.eat(delimiter)
     }
@@ -1616,7 +1701,22 @@ impl<'a> Parser<'a> {
         Ok((vec![name], vec![span], many))
     }
 
+    /// A selection and the items nested in it. Everything before `{` is read
+    /// by [`Self::selection_head`], out of line, so the frames that recurse
+    /// once per nested selection stay small (zegadb/zega#48).
     fn parse_selection(&mut self) -> Result<Selection> {
+        let mut selection = self.selection_head()?;
+        if self.eat("{") {
+            while !self.eat("}") {
+                selection.items.push(self.parse_item()?);
+                self.skip();
+            }
+        }
+        Ok(selection)
+    }
+
+    #[inline(never)]
+    fn selection_head(&mut self) -> Result<Selection> {
         self.skip();
         self.reject_discovery_literal()?;
         let mut also = Vec::new();
@@ -1687,13 +1787,6 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        let mut items = Vec::new();
-        if self.eat("{") {
-            while !self.eat("}") {
-                items.push(self.parse_item()?);
-                self.skip();
-            }
-        }
         Ok(Selection {
             type_name,
             type_span,
@@ -1704,33 +1797,68 @@ impl<'a> Parser<'a> {
             near,
             order,
             limit,
-            items,
+            items: Vec::new(),
         })
     }
 
+    /// One item. A walk's target recurses; everything else is read by
+    /// [`Self::item_head`], out of line, to keep this frame small.
     fn parse_item(&mut self) -> Result<Item> {
+        match self.item_head()? {
+            ItemHead::Done(item) => Ok(item),
+            ItemHead::Walk {
+                field,
+                span,
+                range,
+                path,
+            } => {
+                let direction = if self.eat("->") {
+                    Direction::Out
+                } else {
+                    self.expect("<-")?;
+                    Direction::In
+                };
+                let link = self.eat_word("link");
+                self.skip();
+                let start = self.i;
+                let target = self.nested(start, Self::parse_selection)?;
+                Ok(Item::Walk {
+                    field,
+                    span,
+                    range,
+                    path,
+                    link,
+                    direction,
+                    target: Box::new(target),
+                })
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn item_head(&mut self) -> Result<ItemHead> {
         self.skip();
         self.reject_discovery_block()?;
         if self.src[self.i..].starts_with('@') {
-            return self.builtin_item(None);
+            return self.builtin_item(None).map(ItemHead::Done);
         }
         if self.eat("&") {
             let amp = self.i - 1;
             let (name, _) = self.ident()?;
             let span = self.span_bytes(amp, self.i);
             if self.eat(":") {
-                return Ok(Item::EdgeSet(name, self.parse_value()?, span));
+                return Ok(ItemHead::Done(Item::EdgeSet(name, self.parse_value()?, span)));
             }
-            return Ok(Item::EdgeProp(name, span));
+            return Ok(ItemHead::Done(Item::EdgeProp(name, span)));
         }
         for name in ["similarity", "distance"] {
             if self.starts_call(name, "(") {
-                return self.builtin_item(None);
+                return self.builtin_item(None).map(ItemHead::Done);
             }
         }
         let (field, mut span) = self.ident()?;
         if self.eat(":") {
-            return self.builtin_item(Some(field));
+            return self.builtin_item(Some(field)).map(ItemHead::Done);
         }
         let mut path = None;
         let star = self.eat("*");
@@ -1754,22 +1882,11 @@ impl<'a> Parser<'a> {
             None
         };
         if self.starts_with_arrow() {
-            let direction = if self.eat("->") {
-                Direction::Out
-            } else {
-                self.expect("<-")?;
-                Direction::In
-            };
-            let link = self.eat_word("link");
-            let target = self.parse_selection()?;
-            return Ok(Item::Walk {
+            return Ok(ItemHead::Walk {
                 field,
                 span,
                 range,
                 path,
-                link,
-                direction,
-                target: Box::new(target),
             });
         }
         if path.is_some() {
@@ -1782,7 +1899,7 @@ impl<'a> Parser<'a> {
                 .err_at(span, format!("{field} has a range but no arrow"))
                 .with_help(format!("write `{field} *1..3 -> Type`")));
         }
-        Ok(Item::Prop(field, span))
+        Ok(ItemHead::Done(Item::Prop(field, span)))
     }
 
     /// `path` after the `*`, then an optional bound `(@hops <= 20)` or
@@ -1892,12 +2009,12 @@ impl<'a> Parser<'a> {
         self.src[self.i..].starts_with("->") || self.src[self.i..].starts_with("<-")
     }
 
+    /// `a || b || c`, read in a loop into one n-ary `Or`.
     fn parse_or(&mut self) -> Result<BoolExpr> {
-        let mut left = self.parse_and()?;
+        let mut terms = vec![self.parse_and()?];
         loop {
             if self.eat("||") {
-                let right = self.parse_and()?;
-                left = BoolExpr::Or(Box::new(left), Box::new(right));
+                terms.push(self.parse_and()?);
                 continue;
             }
             self.skip();
@@ -1906,16 +2023,20 @@ impl<'a> Parser<'a> {
                     .err("or is `||`")
                     .with_help("one `|` joins types, as in `(Book | Movie)`"));
             }
-            return Ok(left);
+            return Ok(if terms.len() == 1 {
+                terms.remove(0)
+            } else {
+                BoolExpr::Or(terms)
+            });
         }
     }
 
+    /// `a && b && c`, read in a loop into one n-ary `And`.
     fn parse_and(&mut self) -> Result<BoolExpr> {
-        let mut left = self.parse_atom()?;
+        let mut terms = vec![self.parse_atom()?];
         loop {
             if self.eat("&&") {
-                let right = self.parse_atom()?;
-                left = BoolExpr::And(Box::new(left), Box::new(right));
+                terms.push(self.parse_atom()?);
                 continue;
             }
             self.skip();
@@ -1927,15 +2048,23 @@ impl<'a> Parser<'a> {
                     .err("and is `&&`")
                     .with_help("a comma separates writes in `set`"));
             }
-            return Ok(left);
+            return Ok(if terms.len() == 1 {
+                terms.remove(0)
+            } else {
+                BoolExpr::And(terms)
+            });
         }
     }
 
     fn parse_atom(&mut self) -> Result<BoolExpr> {
+        self.skip();
+        let start = self.i;
         if self.eat("(") {
-            let inner = self.parse_or()?;
-            self.expect(")")?;
-            return Ok(inner);
+            return self.nested(start, |p| {
+                let inner = p.parse_or()?;
+                p.expect(")")?;
+                Ok(inner)
+            });
         }
         Ok(BoolExpr::Test(self.parse_pred()?))
     }
@@ -2399,18 +2528,20 @@ fn bind_expr(
 ) -> Result<Option<BoolExpr>> {
     match expr {
         BoolExpr::Test(pred) => Ok(bind_pred(pred, row)?.map(BoolExpr::Test)),
-        BoolExpr::And(left, right) | BoolExpr::Or(left, right) => {
-            let bound_left = bind_expr(left, row)?;
-            let bound_right = bind_expr(right, row)?;
-            match (bound_left, bound_right) {
-                (Some(left), Some(right)) => Ok(Some(if matches!(expr, BoolExpr::And(_, _)) {
-                    BoolExpr::And(Box::new(left), Box::new(right))
-                } else {
-                    BoolExpr::Or(Box::new(left), Box::new(right))
-                })),
-                (Some(only), None) | (None, Some(only)) => Ok(Some(only)),
-                (None, None) => Ok(None),
+        BoolExpr::And(terms) | BoolExpr::Or(terms) => {
+            // A term whose column is empty drops out of its chain.
+            let mut bound = Vec::with_capacity(terms.len());
+            for term in terms {
+                if let Some(term) = bind_expr(term, row)? {
+                    bound.push(term);
+                }
             }
+            Ok(match bound.len() {
+                0 => None,
+                1 => bound.pop(),
+                _ if matches!(expr, BoolExpr::And(_)) => Some(BoolExpr::And(bound)),
+                _ => Some(BoolExpr::Or(bound)),
+            })
         }
     }
 }
@@ -2506,9 +2637,10 @@ fn collect_expr_refs(expr: &BoolExpr, out: &mut Vec<(String, Span)>) {
                 out.push((name.to_string(), span));
             }
         }
-        BoolExpr::And(left, right) | BoolExpr::Or(left, right) => {
-            collect_expr_refs(left, out);
-            collect_expr_refs(right, out);
+        BoolExpr::And(terms) | BoolExpr::Or(terms) => {
+            for term in terms {
+                collect_expr_refs(term, out);
+            }
         }
     }
 }
@@ -2620,7 +2752,11 @@ fn bind_points(
         }
         let pred = BoolExpr::Test(Pred::Eq(name.clone(), value, sel.type_span));
         sel.condition = Some(match sel.condition.take() {
-            Some(expr) => BoolExpr::And(Box::new(expr), Box::new(pred)),
+            Some(BoolExpr::And(mut terms)) => {
+                terms.push(pred);
+                BoolExpr::And(terms)
+            }
+            Some(expr) => BoolExpr::And(vec![expr, pred]),
             None => pred,
         });
     }
@@ -3674,16 +3810,19 @@ mod tests {
         row.insert("Name".into(), Json::from("Connor McDavid"));
         row.insert("Salary".into(), Json::from(12_500_000));
         let bound = bind_row(template, &row).unwrap().unwrap();
-        let BoolExpr::And(left, right) = bound.root.unwrap().condition.unwrap() else {
+        let BoolExpr::And(terms) = bound.root.unwrap().condition.unwrap() else {
             panic!("expected name && salary");
         };
+        let [left, right] = terms.as_slice() else {
+            panic!("expected two terms");
+        };
         assert!(matches!(
-            left.as_ref(),
+            left,
             BoolExpr::Test(Pred::Eq(field, Json::String(text), _))
                 if field == "name" && text == "Connor McDavid"
         ));
         assert!(matches!(
-            right.as_ref(),
+            right,
             BoolExpr::Test(Pred::Eq(field, value, _))
                 if field == "salary" && value.as_i64() == Some(12_500_000)
         ));
@@ -3767,3 +3906,5 @@ mod tests {
 
 #[cfg(test)]
 mod display_tests;
+#[cfg(test)]
+mod depth_tests;

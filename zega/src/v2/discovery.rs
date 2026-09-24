@@ -114,16 +114,23 @@ fn evaluate(
     budget: &mut usize,
 ) -> Result<Matches, LangError> {
     match expr {
-        DiscoveryExpr::And(a, b) | DiscoveryExpr::Or(a, b) => {
-            let mut left = evaluate(graph, schema, input, a, budget)?;
-            let right = evaluate(graph, schema, input, b, budget)?;
-            if matches!(expr, DiscoveryExpr::And(..)) {
-                left.nodes.retain(|id| right.nodes.contains(id));
-            } else {
-                left.nodes.extend(right.nodes);
+        DiscoveryExpr::And(terms) | DiscoveryExpr::Or(terms) => {
+            let and = matches!(expr, DiscoveryExpr::And(..));
+            let mut terms = terms.iter();
+            let Some(first) = terms.next() else {
+                return Ok(Matches::default());
+            };
+            let mut left = evaluate(graph, schema, input, first, budget)?;
+            for term in terms {
+                let right = evaluate(graph, schema, input, term, budget)?;
+                if and {
+                    left.nodes.retain(|id| right.nodes.contains(id));
+                } else {
+                    left.nodes.extend(right.nodes);
+                }
+                left.edges.extend(right.edges);
+                left.normalize();
             }
-            left.edges.extend(right.edges);
-            left.normalize();
             Ok(left)
         }
         DiscoveryExpr::Test(primitive) => {

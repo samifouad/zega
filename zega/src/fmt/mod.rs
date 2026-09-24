@@ -522,14 +522,18 @@ impl<'a> Printer<'a> {
             });
         }
         match expr {
-            DiscoveryExpr::And(left, right) | DiscoveryExpr::Or(left, right) => {
-                let left = self.discovery(left)?;
-                let op = self.token();
-                let right = self.discovery(right)?;
+            DiscoveryExpr::And(terms) | DiscoveryExpr::Or(terms) => {
+                // One group at the stage/parenthesis boundary breaks every
+                // operand together. A chain is one node, walked in a loop.
+                let mut parts = Vec::with_capacity(terms.len() * 4);
+                for (n, term) in terms.iter().enumerate() {
+                    if n > 0 {
+                        parts.extend([Doc::text(" "), self.token(), Doc::Line(" ")]);
+                    }
+                    parts.push(self.discovery(term)?.doc);
+                }
                 Ok(Node {
-                    // One group at the stage/parenthesis boundary breaks every
-                    // operand together, regardless of the AST's associativity.
-                    doc: Doc::seq([left.doc, Doc::text(" "), op, Doc::Line(" "), right.doc]),
+                    doc: Doc::seq(parts),
                     block: true,
                 })
             }
@@ -742,9 +746,10 @@ impl Node {
 // spelling or precision. No catch-all arms: new syntax must choose a layout.
 fn condition_forms(expr: &BoolExpr) {
     match expr {
-        BoolExpr::And(left, right) | BoolExpr::Or(left, right) => {
-            condition_forms(left);
-            condition_forms(right);
+        BoolExpr::And(terms) | BoolExpr::Or(terms) => {
+            for term in terms {
+                condition_forms(term);
+            }
         }
         BoolExpr::Test(pred) => match pred {
             Pred::Similarity(similarity, cmp, _) => {
