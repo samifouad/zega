@@ -200,11 +200,55 @@ draw and a notice says so. Terrain and relief are not part of this phase.
 
 Country outlines are Natural Earth's 1:110m Admin 0 countries (v5.1.2,
 public domain), bundled with the explorer as `browser/data/countries-110m.geojson`.
-The file is 193,714 bytes (64,910 gzipped). It has 177 outlines, and each keeps
-only `iso` and `name`, with coordinates rounded to three decimals.
-`browser/scripts/prepare-countries.mjs` rebuilds the file from the pinned
-source and checks the source's SHA-256 first. `iso` comes from Natural Earth's
-`ISO_A2_EH`, which fills the gaps for France and Norway. Kosovo (`XK`, not an
-ISO assignment), Northern Cyprus and Somaliland have no code, so they are never
-highlighted. The bundled file is a static asset, so the globe needs no tile
-server for its outlines.
+The file is 197,623 bytes (66,258 gzipped). It has 177 outlines, and each keeps
+only `iso`, `name` and `label` (below), with coordinates rounded to three
+decimals. `browser/scripts/prepare-countries.mjs` rebuilds the file from the
+pinned source and checks the source's SHA-256 first. `iso` comes from Natural
+Earth's `ISO_A2_EH`, which fills the gaps for France and Norway. Kosovo (`XK`,
+not an ISO assignment), Northern Cyprus and Somaliland have no code, so they
+are never highlighted. The bundled file is a static asset, so the globe needs
+no tile server for its outlines.
+
+### Relationships as arcs
+
+The globe draws the relationships among its nodes as arcs that lift off the
+sphere, the way a flight map shows routes. A relationship is drawn when both
+of its ends have a location: a place at its `Point` (or `lat`/`lon`), a
+country at its label point. The label point is precomputed by
+`prepare-countries.mjs` as the pole of inaccessibility of the country's
+largest polygon, so it sits inside the main landmass (a centroid would put
+Norway, Chile or the United States in the sea). The relationships are the
+same ones the graph view draws as edges: those in the stored graph whose ends
+are both among the view's types.
+
+Each arc follows the great circle from source to target and rises
+`lift · (0.25 + 0.75 · d/π)` globe radii at its middle, where `d` is the
+route's angular length, so long routes rise higher and short ones still lift.
+Below about 900 km the rise is capped at `2 · lift · d`, so a hop across a
+city arches over it instead of climbing hundreds of kilometres above the
+camera. The arc is rendered on the GPU through a MapLibre custom layer: one
+instanced draw for every arc, with the sphere drawn depth-only first so arcs
+behind the planet are hidden by depth and an arc rising over the limb shows
+where it clears the surface. As the globe becomes the flat map (zoom 10 to
+12) the arcs follow MapLibre's own blend, lifted by the same height in
+mercator altitude, and are drawn on the neighbouring world copies so a route
+across the antimeridian stays whole. The great circle is computed once per
+arc as an orthonormal basis, so an antipodal pair takes the same route every
+frame.
+
+Animated edges move their dashes from source to target at 20 px/s and send a
+pulse along the route every four seconds; static edges are solid. Clicking an
+arc opens the relationship in the shared inspector: its kind, both ends by
+name, then its properties. Arcs take the theme's accent colour.
+
+The gear under the zoom buttons opens the globe's settings, kept in
+`localStorage` under `zega.browser.globe` like the graph's layout settings:
+
+- **Lift**: the arc height, 0 to 0.5 of the globe radius (default 0.18).
+- **Edges**: `animated` or `static`. The default is `static` when the
+  reader prefers reduced motion, otherwise `animated`.
+- **Auto-spin**: turns the globe slowly eastward, slowing as you zoom in and
+  stopping while you drag or once the map is flat.
+
+`scripts/bench-arcs.mjs` measures frame times with 500 and 5,000 animated
+arcs headless; the target is 60 fps with 5,000.
