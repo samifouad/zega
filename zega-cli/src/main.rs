@@ -72,8 +72,16 @@ enum Command {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     if let Command::Fmt { paths, check, stdin, lang } = cli.command {
-        if !fmt::run(paths, check, stdin, lang)? { std::process::exit(1); }
-        return Ok(());
+        // 1 means `--check` found a file to reformat; 2 means zega fmt could not
+        // do its job, the same code clap uses for bad arguments (zegadb/zega#66).
+        match fmt::run(paths, check, stdin, lang) {
+            Ok(true) => return Ok(()),
+            Ok(false) => std::process::exit(1),
+            Err(error) => {
+                eprintln!("zega fmt: {error}");
+                std::process::exit(2);
+            }
+        }
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(std::thread::available_parallelism()?.get())

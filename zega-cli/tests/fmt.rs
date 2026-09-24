@@ -103,3 +103,39 @@ fn bad_paths_and_conflicting_arguments_fail() {
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("--stdin") && help.contains("--check"));
 }
+#[test]
+fn a_path_that_cannot_be_read_exits_2_and_names_it_not_1_like_check() {
+    // zegadb/zega#66: exit 1 means `--check` found a file to reformat, so a CI
+    // job must be able to tell a missing or refused path apart from it.
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.zql");
+    let link = dir.path().join("link.zql");
+    fs::write(dir.path().join("real.zql"), OUTPUT).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("real.zql"), &link).unwrap();
+    for (path, reason) in [
+        (&missing, "No such file or directory"),
+        (&link, "refusing to rewrite symbolic link"),
+    ] {
+        for check in [true, false] {
+            let mut command = Command::new(BIN);
+            command.arg("fmt");
+            if check {
+                command.arg("--check");
+            }
+            let output = command.arg(path).output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{} check={check}",
+                path.display()
+            );
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(
+                stderr.starts_with("zega fmt: ")
+                    && stderr.contains(&path.display().to_string())
+                    && stderr.contains(reason),
+                "{stderr}"
+            );
+        }
+    }
+}
