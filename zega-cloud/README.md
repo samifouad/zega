@@ -183,7 +183,8 @@ python3 zega-cloud/test/compare-wasm.py MAIN.wasm BRANCH.wasm MAIN_REV
 ```
 
 The ungated spike fails the artifact guard; injecting `durable-log` into
-`zega-wasm` fails the dependency guard. No compiled browser code has been added.
+`zega-wasm` fails the feature guard, and injecting a wasm32-only `worker`
+dependency fails the target dependency-tree guard. No compiled browser code has been added.
 `zega-wasm` remains the existing wasm-bindgen JavaScript-host target; this does
 not introduce a new host-neutral ABI for non-JS runtimes. The engine seam remains
 available for such a separate target without Cloudflare assumptions (APS 13).

@@ -1,0 +1,323 @@
+cargo tree -p zega-wasm -e normal (native): no Cloudflare crates
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Cloudflare dependency leaked into zega-wasm:
+zega-wasm v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-wasm)
+base64 v0.22.1
+serde_json v1.0.151
+itoa v1.0.18
+memchr v2.8.3
+serde_core v1.0.229
+zmij v1.0.23
+wasm-bindgen v0.2.128
+cfg-if v1.0.5
+once_cell v1.21.4
+wasm-bindgen-macro v0.2.128 (proc-macro)
+quote v1.0.47
+proc-macro2 v1.0.107
+unicode-ident v1.0.26
+wasm-bindgen-macro-support v0.2.128
+bumpalo v3.20.3
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.6
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+unicode-ident v1.0.26
+wasm-bindgen-shared v0.2.128
+unicode-ident v1.0.26
+wasm-bindgen-shared v0.2.128
+unicode-ident v1.0.26
+worker v0.8.6
+async-trait v0.1.92 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.6 (*)
+bytes v1.12.1
+chrono v0.4.45
+js-sys v0.3.105
+cfg-if v1.0.5
+futures-util v0.3.34
+futures-core v0.3.34
+futures-io v0.3.34
+futures-macro v0.3.34 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.6 (*)
+futures-sink v0.3.34
+futures-task v0.3.34
+memchr v2.8.3
+pin-project-lite v0.2.17
+slab v0.4.12
+wasm-bindgen v0.2.128 (*)
+num-traits v0.2.19
+libm v0.2.16
+wasm-bindgen v0.2.128 (*)
+futures-channel v0.3.34
+futures-core v0.3.34
+futures-util v0.3.34 (*)
+http v1.5.0
+bytes v1.12.1
+itoa v1.0.18
+http-body v1.1.0
+bytes v1.12.1
+http v1.5.0 (*)
+js-sys v0.3.105 (*)
+matchit v0.7.3
+pin-project v1.1.13
+pin-project-internal v1.1.13 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v2.0.119
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+unicode-ident v1.0.26
+serde v1.0.229
+serde_core v1.0.229
+serde_derive v1.0.229 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.6 (*)
+serde-wasm-bindgen v0.6.5
+js-sys v0.3.105 (*)
+serde v1.0.229 (*)
+wasm-bindgen v0.2.128 (*)
+serde_json v1.0.151 (*)
+serde_urlencoded v0.7.1
+form_urlencoded v1.2.2
+percent-encoding v2.3.2
+itoa v1.0.18
+ryu v1.0.23
+serde v1.0.229 (*)
+strum v0.28.0
+strum_macros v0.28.0 (proc-macro)
+heck v0.5.0
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v2.0.119 (*)
+tokio v1.53.1
+pin-project-lite v0.2.17
+url v2.5.8
+form_urlencoded v1.2.2 (*)
+idna v1.1.0
+idna_adapter v1.2.2
+icu_normalizer v2.3.0
+icu_collections v2.3.0
+displaydoc v0.2.7 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.6 (*)
+potential_utf v0.1.6
+zerovec v0.11.8
+yoke v0.8.3
+stable_deref_trait v1.2.1
+yoke-derive v0.8.3 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.6 (*)
+synstructure v0.14.0
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.6 (*)
+zerofrom v0.1.8
+zerofrom-derive v0.1.8 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.6 (*)
+synstructure v0.14.0 (*)
+zerofrom v0.1.8 (*)
+zerovec-derive v0.11.6 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.6 (*)
+utf8_iter v1.0.4
+yoke v0.8.3 (*)
+zerofrom v0.1.8 (*)
+zerovec v0.11.8 (*)
+icu_normalizer_data v2.3.0
+icu_provider v2.3.1
+displaydoc v0.2.7 (proc-macro) (*)
+icu_locale_core v2.3.0
+displaydoc v0.2.7 (proc-macro) (*)
+litemap v0.8.3
+tinystr v0.8.4
+displaydoc v0.2.7 (proc-macro) (*)
+zerovec v0.11.8 (*)
+writeable v0.6.4
+zerovec v0.11.8 (*)
+writeable v0.6.4
+yoke v0.8.3 (*)
+zerofrom v0.1.8 (*)
+zerotrie v0.2.5
+displaydoc v0.2.7 (proc-macro) (*)
+yoke v0.8.3 (*)
+zerofrom v0.1.8 (*)
+zerovec v0.11.8 (*)
+smallvec v1.16.1
+zerovec v0.11.8 (*)
+icu_properties v2.3.0
+displaydoc v0.2.7 (proc-macro) (*)
+icu_collections v2.3.0 (*)
+icu_locale_core v2.3.0 (*)
+icu_properties_data v2.3.0
+icu_provider v2.3.1 (*)
+zerotrie v0.2.5 (*)
+zerovec v0.11.8 (*)
+smallvec v1.16.1
+utf8_iter v1.0.4
+percent-encoding v2.3.2
+wasm-bindgen v0.2.128 (*)
+wasm-bindgen-futures v0.4.78
+js-sys v0.3.105 (*)
+wasm-bindgen v0.2.128 (*)
+wasm-streams v0.6.0
+futures-util v0.3.34 (*)
+js-sys v0.3.105 (*)
+wasm-bindgen v0.2.128 (*)
+wasm-bindgen-futures v0.4.78 (*)
+web-sys v0.3.105
+js-sys v0.3.105 (*)
+wasm-bindgen v0.2.128 (*)
+web-sys v0.3.105 (*)
+worker-macros v0.8.6 (proc-macro)
+async-trait v0.1.92 (proc-macro) (*)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+strum v0.28.0
+strum_macros v0.28.0 (proc-macro) (*)
+syn v3.0.6 (*)
+wasm-bindgen v0.2.128
+cfg-if v1.0.5
+once_cell v1.21.4
+wasm-bindgen-macro v0.2.128 (proc-macro) (*)
+wasm-bindgen-shared v0.2.128 (*)
+wasm-bindgen-macro-support v0.2.128 (*)
+worker-sys v0.8.6
+cfg-if v1.0.5
+js-sys v0.3.105
+cfg-if v1.0.5
+futures-util v0.3.34
+futures-core v0.3.34
+futures-task v0.3.34
+pin-project-lite v0.2.17
+slab v0.4.12
+wasm-bindgen v0.2.128 (*)
+wasm-bindgen v0.2.128 (*)
+web-sys v0.3.105
+js-sys v0.3.105 (*)
+wasm-bindgen v0.2.128 (*)
+worker-sys v0.8.6
+cfg-if v1.0.5
+js-sys v0.3.105 (*)
+wasm-bindgen v0.2.128 (*)
+web-sys v0.3.105 (*)
+zega v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega)
+base64 v0.22.1
+bincode v1.3.3
+serde v1.0.229 (*)
+crc32fast v1.5.2
+cfg-if v1.0.5
+csv v1.4.0
+csv-core v0.1.13
+memchr v2.8.3
+itoa v1.0.18
+ryu v1.0.23
+serde_core v1.0.229
+getrandom v0.2.17
+cfg-if v1.0.5
+js-sys v0.3.105 (*)
+wasm-bindgen v0.2.128 (*)
+hmac v0.12.1
+digest v0.10.7
+block-buffer v0.10.4
+generic-array v0.14.7
+typenum v1.20.1
+const-oid v0.9.6
+crypto-common v0.1.7
+generic-array v0.14.7 (*)
+typenum v1.20.1
+subtle v2.6.1
+js-sys v0.3.105 (*)
+libm v0.2.16
+regex v1.13.1
+aho-corasick v1.1.5
+memchr v2.8.3
+memchr v2.8.3
+regex-automata v0.4.18
+aho-corasick v1.1.5 (*)
+memchr v2.8.3
+regex-syntax v0.8.11
+regex-syntax v0.8.11
+rsa v0.9.10
+const-oid v0.9.6
+digest v0.10.7 (*)
+num-bigint-dig v0.8.6
+lazy_static v1.5.0
+spin v0.9.9
+libm v0.2.16
+num-integer v0.1.47
+num-traits v0.2.19 (*)
+num-iter v0.1.46
+num-integer v0.1.47 (*)
+num-traits v0.2.19 (*)
+num-traits v0.2.19 (*)
+rand v0.8.8
+rand_chacha v0.3.1
+ppv-lite86 v0.2.21
+zerocopy v0.8.57
+rand_core v0.6.4
+getrandom v0.2.17 (*)
+rand_core v0.6.4 (*)
+smallvec v1.16.1
+zeroize v1.9.0
+num-integer v0.1.47 (*)
+num-traits v0.2.19 (*)
+pkcs1 v0.7.5
+der v0.7.10
+const-oid v0.9.6
+pem-rfc7468 v0.7.0
+base64ct v1.8.3
+zeroize v1.9.0
+pkcs8 v0.10.2
+der v0.7.10 (*)
+spki v0.7.3
+der v0.7.10 (*)
+spki v0.7.3 (*)
+pkcs8 v0.10.2 (*)
+rand_core v0.6.4 (*)
+signature v2.2.0
+digest v0.10.7 (*)
+rand_core v0.6.4 (*)
+spki v0.7.3 (*)
+subtle v2.6.1
+zeroize v1.9.0
+serde v1.0.229 (*)
+serde_json v1.0.151 (*)
+sha2 v0.10.9
+cfg-if v1.0.5
+digest v0.10.7 (*)
+smallvec v1.16.1
+thiserror v1.0.69
+thiserror-impl v1.0.69 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v2.0.119 (*)
+url v2.5.8 (*)
+
+    at file:///Volumes/Projects/codex/zega-wt-cloud/browser/scripts/check-wasm.mjs:24:5
+    at ModuleJob.run (node:internal/modules/esm/module_job:439:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:646:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: false,
+  expected: true,
+  operator: '==',
+  diff: 'simple'
+}
+
+Node.js v26.3.1
+
+EXIT_CODE=1
