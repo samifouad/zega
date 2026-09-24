@@ -2,7 +2,8 @@
 
 A local-first Worker and one SQLite Durable Object per graph. Rust/`workers-rs`
 0.8.6 calls `zega` directly on wasm32. The native workspace includes the crate;
-Cloudflare dependencies and the allocator are wasm-only. No account, credentials
+Cloudflare dependencies and the allocator are wasm-only. The `zega` dependency
+explicitly enables `durable-log`, which is **off by default** on every target. No account, credentials
 or network deployment is needed to build or test it.
 
 ## Run locally
@@ -75,14 +76,16 @@ Durable Object derived with `idFromName(graph)`.
 * `requests(id, block, fingerprint, result)`: block results and completed response
   bodies. Successful earlier blocks remain cached if a later block is interrupted.
 
-The existing `AppendTarget` seam is now public and usable on wasm. A small
+The target-neutral `AppendTarget` seam is public with `zega/durable-log`. Only
+`zega-cloud` implements SQLite storage; the engine has no Cloudflare or
+`wasm-bindgen-futures` dependency. Regular WASM retains its empty in-memory WAL. A small
 `write_entry` extension lets row targets accept a complete frame while preserving
 native file targets' existing streaming write behavior. SQLite append is INSERT;
 rollback is `DELETE WHERE seq > last_good`. Replay reads ordered rows and uses the
 same bounded bincode decoder as native, after checking frame length/CRC. A gap or
 corrupt committed SQL row fails closed. Native torn-tail repair stays native.
 
-`ZqlProgram` shares parsing and execution with `run_lang`/`apply_zql`, and lets the
+`ZqlProgram` calls the same parser and executor as `run_lang`/`apply_zql`, and lets the
 host wrap **each block**, including its retry result, in `transactionSync`. A Rust
 error must throw *inside* that callback to roll back SQLite. Engine journal errors
 restore graph state; failures after engine success discard the engine and reload
@@ -106,7 +109,7 @@ There are two small `workers-rs` gaps in this spike:
    `catch` binding. `entry.mjs` is a lifecycle wrapper: it waits for Rust to finish,
    releases its graph/JS reference, then calls `ctx.abort()` in JavaScript. Routing, ZQL,
    the actual Durable Object implementation and storage remain Rust. There is no
-   JS engine or JS WAL codec, and `zega-wasm` is unchanged. The wrapper leaves
+   JS engine or JS WAL codec, and `zega-wasm` does not enable `durable-log`. The wrapper leaves
    instance destruction to wasm-bindgen's finalizer: calling `free()` through
    the SDK's proxy leaves the underlying finalizer token registered, causing a
    second free on a later GC (caught by the 10,000-query run after eviction).
@@ -142,6 +145,48 @@ heap is a lower bound on total isolate memory. A successful local run above
 are unauthenticated measurement/test controls; the deployment is a temporary
 spike, not a multi-tenant authenticated service. The query endpoint also has no
 application authentication in this step. No routes or custom domains are configured.
+
+## Regular WASM isolation
+
+`durable-log = []` is an explicit, default-off engine feature. It exposes the
+host journal, framed replay, checkpoint metadata and per-block ZQL program.
+Only WASM with that feature owns an append target and serializes WAL entries.
+File storage remains native-only. The borrowed snapshot optimization is also
+feature-gated; ordinary browser parsing, snapshot allocation and WAL behavior
+stay as on `main`. These APIs use Rust types and synchronous `std::io`; no
+Cloudflare or async-JavaScript dependency enters the engine.
+
+From a clean checkout:
+
+```sh
+node browser/scripts/check-wasm.mjs
+```
+
+This checks native and wasm32 dependency trees, rejects `durable-log` feature
+unification, rebuilds with the repo's `rebuild-wasm.mjs`, and compares SHA-256
+against the **pre-build committed** `browser/pkg` hash. The dedicated CI job
+pins Rust 1.96.0 and wasm-pack 0.15.0, requires sccache, and needs no Cloudflare
+credentials. `rebuild-wasm.mjs` now remaps checkout/Cargo/sysroot source paths to
+`/zega`, `/cargo`, `/rust`; the prior artifact contained iMac worktree paths and
+could not be reproduced elsewhere. JS glue and declarations are unchanged.
+
+Both `origin/main` and the feature-gated branch were built at the same path with
+this script, toolchain and flags: **2,745,640 bytes each**. Every section except
+the data section is byte-identical, including all compiled code, imports and
+exports. The only nine different bytes encode eight moved Rust panic-location
+line numbers. [The comparison report](evidence/wasm-comparison.json) enumerates
+every byte offset, source line and old/new value. The following verifier rejects
+any other change or size growth:
+
+```sh
+python3 zega-cloud/test/compare-wasm.py MAIN.wasm BRANCH.wasm MAIN_REV
+```
+
+The ungated spike fails the artifact guard; injecting `durable-log` into
+`zega-wasm` fails the dependency guard. No compiled browser code has been added.
+`zega-wasm` remains the existing wasm-bindgen JavaScript-host target; this does
+not introduce a new host-neutral ABI for non-JS runtimes. The engine seam remains
+available for such a separate target without Cloudflare assumptions (APS 13).
 
 ## Verification
 

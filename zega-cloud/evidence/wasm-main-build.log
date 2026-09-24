@@ -1,0 +1,84 @@
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+   Compiling zega v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega)
+warning: unused variable: `wal_path`
+   --> /zega/zega/src/lib.rs:293:13
+    |
+293 |         let wal_path = path.join("wal.bin");
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_wal_path`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+
+warning: field `in_memory` is never read
+   --> /zega/zega/src/lib.rs:157:5
+    |
+152 | pub struct Zega {
+    |            ---- field in this struct
+...
+157 |     in_memory: bool,
+    |     ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+
+warning: field `wal_flush_every` is never read
+   --> /zega/zega/src/lib.rs:167:5
+    |
+164 | pub struct ZegaBuilder {
+    |            ----------- field in this struct
+...
+167 |     wal_flush_every: bool,
+    |     ^^^^^^^^^^^^^^^
+
+
+warning: constant `WAL_MAGIC` is never used
+  --> /zega/zega/src/wal/mod.rs:22:7
+   |
+22 | const WAL_MAGIC: &[u8; 4] = b"ZWAL";
+   |       ^^^^^^^^^
+
+
+warning: constant `WAL_VERSION` is never used
+  --> /zega/zega/src/wal/mod.rs:23:7
+   |
+23 | const WAL_VERSION: u16 = 2;
+   |       ^^^^^^^^^^^
+
+
+warning: constant `WAL_FILE_HEADER` is never used
+  --> /zega/zega/src/wal/mod.rs:24:7
+   |
+24 | const WAL_FILE_HEADER: &[u8; 6] = b"ZWAL\x02\x00";
+   |       ^^^^^^^^^^^^^^^
+
+
+warning: constant `WAL_FILE_HEADER_LEN` is never used
+  --> /zega/zega/src/wal/mod.rs:25:7
+   |
+25 | const WAL_FILE_HEADER_LEN: u64 = WAL_FILE_HEADER.len() as u64;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+
+warning: constant `ENTRY_HEADER_LEN` is never used
+  --> /zega/zega/src/wal/mod.rs:26:7
+   |
+26 | const ENTRY_HEADER_LEN: u64 = 12;
+   |       ^^^^^^^^^^^^^^^^
+
+
+warning: constant `DEFAULT_GROUP_COMMIT_BATCH_SIZE` is never used
+  --> /zega/zega/src/wal/mod.rs:29:7
+   |
+29 | const DEFAULT_GROUP_COMMIT_BATCH_SIZE: usize = 64;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+   Compiling zega-wasm v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-wasm)
+    Finished `release` profile [optimized] target(s) in 9.92s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: Optional field missing from Cargo.toml: 'description'. This is not necessary, but recommended
+[INFO]: License key is set in Cargo.toml but no LICENSE file(s) were found; Please add the LICENSE file(s) to your project directory
+[INFO]: ✨   Done in 14.75s
+[INFO]: 📦   Your wasm pkg is ready to publish at /Volumes/Projects/codex/zega-wt-cloud/browser/.tmp/wasm-FfTGQM/pkg.
+Vendored wasm from engine 7fa1b47c836cd577d1371fdc84881ac6d7825881. Run npm test and commit pkg/ with wasm-source.json.

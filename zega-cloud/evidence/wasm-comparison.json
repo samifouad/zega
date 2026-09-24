@@ -1,0 +1,159 @@
+{
+  "mainRevision": "7fa1b47c836cd577d1371fdc84881ac6d7825881",
+  "main": {
+    "bytes": 2745640,
+    "sha256": "ab1569e7908715c3e4da33295a148200ff71861d6877de8e94a59393b293fba0"
+  },
+  "branch": {
+    "bytes": 2745640,
+    "sha256": "b5c1e6a8bb29e369b64e44e153f7af86dcc53f78a35ea11a6227b77d36deef94"
+  },
+  "byteIdentical": false,
+  "sizeGrowthBytes": 0,
+  "identicalSections": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    9,
+    12,
+    10,
+    0,
+    0
+  ],
+  "differences": [
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 2689,
+      "branchLine": 2694,
+      "column": 19,
+      "source": "groups[group_index].1.push(binding);",
+      "bytes": [
+        {
+          "offset": 2190503,
+          "main": 129,
+          "branch": 134
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 2218,
+      "branchLine": 2223,
+      "column": 29,
+      "source": "let frac: String = s[20..].chars().take_while(|c| c.is_ascii_digit()).take(3).collect();",
+      "bytes": [
+        {
+          "offset": 2190519,
+          "main": 170,
+          "branch": 175
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 2955,
+      "branchLine": 2960,
+      "column": 14,
+      "source": "_ => unreachable!(),",
+      "bytes": [
+        {
+          "offset": 2190583,
+          "main": 139,
+          "branch": 144
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 2066,
+      "branchLine": 2071,
+      "column": 36,
+      "source": "Value::String(chars[start..end].iter().collect())",
+      "bytes": [
+        {
+          "offset": 2190809,
+          "main": 18,
+          "branch": 23
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 1055,
+      "branchLine": 1060,
+      "column": 70,
+      "source": "Rc::clone(relationship_variable.as_ref().unwrap()),",
+      "bytes": [
+        {
+          "offset": 2190825,
+          "main": 31,
+          "branch": 36
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 971,
+      "branchLine": 976,
+      "column": 48,
+      "source": "let retain_used_relationships = pattern[index + 1..]",
+      "bytes": [
+        {
+          "offset": 2190841,
+          "main": 203,
+          "branch": 208
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 2290,
+      "branchLine": 2295,
+      "column": 64,
+      "source": "Value::String(iso8601_from_millis(parse_iso8601(s).unwrap() + ms))",
+      "bytes": [
+        {
+          "offset": 2191045,
+          "main": 242,
+          "branch": 247
+        }
+      ]
+    },
+    {
+      "file": "zega/src/wal/mod.rs",
+      "mainLine": 231,
+      "branchLine": 261,
+      "column": 35,
+      "source": "1 => self.append(&ops.remove(0)),",
+      "bytes": [
+        {
+          "offset": 2200345,
+          "main": 231,
+          "branch": 5
+        },
+        {
+          "offset": 2200346,
+          "main": 0,
+          "branch": 1
+        }
+      ]
+    }
+  ],
+  "differingBytes": 9,
+  "ungatedSpike": {
+    "revision": "bc5f93f1990118a7b236db7b7a52630ad0546cb4",
+    "bytes": 2772469,
+    "sha256": "3f7ec92346a443728c52e2e492f47c9e3a26c38b4276e1e07d83b00d0bdf4fcd",
+    "growthBytes": 26829
+  },
+  "branchRevision": "fafe68a9d444b317f0a4381ddf921f7ee09d0e30",
+  "toolchain": {
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "wasmPack": "wasm-pack 0.15.0"
+  },
+  "flags": "wasm-pack --target web --release --locked; source prefixes remapped to /zega, /cargo, /rust"
+}
