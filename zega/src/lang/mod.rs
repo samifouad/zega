@@ -1620,12 +1620,17 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn starts_distance_unit(&self) -> bool {
+        let mut lookahead = self.fork();
+        lookahead.ident().is_ok_and(|(name, _)| DistanceUnit::parse(&name).is_some())
+    }
+
     /// `<km>` after a type: the distance unit of an `Int` or `Float`.
     fn parse_unit(&mut self, ty: &mut String, ty_span: Span) -> Result<Option<DistanceUnit>> {
         if !self.eat("<") {
             return Ok(None);
         }
-        if ty == "String" {
+        if ty == "String" && !self.starts_distance_unit() {
             let (name, span) = self.ident()?;
             if !matches!(name.as_str(), "url" | "iso2") {
                 return Err(self

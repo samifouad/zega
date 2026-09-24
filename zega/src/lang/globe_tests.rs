@@ -95,6 +95,9 @@ fn iso2_is_a_string_unit() {
     assert!(matches!(&schema.types[0].fields[0], Field::Prop { ty, unit: None, .. } if ty == "String<iso2>"));
     let error = parse_schema("type C { iso: String<iso3> }").unwrap_err();
     assert_eq!((error.message.as_str(), error.help.as_deref()), ("unknown string unit iso3", Some("a String unit is `url` or `iso2`, as in `String<iso2>`")));
+    // A distance unit on a String keeps the distance diagnostic.
+    let error = parse_schema("type C { d: String<km> }").unwrap_err();
+    assert_eq!(error.message, "a unit needs an Int or Float; String has none");
     assert!(parse_schema("type C { iso: Int<iso2> }").is_err());
     assert!(parse_schema("type C { iso: Bool<iso2> }").is_err());
 }
