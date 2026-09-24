@@ -2592,7 +2592,6 @@ name = "zega-bench"
 version = "0.1.2"
 dependencies = [
  "neo4rs",
- "serde_json",
  "tokio",
  "zega",
 ]
