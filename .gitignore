@@ -25,3 +25,4 @@ browser/.wrangler/
 browser/.tmp/
 
 /evidence/node-shapes/
+/evidence/graph-expand/

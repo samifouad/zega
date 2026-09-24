@@ -535,7 +535,7 @@ button.mini { padding: 0 6px; font-size: 11px; }
 .graph-hint {
   position: absolute;
   top: 12px;
-  right: 46px;
+  right: 82px;
   z-index: 2;
   font-size: 11px;
   letter-spacing: 0.01em;
@@ -550,6 +550,36 @@ button.mini { padding: 0 6px; font-size: 11px; }
   z-index: 2;
   font-size: 13px;
   padding: 2px 8px;
+}
+.graph-expand {
+  position: absolute;
+  top: 8px;
+  right: 44px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  height: 24px;
+}
+.graph-expand svg { display: block; }
+.graph-expand[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+/* The graph as a near-full-viewport modal. Above the top bar, below the
+   import dialog and the context menu. */
+#graph.graph-expanded {
+  position: fixed;
+  inset: 24px;
+  z-index: 15;
+  background: var(--panel);
+  border: 1px solid var(--rule, var(--border));
+  border-radius: 10px;
+  box-shadow: 0 0 0 100vmax #0007, 0 16px 80px #0005;
+  padding: 12px;
+}
+.pane-graph:has(#graph.graph-expanded) #node-inspector { position: fixed; z-index: 16; top: 84px; right: 44px; max-height: calc(100vh - 120px); }
+@media (max-width: 600px) {
+  #graph.graph-expanded { inset: 8px; padding: 8px; }
+  .pane-graph:has(#graph.graph-expanded) #node-inspector { top: 60px; right: 20px; }
 }
 .graph-zoom {
   position: absolute;
