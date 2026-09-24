@@ -346,3 +346,170 @@ async fn readers_never_observe_half_a_zql_document() {
         task.await.unwrap();
     }
 }
+
+/// zegadb/zega#63: the server's own limit, as `zega start` sets it. The
+/// traversal budget is lifted so that the limit, not the budget, is what
+/// stops the slow reads below.
+async fn start_limited_server() -> TestServer {
+    let data = tempfile::tempdir().unwrap();
+    let zega = Zega::open(data.path().to_str().unwrap())
+        .traversal_work_budget(usize::MAX)
+        .query_time_limit(zega_server::DEFAULT_QUERY_TIME_LIMIT)
+        .build()
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        server::serve(listener, AppState::new(zega, Some(TOKEN)))
+            .await
+            .unwrap();
+    });
+    TestServer {
+        base_url: format!("http://{address}"),
+        _data: data,
+        task,
+    }
+}
+
+const STOPS: &str = "type Stop { name: String at: Point seen?: Int }";
+
+/// `n` stops at one place, loaded through the server.
+async fn load_stops(client: &Client, server: &TestServer, n: usize) {
+    let rows: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"name":"s{i}","at":{{"lat":51.05,"lon":-114.07}}}}"#))
+        .collect();
+    let body: Value = post(client, server)
+        .json(&json!({
+            "schema": STOPS,
+            "query": r#"mutation json ["stops.json"] { Stop(name: $name && at: $at) }"#,
+            "sources": {"stops.json": format!("[{}]", rows.join(","))},
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["ok"], true, "{body}");
+}
+
+/// Every pair of 4,000 stops: about 19 s in a debug build, unbounded.
+const PAIRS: &str = "query { Stop } display { skip } then { near { &at < 0 m } }";
+
+fn assert_time_limit(status: StatusCode, body: &Value) {
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body,
+        &json!({"ok": false, "error": "query exceeded the 2 s limit", "code": "query_time_limit"})
+    );
+}
+
+#[tokio::test]
+async fn a_slow_query_gets_the_time_limit_error_at_about_two_seconds() {
+    let server = start_limited_server().await;
+    let client = Client::new();
+    load_stops(&client, &server, 4_000).await;
+    let started = std::time::Instant::now();
+    let response = post(&client, &server)
+        .json(&json!({"schema": STOPS, "query": PAIRS}))
+        .send()
+        .await
+        .unwrap();
+    let took = started.elapsed();
+    let status = response.status();
+    assert_time_limit(status, &response.json().await.unwrap());
+    assert!(
+        took >= std::time::Duration::from_secs(2) && took < std::time::Duration::from_secs(4),
+        "answered after {took:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_mutation_that_hits_the_time_limit_writes_nothing() {
+    let server = start_limited_server().await;
+    let client = Client::new();
+    load_stops(&client, &server, 8_000).await;
+    // Each row finds its stop by an unindexed name: every row scans every stop.
+    let rows: Vec<String> = (0..8_000).map(|i| format!(r#"{{"n":{i},"stop":"s{i}"}}"#)).collect();
+    let response = post(&client, &server)
+        .json(&json!({
+            "schema": STOPS,
+            "query": r#"mutation json ["seen.json"] { Stop(name = $stop) set seen: $n }"#,
+            "sources": {"seen.json": format!("[{}]", rows.join(","))},
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    assert_time_limit(status, &response.json().await.unwrap());
+    let body: Value = post(&client, &server)
+        .json(&json!({"schema": STOPS, "query": "query { Stop(seen >= 0) { name } }"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body, json!({"ok": true, "result": []}));
+}
+
+#[tokio::test]
+async fn fast_requests_keep_answering_while_a_slow_one_times_out() {
+    let server = start_limited_server().await;
+    let client = Client::new();
+    load_stops(&client, &server, 4_000).await;
+    let started = std::time::Instant::now();
+    let slow = tokio::spawn({
+        let request = post(&client, &server).json(&json!({"schema": STOPS, "query": PAIRS}));
+        async move {
+            let response = request.send().await.unwrap();
+            (response.status(), response.json::<Value>().await.unwrap())
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // Health never waits for the database.
+    let health = client
+        .get(format!("{}/health", server.base_url))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert!(health.status().is_success());
+    assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
+    // Queries wait for the one database lock, so they answer once the slow
+    // query has been stopped: within the limit, not after the full 19 s.
+    let fast: Vec<_> = (0..5)
+        .map(|i| {
+            let request = post(&client, &server).json(&json!({
+                "schema": STOPS,
+                "query": format!("query {{ Stop(name: \"s{i}\") {{ name }} }}"),
+            }));
+            tokio::spawn(async move { request.send().await.unwrap().json::<Value>().await.unwrap() })
+        })
+        .collect();
+    for (i, answer) in fast.into_iter().enumerate() {
+        assert_eq!(
+            answer.await.unwrap(),
+            json!({"ok": true, "result": {"name": format!("s{i}")}})
+        );
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(4), "{:?}", started.elapsed());
+    let (status, body) = slow.await.unwrap();
+    assert_time_limit(status, &body);
+}
+
+#[tokio::test]
+async fn a_query_inside_the_limit_is_not_affected() {
+    let server = start_limited_server().await;
+    let client = Client::new();
+    load_stops(&client, &server, 300).await;
+    let body: Value = post(&client, &server)
+        .json(&json!({"schema": STOPS, "query": PAIRS}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["ok"], true, "{body}");
+}

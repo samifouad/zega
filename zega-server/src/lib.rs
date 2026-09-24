@@ -4,7 +4,13 @@ pub mod routes;
 pub mod server;
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use zega::Zega;
+
+/// How long one ZQL statement may run on a server before it is stopped with a
+/// `query_time_limit` error (APS 13: "2 second limit" per query). `zega start
+/// --query-time-limit` changes it for a self-hosted server.
+pub const DEFAULT_QUERY_TIME_LIMIT: Duration = Duration::from_secs(2);
 
 /// One database and one gate for each complete HTTP operation. Blocking engine
 /// work runs on Tokio's blocking pool, never on its request/health workers.
