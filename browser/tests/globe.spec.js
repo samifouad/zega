@@ -1,6 +1,6 @@
 import { test, expect } from './offline.js';
-import { tileFixture } from './map-fixture.js';
 import { palettes } from '../theme.js';
+import { globe as openGlobe, map, globeness, idle, highlightAt, setEditor } from './globe-helpers.js';
 
 const SCHEMA = `schema {
   type Country { name: String iso: String<iso2> }
@@ -16,31 +16,9 @@ mutation { Country(name: "Brazil" && iso: "BR") { name } }
 mutation { City(name: "Calgary" && at: @point(51.05, -114.07)) { name } }
 mutation { City(name: "Lisbon" && at: @point(38.72, -9.14)) { name } }`;
 
-async function setEditor(page, pane, value) {
-  await page.evaluate(({ pane, value }) => window.monaco.editor.getEditors().find((editor) => editor.getDomNode()?.closest(`#${pane}`)).setValue(value), { pane, value });
-}
-const map = (page, script, arg) => page.evaluate(({ script, arg }) => new Function('map', 'arg', script)(document.querySelector('#graph')._map, arg), { script, arg });
-const globeness = (page) => map(page, 'return map ? map.style.projection.transitionState : -1');
-const idle = (page) => page.evaluate(() => new Promise((resolve) => { const m = document.querySelector('#graph')._map; if (m.loaded() && !m.isMoving()) resolve(); else m.once('idle', resolve); }));
-// The highlighted country drawn at a longitude/latitude, or null.
-const highlightAt = (page, lon, lat) => map(page, 'const f = map.queryRenderedFeatures(map.project(arg), { layers: ["globe-countries"] })[0]; return f ? f.properties.iso : null', [lon, lat]);
 const CANADA = [-100, 58], USA = [-100, 40], JAPAN = [138.5, 36.5];
 
-async function globe(page, schema = SCHEMA) {
-  await tileFixture(page);
-  await page.goto('/');
-  await expect(page.locator('#query .monaco-editor')).toBeVisible();
-  await expect(page.locator('#raw-count')).toContainText('nodes');
-  if (await page.locator('#btn-play').textContent() === 'pause') await page.locator('#btn-play').click();
-  await page.locator('#btn-clear').click();
-  await setEditor(page, 'query', '');
-  await setEditor(page, 'schema', schema);
-  await page.locator('#btn-run').click();
-  await expect(page.getByRole('tab', { name: 'Globe' })).toHaveAttribute('aria-selected', 'true');
-  await expect.poll(() => map(page, 'return !!map && map.loaded() && !!map.getSource("countries")')).toBe(true);
-  await page.evaluate(() => document.querySelector('#graph')._outlines);
-  await idle(page);
-}
+const globe = (page, schema = SCHEMA) => openGlobe(page, schema);
 
 test('globe renders a sphere at the checked camera and highlights countries by ISO code', async ({ page }) => {
   await globe(page);

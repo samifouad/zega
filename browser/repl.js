@@ -770,7 +770,8 @@ function resetView() {
   graphEl.replaceChildren();
 }
 
-function inspectNode(node) {
+// The shared inspector: one panel for nodes and relationships alike.
+function showInspector(caption, entries) {
   document.getElementById('node-inspector')?.remove();
   const panel = document.createElement('aside');
   panel.id = 'node-inspector';
@@ -779,10 +780,9 @@ function inspectNode(node) {
   close.textContent = 'Close';
   close.onclick = () => panel.remove();
   const title = document.createElement('h3');
-  title.textContent = nodeCaption(node);
+  title.textContent = caption;
   const props = document.createElement('dl');
-  for (const [key, value] of Object.entries(node)) {
-    if (['x', 'y', 'vx', 'vy', 'fx', 'fy', 'index'].includes(key)) continue;
+  for (const [key, value] of Object.entries(entries)) {
     const term = document.createElement('dt');
     const detail = document.createElement('dd');
     term.textContent = key;
@@ -791,6 +791,24 @@ function inspectNode(node) {
   }
   panel.append(close, title, props);
   graphEl.parentElement.append(panel);
+}
+
+function inspectNode(node) {
+  showInspector(nodeCaption(node), Object.fromEntries(Object.entries(node).filter(([key]) => !['x', 'y', 'vx', 'vy', 'fx', 'fy', 'index'].includes(key))));
+}
+
+// A relationship in the same inspector: its kind, both ends by name, then its properties.
+function inspectRel(rel) {
+  const nodes = storedGraph().nodes;
+  const end = (id) => { const node = nodes.find((node) => node.id === id); return node ? `${nodeCaption(node)} (${id})` : String(id); };
+  showInspector(rel.type, { id: rel.id, type: rel.type, from: end(rel.from), to: end(rel.to), ...(rel.props || {}) });
+}
+
+// The relationships whose ends are both among `nodes`: what the graph draws
+// as edges and the globe as arcs.
+function relsAmong(rels, nodes) {
+  const ids = new Set(nodes.map((node) => node.id));
+  return rels.filter((rel) => ids.has(rel.from) && ids.has(rel.to));
 }
 
 // Projection values carry coordinates. Resolve their stored identity for the
@@ -850,8 +868,7 @@ function drawGraph() {
   const allowed = new Set(types.map((type) => type.name));
   const nodes = graph.nodes.filter((node) => node.labels.some((label) => allowed.has(label)));
   if (activeView === 'graph') {
-    const ids = new Set(nodes.map((node) => node.id));
-    renderGraph(graphEl, { nodes, rels: graph.rels.filter((rel) => ids.has(rel.from) && ids.has(rel.to)) }, highlights(lastValue), {
+    renderGraph(graphEl, { nodes, rels: relsAmong(graph.rels, nodes) }, highlights(lastValue), {
       onNode: openNodeMenu, onEdge: openEdgeMenu, onInspect: inspectNode,
     }, view, types);
   } else if (activeView === 'table') {
@@ -861,7 +878,7 @@ function drawGraph() {
     disposeView = renderMap(graphEl, mapResults(lastValue, nodes, types), theme, inspectNode);
   } else if (activeView === 'globe') {
     disposeView?.();
-    disposeView = renderGlobe(graphEl, globeData(nodes, types), view.globe, theme, inspectNode);
+    disposeView = renderGlobe(graphEl, globeData(nodes, types, relsAmong(graph.rels, nodes)), view.globe, theme, inspectNode, inspectRel);
   } else if (activeView === 'vector2d' || activeView === 'vector3d') {
     disposeView?.();
     const analyze = async (selected, k, threshold) => {
