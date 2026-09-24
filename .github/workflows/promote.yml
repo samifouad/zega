@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - run: python3 -m unittest -v scripts.test_channels.Promotion
+      - run: python3 -m unittest -v scripts.test_channels.Promotion scripts.test_channels.Publication
       # crates.io names are permanent. Only `zega` may ever be published; every
       # other workspace crate says `publish = false`, and this fails if one stops.
       - name: Only the zega crate is publishable
