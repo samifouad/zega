@@ -103,43 +103,35 @@ impl Zega {
     /// index lowers this number and never changes a result; tests use it to
     /// show an index was used.
     pub fn rows_examined(&self) -> Result<u64, ZegaError> {
-        let graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        Ok(graph.examined())
+        self.with_graph(|graph| {
+            Ok(graph.examined())
+        })
     }
 
     /// Nodes whose edges a ZQL `*path` search has read since this database
     /// opened. `toward` (A*) lowers this number and never changes a route's
     /// cost; tests use it to show the guess was used.
     pub fn nodes_expanded(&self) -> Result<u64, ZegaError> {
-        let graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        Ok(graph.expanded())
+        self.with_graph(|graph| {
+            Ok(graph.expanded())
+        })
     }
 
     pub fn delete_node(&self, id: u64) -> Result<(), ZegaError> {
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
-            journal.delete_node(graph, id);
-            Ok(())
+        self.with_graph(|graph| {
+            atomically(graph, &self.wal, |graph, journal| {
+                journal.delete_node(graph, id);
+                Ok(())
+            })
         })
     }
 
     pub fn delete_relationship(&self, id: u64) -> Result<(), ZegaError> {
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
-            journal.delete_relationship(graph, id);
-            Ok(())
+        self.with_graph(|graph| {
+            atomically(graph, &self.wal, |graph, journal| {
+                journal.delete_relationship(graph, id);
+                Ok(())
+            })
         })
     }
 
@@ -154,69 +146,67 @@ impl Zega {
     ) -> Result<(), ZegaError> {
         let schema = crate::lang::parse_schema(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let from = graph
-            .get_node(from_id)
-            .cloned()
-            .ok_or_else(|| ZegaError::Execution(format!("missing node {from_id}")))?;
-        let to = graph
-            .get_node(to_id)
-            .cloned()
-            .ok_or_else(|| ZegaError::Execution(format!("missing node {to_id}")))?;
-        let label = from
-            .labels
-            .first()
-            .cloned()
-            .ok_or_else(|| ZegaError::Execution(format!("node {from_id} has no type")))?;
-        let edge = schema.edge(&label, field).map_err(|error| {
-            ZegaError::Execution(format!("{label} has no relationship {field}: {}", error))
-        })?;
-        let (_, rel, direction, targets, many) = edge.as_edge().unwrap();
-        let target_label = to.labels.first().map(String::as_str).unwrap_or("");
-        if !targets.iter().any(|target| target == target_label) {
-            return Err(ZegaError::Execution(format!(
-                "{label}.{field} does not reach {target_label}"
-            )));
-        }
-        let props = HashMap::new();
-        require_edge_props(
-            &schema,
-            rel,
-            &props,
-            Span {
-                line: 0,
-                column: 0,
-                end_line: 0,
-                end_column: 0,
-            },
-        )
-        .map_err(|error| explain(error, "schema", schema_src))?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
-            connect(
-                graph,
-                journal,
-                from_id,
-                to_id,
-                direction,
-                RelationshipSpec {
-                    field,
-                    kind: rel,
-                    many,
-                    span: Span {
-                        line: 0,
-                        column: 0,
-                        end_line: 0,
-                        end_column: 0,
-                    },
+        self.with_graph(|graph| {
+            let from = graph
+                .get_node(from_id)
+                .cloned()
+                .ok_or_else(|| ZegaError::Execution(format!("missing node {from_id}")))?;
+            let to = graph
+                .get_node(to_id)
+                .cloned()
+                .ok_or_else(|| ZegaError::Execution(format!("missing node {to_id}")))?;
+            let label = from
+                .labels
+                .first()
+                .cloned()
+                .ok_or_else(|| ZegaError::Execution(format!("node {from_id} has no type")))?;
+            let edge = schema.edge(&label, field).map_err(|error| {
+                ZegaError::Execution(format!("{label} has no relationship {field}: {}", error))
+            })?;
+            let (_, rel, direction, targets, many) = edge.as_edge().unwrap();
+            let target_label = to.labels.first().map(String::as_str).unwrap_or("");
+            if !targets.iter().any(|target| target == target_label) {
+                return Err(ZegaError::Execution(format!(
+                    "{label}.{field} does not reach {target_label}"
+                )));
+            }
+            let props = HashMap::new();
+            require_edge_props(
+                &schema,
+                rel,
+                &props,
+                Span {
+                    line: 0,
+                    column: 0,
+                    end_line: 0,
+                    end_column: 0,
                 },
-                props,
             )
-            .map_err(|error| explain(error, "schema", schema_src))
-        })?;
-        Ok(())
+            .map_err(|error| explain(error, "schema", schema_src))?;
+            atomically(graph, &self.wal, |graph, journal| {
+                connect(
+                    graph,
+                    journal,
+                    from_id,
+                    to_id,
+                    direction,
+                    RelationshipSpec {
+                        field,
+                        kind: rel,
+                        many,
+                        span: Span {
+                            line: 0,
+                            column: 0,
+                            end_line: 0,
+                            end_column: 0,
+                        },
+                    },
+                    props,
+                )
+                .map_err(|error| explain(error, "schema", schema_src))
+            })?;
+            Ok(())
+        })
     }
 
     /// Run a `.zql` file: schema, unique, mutations, then an optional query.
@@ -242,18 +232,29 @@ impl Zega {
     ) -> Result<Json, ZegaError> {
         let file =
             crate::lang::parse_zql(source).map_err(|error| explain(error, "schema", source))?;
-        let mut last = Json::Null;
-        for statement in &file.statements {
-            last = self.execute(
-                &file.schema,
-                Declared { uniques: &file.uniques, indexes: &file.indexes },
-                statement,
-                "schema",
-                source,
-                loader,
-            )?;
-        }
-        Ok(last)
+        let declared = Declared { uniques: &file.uniques, indexes: &file.indexes };
+        // Checks and load I/O happen before the graph lock. A failure is
+        // reported when its statement's turn comes, after the statements
+        // before it have run, as when each statement took the lock itself.
+        let rows: Vec<_> = file
+            .statements
+            .iter()
+            .map(|statement| {
+                self.statement_rows(&file.schema, statement, "schema", source, loader)
+            })
+            .collect();
+        // One lock for the whole document, so no reader sees part of it. The
+        // server used to get this from a lock around every request, which
+        // also held every other request through each write's fsync (zega#51).
+        self.with_graph(|graph| {
+            let mut last = Json::Null;
+            for (statement, rows) in file.statements.iter().zip(rows) {
+                last = self.run_statement_locked(
+                    graph, &file.schema, declared, statement, "schema", source, &rows?,
+                )?;
+            }
+            Ok(last)
+        })
     }
 
     fn execute(
@@ -265,23 +266,42 @@ impl Zega {
         source: &str,
         loader: &dyn Fn(&str) -> Result<String, LangError>,
     ) -> Result<Json, ZegaError> {
+        let rows = self.statement_rows(schema, statement, source_name, source, loader)?;
+        self.with_graph(|graph| {
+            self.run_statement_locked(graph, schema, declared, statement, source_name, source, &rows)
+        })
+    }
+
+    /// Check `statement` and, for a load, read and parse its sources: the
+    /// part of a statement that needs no graph, done before the lock.
+    fn statement_rows(
+        &self,
+        schema: &Schema,
+        statement: &Statement,
+        source_name: &str,
+        source: &str,
+        loader: &dyn Fn(&str) -> Result<String, LangError>,
+    ) -> Result<Vec<HashMap<String, Json>>, ZegaError> {
         prepare(schema, statement).map_err(|error| explain(error, source_name, source))?;
-        // I/O and parsing happen before the graph lock. Each complete load is
-        // inserted under the same lock as ordinary mutations.
-        let rows = if let Statement::Load {
-            format, locations, ..
-        } = statement
-        {
-            load_rows(*format, locations, loader)
-                .map_err(|error| explain(error, source_name, source))?
-        } else {
-            Vec::new()
+        let Statement::Load { format, locations, .. } = statement else {
+            return Ok(Vec::new());
         };
+        load_rows(*format, locations, loader).map_err(|error| explain(error, source_name, source))
+    }
+
+    /// Run one statement under the graph lock the caller holds.
+    #[allow(clippy::too_many_arguments)]
+    fn run_statement_locked(
+        &self,
+        graph: &mut Graph,
+        schema: &Schema,
+        declared: Declared<'_>,
+        statement: &Statement,
+        source_name: &str,
+        source: &str,
+        rows: &[HashMap<String, Json>],
+    ) -> Result<Json, ZegaError> {
         let uniques = declared.uniques;
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         // The schema of this statement says which indexes exist; the writes
         // below keep them current, and a rollback restores them with the rows.
         graph.sync_indexes(&crate::lang::effective_indexes(
@@ -294,8 +314,8 @@ impl Zega {
         // and nested selection is applied, or (on a validation error, a
         // refused WAL append, or the time limit) none is, in memory and in the
         // WAL alike.
-        let result = atomically(&mut graph, &self.wal, |graph, journal| {
-            run_statement(graph, journal, schema, uniques, statement, &mut work, &rows)
+        let result = atomically(graph, &self.wal, |graph, journal| {
+            run_statement(graph, journal, schema, uniques, statement, &mut work, rows)
                 .map_err(|error| explain(error, source_name, source))
         });
         match (result, self.query_time_limit) {
@@ -305,15 +325,13 @@ impl Zega {
     }
 
     pub fn graph_json(&self) -> Result<Json, ZegaError> {
-        let graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut nodes: Vec<Json> = graph.all_nodes().values().map(node_json).collect();
-        nodes.sort_by_key(|node| node["id"].as_u64().unwrap_or(0));
-        let mut rels: Vec<Json> = graph.all_relationships().values().map(rel_json).collect();
-        rels.sort_by_key(|rel| rel["id"].as_u64().unwrap_or(0));
-        Ok(json!({ "nodes": nodes, "rels": rels }))
+        self.with_graph(|graph| {
+            let mut nodes: Vec<Json> = graph.all_nodes().values().map(node_json).collect();
+            nodes.sort_by_key(|node| node["id"].as_u64().unwrap_or(0));
+            let mut rels: Vec<Json> = graph.all_relationships().values().map(rel_json).collect();
+            rels.sort_by_key(|rel| rel["id"].as_u64().unwrap_or(0));
+            Ok(json!({ "nodes": nodes, "rels": rels }))
+        })
     }
 }
 

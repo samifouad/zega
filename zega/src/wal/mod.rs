@@ -14,7 +14,7 @@ use std::sync::{Arc, Condvar, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread::{self, JoinHandle};
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use crate::graph::{Graph, Node, NodeId, RelId, Relationship};
 use crate::parser::Value;
@@ -24,8 +24,10 @@ const WAL_VERSION: u16 = 2;
 const WAL_FILE_HEADER: &[u8; 6] = b"ZWAL\x02\x00";
 const WAL_FILE_HEADER_LEN: u64 = WAL_FILE_HEADER.len() as u64;
 const ENTRY_HEADER_LEN: u64 = 12;
+/// No linger: the worker syncs as soon as an entry is waiting, and entries
+/// appended while that sync runs share the next one.
 #[cfg(not(target_arch = "wasm32"))]
-const DEFAULT_GROUP_COMMIT_INTERVAL: Duration = Duration::from_millis(5);
+const DEFAULT_GROUP_COMMIT_INTERVAL: Duration = Duration::ZERO;
 const DEFAULT_GROUP_COMMIT_BATCH_SIZE: usize = 64;
 
 #[derive(Error, Debug)]
@@ -81,14 +83,26 @@ struct WalState {
     /// File offset where the oldest unsynced entry starts: a failed sync
     /// truncates back to here, so writes reported as failed leave the file.
     pending_start: u64,
+    /// Once set, every append and every wait for an entry not yet durable
+    /// fails with it. A failed sync leaves `next_sequence` ahead of
+    /// `durable_sequence` for good, so after one every later wait fails too:
+    /// the store refuses reads as well as writes until it is reopened.
     durability_error: Option<String>,
+    /// The worker is syncing without holding this lock.
+    syncing: bool,
+    /// Offset just past the last entry appended.
+    end: u64,
     shutdown: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 struct GroupCommit {
     state: Mutex<WalState>,
+    /// Wakes writers and readers waiting for a sequence to be durable, and
+    /// anyone waiting for the worker's sync to finish.
     wake: Condvar,
+    /// Wakes the worker: an entry is waiting, or the WAL is shutting down.
+    work: Condvar,
     interval: Duration,
     batch_size: usize,
     flush_every: bool,
@@ -121,9 +135,12 @@ impl Wal {
                         pending_entries: 0,
                         pending_start: 0,
                         durability_error: None,
+                        syncing: false,
+                        end: 0,
                         shutdown: false,
                     }),
                     wake: Condvar::new(),
+                    work: Condvar::new(),
                     interval: DEFAULT_GROUP_COMMIT_INTERVAL,
                     batch_size: DEFAULT_GROUP_COMMIT_BATCH_SIZE,
                     flush_every: false,
@@ -172,13 +189,7 @@ impl Wal {
         {
             prepare_wal(path)?;
             let file = open_wal_writer(path)?;
-            Ok(Self::from_target(
-                path,
-                Box::new(file),
-                flush_every,
-                interval,
-                batch_size,
-            ))
+            Self::from_target(path, Box::new(file), flush_every, interval, batch_size)
         }
     }
 
@@ -188,11 +199,17 @@ impl Wal {
     #[cfg(not(target_arch = "wasm32"))]
     fn from_target(
         path: &Path,
-        target: Box<dyn AppendTarget + Send>,
+        mut target: Box<dyn AppendTarget + Send>,
         flush_every: bool,
         interval: Duration,
         batch_size: usize,
-    ) -> Self {
+    ) -> Result<Self, WalError> {
+        let syncer = if flush_every {
+            None
+        } else {
+            Some(target.syncer()?)
+        };
+        let end = target.seek_end()?;
         let group = Arc::new(GroupCommit {
             state: Mutex::new(WalState {
                 file: Some(target),
@@ -201,43 +218,60 @@ impl Wal {
                 pending_entries: 0,
                 pending_start: 0,
                 durability_error: None,
+                syncing: false,
+                end,
                 shutdown: false,
             }),
             wake: Condvar::new(),
+            work: Condvar::new(),
             interval,
             batch_size: batch_size.max(1),
             flush_every,
         });
-        let worker = if flush_every {
-            None
-        } else {
+        let worker = syncer.map(|syncer| {
             let group = Arc::clone(&group);
-            Some(thread::spawn(move || group_commit_worker(group)))
-        };
-        Wal {
+            thread::spawn(move || group_commit_worker(group, syncer))
+        });
+        Ok(Wal {
             path: path.to_path_buf(),
             group,
             worker,
-        }
+        })
     }
 
     /// Append one statement's writes as a unit: nothing for none, the bare
     /// operation for one (the same bytes a single write always had), and a
     /// [`Operation::Statement`] entry for more, so a failure part-way through
-    /// cannot leave half a statement in the log.
+    /// cannot leave half a statement in the log. Does not wait for the entry
+    /// to be durable: see [`Wal::wait_durable`].
     pub fn append_statement(&self, mut ops: Vec<Operation>) -> Result<(), WalError> {
         match ops.len() {
             0 => Ok(()),
-            1 => self.append(&ops.remove(0)),
-            _ => self.append(&Operation::Statement { ops }),
+            1 => self.append_unsynced(&ops.remove(0)).map(|_| ()),
+            _ => self
+                .append_unsynced(&Operation::Statement { ops })
+                .map(|_| ()),
         }
     }
 
+    /// Append `op` and wait until it is durable. `Zega` appends through
+    /// [`Wal::append_statement`] and waits separately, after releasing the
+    /// graph lock; this module's durability tests use this.
+    #[allow(dead_code)]
     pub fn append(&self, op: &Operation) -> Result<(), WalError> {
+        let sequence = self.append_unsynced(op)?;
+        self.wait_durable(sequence)
+    }
+
+    /// Append `op` and return its sequence number without waiting for it to
+    /// be durable (with `flush_every`, it already is). A failed write leaves
+    /// nothing of the entry in the file and returns the error here, so the
+    /// caller can still take the statement back.
+    fn append_unsynced(&self, op: &Operation) -> Result<u64, WalError> {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = op;
-            Ok(())
+            Ok(0)
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -254,7 +288,7 @@ impl Wal {
                 return Err(WalError::Durability(error.clone()));
             }
             if state.file.is_none() {
-                return Ok(());
+                return Ok(state.next_sequence);
             }
             let append_result = {
                 let file = state
@@ -278,32 +312,73 @@ impl Wal {
             if state.pending_entries == 0 {
                 state.pending_start = offset;
             }
+            state.end = offset + ENTRY_HEADER_LEN + len;
             state.next_sequence += 1;
             let sequence = state.next_sequence;
             state.pending_entries += 1;
 
             if self.group.flush_every {
-                sync_pending(&mut state)?;
+                if let Err(error) = sync_pending(&mut state) {
+                    // Synced inline, under the caller's graph lock: nobody
+                    // else saw the entry, the caller takes the statement back,
+                    // and the graph matches the file again. Reads go on;
+                    // writes stay refused until the store is reopened.
+                    state.next_sequence = state.durable_sequence;
+                    return Err(error);
+                }
                 self.group.wake.notify_all();
-                return Ok(());
+            } else {
+                self.group.work.notify_one();
             }
-            if state.pending_entries >= self.group.batch_size {
-                self.group.wake.notify_one();
-            }
+            Ok(sequence)
+        }
+    }
+
+    /// The sequence number of the last entry appended, durable or not.
+    pub fn appended_sequence(&self) -> u64 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            0
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.group
+                .state
+                .lock()
+                .map(|state| state.next_sequence)
+                .unwrap_or(u64::MAX)
+        }
+    }
+
+    /// Wait until every entry up to `sequence` is durable, or fail with the
+    /// error that means some of them never will be.
+    pub fn wait_durable(&self, sequence: u64) -> Result<(), WalError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = sequence;
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut state = self
+                .group
+                .state
+                .lock()
+                .map_err(|_| WalError::Durability("group commit lock poisoned".to_string()))?;
             while state.durable_sequence < sequence {
+                if let Some(error) = &state.durability_error {
+                    return Err(WalError::Durability(error.clone()));
+                }
                 state =
                     self.group.wake.wait(state).map_err(|_| {
                         WalError::Durability("group commit lock poisoned".to_string())
                     })?;
-                if let Some(error) = &state.durability_error {
-                    return Err(WalError::Durability(error.clone()));
-                }
             }
             Ok(())
         }
     }
 
-    #[allow(dead_code)]
+    /// Make every entry appended so far durable now.
     pub fn flush(&self) -> Result<(), WalError> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -316,6 +391,16 @@ impl Wal {
                 .state
                 .lock()
                 .map_err(|_| WalError::Durability("group commit lock poisoned".to_string()))?;
+            // Let a sync the worker has in progress finish first, so that
+            // its batch and this one are counted apart.
+            while state.syncing {
+                state = self.group.wake.wait(state).map_err(|_| {
+                    WalError::Durability("group commit lock poisoned".to_string())
+                })?;
+            }
+            if let Some(error) = &state.durability_error {
+                return Err(WalError::Durability(error.clone()));
+            }
             sync_pending(&mut state)?;
             self.group.wake.notify_all();
             Ok(())
@@ -577,6 +662,24 @@ trait AppendTarget: Write {
     /// length. A truncate changes no directory entry, so no platform needs
     /// the parent directory synced for it (unlike `persist_replacement`).
     fn sync(&mut self) -> io::Result<()>;
+    /// A second handle on the same file, which the group-commit worker syncs
+    /// without holding the WAL lock while appends go on through this one.
+    fn syncer(&self) -> io::Result<Box<dyn Syncer + Send>>;
+}
+
+/// Syncs the WAL file through its own handle; see [`AppendTarget::syncer`].
+#[cfg(not(target_arch = "wasm32"))]
+trait Syncer {
+    /// The same guarantee as [`AppendTarget::sync`], for every write made
+    /// through any handle on the file before the call.
+    fn sync_file(&mut self) -> io::Result<()>;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Syncer for File {
+    fn sync_file(&mut self) -> io::Result<()> {
+        self.sync_all()
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -594,6 +697,10 @@ impl AppendTarget for File {
     // the write access open_wal_writer already requests.
     fn sync(&mut self) -> io::Result<()> {
         self.sync_all()
+    }
+
+    fn syncer(&self) -> io::Result<Box<dyn Syncer + Send>> {
+        Ok(Box::new(self.try_clone()?))
     }
 }
 
@@ -640,6 +747,7 @@ impl Drop for Wal {
     fn drop(&mut self) {
         if let Ok(mut state) = self.group.state.lock() {
             state.shutdown = true;
+            self.group.work.notify_all();
             self.group.wake.notify_all();
         }
         if let Some(worker) = self.worker.take() {
@@ -671,6 +779,7 @@ fn sync_pending(state: &mut WalState) -> Result<(), WalError> {
                 ),
             };
             state.pending_entries = 0;
+            state.end = start;
             state.durability_error = Some(message.clone());
             return Err(WalError::Durability(message));
         }
@@ -687,23 +796,34 @@ fn truncate_tail(file: &File, valid_end: u64) -> Result<(), WalError> {
     Ok(())
 }
 
+/// Syncs whatever has been appended, as soon as there is any (after the
+/// optional linger), without holding the WAL lock: appends go on during the
+/// sync and share the next one, so any number of waiting writers costs one
+/// fsync each round.
 #[cfg(not(target_arch = "wasm32"))]
-fn group_commit_worker(group: Arc<GroupCommit>) {
+fn group_commit_worker(group: Arc<GroupCommit>, mut syncer: Box<dyn Syncer + Send>) {
+    let Ok(mut state) = group.state.lock() else {
+        return;
+    };
     loop {
-        let mut state = match group.state.lock() {
-            Ok(state) => state,
-            Err(_) => return,
-        };
-        while !state.shutdown && state.pending_entries < group.batch_size {
-            let result = group.wake.wait_timeout(state, group.interval);
-            match result {
-                Ok((next, timeout)) => {
-                    state = next;
-                    if timeout.timed_out() && state.pending_entries > 0 {
-                        break;
-                    }
-                }
+        while !state.shutdown && state.pending_entries == 0 {
+            state = match group.work.wait(state) {
+                Ok(state) => state,
                 Err(_) => return,
+            };
+        }
+        if !state.shutdown && !group.interval.is_zero() {
+            // Linger: give more writers the chance to join this sync.
+            let deadline = Instant::now() + group.interval;
+            while !state.shutdown && state.pending_entries < group.batch_size {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                state = match group.work.wait_timeout(state, deadline - now) {
+                    Ok((state, _)) => state,
+                    Err(_) => return,
+                };
             }
         }
         if state.shutdown {
@@ -711,12 +831,63 @@ fn group_commit_worker(group: Arc<GroupCommit>) {
             group.wake.notify_all();
             return;
         }
-        if let Err(error) = sync_pending(&mut state) {
-            state.durability_error.get_or_insert_with(|| error.to_string());
+        if state.durability_error.is_some() {
             group.wake.notify_all();
             return;
         }
-        group.wake.notify_all();
+        let batch = state.pending_entries;
+        let target = state.next_sequence;
+        let start = state.pending_start;
+        let end = state.end;
+        let flushed = match state.file.as_mut() {
+            Some(file) => file.flush(),
+            None => Ok(()),
+        };
+        state.syncing = true;
+        drop(state);
+        let synced = flushed.and_then(|()| syncer.sync_file());
+        state = match group.state.lock() {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        state.syncing = false;
+        match synced {
+            Ok(()) => {
+                state.durable_sequence = target;
+                state.pending_entries -= batch;
+                // Entries appended during the sync start where the batch ended.
+                state.pending_start = end;
+                group.wake.notify_all();
+            }
+            Err(sync_error) => {
+                // Every entry from the batch on is removed, including those
+                // appended during the sync, and every writer waiting on one
+                // is told it failed. But the graph lock was released before
+                // they waited, so other statements may have read them: from
+                // here on nothing is read or written until the store is
+                // reopened, which replays only what is in the file.
+                let message = match state
+                    .file
+                    .as_mut()
+                    .map_or(Ok(()), |file| file.truncate(start).and_then(|()| file.sync()))
+                {
+                    Ok(()) => format!(
+                        "WAL sync failed ({sync_error}); the unsynced writes were removed \
+                         and the store refuses reads and writes until it is reopened"
+                    ),
+                    Err(rollback_error) => format!(
+                        "WAL sync failed ({sync_error}); removing the unsynced writes failed \
+                         ({rollback_error}); the store refuses reads and writes until it is \
+                         reopened, and the WAL may be inconsistent until then"
+                    ),
+                };
+                state.pending_entries = 0;
+                state.end = start;
+                state.durability_error = Some(message);
+                group.wake.notify_all();
+                return;
+            }
+        }
     }
 }
 
@@ -933,6 +1104,10 @@ pub(crate) mod tests {
         fn sync(&mut self) -> io::Result<()> {
             self.file.sync_all()
         }
+
+        fn syncer(&self) -> io::Result<Box<dyn Syncer + Send>> {
+            self.file.syncer()
+        }
     }
 
     #[test]
@@ -1032,14 +1207,47 @@ pub(crate) mod tests {
         }
 
         fn sync(&mut self) -> io::Result<()> {
-            let once = std::mem::take(&mut *self.fail_one_sync.lock().unwrap());
-            if once || *self.fail_syncs.lock().unwrap() {
-                return Err(io::Error::other("injected sync failure"));
-            }
-            AppendTarget::sync(&mut self.file)?;
-            self.log.lock().unwrap().push(FileEvent::Sync);
-            Ok(())
+            faulty_sync(&mut self.file, &self.log, &self.fail_syncs, &self.fail_one_sync)
         }
+
+        fn syncer(&self) -> io::Result<Box<dyn Syncer + Send>> {
+            Ok(Box::new(FaultySyncer {
+                file: self.file.try_clone()?,
+                log: Arc::clone(&self.log),
+                fail_syncs: Arc::clone(&self.fail_syncs),
+                fail_one_sync: Arc::clone(&self.fail_one_sync),
+            }))
+        }
+    }
+
+    /// The group-commit worker's handle on a [`FaultyTarget`]'s file: its
+    /// syncs fail, and are logged, the same way.
+    struct FaultySyncer {
+        file: File,
+        log: Arc<Mutex<Vec<FileEvent>>>,
+        fail_syncs: Arc<Mutex<bool>>,
+        fail_one_sync: Arc<Mutex<bool>>,
+    }
+
+    impl Syncer for FaultySyncer {
+        fn sync_file(&mut self) -> io::Result<()> {
+            faulty_sync(&mut self.file, &self.log, &self.fail_syncs, &self.fail_one_sync)
+        }
+    }
+
+    fn faulty_sync(
+        file: &mut File,
+        log: &Mutex<Vec<FileEvent>>,
+        fail_syncs: &Mutex<bool>,
+        fail_one_sync: &Mutex<bool>,
+    ) -> io::Result<()> {
+        let once = std::mem::take(&mut *fail_one_sync.lock().unwrap());
+        if once || *fail_syncs.lock().unwrap() {
+            return Err(io::Error::other("injected sync failure"));
+        }
+        file.sync_all()?;
+        log.lock().unwrap().push(FileEvent::Sync);
+        Ok(())
     }
 
     struct FaultyWal {
@@ -1075,7 +1283,7 @@ pub(crate) mod tests {
             true,
             DEFAULT_GROUP_COMMIT_INTERVAL,
             DEFAULT_GROUP_COMMIT_BATCH_SIZE,
-        );
+        ).unwrap();
         wal.append(&insert_node("acked")).unwrap();
         log.lock().unwrap().clear();
         FaultyWal {
@@ -1116,8 +1324,134 @@ pub(crate) mod tests {
             true,
             DEFAULT_GROUP_COMMIT_INTERVAL,
             DEFAULT_GROUP_COMMIT_BATCH_SIZE,
-        );
+        ).unwrap();
         (wal, AppendSwitch(fail_writes))
+    }
+
+    /// Holds the group-commit worker inside its sync until released, and can
+    /// make that sync fail: zega#51's tests use it to see what readers and
+    /// writers do while an fsync is in progress.
+    #[derive(Default)]
+    pub(crate) struct SyncGate {
+        state: Mutex<GateState>,
+        changed: Condvar,
+    }
+
+    #[derive(Default)]
+    struct GateState {
+        held: bool,
+        fail: bool,
+        /// A sync is waiting at the gate.
+        waiting: bool,
+        syncs: usize,
+    }
+
+    impl SyncGate {
+        pub(crate) fn hold(&self) {
+            self.state.lock().unwrap().held = true;
+        }
+
+        /// Let the waiting sync, and every later one, go on; `fail` makes
+        /// them fail instead of syncing.
+        pub(crate) fn release(&self, fail: bool) {
+            let mut state = self.state.lock().unwrap();
+            state.held = false;
+            state.fail = fail;
+            self.changed.notify_all();
+        }
+
+        /// Wait until a sync is held at the gate.
+        pub(crate) fn wait_for_held_sync(&self) {
+            let state = self.state.lock().unwrap();
+            let (state, timeout) = self
+                .changed
+                .wait_timeout_while(state, Duration::from_secs(10), |state| !state.waiting)
+                .unwrap();
+            assert!(!timeout.timed_out() && state.waiting, "no sync reached the gate");
+        }
+
+        /// Syncs that completed.
+        pub(crate) fn syncs(&self) -> usize {
+            self.state.lock().unwrap().syncs
+        }
+    }
+
+    struct GatedTarget {
+        file: File,
+        gate: Arc<SyncGate>,
+    }
+
+    impl Write for GatedTarget {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.file.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.file.flush()
+        }
+    }
+
+    impl AppendTarget for GatedTarget {
+        fn seek_end(&mut self) -> io::Result<u64> {
+            self.file.seek_end()
+        }
+
+        fn truncate(&mut self, len: u64) -> io::Result<()> {
+            self.file.set_len(len)
+        }
+
+        fn sync(&mut self) -> io::Result<()> {
+            self.file.sync_all()
+        }
+
+        fn syncer(&self) -> io::Result<Box<dyn Syncer + Send>> {
+            Ok(Box::new(GatedSyncer {
+                file: self.file.try_clone()?,
+                gate: Arc::clone(&self.gate),
+            }))
+        }
+    }
+
+    struct GatedSyncer {
+        file: File,
+        gate: Arc<SyncGate>,
+    }
+
+    impl Syncer for GatedSyncer {
+        fn sync_file(&mut self) -> io::Result<()> {
+            let mut state = self.gate.state.lock().unwrap();
+            state.waiting = true;
+            self.gate.changed.notify_all();
+            while state.held {
+                state = self.gate.changed.wait(state).unwrap();
+            }
+            state.waiting = false;
+            if state.fail {
+                return Err(io::Error::other("injected sync failure"));
+            }
+            self.file.sync_all()?;
+            state.syncs += 1;
+            Ok(())
+        }
+    }
+
+    /// A group-commit WAL (no linger) over the existing file at `path`,
+    /// whose worker syncs through `SyncGate`.
+    pub(crate) fn gated_wal(path: &Path) -> (Wal, Arc<SyncGate>) {
+        let gate = Arc::new(SyncGate::default());
+        let target = GatedTarget {
+            file: open_wal_writer(path).unwrap(),
+            gate: Arc::clone(&gate),
+        };
+        let wal = Wal::from_target(
+            path,
+            Box::new(target),
+            false,
+            DEFAULT_GROUP_COMMIT_INTERVAL,
+            DEFAULT_GROUP_COMMIT_BATCH_SIZE,
+        )
+        .unwrap();
+        (wal, gate)
     }
 
     #[test]
@@ -1253,7 +1587,7 @@ pub(crate) mod tests {
             false,
             Duration::from_secs(60),
             2,
-        ));
+        ).unwrap());
         let writers: Vec<_> = ["one", "two"]
             .into_iter()
             .map(|label| {

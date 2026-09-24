@@ -32,15 +32,7 @@ async fn execute(
     state: AppState,
     action: impl FnOnce(&Zega) -> Result<Value, ZegaError> + Send + 'static,
 ) -> Response {
-    match tokio::task::spawn_blocking(move || {
-        let db = state
-            .zega
-            .lock()
-            .map_err(|_| ZegaError::Execution("database lock poisoned".into()))?;
-        action(&db)
-    })
-    .await
-    {
+    match tokio::task::spawn_blocking(move || action(&state.zega)).await {
         Ok(Ok(result)) => Json(json!({"ok": true, "result": result})).into_response(),
         // Its own code, so a client can tell "this query is too slow" from
         // "this query is wrong". A 4xx, like any other refused query: a 5xx

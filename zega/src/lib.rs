@@ -34,6 +34,8 @@ mod validation;
 mod wal;
 #[cfg(test)]
 mod wal_order_tests;
+#[cfg(test)]
+mod lock_split_tests;
 
 pub use crate::lang::{diagnose, fmt};
 pub use crate::validation::{Diagnostic, Pane, Report, Severity};
@@ -331,7 +333,7 @@ impl Zega {
             Wal::with_group_commit(
                 &wal_path,
                 builder.wal_flush_every,
-                std::time::Duration::from_millis(builder.wal_flush_interval_ms.unwrap_or(5)),
+                std::time::Duration::from_millis(builder.wal_flush_interval_ms.unwrap_or(0)),
                 64,
             )?
         };
@@ -543,63 +545,61 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let bindings = if optional_patterns.is_empty() {
-            resolve_match_bindings(&graph, pattern, where_clause, params, traversal_budget)?
-        } else {
-            // Resolve the required pattern first WITHOUT the WHERE (it may
-            // reference optional vars), left-outer-extend each OPTIONAL MATCH
-            // segment, then apply the WHERE to the assembled rows.
-            let mut bindings = resolve_match_bindings(&graph, pattern, None, params, traversal_budget)?;
-            for optional in optional_patterns {
-                let mut extended_all = Vec::with_capacity(bindings.len());
-                for binding in bindings {
-                    let extended = resolve_match_bindings_seeded(
-                        &graph,
-                        optional,
-                        None,
-                        params,
-                        traversal_budget,
-                        &binding,
-                    )?;
-                    if extended.is_empty() {
-                        extended_all.push(binding); // left-outer: keep row, optional vars → null
-                    } else {
-                        extended_all.extend(extended);
+        self.with_graph(|graph| {
+            let bindings = if optional_patterns.is_empty() {
+                resolve_match_bindings(graph, pattern, where_clause, params, traversal_budget)?
+            } else {
+                // Resolve the required pattern first WITHOUT the WHERE (it may
+                // reference optional vars), left-outer-extend each OPTIONAL MATCH
+                // segment, then apply the WHERE to the assembled rows.
+                let mut bindings = resolve_match_bindings(graph, pattern, None, params, traversal_budget)?;
+                for optional in optional_patterns {
+                    let mut extended_all = Vec::with_capacity(bindings.len());
+                    for binding in bindings {
+                        let extended = resolve_match_bindings_seeded(
+                            graph,
+                            optional,
+                            None,
+                            params,
+                            traversal_budget,
+                            &binding,
+                        )?;
+                        if extended.is_empty() {
+                            extended_all.push(binding); // left-outer: keep row, optional vars → null
+                        } else {
+                            extended_all.extend(extended);
+                        }
                     }
+                    bindings = extended_all;
                 }
-                bindings = extended_all;
-            }
-            if let Some(predicate) = where_clause {
-                bindings.retain(|binding| {
-                    matches!(
-                        eval_expr(predicate, params, binding, &graph),
-                        Ok(Value::Bool(true))
-                    )
-                });
-            }
-            bindings
-        };
+                if let Some(predicate) = where_clause {
+                    bindings.retain(|binding| {
+                        matches!(
+                            eval_expr(predicate, params, binding, graph),
+                            Ok(Value::Bool(true))
+                        )
+                    });
+                }
+                bindings
+            };
 
-        // WITH boundary (carry node/rel identity for bare vars; value-bind the rest).
-        let bindings = if let Some(with) = with_clause {
-            stage_with(bindings, with, params, &graph)?
-        } else {
-            bindings
-        };
+            // WITH boundary (carry node/rel identity for bare vars; value-bind the rest).
+            let bindings = if let Some(with) = with_clause {
+                stage_with(bindings, with, params, graph)?
+            } else {
+                bindings
+            };
 
-        project_bound_rows(
-            &graph,
-            &bindings,
-            return_clause,
-            order_by.map(Vec::as_slice),
-            skip,
-            limit,
-            params,
-        )
+            project_bound_rows(
+                graph,
+                &bindings,
+                return_clause,
+                order_by.map(Vec::as_slice),
+                skip,
+                limit,
+                params,
+            )
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -612,96 +612,97 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
-            let bindings = match write {
-                Statement::Create { pattern } => {
-                    vec![create_pattern(graph, journal, pattern, params, Bindings::new())?]
-                }
-                Statement::MatchCreate {
-                    match_pattern,
-                    where_clause,
-                    create_pattern: create_elements,
-                } => {
-                    let matched = resolve_match_bindings(
-                        graph,
+        self.with_graph(|graph| {
+            atomically(graph, &self.wal, |graph, journal| {
+                let bindings = match write {
+                    Statement::Create { pattern } => {
+                        vec![create_pattern(graph, journal, pattern, params, Bindings::new())?]
+                    }
+                    Statement::MatchCreate {
                         match_pattern,
-                        where_clause.as_ref(),
-                        params,
-                        traversal_budget,
-                    )?;
-                    let mut created = Vec::with_capacity(matched.len());
-                    for binding in matched {
-                        created.push(create_pattern(
+                        where_clause,
+                        create_pattern: create_elements,
+                    } => {
+                        let matched = resolve_match_bindings(
                             graph,
-                            journal,
-                            create_elements,
+                            match_pattern,
+                            where_clause.as_ref(),
                             params,
-                            binding,
-                        )?);
-                    }
-                    created
-                }
-                Statement::Merge {
-                    pattern,
-                    on_create,
-                    on_match,
-                } => {
-                    vec![merge_pattern(
-                        graph, journal, pattern, on_create, on_match, params,
-                    )?]
-                }
-                Statement::MatchSet {
-                    match_pattern,
-                    where_clause,
-                    assignments,
-                } => {
-                    let matched = resolve_match_bindings(
-                        graph,
-                        match_pattern,
-                        where_clause.as_ref(),
-                        params,
-                        traversal_budget,
-                    )?;
-                    for binding in &matched {
-                        set_pattern(graph, journal, assignments, params, binding)?;
-                    }
-                    matched
-                }
-                Statement::MatchDelete {
-                    match_pattern,
-                    where_clause,
-                    detach,
-                    identifiers,
-                } => {
-                    let matched = resolve_match_bindings(
-                        graph,
-                        match_pattern,
-                        where_clause.as_ref(),
-                        params,
-                        traversal_budget,
-                    )?;
-                    let mut deleted = std::collections::HashSet::new();
-                    for binding in &matched {
-                        delete_pattern(
-                            graph,
-                            journal,
-                            *detach,
-                            identifiers,
-                            binding,
-                            &mut deleted,
+                            traversal_budget,
                         )?;
+                        let mut created = Vec::with_capacity(matched.len());
+                        for binding in matched {
+                            created.push(create_pattern(
+                                graph,
+                                journal,
+                                create_elements,
+                                params,
+                                binding,
+                            )?);
+                        }
+                        created
                     }
-                    matched
-                }
-                Statement::Set { .. } | Statement::Delete { .. } => vec![Bindings::new()],
-                _ => {
-                    return Err(ZegaError::Execution(
-                        "RETURN can only follow a graph write clause".to_string(),
-                    ));
-                }
-            };
-            project_bound_rows(graph, &bindings, return_clause, order_by, None, limit, params)
+                    Statement::Merge {
+                        pattern,
+                        on_create,
+                        on_match,
+                    } => {
+                        vec![merge_pattern(
+                            graph, journal, pattern, on_create, on_match, params,
+                        )?]
+                    }
+                    Statement::MatchSet {
+                        match_pattern,
+                        where_clause,
+                        assignments,
+                    } => {
+                        let matched = resolve_match_bindings(
+                            graph,
+                            match_pattern,
+                            where_clause.as_ref(),
+                            params,
+                            traversal_budget,
+                        )?;
+                        for binding in &matched {
+                            set_pattern(graph, journal, assignments, params, binding)?;
+                        }
+                        matched
+                    }
+                    Statement::MatchDelete {
+                        match_pattern,
+                        where_clause,
+                        detach,
+                        identifiers,
+                    } => {
+                        let matched = resolve_match_bindings(
+                            graph,
+                            match_pattern,
+                            where_clause.as_ref(),
+                            params,
+                            traversal_budget,
+                        )?;
+                        let mut deleted = std::collections::HashSet::new();
+                        for binding in &matched {
+                            delete_pattern(
+                                graph,
+                                journal,
+                                *detach,
+                                identifiers,
+                                binding,
+                                &mut deleted,
+                            )?;
+                        }
+                        matched
+                    }
+                    Statement::Set { .. } | Statement::Delete { .. } => vec![Bindings::new()],
+                    _ => {
+                        return Err(ZegaError::Execution(
+                            "RETURN can only follow a graph write clause".to_string(),
+                        ));
+                    }
+                };
+                project_bound_rows(graph, &bindings, return_clause, order_by, None, limit, params)
+            })
         })
     }
 
@@ -710,11 +711,12 @@ impl Zega {
         pattern: &[PatternElement],
         params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
-        let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
-            create_pattern(graph, journal, pattern, params, Bindings::new())
-        })?;
-        Ok(vec![])
+        self.with_graph(|graph| {
+            atomically(graph, &self.wal, |graph, journal| {
+                create_pattern(graph, journal, pattern, params, Bindings::new())
+            })?;
+            Ok(vec![])
+        })
     }
 
     fn exec_match_create(
@@ -725,19 +727,20 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
-            let bindings = resolve_match_bindings(
-                graph,
-                match_pattern,
-                where_clause,
-                params,
-                traversal_budget,
-            )?;
-            for binding in bindings {
-                create_pattern(graph, journal, create_elements, params, binding)?;
-            }
-            Ok(vec![])
+        self.with_graph(|graph| {
+            atomically(graph, &self.wal, |graph, journal| {
+                let bindings = resolve_match_bindings(
+                    graph,
+                    match_pattern,
+                    where_clause,
+                    params,
+                    traversal_budget,
+                )?;
+                for binding in bindings {
+                    create_pattern(graph, journal, create_elements, params, binding)?;
+                }
+                Ok(vec![])
+            })
         })
     }
 
@@ -748,11 +751,12 @@ impl Zega {
         on_match: &[SetClause],
         params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
-        let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
-            merge_pattern(graph, journal, pattern, on_create, on_match, params)
-        })?;
-        Ok(vec![])
+        self.with_graph(|graph| {
+            atomically(graph, &self.wal, |graph, journal| {
+                merge_pattern(graph, journal, pattern, on_create, on_match, params)
+            })?;
+            Ok(vec![])
+        })
     }
 
     fn exec_set(
@@ -760,29 +764,27 @@ impl Zega {
         _assignments: &[SetClause],
         _params: &HashMap<String, Value>,
     ) -> Result<Vec<Row>> {
-        let _graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        for _clause in _assignments {
-            if let Expr::PropertyAccess(ref _target, ref _prop) = _clause.target {
-                if let Expr::Identifier(ref _var) = **_target {
-                    // We need a way to resolve var -> node id. For SET statements, var must be bound.
-                    // In MVP, SET is usually used after MATCH in the same query, but we process statement-by-statement.
-                    // For simplicity, we'll skip WAL for SET if we can't resolve, but in a real system you'd have query state.
-                    // Here we'll just search all nodes for the variable name in the query context... actually this is tricky.
-                    // For MVP tests, SET n.prop = $val will be tested with n known from prior MATCH, but since we process
-                    // per-statement, we need a session context. Let's create a simple session context in Zega.
-                    // Actually, to keep it simple, I'll add a simple session var map to Zega struct.
-                    // But for now, let's just leave it as a no-op for the tests that don't need it.
-                    // Actually the tests require "SET n.prop = $val" after MATCH in the same query string.
-                    // Wait, the spec says each statement is parsed. If the query is "MATCH ... SET ..." that's two statements.
-                    // But the spec doesn't show combined statements. The test is statement-level.
-                    // Let me add a last_matched_vars to Zega for session state.
+        self.with_graph(|_graph| {
+            for _clause in _assignments {
+                if let Expr::PropertyAccess(ref _target, ref _prop) = _clause.target {
+                    if let Expr::Identifier(ref _var) = **_target {
+                        // We need a way to resolve var -> node id. For SET statements, var must be bound.
+                        // In MVP, SET is usually used after MATCH in the same query, but we process statement-by-statement.
+                        // For simplicity, we'll skip WAL for SET if we can't resolve, but in a real system you'd have query state.
+                        // Here we'll just search all nodes for the variable name in the query context... actually this is tricky.
+                        // For MVP tests, SET n.prop = $val will be tested with n known from prior MATCH, but since we process
+                        // per-statement, we need a session context. Let's create a simple session context in Zega.
+                        // Actually, to keep it simple, I'll add a simple session var map to Zega struct.
+                        // But for now, let's just leave it as a no-op for the tests that don't need it.
+                        // Actually the tests require "SET n.prop = $val" after MATCH in the same query string.
+                        // Wait, the spec says each statement is parsed. If the query is "MATCH ... SET ..." that's two statements.
+                        // But the spec doesn't show combined statements. The test is statement-level.
+                        // Let me add a last_matched_vars to Zega for session state.
+                    }
                 }
             }
-        }
-        Ok(vec![])
+            Ok(vec![])
+        })
     }
 
     fn exec_delete(&self, _identifiers: &[String]) -> Result<Vec<Row>> {
@@ -800,19 +802,20 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
-            let bindings = resolve_match_bindings(
-                graph,
-                match_pattern,
-                where_clause,
-                params,
-                traversal_budget,
-            )?;
-            for binding in &bindings {
-                set_pattern(graph, journal, assignments, params, binding)?;
-            }
-            Ok(vec![])
+        self.with_graph(|graph| {
+            atomically(graph, &self.wal, |graph, journal| {
+                let bindings = resolve_match_bindings(
+                    graph,
+                    match_pattern,
+                    where_clause,
+                    params,
+                    traversal_budget,
+                )?;
+                for binding in &bindings {
+                    set_pattern(graph, journal, assignments, params, binding)?;
+                }
+                Ok(vec![])
+            })
         })
     }
 
@@ -825,20 +828,21 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
-            let bindings = resolve_match_bindings(
-                graph,
-                match_pattern,
-                where_clause,
-                params,
-                traversal_budget,
-            )?;
-            let mut deleted = std::collections::HashSet::new();
-            for binding in &bindings {
-                delete_pattern(graph, journal, detach, identifiers, binding, &mut deleted)?;
-            }
-            Ok(vec![])
+        self.with_graph(|graph| {
+            atomically(graph, &self.wal, |graph, journal| {
+                let bindings = resolve_match_bindings(
+                    graph,
+                    match_pattern,
+                    where_clause,
+                    params,
+                    traversal_budget,
+                )?;
+                let mut deleted = std::collections::HashSet::new();
+                for binding in &bindings {
+                    delete_pattern(graph, journal, detach, identifiers, binding, &mut deleted)?;
+                }
+                Ok(vec![])
+            })
         })
     }
 
@@ -854,34 +858,52 @@ impl Zega {
         params: &HashMap<String, Value>,
         traversal_budget: &mut TraversalWorkBudget,
     ) -> Result<Vec<Row>> {
-        let mut graph = self.lock_graph()?;
-        atomically(&mut graph, &self.wal, |graph, journal| {
-            // 1. resolve MATCH (+ OPTIONAL MATCH + WHERE)
-            let mut bindings = resolve_match_and_optional(
-                graph,
-                match_pattern,
-                optional_patterns,
-                where_clause,
-                params,
-                traversal_budget,
-            )?;
-            // 2. WITH boundary
-            if let Some(with) = with_clause {
-                bindings = stage_with(bindings, with, params, graph)?;
-            }
-            // 3. apply each write clause in order, threading bindings
-            for clause in writes {
-                bindings = apply_write_clause(graph, journal, clause, bindings, params)?;
-            }
-            // 4. RETURN
-            project_bound_rows(graph, &bindings, return_clause, None, None, None, params)
+        self.with_graph(|graph| {
+            atomically(graph, &self.wal, |graph, journal| {
+                // 1. resolve MATCH (+ OPTIONAL MATCH + WHERE)
+                let mut bindings = resolve_match_and_optional(
+                    graph,
+                    match_pattern,
+                    optional_patterns,
+                    where_clause,
+                    params,
+                    traversal_budget,
+                )?;
+                // 2. WITH boundary
+                if let Some(with) = with_clause {
+                    bindings = stage_with(bindings, with, params, graph)?;
+                }
+                // 3. apply each write clause in order, threading bindings
+                for clause in writes {
+                    bindings = apply_write_clause(graph, journal, clause, bindings, params)?;
+                }
+                // 4. RETURN
+                project_bound_rows(graph, &bindings, return_clause, None, None, None, params)
+            })
         })
     }
 
-    fn lock_graph(&self) -> Result<std::sync::MutexGuard<'_, Graph>> {
-        self.graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))
+    /// Every use of the graph, read or write, goes through here. `f` runs
+    /// under the graph lock, and the result is handed back only once every
+    /// WAL entry appended by then is durable: this call's own writes, and
+    /// any other statement's writes it may have read. The lock is released
+    /// before that wait, so other statements run meanwhile and waiting
+    /// writers share one fsync (zega#51), and still no caller is ever
+    /// answered with a write that a failed fsync then takes back.
+    ///
+    /// After such a failure the graph holds writes the log lost, and every
+    /// later call fails at the same wait until the store is reopened.
+    fn with_graph<T>(&self, f: impl FnOnce(&mut Graph) -> Result<T>) -> Result<T> {
+        let (result, seen) = {
+            let mut graph = self
+                .graph
+                .lock()
+                .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+            let result = f(&mut graph);
+            (result, self.wal.appended_sequence())
+        };
+        self.wal.wait_durable(seen)?;
+        result
     }
 
     pub fn snapshot(&self) -> Result<()> {
@@ -895,35 +917,30 @@ impl Zega {
             if self.in_memory {
                 return Ok(());
             }
-            let graph = self
-                .graph
-                .lock()
-                .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-            let snapshot_path = self.path.join("snapshot.bin");
-            snapshot(&graph, &snapshot_path)?;
-            Ok(())
+            self.with_graph(|graph| {
+                // The snapshot must hold only durable writes.
+                self.wal.flush()?;
+                snapshot(graph, &self.path.join("snapshot.bin"))?;
+                Ok(())
+            })
         }
     }
 
     /// Serialize the full graph state to bytes. Platform-independent —
     /// this is how the wasm build persists an in-memory database.
     pub fn snapshot_bytes(&self) -> Result<Vec<u8>> {
-        let graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        Ok(crate::wal::encode_snapshot(&graph)?)
+        self.with_graph(|graph| {
+            Ok(crate::wal::encode_snapshot(graph)?)
+        })
     }
 
     /// Restore the full graph state from [`snapshot_bytes`] output,
     /// replacing current state.
     pub fn restore_bytes(&self, bytes: &[u8]) -> Result<()> {
-        let mut graph = self
-            .graph
-            .lock()
-            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        crate::wal::restore_bytes(&mut graph, bytes)?;
-        Ok(())
+        self.with_graph(|graph| {
+            crate::wal::restore_bytes(graph, bytes)?;
+            Ok(())
+        })
     }
 }
 
