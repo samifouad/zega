@@ -120,7 +120,7 @@ fn the_checker_names_what_cannot_be_ordered() {
     assert_eq!(diagnosis(schema, "{ City order by embedding { name } }"), ["City.embedding is a Vector<2,cosine> and cannot be ordered"]);
     assert_eq!(diagnosis(schema, "{ City order by nme { name } }"), ["City has no field nme"]);
     assert_eq!(diagnosis(schema, "{ City order by near { name } }"), ["City has no field near"]);
-    assert_eq!(diagnosis(schema, r#"mutation { City(name: "x") order by name { name } }"#), ["order and limit are only valid in queries"]);
+    assert_eq!(diagnosis(schema, r#"mutation { City(name: "x" && at: @point(0, 0)) order by name { name } }"#), ["order and limit are only valid in queries"]);
     // Execution stops at the same check.
     let error = Zega::in_memory().build().unwrap().run_lang(schema, "{ City order by at { name } }").unwrap_err();
     assert!(error.to_string().contains("City.at is a Point; order it by distance"), "{error}");
