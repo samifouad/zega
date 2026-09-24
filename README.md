@@ -6,7 +6,7 @@ An embeddable graph database. Written in Rust.
   <img src="image.png" alt="zega browser" width="70%">
 </p>
 
-zega provides a property graph with a Cypher-inspired query language in
+zega provides a property graph and its own query language, ZQL, in
 one engine, one binary, one dependency. It runs in-process in
 any Rust application, persists through a write-ahead log with snapshots, and
 compiles to WebAssembly for the browser.
@@ -22,14 +22,15 @@ just like [cqx](https://cqx.bio) does for running queries without a server:
 ## Features
 
 - **Property graph** — labelled nodes, typed relationships, property indexes,
-  and variable-length traversals (`-[*1..3]->`).
+  and variable-length traversals (`parent *1..3 -> Person`).
 - **Path finding** — `road *path -> Junction(name: "B")` returns one route
   with its nodes, edges and cost: fewest edges, `by &km` (Dijkstra), or
   `by &km toward at` (A*, with `km: Float<km>`). See [paths](docs/path.md).
-- **ZQL** — a Cypher-inspired query language: `MATCH`, `CREATE`, `MERGE`,
-  `SET`, `DELETE`/`DETACH DELETE`, `WHERE`, `WITH`, `UNWIND`, `FOREACH`,
-  `ORDER BY`/`SKIP`/`LIMIT`, aggregates (`count`, `sum`, `avg`, `min`, `max`,
-  `collect`), `CASE`, and scalar functions.
+- **ZQL** — zega's own query language: an explicit schema, mutations that
+  load JSON and CSV, and queries shaped like the graph they return. Filters,
+  [paths](docs/path.md), [locations](docs/location.md),
+  [vectors](docs/vector.md) and [discovery stages](docs/then.md) share one
+  grammar.
 - **Embeddable** — `zega` is a library first. Open a database with two
   lines of Rust and run graph queries against it.
 - **WebAssembly** — `zega-wasm` exposes the same engine to JavaScript,
@@ -201,9 +202,11 @@ invalid input is returned unchanged. Directories include both `.zql` and `.json`
 Use `zega fmt --stdin --lang json` for JSON on standard input. The explorer uses
 the same WASM formatter for its JSON import preview and result views.
 
-## The query language
+## ZQL
 
-ZQL has explicit schemas, mutations and graph-shaped queries:
+ZQL is zega's own query language. A document declares a schema, loads data
+with mutations, and asks queries shaped like the graph they return. It is not
+Cypher, so it has its own name.
 
 ```zql
 schema {
@@ -233,8 +236,9 @@ query {
 ```
 
 Use `run_lang(schema, statement)` for one operation or `apply_zql(document)` for
-an entire file. The [data-loading guide](docs/data-loading.md) covers raw sources,
-JSON/CSV types and linking. The conformance corpus lives in
+an entire file; the server runs the same language on `POST /zql`. The
+[data-loading guide](docs/data-loading.md) covers raw sources, JSON/CSV types
+and linking. The conformance corpus lives in
 [zegadb/testsuite](https://github.com/zegadb/testsuite).
 
 ## How persistence works
