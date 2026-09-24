@@ -38,6 +38,10 @@ export class ZegaWasm {
     load_locations(source: string, document: boolean): string;
     constructor();
     /**
+     * Nodes a ZQL `*path` search has expanded since this database opened.
+     */
+    nodes_expanded(): number;
+    /**
      * Preview metadata and cells come from the same Rust parser as insertion.
      */
     preview_import(text: string): string;
@@ -79,6 +83,7 @@ export interface InitOutput {
     readonly zegawasm_import_base64: (a: number, b: number, c: number) => [number, number];
     readonly zegawasm_load_locations: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly zegawasm_new: () => [number, number, number];
+    readonly zegawasm_nodes_expanded: (a: number) => [number, number, number];
     readonly zegawasm_preview_import: (a: number, b: number, c: number) => [number, number, number, number];
     readonly zegawasm_query: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_rows_examined: (a: number) => [number, number, number];

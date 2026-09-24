@@ -51,20 +51,39 @@ impl Point {
         serde_json::json!({"lat": self.lat(), "lon": self.lon()})
     }
     pub fn distance(self, other: Self) -> f64 {
-        let a = self.lat().to_radians();
-        let b = other.lat().to_radians();
-        let longitude = ((other.lon() - self.lon() + 180.0).rem_euclid(360.0) - 180.0).to_radians();
-        let cos = |lat: f64| {
-            if lat.abs() == 90.0 {
-                0.0
-            } else {
-                lat.to_radians().cos()
-            }
-        };
-        let h = ((b - a) / 2.0).sin().powi(2)
-            + cos(self.lat()) * cos(other.lat()) * (longitude / 2.0).sin().powi(2);
-        2.0 * EARTH_RADIUS * h.clamp(0.0, 1.0).sqrt().asin()
+        haversine(self, other, f64::sin, f64::cos, f64::asin)
     }
+    /// The same haversine distance, computed with software trigonometry so
+    /// every host returns the same bits. A search whose order depends on the
+    /// value (the A* heuristic) uses this, so native and wasm return the same
+    /// route.
+    pub fn portable_distance(self, other: Self) -> f64 {
+        haversine(self, other, libm::sin, libm::cos, libm::asin)
+    }
+}
+
+/// Haversine on a sphere of radius [`EARTH_RADIUS`], in metres.
+fn haversine(
+    from: Point,
+    to: Point,
+    sin: fn(f64) -> f64,
+    cos: fn(f64) -> f64,
+    asin: fn(f64) -> f64,
+) -> f64 {
+    let a = from.lat().to_radians();
+    let b = to.lat().to_radians();
+    let longitude = ((to.lon() - from.lon() + 180.0).rem_euclid(360.0) - 180.0).to_radians();
+    let cos_lat = |lat: f64| {
+        if lat.abs() == 90.0 {
+            0.0
+        } else {
+            cos(lat.to_radians())
+        }
+    };
+    let square = |x: f64| x * x;
+    let h = square(sin((b - a) / 2.0))
+        + cos_lat(from.lat()) * cos_lat(to.lat()) * square(sin(longitude / 2.0));
+    2.0 * EARTH_RADIUS * asin(h.clamp(0.0, 1.0).sqrt())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

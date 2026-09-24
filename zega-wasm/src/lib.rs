@@ -90,6 +90,11 @@ impl ZegaWasm {
         self.inner.rows_examined().map(|rows| rows as f64).map_err(to_js_error)
     }
 
+    /// Nodes a ZQL `*path` search has expanded since this database opened.
+    pub fn nodes_expanded(&self) -> Result<f64, JsValue> {
+        self.inner.nodes_expanded().map(|nodes| nodes as f64).map_err(to_js_error)
+    }
+
     pub fn delete_node(&self, id: f64) -> Result<(), JsValue> {
         self.inner.delete_node(id as u64).map_err(to_js_error)
     }

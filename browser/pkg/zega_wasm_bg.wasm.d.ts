@@ -13,6 +13,7 @@ export const zegawasm_graph: (a: number) => [number, number, number, number];
 export const zegawasm_import_base64: (a: number, b: number, c: number) => [number, number];
 export const zegawasm_load_locations: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const zegawasm_new: () => [number, number, number];
+export const zegawasm_nodes_expanded: (a: number) => [number, number, number];
 export const zegawasm_preview_import: (a: number, b: number, c: number) => [number, number, number, number];
 export const zegawasm_query: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const zegawasm_rows_examined: (a: number) => [number, number, number];

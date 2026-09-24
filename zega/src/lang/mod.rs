@@ -209,6 +209,8 @@ pub enum Field {
         optional: bool,
         /// Explicit source column names, latitude then longitude, for loads.
         from: Option<Vec<String>>,
+        /// `Float<km>`: the distance unit a number is measured in.
+        unit: Option<DistanceUnit>,
     },
     Edge {
         /// Name used in a query.
@@ -233,6 +235,8 @@ pub struct EdgeField {
     pub ty: String,
     pub optional: bool,
     pub span: Span,
+    /// `km: Float<km>`: the distance unit, which A* reads.
+    pub unit: Option<DistanceUnit>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -291,10 +295,77 @@ pub enum Item {
         field: String,
         span: Span,
         range: Option<(usize, usize)>,
+        /// `*path`: one route to the target instead of every node in reach.
+        path: Option<PathSpec>,
         link: bool,
         direction: Direction,
         target: Box<Selection>,
     },
+}
+
+/// `road *path(cost <= 50) by &km toward at in km -> Junction(...)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathSpec {
+    /// The `*path` word.
+    pub span: Span,
+    pub bound: Option<(PathBound, Span)>,
+    /// `by &km`: the edge field summed along the route. None counts edges.
+    pub weight: Option<(String, Span)>,
+    /// `toward at in km`: A*, guided by this Point field.
+    pub toward: Option<Toward>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PathBound {
+    /// At most this many edges.
+    Hops(usize),
+    /// A route costing at most (or, not inclusive, under) this much.
+    Cost { limit: f64, inclusive: bool },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Toward {
+    pub field: String,
+    pub span: Span,
+}
+
+/// The distance unit of an `Int` or `Float` field, declared in its type:
+/// `Float<km>`. A* reads it from the weight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum DistanceUnit {
+    #[serde(rename = "m")]
+    Metres,
+    #[serde(rename = "km")]
+    Kilometres,
+    #[serde(rename = "mi")]
+    Miles,
+}
+
+impl DistanceUnit {
+    pub fn metres(self) -> f64 {
+        match self {
+            DistanceUnit::Metres => 1.0,
+            DistanceUnit::Kilometres => 1000.0,
+            DistanceUnit::Miles => 1609.344,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DistanceUnit::Metres => "m",
+            DistanceUnit::Kilometres => "km",
+            DistanceUnit::Miles => "mi",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "m" => Some(DistanceUnit::Metres),
+            "km" => Some(DistanceUnit::Kilometres),
+            "mi" => Some(DistanceUnit::Miles),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -608,7 +679,7 @@ fn same_edge_props(left: &[EdgeField], right: &[EdgeField]) -> bool {
     right.sort_by(|a, b| a.name.cmp(&b.name));
     left.iter()
         .zip(right)
-        .all(|(a, b)| a.name == b.name && a.ty == b.ty && a.optional == b.optional)
+        .all(|(a, b)| a.name == b.name && a.ty == b.ty && a.optional == b.optional && a.unit == b.unit)
 }
 
 pub fn parse_query(source: &str) -> Result<Query> {
@@ -1276,6 +1347,7 @@ impl<'a> Parser<'a> {
                 self.expect(">")?;
                 ty = format!("Vector<{n},{metric}>");
             }
+            let unit = self.parse_unit(&ty, ty_span)?;
             let from = if self.eat_word("from") {
                 if ty != "Point" && VectorSpec::parse(&ty).is_none() {
                     return Err(self.err_at(name_span, "from (...) is only valid on a Point or Vector field"));
@@ -1295,6 +1367,7 @@ impl<'a> Parser<'a> {
                 ty,
                 optional,
                 from,
+                unit,
             });
         }
         if optional {
@@ -1328,6 +1401,25 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// `<km>` after a type: the distance unit of an `Int` or `Float`.
+    fn parse_unit(&mut self, ty: &str, ty_span: Span) -> Result<Option<DistanceUnit>> {
+        if !self.eat("<") {
+            return Ok(None);
+        }
+        if ty != "Int" && ty != "Float" {
+            return Err(self
+                .err_at(ty_span, format!("a unit needs an Int or Float; {ty} has none"))
+                .with_help("declare a distance as `km: Float<km>` or `length: Int<m>`"));
+        }
+        let (name, span) = self.ident()?;
+        let unit = DistanceUnit::parse(&name).ok_or_else(|| {
+            self.err_at(span, format!("unknown distance unit {name}"))
+                .with_help("the unit is `m`, `km` or `mi`, as in `Float<km>`")
+        })?;
+        self.expect(">")?;
+        Ok(Some(unit))
+    }
+
     fn parse_edge_props(&mut self) -> Result<(Vec<EdgeField>, Option<Span>)> {
         self.skip();
         if !self.src[self.i..].starts_with('{') {
@@ -1344,7 +1436,8 @@ impl<'a> Parser<'a> {
             let (name, span) = self.ident()?;
             let optional = self.eat("?");
             self.expect(":")?;
-            let (ty, _) = self.ident()?;
+            let (ty, ty_span) = self.ident()?;
+            let unit = self.parse_unit(&ty, ty_span)?;
             if props.iter().any(|field| field.name == name) {
                 return Err(self
                     .err_at(span, format!("duplicate edge field {name}"))
@@ -1355,6 +1448,7 @@ impl<'a> Parser<'a> {
                 ty,
                 optional,
                 span,
+                unit,
             });
         }
         Ok((props, Some(self.span_bytes(start, self.i))))
@@ -1546,7 +1640,12 @@ impl<'a> Parser<'a> {
             return Ok(Item::Distance(field, self.distance()?));
         }
         if field == "score" { return Ok(Item::Score(field, span)); }
-        let range = if self.eat("*") {
+        let mut path = None;
+        let star = self.eat("*");
+        let range = if star && self.starts_word("path") {
+            path = Some(self.parse_path()?);
+            None
+        } else if star {
             let min = self.integer()? as usize;
             self.expect("..")?;
             let max = self.integer()? as usize;
@@ -1575,10 +1674,16 @@ impl<'a> Parser<'a> {
                 field,
                 span,
                 range,
+                path,
                 link,
                 direction,
                 target: Box::new(target),
             });
+        }
+        if path.is_some() {
+            return Err(self
+                .err(format!("{field} *path needs an arrow and a target"))
+                .with_help(format!("write `{field} *path -> Type(name: \"B\")`")));
         }
         if range.is_some() {
             return Err(self
@@ -1586,6 +1691,103 @@ impl<'a> Parser<'a> {
                 .with_help(format!("write `{field} *1..3 -> Type`")));
         }
         Ok(Item::Prop(field, span))
+    }
+
+    /// `path` after the `*`, then an optional bound `(hops <= 20)` or
+    /// `(cost <= 50)`, a weight `by &km`, and an A* guide `toward at in km`,
+    /// in that order.
+    fn parse_path(&mut self) -> Result<PathSpec> {
+        self.skip();
+        let start = self.i;
+        self.expect_word("path")?;
+        let span = self.span_bytes(start, self.i);
+        let bound = if self.eat("(") {
+            self.skip();
+            let bound_start = self.i;
+            let (name, name_span) = self.ident()?;
+            let inclusive = if self.eat("<=") {
+                true
+            } else if self.eat("<") {
+                false
+            } else {
+                return Err(self
+                    .err("a path bound is `<=` or `<`")
+                    .with_help("write `*path(hops <= 20)` or `*path(cost <= 50)`"));
+            };
+            self.skip();
+            let value_start = self.i;
+            let value = self.number_token()?;
+            let value_span = self.span_bytes(value_start, self.i);
+            let bound = match name.as_str() {
+                "hops" => {
+                    let n = value
+                        .as_i64()
+                        .and_then(|n| usize::try_from(n).ok())
+                        .ok_or_else(|| {
+                            self.err_at(value_span, "a hops bound is a non-negative integer")
+                        })?;
+                    match (inclusive, n) {
+                        (true, n) => PathBound::Hops(n),
+                        (false, 0) => {
+                            return Err(self
+                                .err_at(value_span, "`hops < 0` allows no route")
+                                .with_help("write `hops <= 0` for a route of no edges"))
+                        }
+                        (false, n) => PathBound::Hops(n - 1),
+                    }
+                }
+                "cost" => {
+                    let limit = value
+                        .as_f64()
+                        .filter(|n| n.is_finite() && *n >= 0.0)
+                        .ok_or_else(|| {
+                            self.err_at(value_span, "a cost bound is a non-negative number")
+                        })?;
+                    PathBound::Cost { limit, inclusive }
+                }
+                _ => {
+                    return Err(self
+                        .err_at(name_span, format!("unknown path bound {name}"))
+                        .with_help("bound a path by `hops` or `cost`, e.g. `*path(cost <= 50)`"))
+                }
+            };
+            let bound_span = self.span_bytes(bound_start, self.i);
+            self.expect(")")?;
+            Some((bound, bound_span))
+        } else {
+            None
+        };
+        let weight = if self.eat_word("by") {
+            self.skip();
+            let amp = self.i;
+            if !self.eat("&") {
+                return Err(self
+                    .err("a path weight is an edge field")
+                    .with_help("write `by &km`, where `km` is a field of the relationship"));
+            }
+            let (name, _) = self.ident()?;
+            Some((name, self.span_bytes(amp, self.i)))
+        } else {
+            None
+        };
+        let toward = if self.eat_word("toward") {
+            let (field, span) = self.ident()?;
+            self.skip();
+            if self.starts_word("in") {
+                return Err(self
+                    .err("the unit is declared on the weight, not here")
+                    .with_help("declare `km: Float<km>` on the relationship and write `toward at`"));
+            }
+            Some(Toward { field, span })
+        } else {
+            None
+        };
+        Ok(PathSpec {
+            span,
+            bound,
+            weight,
+            toward,
+        })
     }
 
     fn starts_with_arrow(&mut self) -> bool {
@@ -2038,6 +2240,7 @@ fn bind_selection(
                 field,
                 span,
                 range,
+                path,
                 link,
                 direction,
                 target,
@@ -2049,6 +2252,7 @@ fn bind_selection(
                     field: field.clone(),
                     span: *span,
                     range: *range,
+                    path: path.clone(),
                     link: *link,
                     direction: *direction,
                     target: Box::new(target),
@@ -2254,6 +2458,7 @@ fn bind_points(
             ty,
             optional,
             from,
+            ..
         } = field
         else {
             continue;
@@ -2583,10 +2788,14 @@ impl Check<'_> {
                     field,
                     span,
                     range,
+                    path,
                     direction,
                     target,
                     ..
                 } => {
+                    if let Some(path) = path {
+                        self.path(sel, field, *span, *direction, path, target);
+                    }
                     if self.mutation && range.is_some() {
                         self.push(
                             *span,
@@ -2738,6 +2947,154 @@ impl Check<'_> {
                     format!("{}.{} does not reach {name}", sel.type_name, field),
                     Some(format!("`{field}` reaches {}", targets.join(", "))),
                 );
+            }
+        }
+    }
+
+    /// `field *path ... -> Target`: the route keeps following `field` from each
+    /// target, the weight is a number on the relationship, and A* has a Point
+    /// on every type it can reach.
+    fn path(
+        &mut self,
+        sel: &Selection,
+        field: &str,
+        span: Span,
+        direction: Direction,
+        path: &PathSpec,
+        target: &Selection,
+    ) {
+        if self.mutation {
+            self.push(
+                path.span,
+                "a mutation cannot find a path",
+                Some("a path reads rows that are already stored; use `query`".into()),
+            );
+        }
+        if target.near.is_some() || target.order.is_some() || target.limit.is_some() {
+            self.push(
+                target.type_span,
+                "a path target takes a condition, not near, order or limit",
+                Some("the condition names where the route ends, e.g. `Junction(name: \"B\")`".into()),
+            );
+        }
+        let Some(edge) = find_edge(self.schema, &sel.type_name, field) else {
+            // `walk` reports the missing relationship.
+            return;
+        };
+        let Field::Edge { rel, props, .. } = edge else {
+            return;
+        };
+        for name in selection_types(target) {
+            let continues = find_edge(self.schema, name, field).is_some_and(|next| {
+                matches!(next, Field::Edge { rel: next_rel, direction: next_dir, .. }
+                    if next_rel == rel && *next_dir == direction)
+            });
+            if !continues && self.schema.types.iter().any(|ty| ty.name == name) {
+                self.push(
+                    span,
+                    format!("a path keeps following {field}, and {name} has no `{field} {}`", arrow(direction)),
+                    Some(format!("declare `{field} {} …` on {name}, or walk one hop without `*path`", arrow(direction))),
+                );
+            }
+        }
+        if let Some((name, weight_span)) = &path.weight {
+            match props.iter().find(|prop| &prop.name == name) {
+                Some(prop) if prop.ty == "Int" || prop.ty == "Float" => {}
+                Some(prop) => self.push(
+                    *weight_span,
+                    format!("a path weight is a number; {field}.{name} is {}", prop.ty),
+                    Some("weigh a path by an Int or Float field of the relationship".into()),
+                ),
+                None => {
+                    let known: Vec<&str> = props.iter().map(|prop| prop.name.as_str()).collect();
+                    let help = if let Some(hit) = closest(name, known.iter().copied()) {
+                        format!("did you mean `&{hit}`?")
+                    } else {
+                        format!("declare it on the relationship: {field} -> Type {{ {name}: Float }}")
+                    };
+                    self.push(*weight_span, format!("{field} has no field {name}"), Some(help));
+                }
+            }
+        }
+        if let Some((PathBound::Hops(_), bound_span)) = &path.bound {
+            if path.weight.is_some() {
+                self.push(
+                    *bound_span,
+                    "a weighted path is bounded by cost",
+                    Some("write `*path(cost <= 50) by &km`; hops bound a path without a weight".into()),
+                );
+            }
+        }
+        if let Some(toward) = &path.toward {
+            match &path.weight {
+                None => self.push(
+                    toward.span,
+                    "toward needs a weight measured in a distance",
+                    Some(format!(
+                        "A* guesses the rest of the route as a distance; write `by &km toward {}` with `km: Float<km>`",
+                        toward.field
+                    )),
+                ),
+                Some((name, _)) => {
+                    // A* compares the weight with metres, so it needs the unit.
+                    if let Some(prop) = props.iter().find(|prop| &prop.name == name) {
+                        if (prop.ty == "Int" || prop.ty == "Float") && prop.unit.is_none() {
+                            self.push(
+                                toward.span,
+                                format!("toward needs a unit on the weight: declare {name}: {}<km>", prop.ty),
+                                Some(format!(
+                                    "A* compares {field}.{name} with straight-line distances; the unit is `m`, `km` or `mi`"
+                                )),
+                            );
+                        }
+                    }
+                }
+            }
+            // The start's roads are checked against the straight line too,
+            // so the start needs the Point as much as every node after it.
+            // A start type that is also a target type is checked below.
+            let targets = selection_types(target);
+            for name in selection_types(sel) {
+                if targets.contains(&name) {
+                    continue;
+                }
+                match self.schema.prop(name, &toward.field) {
+                    Ok(Field::Prop { ty, .. }) if ty == "Point" => {}
+                    Ok(Field::Prop { ty, .. }) => self.push(
+                        toward.span,
+                        format!("toward needs a Point; {name}.{} is {ty}", toward.field),
+                        Some("A* measures the straight line to the target from a Point field".into()),
+                    ),
+                    _ => self.push(
+                        toward.span,
+                        format!(
+                            "{name} has no {}, and `toward {}` needs a location on every node it reaches",
+                            toward.field, toward.field
+                        ),
+                        Some(format!(
+                            "declare `{}: Point` on {name}, or drop `toward` to search without a guess",
+                            toward.field
+                        )),
+                    ),
+                }
+            }
+            for name in selection_types(target) {
+                if self.schema.types.iter().all(|ty| ty.name != name) {
+                    continue;
+                }
+                match self.schema.prop(name, &toward.field) {
+                    Ok(Field::Prop { ty, .. }) if ty == "Point" => {}
+                    Ok(Field::Prop { ty, .. }) => self.push(
+                        toward.span,
+                        format!("toward needs a Point; {name}.{} is {ty}", toward.field),
+                        Some("A* measures the straight line to the target from a Point field".into()),
+                    ),
+                    _ => self.push(
+                        toward.span,
+                        format!("{name} has no field {}", toward.field),
+                        Some(prop_help(self.schema, name, &toward.field)),
+                    ),
+                }
             }
         }
     }

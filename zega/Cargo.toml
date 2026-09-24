@@ -20,6 +20,8 @@ base64 = { workspace = true }
 bincode = { workspace = true }
 crc32fast = { workspace = true }
 getrandom = { workspace = true }
+# Software sin/cos/asin: the A* heuristic is bit-identical on native and wasm.
+libm = "0.2"
 hmac = { workspace = true }
 rsa = { workspace = true }
 serde = { workspace = true }
