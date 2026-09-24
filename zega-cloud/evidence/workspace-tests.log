@@ -1,31 +1,219 @@
+   Compiling cfg-if v1.0.5
+   Compiling smallvec v1.16.1
+   Compiling itoa v1.0.18
+   Compiling once_cell v1.21.4
+   Compiling memchr v2.8.3
+   Compiling zeroize v1.9.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling log v0.4.34
+   Compiling pin-project-lite v0.2.17
+   Compiling const-oid v0.9.6
+   Compiling typenum v1.20.1
+   Compiling scopeguard v1.2.0
+   Compiling libc v0.2.189
+   Compiling serde_core v1.0.229
+   Compiling percent-encoding v2.3.2
+   Compiling writeable v0.6.4
+   Compiling litemap v0.8.3
+   Compiling zerofrom v0.1.8
+   Compiling subtle v2.6.1
+   Compiling utf8_iter v1.0.4
+   Compiling libm v0.2.16
+   Compiling zerocopy v0.8.57
+   Compiling httparse v1.10.1
+   Compiling icu_normalizer_data v2.3.0
+   Compiling zmij v1.0.23
+   Compiling icu_properties_data v2.3.0
+   Compiling lock_api v0.4.14
+   Compiling bitflags v2.13.2
+   Compiling untrusted v0.9.0
+   Compiling form_urlencoded v1.2.2
+   Compiling rustls-pki-types v1.15.1
+   Compiling base64ct v1.8.3
+   Compiling ryu v1.0.23
+   Compiling yoke v0.8.3
+   Compiling base64 v0.22.1
+   Compiling cpufeatures v0.2.17
+   Compiling spin v0.9.9
+   Compiling aho-corasick v1.1.5
+   Compiling base64 v0.23.1
+   Compiling regex-syntax v0.8.11
+   Compiling generic-array v0.14.7
+   Compiling thiserror v1.0.69
+   Compiling csv-core v0.1.13
+   Compiling utf8-zero v0.8.1
+   Compiling crc32fast v1.5.2
+   Compiling num-traits v0.2.19
+   Compiling pem-rfc7468 v0.7.0
+   Compiling futures-core v0.3.34
+   Compiling lazy_static v1.5.0
+   Compiling webpki-roots v1.0.9
+   Compiling futures-sink v0.3.34
+   Compiling core-foundation-sys v0.8.7
+   Compiling slab v0.4.12
+   Compiling zerovec v0.11.8
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling parking_lot_core v0.9.12
+   Compiling serde v1.0.229
+   Compiling zerotrie v0.2.5
+   Compiling mio v1.2.3
+   Compiling socket2 v0.6.5
+   Compiling der v0.7.10
+   Compiling serde_json v1.0.151
+   Compiling csv v1.4.0
+   Compiling futures-channel v0.3.34
+   Compiling regex-automata v0.4.18
+   Compiling futures-task v0.3.34
+   Compiling num-integer v0.1.47
+   Compiling futures-io v0.3.34
+   Compiling rand_core v0.6.4
+   Compiling ring v0.17.14
+   Compiling signal-hook-registry v1.4.8
+   Compiling digest v0.10.7
+   Compiling getrandom v0.4.3
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling parking_lot v0.12.5
+   Compiling bytes v1.12.1
+   Compiling bincode v1.3.3
+   Compiling rustix v1.1.5
+   Compiling fastrand v2.5.0
+   Compiling core-foundation v0.9.4
+   Compiling security-framework-sys v2.17.0
+   Compiling num-iter v0.1.46
+   Compiling ppv-lite86 v0.2.21
+   Compiling futures-util v0.3.34
+   Compiling tracing-core v0.1.36
+   Compiling siphasher v1.0.3
+   Compiling spki v0.7.3
+   Compiling equivalent v1.0.2
+   Compiling tower-service v0.3.3
+   Compiling signature v2.2.0
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling hmac v0.12.1
+   Compiling sha2 v0.10.9
+   Compiling rustls-webpki v0.103.15
+   Compiling hashbrown v0.17.1
+   Compiling fnv v1.0.7
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling system-configuration-sys v0.6.0
+   Compiling http v1.5.0
+   Compiling tokio v1.53.1
+   Compiling pkcs8 v0.10.2
+   Compiling phf_shared v0.11.3
+   Compiling sync_wrapper v1.0.2
+   Compiling tracing v0.1.44
+   Compiling rand_chacha v0.3.1
+   Compiling regex v1.13.1
+   Compiling tempfile v3.27.0
+   Compiling tower-layer v0.3.3
+   Compiling httpdate v1.0.3
+   Compiling system-configuration v0.7.0
+   Compiling phf_generator v0.11.3
+   Compiling want v0.3.1
+   Compiling phf v0.11.3
+   Compiling ipnet v2.12.2
+   Compiling icu_provider v2.3.1
+   Compiling mime v0.3.17
+   Compiling rand v0.8.8
+   Compiling pkcs1 v0.7.5
+   Compiling serde_urlencoded v0.7.1
+   Compiling indexmap v2.14.2
+   Compiling security-framework v2.11.1
+   Compiling chrono v0.4.45
+   Compiling rustls v0.23.45
+   Compiling ureq-proto v0.6.4
+   Compiling http-body v1.1.0
+   Compiling core-foundation v0.10.1
+   Compiling serde_path_to_error v0.1.20
+   Compiling phf_codegen v0.11.3
+   Compiling futures-executor v0.3.34
+   Compiling num_cpus v1.17.0
+   Compiling rustls-pemfile v2.2.0
+   Compiling instant v0.1.13
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling retain_mut v0.1.9
+   Compiling num-bigint-dig v0.8.6
+   Compiling http-body-util v0.1.5
+   Compiling deadpool-runtime v0.1.4
+   Compiling matchit v0.7.3
+   Compiling chrono-tz-build v0.2.1
+   Compiling security-framework v3.7.0
+   Compiling webpki-roots v0.26.11
+   Compiling utf8parse v0.2.2
+   Compiling futures v0.3.34
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle-query v1.1.5
+   Compiling anstyle v1.0.14
+   Compiling colorchoice v1.0.5
+   Compiling rustls-native-certs v0.7.3
+   Compiling multiversion v0.9.0
+   Compiling clap_lex v1.1.1
+   Compiling core_detect v1.0.0
+   Compiling axum-core v0.4.5
+   Compiling anstyle-parse v1.0.0
+   Compiling strsim v0.11.1
+   Compiling rsa v0.9.10
+   Compiling simdutf8 v0.1.5
+   Compiling include_dir v0.7.4
+   Compiling chrono-tz v0.8.6
+   Compiling tokio-util v0.7.19
+   Compiling tower v0.5.3
+   Compiling deadpool v0.9.5
+   Compiling backoff v0.4.0
+   Compiling idna_adapter v1.2.2
+   Compiling native-tls v0.2.18
+   Compiling encoding_rs v0.8.41
+   Compiling anstream v1.0.0
+   Compiling ureq v3.4.2
+   Compiling tokio-rustls v0.26.5
+   Compiling idna v1.1.0
+   Compiling h2 v0.4.19
+   Compiling zega-cli v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-cli)
+   Compiling clap_builder v4.6.7
+   Compiling tokio-native-tls v0.3.1
+   Compiling url v2.5.8
    Compiling zega v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega)
+   Compiling tower-http v0.6.11
+   Compiling hyper v1.11.1
+   Compiling clap v4.6.7
+   Compiling hyper-util v0.1.20
+   Compiling neo4rs v0.8.0
+   Compiling axum v0.7.9
+   Compiling hyper-tls v0.6.0
+   Compiling reqwest v0.12.28
    Compiling zega-server v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-server)
    Compiling zega-cloud v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-cloud)
    Compiling zega-bench v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-bench)
-   Compiling zega-cli v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-cli)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.20s
-     Running unittests src/lib.rs (.target/debug/deps/zega-137717614d9f9484)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.49s
+     Running unittests src/lib.rs (.target/debug/deps/zega-1dcf9c6823f8b8c1)
 
-running 646 tests
+running 653 tests
 test graph::exhaustive_tests::default_graph_equivalent_to_new ... ok
-test graph::exhaustive_tests::create_relationship_returns_first_id_one ... ok
-test graph::exhaustive_tests::create_node_ids_are_sequential_and_unique ... ok
 test graph::exhaustive_tests::create_node_with_no_labels_or_props ... ok
+test graph::exhaustive_tests::create_relationship_returns_first_id_one ... ok
 test graph::exhaustive_tests::create_node_returns_first_id_one ... ok
 test graph::exhaustive_tests::create_relationship_updates_adjacency ... ok
+test graph::exhaustive_tests::create_node_ids_are_sequential_and_unique ... ok
 test graph::exhaustive_tests::all_relationships_reflects_inserts_and_deletes ... ok
+test graph::exhaustive_tests::create_after_set_state_continues_from_high_water_mark ... ok
+test graph::exhaustive_tests::create_relationship_stores_fields_and_props ... ok
+test graph::exhaustive_tests::delete_node_clears_from_label_index ... ok
 test graph::exhaustive_tests::all_nodes_reflects_inserts_and_deletes ... ok
 test graph::exhaustive_tests::delete_node_cascades_self_loop ... ok
-test graph::exhaustive_tests::delete_node_cascades_outgoing_relationships ... ok
-test graph::exhaustive_tests::create_after_set_state_continues_from_high_water_mark ... ok
 test graph::exhaustive_tests::delete_node_cascades_both_directions ... ok
+test graph::exhaustive_tests::delete_node_cascades_outgoing_relationships ... ok
 test graph::exhaustive_tests::delete_node_cascades_incoming_relationships ... ok
-test graph::exhaustive_tests::create_relationship_stores_fields_and_props ... ok
 test graph::exhaustive_tests::create_node_stores_labels_and_props ... ok
-test graph::exhaustive_tests::delete_node_clears_from_label_index ... ok
 test graph::exhaustive_tests::delete_node_clears_from_property_index ... ok
-test graph::exhaustive_tests::delete_node_keeps_other_nodes_in_shared_label_bucket ... ok
 test graph::exhaustive_tests::delete_node_keeps_other_nodes_in_shared_property_bucket ... ok
+test graph::exhaustive_tests::delete_node_keeps_other_nodes_in_shared_label_bucket ... ok
 test graph::exhaustive_tests::delete_node_keeps_shared_dangling_endpoint_adjacency ... ok
 test graph::exhaustive_tests::delete_node_removes_node_and_returns_none_after ... ok
 test graph::exhaustive_tests::delete_node_twice_is_safe ... ok
@@ -41,20 +229,20 @@ test graph::exhaustive_tests::empty_graph_lookups_return_none ... ok
 test graph::exhaustive_tests::empty_string_label_is_indexed ... ok
 test graph::exhaustive_tests::get_node_returns_none_for_unknown_id ... ok
 test graph::exhaustive_tests::get_relationship_unknown_id_is_none ... ok
-test graph::exhaustive_tests::label_lookup_is_case_sensitive ... ok
 test graph::exhaustive_tests::end_to_end_social_graph_scenario ... ok
-test graph::exhaustive_tests::new_graph_is_empty ... ok
+test graph::exhaustive_tests::label_lookup_is_case_sensitive ... ok
 test graph::exhaustive_tests::mutual_relationships_two_separate_edges ... ok
+test graph::exhaustive_tests::new_graph_is_empty ... ok
 test graph::exhaustive_tests::node_and_rel_counters_advance_independently ... ok
 test graph::exhaustive_tests::node_is_cloneable_and_fields_public ... ok
 test graph::exhaustive_tests::node_with_multiple_labels_indexed_under_each ... ok
 test graph::exhaustive_tests::node_with_multiple_props_indexed_under_each ... ok
 test graph::exhaustive_tests::node_with_only_incoming_has_no_outgoing_entry ... ok
 test graph::exhaustive_tests::nodes_by_label_groups_multiple_nodes ... ok
-test graph::exhaustive_tests::node_serde_json_roundtrip ... ok
 test graph::exhaustive_tests::nodes_by_label_unknown_label_is_none ... ok
-test graph::exhaustive_tests::nodes_by_property_discriminates_same_length_different_lists ... ok
+test graph::exhaustive_tests::node_serde_json_roundtrip ... ok
 test graph::exhaustive_tests::nodes_by_property_discriminates_same_length_different_maps ... ok
+test graph::exhaustive_tests::nodes_by_property_discriminates_same_length_different_lists ... ok
 test graph::exhaustive_tests::nodes_by_property_distinguishes_positive_and_negative_zero ... ok
 test graph::exhaustive_tests::nodes_by_property_distinguishes_value_types ... ok
 test graph::exhaustive_tests::nodes_by_property_empty_list_and_empty_map_are_distinct_keys ... ok
@@ -81,11 +269,11 @@ test graph::exhaustive_tests::prop_roundtrip_map ... ok
 test graph::exhaustive_tests::prop_roundtrip_null ... ok
 test graph::exhaustive_tests::prop_roundtrip_string ... ok
 test graph::exhaustive_tests::prop_roundtrip_unicode_and_empty_string ... ok
-test graph::exhaustive_tests::large_graph_delete_hub_cascades_all_edges ... ok
 test graph::exhaustive_tests::property_key_empty_and_whitespace_and_unicode ... ok
 test graph::exhaustive_tests::rel_ids_independent_from_node_ids ... ok
 test graph::exhaustive_tests::relationship_empty_and_unicode_kind ... ok
 test graph::exhaustive_tests::relationship_is_cloneable_and_fields_public ... ok
+test graph::exhaustive_tests::large_graph_delete_hub_cascades_all_edges ... ok
 test graph::exhaustive_tests::relationship_serde_json_roundtrip ... ok
 test graph::exhaustive_tests::relationship_stores_rich_value_props ... ok
 test graph::exhaustive_tests::relationship_to_nonexistent_node_still_recorded ... ok
@@ -105,14 +293,14 @@ test graph::exhaustive_tests::self_loop_delete_clears_both_adjacency_sets ... ok
 test graph::exhaustive_tests::self_loop_relationship_indexed_both_directions ... ok
 test graph::exhaustive_tests::set_state_empty_resets_counters_to_one ... ok
 test graph::exhaustive_tests::set_state_node_with_many_labels_and_props_fully_indexed ... ok
-test graph::exhaustive_tests::set_state_overwrites_indexes_not_merges ... ok
 test graph::exhaustive_tests::set_state_from_serde_roundtripped_snapshot ... ok
+test graph::exhaustive_tests::set_state_overwrites_indexes_not_merges ... ok
 test graph::exhaustive_tests::set_state_rebuilds_indexes_and_adjacency ... ok
 test graph::exhaustive_tests::set_state_replaces_prior_contents ... ok
 test graph::exhaustive_tests::set_state_sets_counters_above_max_ids ... ok
 test graph::exhaustive_tests::set_state_with_dangling_relationship_endpoints ... ok
-test graph::exhaustive_tests::trail_diamond_two_distinct_paths ... ok
 test graph::exhaustive_tests::trail_distinguishes_parallel_edges ... ok
+test graph::exhaustive_tests::trail_diamond_two_distinct_paths ... ok
 test graph::exhaustive_tests::trail_does_not_reuse_relationship_on_cycle ... ok
 test graph::exhaustive_tests::trail_mutual_edges_allow_there_and_back ... ok
 test graph::exhaustive_tests::traversal_bounded_length_two_hops ... ok
@@ -131,7 +319,6 @@ test graph::exhaustive_tests::update_node_overwrite_keeps_untouched_props_indexe
 test graph::exhaustive_tests::update_node_overwrites_existing_prop ... ok
 test graph::exhaustive_tests::update_node_reindexes_property_old_value_dropped ... ok
 test graph::exhaustive_tests::update_node_same_value_is_stable_remove_then_readd ... ok
-test graph::exhaustive_tests::large_chain_full_traversal ... ok
 test graph::exhaustive_tests::update_node_with_empty_props_keeps_existing ... ok
 test graph::tests::test_create_node_and_lookup ... ok
 test graph::tests::test_relationship ... ok
@@ -140,45 +327,53 @@ test index::tests::negative_zero_and_zero_share_a_key_and_nan_is_not_stored ... 
 test index::tests::trigrams_answer_all_three_text_operators ... ok
 test lang::discovery::tests::precedence_and_parentheses_match_filters ... ok
 test lang::discovery::tests::infix_names_and_type_names_are_not_reserved ... ok
+test graph::exhaustive_tests::large_chain_full_traversal ... ok
 test lang::display_tests::display_empty ... ok
 test lang::discovery::tests::stages_and_skip_bind_to_the_immediate_stage ... ok
 test lang::display_tests::display_every_listed_type_is_checked ... ok
 test lang::display_tests::display_missing_coordinates ... ok
-test lang::display_tests::display_diagnostic_caret_and_public_api ... ok
 test lang::display_tests::display_syntax_errors ... ok
+test lang::display_tests::display_diagnostic_caret_and_public_api ... ok
 test lang::display_tests::display_two_defaults ... ok
-test lang::display_tests::display_unknown_singular_type ... ok
 test lang::display_tests::display_timeline_requirements ... ok
+test lang::display_tests::display_unknown_singular_type ... ok
 test lang::display_tests::display_wrong_coordinate_type ... ok
-test lang::tests::bare_types_still_parse_beside_a_schema_wrapper ... ok
 test lang::display_tests::display_round_trip_and_defaults ... ok
-test lang::tests::query_keyword_wraps_a_read_and_an_empty_block_is_valid ... ok
 test lang::discovery::tests::every_primitive_parses_and_checks ... ok
-test lang::tests::schema_unknown_type_is_a_schema_diagnostic ... ok
-test lang::tests::index_block_names_one_index_per_field_and_kind ... ok
-test lang::tests::unique_unknown_field_suggests_a_field ... ok
-test lang::tests::unique_rejects_a_relationship ... ok
-test lang::tests::parses_schema_and_query ... ok
+test lang::display_tests::node_display_unknown_attribute_span ... ok
+test lang::display_tests::node_display_image_reference_errors ... ok
+test lang::tests::bare_types_still_parse_beside_a_schema_wrapper ... ok
+test lang::display_tests::node_display_image_requires_url_field ... ok
+test lang::display_tests::node_display_duplicate_and_at_rule ... ok
 test lang::discovery::tests::regex_is_compiled_and_unsupported_syntax_has_help ... ok
-test lang::tests::unique_block_makes_each_field_unique_on_its_own ... ok
-test parser::exhaustive_tests::ast_aggregate_function_variants_distinct ... ok
-test lang::tests::unknown_field_underlines_the_name_and_suggests ... ok
+test lang::display_tests::node_display_shape_errors ... ok
+test lang::tests::query_keyword_wraps_a_read_and_an_empty_block_is_valid ... ok
+test lang::tests::schema_unknown_type_is_a_schema_diagnostic ... ok
+test lang::display_tests::node_display_serialization_and_defaults ... ok
+test lang::tests::index_block_names_one_index_per_field_and_kind ... ok
+test lang::tests::parses_schema_and_query ... ok
+test lang::tests::unique_rejects_a_relationship ... ok
 test lang::tests::reports_every_type_error ... ok
+test lang::tests::unique_unknown_field_suggests_a_field ... ok
+test lang::tests::edge_fields_are_declared_once_on_the_relationship ... ok
+test lang::tests::dollar_names_a_column_and_a_load_is_a_file ... ok
+test lang::tests::unknown_field_underlines_the_name_and_suggests ... ok
+test lang::display_tests::node_display_size_errors ... ok
+test parser::exhaustive_tests::ast_aggregate_function_variants_distinct ... ok
+test lang::tests::unique_block_makes_each_field_unique_on_its_own ... ok
 test parser::exhaustive_tests::ast_binary_operator_variants_distinct ... ok
 test lang::tests::wrong_arrow_names_the_schema_direction ... ok
 test parser::exhaustive_tests::ast_direction_variants_distinct ... ok
-test lang::tests::edge_fields_are_declared_once_on_the_relationship ... ok
-test lang::tests::dollar_names_a_column_and_a_load_is_a_file ... ok
 test parser::exhaustive_tests::ast_expr_clone_equality ... ok
 test parser::exhaustive_tests::ast_order_direction_variants_distinct ... ok
 test parser::exhaustive_tests::ast_relationship_length_equality ... ok
 test parser::exhaustive_tests::ast_pattern_element_clone_and_debug ... ok
 test parser::exhaustive_tests::ast_return_item_alias_some_vs_none_distinct ... ok
 test parser::exhaustive_tests::ast_set_clause_equality_round_trip ... ok
-test parser::exhaustive_tests::lex_all_keywords_uppercase ... ok
 test parser::exhaustive_tests::ast_statement_variants_are_distinct ... ok
-test parser::exhaustive_tests::lex_all_single_char_symbols ... ok
+test parser::exhaustive_tests::lex_all_keywords_uppercase ... ok
 test parser::exhaustive_tests::lex_all_symbols_back_to_back ... ok
+test parser::exhaustive_tests::lex_all_single_char_symbols ... ok
 test parser::exhaustive_tests::lex_arrow ... ok
 test parser::exhaustive_tests::lex_arrow_vs_dash_in_pattern_fragment ... ok
 test parser::exhaustive_tests::lex_bang_alone_falls_back_to_dash ... ok
@@ -189,6 +384,7 @@ test parser::exhaustive_tests::lex_comment_only_no_newline ... ok
 test parser::exhaustive_tests::lex_dash_alone_is_dash ... ok
 test parser::exhaustive_tests::lex_dash_then_other_is_dash_plus_next ... ok
 test parser::exhaustive_tests::lex_double_equals_is_eq ... ok
+test graph::exhaustive_tests::large_star_fanout_adjacency ... ok
 test parser::exhaustive_tests::lex_double_quoted_string ... ok
 test parser::exhaustive_tests::lex_empty_input_yields_no_tokens ... ok
 test parser::exhaustive_tests::lex_empty_string ... ok
@@ -197,7 +393,6 @@ test parser::exhaustive_tests::lex_eq_eq_eq_collapses_pairs ... ok
 test parser::exhaustive_tests::lex_float_basic ... ok
 test parser::exhaustive_tests::lex_float_then_dot_then_int_is_float_dot_int ... ok
 test parser::exhaustive_tests::lex_float_with_underscores ... ok
-test graph::exhaustive_tests::large_star_fanout_adjacency ... ok
 test parser::exhaustive_tests::lex_float_with_underscores_in_both_parts ... ok
 test parser::exhaustive_tests::lex_full_match_query_stream ... ok
 test parser::exhaustive_tests::lex_greater_and_gte ... ok
@@ -249,16 +444,16 @@ test parser::exhaustive_tests::lex_unterminated_string_returns_partial_literal_n
 test parser::exhaustive_tests::lex_unterminated_string_with_trailing_escape_does_not_panic ... ok
 test parser::exhaustive_tests::lex_zero_point_zero_is_float ... ok
 test parser::exhaustive_tests::parse_aggregate_function_name_case_insensitive ... ok
-test parser::exhaustive_tests::parse_aggregate_unclosed_paren_is_error ... ok
 test parser::exhaustive_tests::parse_aggregate_with_alias ... ok
+test parser::exhaustive_tests::parse_aggregate_unclosed_paren_is_error ... ok
 test parser::exhaustive_tests::parse_all_aggregate_functions ... ok
 test parser::exhaustive_tests::parse_arithmetic_in_return_item ... ok
 test parser::exhaustive_tests::parse_bare_dash_relationship_no_bracket ... ok
 test parser::exhaustive_tests::parse_bare_keyword_only_no_pattern_is_error ... ok
-test parser::exhaustive_tests::parse_all_keyword_tokens_as_parameter_names ... ok
 test parser::exhaustive_tests::parse_both_relationship ... ok
 test parser::exhaustive_tests::parse_all_keyword_tokens_as_property_keys ... ok
 test parser::exhaustive_tests::parse_chained_relationships ... ok
+test parser::exhaustive_tests::parse_all_keyword_tokens_as_parameter_names ... ok
 test parser::exhaustive_tests::parse_collect_with_property_argument ... ok
 test parser::exhaustive_tests::parse_count_distinct ... ok
 test parser::exhaustive_tests::parse_count_distinct_star_is_error ... ok
@@ -272,8 +467,8 @@ test parser::exhaustive_tests::parse_delete_multiple_identifiers ... ok
 test parser::exhaustive_tests::parse_delete_no_identifiers_yields_empty_vec ... ok
 test parser::exhaustive_tests::parse_delete_single_identifier ... ok
 test parser::exhaustive_tests::parse_dollar_without_name_is_error ... ok
-test parser::exhaustive_tests::parse_empty_input_yields_empty_statement_list ... ok
 test parser::exhaustive_tests::parse_double_parenthesized_literal ... ok
+test parser::exhaustive_tests::parse_empty_input_yields_empty_statement_list ... ok
 test parser::exhaustive_tests::parse_empty_property_map ... ok
 test parser::exhaustive_tests::parse_error_message_variant_displays_inner_string ... ok
 test parser::exhaustive_tests::parse_error_unexpected_eof_variant_is_reachable_and_displays ... ok
@@ -281,12 +476,12 @@ test parser::exhaustive_tests::parse_fully_anonymous_node ... ok
 test parser::exhaustive_tests::parse_incoming_bare_dash_no_bracket ... ok
 test parser::exhaustive_tests::parse_incoming_missing_trailing_dash_is_error ... ok
 test parser::exhaustive_tests::parse_incoming_relationship ... ok
-test parser::exhaustive_tests::parse_incoming_relationship_with_bracket_and_kind ... ok
 test parser::exhaustive_tests::parse_leading_semicolon_is_error ... ok
+test parser::exhaustive_tests::parse_incoming_relationship_with_bracket_and_kind ... ok
 test parser::exhaustive_tests::parse_limit_absent_is_none ... ok
+test parser::exhaustive_tests::parse_lone_symbols_is_error ... ok
 test parser::exhaustive_tests::parse_limit_integer ... ok
 test parser::exhaustive_tests::parse_limit_parameter ... ok
-test parser::exhaustive_tests::parse_lone_symbols_is_error ... ok
 test parser::exhaustive_tests::parse_match_anonymous_node ... ok
 test parser::exhaustive_tests::parse_match_create ... ok
 test parser::exhaustive_tests::parse_match_create_carries_where_across ... ok
@@ -294,17 +489,17 @@ test parser::exhaustive_tests::parse_match_lowercase_keywords ... ok
 test parser::exhaustive_tests::parse_match_where_create ... ok
 test parser::exhaustive_tests::parse_match_with_label ... ok
 test parser::exhaustive_tests::parse_match_without_return_has_empty_return_clause ... ok
-test parser::exhaustive_tests::parse_merge_on_create_multiple_assignments ... ok
 test parser::exhaustive_tests::parse_merge_on_without_create_is_error ... ok
+test parser::exhaustive_tests::parse_merge_on_create_multiple_assignments ... ok
 test parser::exhaustive_tests::parse_merge_then_return ... ok
 test parser::exhaustive_tests::parse_merge_with_on_create_set ... ok
 test parser::exhaustive_tests::parse_merge_without_on_create ... ok
 test parser::exhaustive_tests::parse_minimal_match_return ... ok
-test parser::exhaustive_tests::parse_multi_match_then_create ... ok
 test parser::exhaustive_tests::parse_node_colon_then_non_symbolic_yields_no_label ... ok
+test parser::exhaustive_tests::parse_multi_match_then_create ... ok
 test parser::exhaustive_tests::parse_node_label_named_order_keyword ... ok
-test parser::exhaustive_tests::parse_node_with_multiple_properties ... ok
 test parser::exhaustive_tests::parse_only_comment_yields_empty_statement_list ... ok
+test parser::exhaustive_tests::parse_node_with_multiple_properties ... ok
 test parser::exhaustive_tests::parse_node_with_single_property ... ok
 test parser::exhaustive_tests::parse_only_semicolon_is_error ... ok
 test parser::exhaustive_tests::parse_only_whitespace_yields_empty_statement_list ... ok
@@ -318,23 +513,23 @@ test parser::exhaustive_tests::parse_outgoing_relationship ... ok
 test parser::exhaustive_tests::parse_parameter_named_like_keyword ... ok
 test parser::exhaustive_tests::parse_parameter_simple ... ok
 test parser::exhaustive_tests::parse_parenthesized_expression_in_return ... ok
-test parser::exhaustive_tests::parse_property_access_missing_prop_name_is_error ... ok
 test parser::exhaustive_tests::parse_parenthesized_property_access_in_where ... ok
+test parser::exhaustive_tests::parse_property_access_missing_prop_name_is_error ... ok
 test parser::exhaustive_tests::parse_property_float_literal ... ok
 test parser::exhaustive_tests::parse_property_key_can_be_keyword_token ... ok
 test parser::exhaustive_tests::parse_property_missing_colon_is_error ... ok
 test parser::exhaustive_tests::parse_property_missing_value_is_error ... ok
 test parser::exhaustive_tests::parse_property_null_literal ... ok
 test parser::exhaustive_tests::parse_property_value_is_parameter ... ok
-test parser::exhaustive_tests::parse_relationship_both_with_variable_and_props ... ok
 test parser::exhaustive_tests::parse_relationship_kind_named_order_keyword ... ok
+test parser::exhaustive_tests::parse_relationship_both_with_variable_and_props ... ok
 test parser::exhaustive_tests::parse_relationship_no_kind_anonymous ... ok
 test parser::exhaustive_tests::parse_relationship_with_no_following_node_is_error ... ok
 test parser::exhaustive_tests::parse_relationship_with_properties ... ok
 test parser::exhaustive_tests::parse_relationship_with_variable_and_kind ... ok
 test parser::exhaustive_tests::parse_return_as_is_case_insensitive ... ok
-test parser::exhaustive_tests::parse_return_as_with_no_following_identifier_is_none ... ok
 test parser::exhaustive_tests::parse_return_bool_literals ... ok
+test parser::exhaustive_tests::parse_return_as_with_no_following_identifier_is_none ... ok
 test parser::exhaustive_tests::parse_return_float_literal_value ... ok
 test parser::exhaustive_tests::parse_return_integer_literal ... ok
 test parser::exhaustive_tests::parse_return_multiple_items ... ok
@@ -352,8 +547,8 @@ test parser::exhaustive_tests::parse_set_target_is_property_access ... ok
 test parser::exhaustive_tests::parse_set_then_return ... ok
 test parser::exhaustive_tests::parse_sum_distinct_is_allowed ... ok
 test parser::exhaustive_tests::parse_sum_star_is_error ... ok
-test parser::exhaustive_tests::parse_three_statements_chained ... ok
 test parser::exhaustive_tests::parse_trailing_semicolon_ok ... ok
+test parser::exhaustive_tests::parse_three_statements_chained ... ok
 test parser::exhaustive_tests::parse_two_statements_separated_by_semicolon ... ok
 test parser::exhaustive_tests::parse_unclosed_brace_property_map_is_error ... ok
 test parser::exhaustive_tests::parse_unclosed_bracket_relationship_is_error ... ok
@@ -366,8 +561,8 @@ test parser::exhaustive_tests::parse_var_length_min_exceeds_max_is_error ... ok
 test parser::exhaustive_tests::parse_var_length_no_kind ... ok
 test parser::exhaustive_tests::parse_var_length_open_lower ... ok
 test parser::exhaustive_tests::parse_var_length_open_upper ... ok
-test parser::exhaustive_tests::parse_var_length_single_dot_is_error ... ok
 test parser::exhaustive_tests::parse_var_length_range ... ok
+test parser::exhaustive_tests::parse_var_length_single_dot_is_error ... ok
 test parser::exhaustive_tests::parse_var_length_star_only ... ok
 test parser::exhaustive_tests::parse_var_length_star_zero_fixed ... ok
 test parser::exhaustive_tests::parse_var_length_zero_bounds ... ok
@@ -383,35 +578,35 @@ test parser::exhaustive_tests::parse_where_literal_only ... ok
 test parser::exhaustive_tests::parse_where_or_is_left_associative ... ok
 test parser::exhaustive_tests::parse_where_parenthesized_overrides_precedence ... ok
 test parser::exhaustive_tests::parse_where_simple_equality ... ok
-test parser::exhaustive_tests::parser_new_always_ok_even_for_garbage ... ok
 test parser::exhaustive_tests::parse_where_with_parameter_rhs ... ok
+test parser::exhaustive_tests::parser_new_always_ok_even_for_garbage ... ok
 test parser::exhaustive_tests::robustness_garbage_punctuation_only ... ok
 test parser::exhaustive_tests::robustness_huge_integer_in_property_returns_parse_error ... ok
 test parser::exhaustive_tests::robustness_unicode_in_string_property ... ok
-test parser::exhaustive_tests::robustness_deeply_nested_parentheses_in_where ... ok
 test parser::exhaustive_tests::value_as_accessors_on_wrong_variants_return_none ... ok
 test parser::exhaustive_tests::robustness_unterminated_string_in_query_does_not_panic ... ok
+test parser::exhaustive_tests::robustness_deeply_nested_parentheses_in_where ... ok
 test parser::exhaustive_tests::value_as_bool_accessor ... ok
-test parser::exhaustive_tests::robustness_long_chained_relationship_pattern ... ok
 test parser::exhaustive_tests::value_as_int_accessor ... ok
 test parser::exhaustive_tests::value_as_string_accessor ... ok
+test parser::exhaustive_tests::robustness_long_chained_relationship_pattern ... ok
 test parser::exhaustive_tests::value_bool_ordering_false_lt_true ... ok
 test parser::exhaustive_tests::value_display_empty_list ... ok
 test parser::exhaustive_tests::value_display_empty_map ... ok
-test parser::exhaustive_tests::robustness_long_or_chain ... ok
 test parser::exhaustive_tests::value_display_formatting ... ok
 test parser::exhaustive_tests::value_display_list ... ok
-test parser::exhaustive_tests::robustness_deeply_nested_unbalanced_is_error_not_panic ... ok
+test parser::exhaustive_tests::robustness_long_or_chain ... ok
 test parser::exhaustive_tests::value_display_map_shows_key_count ... ok
-test parser::exhaustive_tests::robustness_large_property_map ... ok
 test parser::exhaustive_tests::value_display_nested_list ... ok
 test parser::exhaustive_tests::value_equality_and_clone ... ok
 test parser::exhaustive_tests::value_float_eq_is_bitwise ... ok
+test parser::exhaustive_tests::robustness_large_property_map ... ok
 test parser::exhaustive_tests::value_float_nan_roundtrips_via_bits ... ok
+test parser::exhaustive_tests::robustness_deeply_nested_unbalanced_is_error_not_panic ... ok
 test parser::exhaustive_tests::value_float_partial_cmp_nan_is_none ... ok
-test parser::exhaustive_tests::robustness_parentheses_beyond_nesting_limit_returns_error ... ok
 test parser::exhaustive_tests::value_float_roundtrip ... ok
 test parser::exhaustive_tests::value_from_conversions ... ok
+test parser::exhaustive_tests::robustness_parentheses_beyond_nesting_limit_returns_error ... ok
 test parser::exhaustive_tests::value_is_hashable_in_set ... ok
 test parser::exhaustive_tests::value_partial_cmp_list_and_map_are_none ... ok
 test parser::exhaustive_tests::value_partial_ord_cross_type_is_none ... ok
@@ -429,29 +624,29 @@ test parser::grammar::tests::test_parse_multi_label_match_three ... ok
 test parser::grammar::tests::test_parse_multi_label_node ... ok
 test parser::grammar::tests::test_parse_multi_match_create_as_one_statement ... ok
 test parser::grammar::tests::test_parse_relationship ... ok
-test graph::exhaustive_tests::large_graph_node_count_and_lookups ... ok
 test parser::grammar::tests::test_parse_return_aggregates ... ok
 test parser::grammar::tests::test_parse_variable_length_relationship_ranges_and_directions ... ok
-test parser::grammar::tests::test_parse_where ... ok
 test parser::lexer::tests::test_basic_tokens ... ok
+test parser::grammar::tests::test_parse_where ... ok
 test parser::lexer::tests::test_number ... ok
 test parser::lexer::tests::test_string_literal ... ok
-test path::tests::bounds_cut_routes_that_are_too_long ... ok
 test path::tests::cheapest_takes_more_edges_when_they_cost_less ... ok
+test path::tests::bounds_cut_routes_that_are_too_long ... ok
 test path::tests::fewest_edges_prefers_the_lower_id_on_a_tie ... ok
 test path::tests::the_start_is_a_route_of_no_edges_and_unreachable_is_none ... ok
 test path::tests::zero_weight_cycles_end ... ok
 test tests::query_is_write_classifies_cql_reads_and_writes ... ok
+test graph::exhaustive_tests::large_graph_node_count_and_lookups ... ok
 test tests::test_anonymous_has_empty_claims ... ok
-test tests::test_aggregate_count_star ... ok
-test tests::test_aggregate_collect ... ok
-test tests::test_aggregate_avg_min_max ... ok
 test tests::test_aggregate_count_distinct ... ok
-test tests::test_aggregate_sum ... ok
+test tests::test_aggregate_collect ... ok
+test tests::test_aggregate_count_star ... ok
+test tests::test_aggregate_avg_min_max ... ok
 test tests::test_aggregate_implicit_group_by ... ok
+test tests::test_aggregate_sum ... ok
+test tests::test_customers_like_you_traverses_anonymous_intermediate_nodes ... ok
 test tests::test_custom_claims_extracted ... ok
 test tests::test_hs256_expired_rejected ... ok
-test tests::test_customers_like_you_traverses_anonymous_intermediate_nodes ... ok
 test tests::test_hs256_valid_token_decodes ... ok
 test tests::test_hs256_wrong_secret_rejected ... ok
 test tests::test_multi_match_create_reuses_both_endpoints_deterministically ... ok
@@ -459,205 +654,205 @@ test parser::exhaustive_tests::robustness_hundred_thousand_parentheses_returns_e
 test location::tests::morton_index_prunes_and_tracks_replacement ... ok
 test tests::test_open_many_instances_without_runtime_leak ... ok
 test tests::test_parser_match_queries ... ok
-test tests::test_aggregate_many_groups_completes_fast_and_correctly ... ok
-test tests::test_policy_no_policy_query_unchanged ... ok
-test tests::test_case_expression ... ok
-test tests::test_create_relationship_creates_two_nodes_and_edge ... ok
-test tests::test_created_relationship_is_traversable ... ok
 test tests::test_match_where_property_equality_uses_same_lookup_semantics ... ok
+test tests::test_policy_no_policy_query_unchanged ... ok
+test tests::test_aggregate_many_groups_completes_fast_and_correctly ... ok
+test tests::test_insert_and_match_node ... ok
+test tests::test_case_expression ... ok
 test tests::test_relationship_uniqueness_spans_chained_pattern ... ok
+test tests::test_create_relationship_creates_two_nodes_and_edge ... ok
+test tests::test_arithmetic_isnull_labels ... ok
+test tests::test_created_relationship_is_traversable ... ok
+test tests::test_multi_label_node_create_and_match ... ok
 test tests::test_policy_anonymous_system_only_permission_denied ... ok
 test tests::test_policy_allow_when_role_in_admin_owner ... ok
-test tests::test_duration_datetime_arithmetic ... ok
-test tests::test_arithmetic_isnull_labels ... ok
-test tests::test_insert_and_match_node ... ok
-test tests::test_multi_label_node_create_and_match ... ok
-test tests::test_return_relationship_property ... ok
-test tests::test_policy_tenant_where_injected_from_context ... ok
 test tests::test_match_create_reuses_existing_node ... ok
 test tests::test_return_variable_length_relationship_variable_returns_path_list ... ok
-test tests::test_return_relationship_variable_returns_relationship ... ok
+test tests::test_return_relationship_property ... ok
+test tests::test_match_set_updates_node ... ok
+test tests::test_duration_datetime_arithmetic ... ok
 test tests::test_system_context_bypasses_jwt ... ok
+test tests::test_return_relationship_variable_returns_relationship ... ok
+test tests::test_comma_match_connects_existing_nodes ... ok
 test tests::test_traversal_through_one_anonymous_intermediate_node ... ok
 test tests::test_traversal_through_two_anonymous_intermediate_nodes ... ok
 test tests::test_unbounded_cycle_terminates_with_relationship_uniqueness ... ok
-test tests::test_unbounded_traversal_returns_all_reachable_nodes ... ok
-test tests::test_comma_match_connects_existing_nodes ... ok
-test tests::test_traversal_filters_endpoints_by_label ... ok
+test tests::test_policy_tenant_where_injected_from_context ... ok
 test tests::test_policy_system_context_bypassed ... ok
 test tests::test_scalar_functions ... ok
-test tests::test_match_set_updates_node ... ok
-test tests::test_remove_property ... ok
+test tests::test_foreach_pipeline ... ok
+test tests::test_unbounded_traversal_returns_all_reachable_nodes ... ok
 test tests::test_variable_length_traversal_aborts_at_work_budget ... ok
 test tests::test_variable_length_traversal_honors_exact_length ... ok
 test tests::test_variable_length_traversal_returns_all_matching_paths ... ok
-test tests::test_variable_length_traversal_honors_incoming_and_undirected_patterns ... ok
 test tests::test_variable_length_traversal_returns_each_linear_path_endpoint ... ok
+test tests::test_variable_length_traversal_honors_incoming_and_undirected_patterns ... ok
 test tests::test_where_and_or_conditions_across_bound_nodes ... ok
 test tests::test_where_can_filter_out_all_traversal_rows ... ok
 test tests::test_where_equality_can_reference_later_bound_variable ... ok
 test tests::test_where_filters_traversal_before_aggregation ... ok
-test v2::discovery::tests::normalization_filters_sorts_and_deduplicates_edges ... ok
-test tests::test_where_filters_variable_length_traversal_endpoint ... ok
 test tests::test_where_filters_traversal_by_related_node_property ... ok
+test tests::test_where_filters_variable_length_traversal_endpoint ... ok
+test v2::discovery::tests::normalization_filters_sorts_and_deduplicates_edges ... ok
 test v2::tests::connect_schema_then_delete_edge_and_node ... ok
 test v2::tests::a_condition_can_or_and_exclude ... ok
-test v2::tests::create_then_read_filters_pages ... ok
-test tests::test_foreach_pipeline ... ok
-test tests::test_optional_match ... ok
+test tests::test_traversal_filters_endpoints_by_label ... ok
 test tests::test_update_node_keeps_unchanged_properties_findable ... ok
+test tests::test_policy_multi_label_query_applies_each_label_policy ... ok
+test tests::test_optional_match ... ok
 test v2::tests::hop_range_counts_from_the_start ... ok
 test v2::tests::empty_query_block_returns_null ... ok
 test v2::tests::edge_field_roundtrips ... ok
+test v2::tests::create_then_read_filters_pages ... ok
 test v2::tests::many_relationship_still_accepts_multiple_targets ... ok
 test v2::tests::ranged_single_valued_walk_checks_every_node_in_the_walk ... ok
 test v2::tests::remote_load_rejects_a_private_address_and_a_parent_path ... ok
 test v2::tests::required_edge_field_rejects_a_bare_connection ... ok
-test v2::tests::single_valued_read_rejects_legacy_raw_graph_state ... ok
 test v2::tests::link_and_set_zero_and_one_match_with_and_without_unique ... ok
-test v2::tests::lookup_one_unique_index_matches_scan_for_seeded_data ... ok
 test v2::tests::csv_path_reads_dollar_columns ... ok
-test tests::test_signup_pattern ... ok
-test v2::tests::csv_and_json_loads_insert_rows_and_honor_unique ... ok
-test tests::test_unwind_pipeline ... ok
-test validation::tests::a_spanless_error_is_message_and_help_only ... ok
-test v2::tests::union_field_missing_on_one_type_is_null ... ok
-test tests::test_wal_recovery ... ok
 test tests::test_match_detach_delete ... ok
+test tests::test_remove_property ... ok
+test tests::test_wal_recovery ... ok
+test validation::tests::a_spanless_error_is_message_and_help_only ... ok
 test validation::tests::caret_sits_under_the_column_it_names ... ok
+test validation::tests::one_missing_letter_suggests_the_name ... ok
 test vector::vector_search_width::vector_hnsw_benchmark_10k_100k ... ignored, local benchmark: builds 12 indexes of up to 100,000 x 384
 test vector::vector_search_width::vector_hnsw_benchmark_1m ... ignored, local benchmark: builds 1,000,000-vector indexes (hours)
-test validation::tests::one_missing_letter_suggests_the_name ... ok
+test v2::tests::single_valued_read_rejects_legacy_raw_graph_state ... ok
+test v2::tests::union_field_missing_on_one_type_is_null ... ok
 test v2::tests::unique_block_rejects_a_second_insert_and_a_rename ... ok
-test tests::test_policy_multi_label_query_applies_each_label_policy ... ok
-test tests::test_string_operators ... ok
-test tests::test_comma_match_is_cartesian_product ... ok
-test wal::exhaustive_tests::append_returns_only_after_durable_in_group_mode ... ok
-test wal::exhaustive_tests::append_does_not_rewrite_existing_header_on_reopen ... ok
+test v2::tests::lookup_one_unique_index_matches_scan_for_seeded_data ... ok
+test v2::tests::csv_and_json_loads_insert_rows_and_honor_unique ... ok
 test tests::test_snapshot_restore ... ok
+test tests::test_signup_pattern ... ok
+test tests::test_unwind_pipeline ... ok
+test tests::test_comma_match_is_cartesian_product ... ok
 test tests::test_return_distinct ... ok
-test wal::exhaustive_tests::batch_size_one_makes_every_append_a_durability_barrier ... ok
+test tests::test_string_operators ... ok
+test wal::exhaustive_tests::append_returns_only_after_durable_in_group_mode ... ok
 test wal::exhaustive_tests::bincode_garbage_as_final_entry_is_truncated_as_torn_tail ... ok
 test v2::tests::link_and_set_reject_ambiguous_lookups ... ok
-test wal::exhaustive_tests::append_after_reopen_continues_log ... ok
+test wal::exhaustive_tests::append_does_not_rewrite_existing_header_on_reopen ... ok
 test wal::exhaustive_tests::append_after_torn_tail_recovery_lands_at_valid_end ... ok
-test wal::exhaustive_tests::corrupt_v2_header_version_is_reported_as_corruption ... ok
+test wal::exhaustive_tests::batch_size_one_makes_every_append_a_durability_barrier ... ok
+test v2::tests::single_valued_relationship_loads_are_atomic_for_json_and_csv ... ok
 test wal::exhaustive_tests::batch_size_zero_is_clamped_to_one ... ok
 test v2::tests::single_valued_relationship_rejects_second_target_on_every_write_path ... ok
-test wal::exhaustive_tests::appends_crossing_batch_boundary_are_all_durable ... ok
+test wal::exhaustive_tests::append_after_reopen_continues_log ... ok
+test tests::test_with_aggregate_and_carry ... ok
+test wal::exhaustive_tests::corrupt_v2_header_version_is_reported_as_corruption ... ok
+test wal::exhaustive_tests::delete_node_field_survives_roundtrip ... ok
+test wal::exhaustive_tests::all_operation_variants_roundtrip ... ok
 test wal::exhaustive_tests::bitflip_in_payload_of_only_entry_truncates_corrupt_tail ... ok
-test v2::tests::single_valued_relationship_loads_are_atomic_for_json_and_csv ... ok
+test wal::exhaustive_tests::appends_crossing_batch_boundary_are_all_durable ... ok
+test wal::exhaustive_tests::corrupt_trailing_crc_is_truncated_preceding_kept ... ok
 test wal::exhaustive_tests::corrupt_middle_entry_does_not_truncate_the_file ... ok
 test wal::exhaustive_tests::corrupt_middle_entry_crc_is_a_hard_corruption_error ... ok
-test tests::test_with_aggregate_and_carry ... ok
-test wal::exhaustive_tests::all_operation_variants_roundtrip ... ok
-test wal::exhaustive_tests::corrupt_trailing_crc_is_truncated_preceding_kept ... ok
-test wal::exhaustive_tests::empty_legacy_file_migrates_to_header_only ... ok
-test wal::exhaustive_tests::explicit_flush_is_idempotent_and_safe_when_empty ... ok
-test wal::exhaustive_tests::each_entry_has_a_valid_crc_on_disk ... ok
-test wal::exhaustive_tests::delete_node_field_survives_roundtrip ... ok
-test wal::exhaustive_tests::flush_every_durably_persists_each_append ... ok
 test tests::test_skip_limit ... ok
+test wal::exhaustive_tests::each_entry_has_a_valid_crc_on_disk ... ok
+test wal::exhaustive_tests::empty_legacy_file_migrates_to_header_only ... ok
 test wal::exhaustive_tests::delete_rel_field_survives_roundtrip ... ok
-test wal::exhaustive_tests::boundary_numeric_values_roundtrip ... ok
 test wal::exhaustive_tests::in_memory_iter_is_io_error_never_panic ... ok
 test wal::exhaustive_tests::in_memory_wal_accepts_appends_and_iterates_empty ... ok
-test wal::exhaustive_tests::entry_with_length_running_past_eof_is_truncated ... ok
-test wal::exhaustive_tests::fresh_wal_iterates_to_empty ... ok
-test wal::exhaustive_tests::in_memory_append_then_flush_never_touches_disk ... ok
 test wal::exhaustive_tests::appends_preserve_insertion_order ... ok
-test wal::exhaustive_tests::empty_string_and_empty_collections_roundtrip ... ok
+test wal::exhaustive_tests::in_memory_append_then_flush_never_touches_disk ... ok
+test wal::exhaustive_tests::boundary_numeric_values_roundtrip ... ok
+test wal::exhaustive_tests::explicit_flush_is_idempotent_and_safe_when_empty ... ok
 test wal::exhaustive_tests::iter_on_header_only_file_returns_empty ... ok
-test wal::exhaustive_tests::iter_on_deleted_file_returns_io_error_not_panic ... ok
-test wal::exhaustive_tests::group_commit_acknowledges_concurrent_writers ... ok
-test wal::exhaustive_tests::legacy_entry_with_undeserializable_payload_is_corruption ... ok
-test wal::exhaustive_tests::legacy_length_prefix_overflowing_past_eof_is_corruption ... ok
+test wal::exhaustive_tests::fresh_wal_iterates_to_empty ... ok
 test wal::exhaustive_tests::insert_rel_all_fields_survive_roundtrip ... ok
+test wal::exhaustive_tests::iter_on_deleted_file_returns_io_error_not_panic ... ok
 test wal::exhaustive_tests::iter_rejects_file_whose_header_was_clobbered_after_open ... ok
+test wal::exhaustive_tests::flush_every_durably_persists_each_append ... ok
+test wal::exhaustive_tests::entry_with_length_running_past_eof_is_truncated ... ok
 test wal::exhaustive_tests::group_commit_batches_below_batch_size_still_flush_on_drop ... ok
-test wal::exhaustive_tests::large_single_entry_roundtrips ... ok
+test wal::exhaustive_tests::empty_string_and_empty_collections_roundtrip ... ok
+test wal::exhaustive_tests::legacy_entry_with_undeserializable_payload_is_corruption ... ok
+test wal::exhaustive_tests::group_commit_acknowledges_concurrent_writers ... ok
+test wal::exhaustive_tests::legacy_length_prefix_overflowing_past_eof_is_corruption ... ok
 test wal::exhaustive_tests::large_node_with_many_props_roundtrips ... ok
-test wal::exhaustive_tests::legacy_with_sub_eight_byte_remainder_migrates_complete_prefix ... ok
-test wal::exhaustive_tests::new_in_missing_directory_returns_io_error_not_panic ... ok
 test wal::exhaustive_tests::new_creates_file_with_v2_header ... ok
-test wal::exhaustive_tests::reopening_empty_wal_is_idempotent ... ok
-test wal::exhaustive_tests::nonexistent_path_create_is_ok ... ok
+test wal::exhaustive_tests::new_in_missing_directory_returns_io_error_not_panic ... ok
 test wal::exhaustive_tests::legacy_with_torn_trailing_entry_migrates_only_complete_entries ... ok
+test wal::exhaustive_tests::legacy_with_sub_eight_byte_remainder_migrates_complete_prefix ... ok
 test wal::exhaustive_tests::nested_and_float_values_roundtrip ... ok
-test wal::exhaustive_tests::migration_leaves_no_scratch_tmp_file ... ok
-test wal::exhaustive_tests::reopening_valid_v2_file_does_not_rewrite_body ... ok
+test wal::exhaustive_tests::large_single_entry_roundtrips ... ok
+test wal::exhaustive_tests::restore_from_corrupt_snapshot_is_error_not_panic ... ok
+test wal::exhaustive_tests::nonexistent_path_create_is_ok ... ok
 test wal::exhaustive_tests::multiple_valid_entries_then_torn_tail_keeps_all_valid ... ok
 test wal::exhaustive_tests::migrated_wal_accepts_new_appends ... ok
-test wal::exhaustive_tests::restore_from_corrupt_snapshot_is_error_not_panic ... ok
+test wal::exhaustive_tests::reopening_empty_wal_is_idempotent ... ok
+test wal::exhaustive_tests::migration_leaves_no_scratch_tmp_file ... ok
 test wal::exhaustive_tests::restore_missing_file_returns_false ... ok
 test wal::exhaustive_tests::restore_from_empty_zero_byte_snapshot_is_error_not_panic ... ok
 test wal::exhaustive_tests::restore_from_gigabyte_length_prefix_is_corruption ... ok
-test wal::exhaustive_tests::snapshot_of_empty_db_restores_empty ... ok
+test wal::exhaustive_tests::reopening_valid_v2_file_does_not_rewrite_body ... ok
+test wal::exhaustive_tests::restored_relationship_endpoints_are_queryable_via_rebuilt_index ... ok
 test wal::exhaustive_tests::restore_overwrites_existing_state ... ok
 test wal::exhaustive_tests::single_append_roundtrips ... ok
-test wal::exhaustive_tests::restored_relationship_endpoints_are_queryable_via_rebuilt_index ... ok
-test wal::exhaustive_tests::snapshot_preserves_node_properties ... ok
 test wal::exhaustive_tests::restore_from_truncated_mid_record_snapshot_is_corruption ... ok
-test tests::test_rs256_valid_signature_verifies ... ok
-test wal::exhaustive_tests::snapshot_overwrites_prior_snapshot_atomically ... ok
-test wal::exhaustive_tests::large_legacy_log_migrates_in_order ... ok
-test wal::exhaustive_tests::replaying_recovered_ops_reconstructs_expected_state ... ok
+test wal::exhaustive_tests::snapshot_of_empty_db_restores_empty ... ok
+test wal::exhaustive_tests::snapshot_preserves_node_properties ... ok
 test wal::exhaustive_tests::snapshot_restore_roundtrips_graph ... ok
-test wal::exhaustive_tests::truncated_v2_header_magic_then_eof_is_corruption ... ok
+test wal::exhaustive_tests::replaying_recovered_ops_reconstructs_expected_state ... ok
 test wal::exhaustive_tests::snapshot_with_unicode_and_extreme_values_roundtrips ... ok
-test wal::exhaustive_tests::undeserializable_payload_with_valid_crc_is_corruption ... ok
+test wal::exhaustive_tests::snapshot_overwrites_prior_snapshot_atomically ... ok
+test wal::exhaustive_tests::truncated_v2_header_magic_then_eof_is_corruption ... ok
 test wal::exhaustive_tests::snapshot_restore_snapshot_is_idempotent_in_counts ... ok
-test wal::tests::crash_writer_helper ... ok
 test wal::exhaustive_tests::torn_entry_header_at_tail_is_truncated ... ok
+test wal::exhaustive_tests::undeserializable_payload_with_valid_crc_is_corruption ... ok
 test wal::exhaustive_tests::unicode_and_control_characters_roundtrip ... ok
+test wal::tests::crash_writer_helper ... ok
 test wal::exhaustive_tests::update_node_fields_survive_roundtrip ... ok
 test wal::exhaustive_tests::zero_length_entry_does_not_hang_and_is_corruption ... ok
-test wal::tests::a_statement_is_one_entry_and_a_torn_one_replays_as_nothing ... ok
 test wal::exhaustive_tests::wrong_magic_is_treated_as_legacy_and_migrated ... ok
 test wal::tests::failed_group_commit_sync_removes_every_waiting_entry ... ok
-test wal::tests::failed_sync_removes_the_unsynced_entry_and_poisons_the_wal ... ok
+test wal::exhaustive_tests::large_legacy_log_migrates_in_order ... ok
+test wal::tests::a_statement_is_one_entry_and_a_torn_one_replays_as_nothing ... ok
 test wal::tests::corrupt_middle_checksum_is_an_error ... ok
-test wal::tests::corrupt_trailing_checksum_is_truncated ... ok
 test wal::tests::failed_sync_whose_removal_cannot_be_synced_says_so ... ok
+test wal::tests::corrupt_trailing_checksum_is_truncated ... ok
+test wal::tests::failed_sync_removes_the_unsynced_entry_and_poisons_the_wal ... ok
 test wal::tests::failed_append_syncs_the_rollback_before_returning ... ok
 test wal::exhaustive_tests::flush_then_drop_in_group_mode_loses_nothing ... ok
-test wal::tests::group_commit_acknowledges_concurrent_writes ... ok
-test wal::tests::test_snapshot_restore ... ok
 test wal::exhaustive_tests::group_written_log_reopens_in_flush_every_mode ... ok
-test tests::test_match_property_index_lookup_performance ... ok
-test wal::tests::torn_trailing_entry_is_truncated ... ok
+test wal::tests::test_snapshot_restore ... ok
 test wal::tests::test_wal_roundtrip ... ok
-test wal::tests::unsynced_rollback_poisons_the_wal ... ok
+test wal::tests::group_commit_acknowledges_concurrent_writes ... ok
+test wal::tests::torn_trailing_entry_is_truncated ... ok
 test wal::tests::legacy_wal_is_migrated_without_data_loss ... ok
-test wal_order_tests::refused_foreach_applies_no_row ... ok
-test wal_order_tests::refused_detach_delete_keeps_the_node_and_its_relationships ... ok
 test wal::tests::partial_append_is_truncated_before_later_append ... ok
-test wal_order_tests::refused_merge_creates_nothing_and_a_retry_creates_one ... ok
+test wal_order_tests::refused_detach_delete_keeps_the_node_and_its_relationships ... ok
+test wal::tests::unsynced_rollback_poisons_the_wal ... ok
 test wal_order_tests::refused_create_is_invisible_and_its_id_is_reused ... ok
-test wal_order_tests::refused_api_connect_and_deletes_change_nothing ... ok
-test wal_order_tests::refused_nested_zql_mutation_applies_no_part ... ok
 test wal_order_tests::refused_multi_node_create_leaves_no_node_and_no_relationship ... ok
-test wal_order_tests::statement_that_fails_part_way_applies_nothing ... ok
+test wal_order_tests::refused_foreach_applies_no_row ... ok
+test wal_order_tests::refused_merge_creates_nothing_and_a_retry_creates_one ... ok
+test wal_order_tests::refused_nested_zql_mutation_applies_no_part ... ok
+test wal_order_tests::refused_set_keeps_the_old_value_in_the_node_and_its_index ... ok
+test wal_order_tests::refused_api_connect_and_deletes_change_nothing ... ok
 test wal_order_tests::refused_relationship_delete_keeps_it_traversable ... ok
 test wal_order_tests::refused_zql_insert_frees_its_unique_value ... ok
-test wal_order_tests::refused_set_keeps_the_old_value_in_the_node_and_its_index ... ok
-test wal_order_tests::refused_json_and_csv_loads_apply_no_row ... ok
-test wal_order_tests::refused_zql_set_keeps_old_values_in_unique_and_range_indexes ... ok
 test wal::tests::replacement_supports_long_unicode_paths ... ok
-test tests::test_rs256_tampered_payload_rejected ... ok
+test wal_order_tests::statement_that_fails_part_way_applies_nothing ... ok
+test wal_order_tests::refused_zql_set_keeps_old_values_in_unique_and_range_indexes ... ok
 test wal_order_tests::refused_zql_link_leaves_a_single_valued_edge_free ... ok
+test wal_order_tests::refused_json_and_csv_loads_apply_no_row ... ok
 test wal::exhaustive_tests::many_concurrent_writers_high_contention_all_durable ... ok
+test tests::test_match_property_index_lookup_performance ... ok
 test wal::exhaustive_tests::data_survives_drop_and_reopen_cycle_repeatedly ... ok
 test wal::tests::acknowledged_writes_survive_kill_9 ... ok
 test wal::exhaustive_tests::acked_prefix_survives_when_tail_entry_is_chopped_at_each_offset ... ok
+test tests::test_rs256_tampered_payload_rejected ... ok
+test tests::test_rs256_valid_signature_verifies ... ok
 test wal::exhaustive_tests::replay_after_crash_at_every_byte_offset_never_panics_or_resurrects ... ok
 test vector::vector_search_width::vector_hnsw_search_width_6000_by_16 ... ok
 test wal::exhaustive_tests::many_entries_roundtrip_in_order has been running for over 60 seconds
 test wal::exhaustive_tests::many_entries_roundtrip_in_order ... ok
 
-test result: ok. 644 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 103.70s
+test result: ok. 651 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 95.21s
 
-     Running tests/at_rule.rs (.target/debug/deps/at_rule-2d22d1fd903ad312)
+     Running tests/at_rule.rs (.target/debug/deps/at_rule-e644bd9bb44245ac)
 
 running 6 tests
 test from_can_name_a_user_field_beside_a_mapping ... ok
@@ -669,7 +864,7 @@ test user_names_and_builtin_values_can_be_projected_together ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/data_loading.rs (.target/debug/deps/data_loading-d2d2c538c101f97c)
+     Running tests/data_loading.rs (.target/debug/deps/data_loading-53fbbf2b45d2659c)
 
 running 10 tests
 test bad_csv_is_rejected_before_any_rows_are_inserted ... ok
@@ -677,188 +872,188 @@ test supplied_sources_use_the_same_parser_and_writes ... ok
 test oversized_source_rejected_before_insertion ... ok
 test http_fixture_consumes_fragmented_request_headers ... ok
 test malformed_json_missing_file_and_http_error_are_readable ... ok
-test remote_json_memory_disk_and_wal_reopen ... ok
 test local_csv_memory_disk_and_wal_reopen ... ok
 test local_json_memory_disk_and_wal_reopen ... ok
+test remote_json_memory_disk_and_wal_reopen ... ok
 test remote_csv_memory_disk_and_wal_reopen ... ok
 test loaded_rows_link_existing_nodes_and_survive_reopen ... ok
 
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
 
-     Running tests/display.rs (.target/debug/deps/display-991792668cedc81c)
+     Running tests/display.rs (.target/debug/deps/display-014c2ff623cbf84b)
 
 running 1 test
 test calgary_point_sample_matches_independent_haversine ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/exhaustive_zega_core.rs (.target/debug/deps/exhaustive_zega_core-ef6cfa576db9b9c0)
+     Running tests/exhaustive_zega_core.rs (.target/debug/deps/exhaustive_zega_core-98a86f18283c013a)
 
 running 172 tests
 test aggregate_min_max_of_empty_set_is_null ... ok
-test aggregate_min_of_empty_distinct_group_is_null ... ok
 test aggregate_count_on_empty_match_is_zero ... ok
+test aggregate_min_of_empty_distinct_group_is_null ... ok
 test aggregate_sum_of_non_numeric_is_execution_error ... ok
 test aggregate_avg_of_all_null_is_null ... ok
 test aggregate_collect_skips_null_values ... ok
-test aggregate_sum_of_floats_only_is_float ... ok
 test aggregate_sum_skips_null_values ... ok
 test aggregate_sum_distinct_sums_unique_values_only ... ok
-test aggregate_collect_distinct_dedupes ... ok
+test aggregate_sum_of_floats_only_is_float ... ok
 test aggregate_avg_distinct_averages_unique_values ... ok
+test aggregate_collect_distinct_dedupes ... ok
 test aggregate_min_max_over_strings_uses_lexicographic_order ... ok
 test aggregate_count_distinct_over_identifier_variable ... ok
 test builder_jwt_hmac_and_issuer_chainable ... ok
-test and_coerces_non_bool_operand_to_false ... ok
 test aggregate_sum_with_float_promotes_result_to_float ... ok
+test and_coerces_non_bool_operand_to_false ... ok
 test builder_jwt_rsa_public_key_pem_is_chainable ... ok
-test aggregate_count_star_counts_all_rows ... ok
-test aggregate_count_variable_counts_bound_rows ... ok
-test aggregate_collect_gathers_values_into_list ... ok
-test aggregate_avg_returns_float ... ok
 test aggregate_count_distinct_counts_unique_values ... ok
-test builder_traversal_work_budget_is_chainable ... ok
-test aggregate_sum_of_ints ... ok
 test aggregate_min_and_max ... ok
+test aggregate_avg_returns_float ... ok
+test aggregate_count_star_counts_all_rows ... ok
+test aggregate_sum_of_ints ... ok
+test aggregate_collect_gathers_values_into_list ... ok
+test aggregate_count_variable_counts_bound_rows ... ok
+test builder_traversal_work_budget_is_chainable ... ok
 test builder_low_traversal_budget_triggers_budget_error_on_traversal ... ok
 test create_preserves_int_bool_float_string_properties ... ok
 test create_preserves_list_and_map_properties_via_parameters ... ok
-test create_then_match_in_single_query_string_sequences_correctly ... ok
 test create_relationship_makes_two_nodes_and_edge_traversable ... ok
-test create_then_return_projects_created_binding ... ok
+test create_then_match_in_single_query_string_sequences_correctly ... ok
 test create_then_match_node_by_label ... ok
+test create_then_return_projects_created_binding ... ok
 test empty_query_string_returns_no_rows ... ok
 test create_with_parameter_then_match_with_parameter ... ok
 test empty_param_map_with_no_param_references_is_fine ... ok
 test empty_string_property_is_distinct_from_missing ... ok
 test equality_across_int_and_float_is_false ... ok
 test equality_across_string_and_int_is_false ... ok
-test garbage_input_is_parse_error_not_panic ... ok
 test explicit_null_literal_equality_is_false_against_value ... ok
 test float_to_float_ordered_comparison_works ... ok
+test garbage_input_is_parse_error_not_panic ... ok
+test group_by_multiple_keys ... ok
 test jwt_context_with_invalid_token_is_error ... ok
 test jwt_context_without_config_is_jwt_error ... ok
-test group_by_multiple_keys ... ok
-test group_by_order_by_count_star_then_mixed_key_matches_neo4j ... ok
-test jwt_expired_token_is_jwt_error ... ok
-test jwt_issuer_mismatch_is_jwt_error ... ok
-test jwt_non_base64url_segment_is_jwt_error ... ok
-test jwt_missing_issuer_when_required_is_jwt_error ... ok
 test incoming_direction_traversal ... ok
+test group_by_order_by_count_star_then_mixed_key_matches_neo4j ... ok
+test jwt_non_base64url_segment_is_jwt_error ... ok
+test group_by_single_key_counts_per_group ... ok
+test jwt_issuer_mismatch_is_jwt_error ... ok
+test jwt_expired_token_is_jwt_error ... ok
+test jwt_missing_issuer_when_required_is_jwt_error ... ok
+test group_by_with_sum_aggregates_per_group ... ok
 test jwt_rs256_alg_against_hmac_key_is_jwt_error ... ok
 test jwt_array_and_numeric_claims_decode_into_zega_values ... ok
-test group_by_single_key_counts_per_group ... ok
 test jwt_signature_signed_with_wrong_secret_is_jwt_error ... ok
 test jwt_unsupported_alg_is_jwt_error ... ok
-test group_by_with_sum_aggregates_per_group ... ok
 test jwt_wrong_number_of_segments_is_jwt_error ... ok
 test jwt_unexpired_token_with_future_exp_is_accepted ... ok
-test large_integer_value_round_trips ... ok
 test jwt_valid_token_with_matching_issuer_is_accepted ... ok
 test jwt_valid_hs256_token_resolves_claims_into_policy_context ... ok
-test limit_with_non_int_value_does_not_truncate ... ok
-test match_all_nodes_no_label_returns_everything ... ok
-test limit_via_parameter ... ok
+test large_integer_value_round_trips ... ok
 test limit_larger_than_result_set_returns_all ... ok
 test limit_truncates_result_set ... ok
-test limit_zero_returns_no_rows ... ok
+test limit_with_non_int_value_does_not_truncate ... ok
 test match_create_on_no_match_creates_nothing ... ok
+test match_all_nodes_no_label_returns_everything ... ok
+test limit_via_parameter ... ok
+test limit_zero_returns_no_rows ... ok
 test match_node_identifier_returns_map_with_id_and_labels ... ok
-test match_create_reuses_matched_node_as_relationship_source ... ok
 test match_node_labels_pseudo_property_via_property_access ... ok
 test match_nonexistent_label_returns_empty ... ok
+test match_create_reuses_matched_node_as_relationship_source ... ok
 test match_without_return_clause_returns_rows_with_empty_fields ... ok
 test merge_creates_node_when_absent ... ok
 test match_property_filter_in_pattern_selects_matching_node ... ok
 test merge_does_not_duplicate_existing_node ... ok
-test merge_on_create_sets_extra_property ... ok
 test merge_on_create_does_not_fire_on_existing_match ... ok
 test merge_unlabeled_node_always_creates_new ... ok
 test missing_parameter_resolves_to_null_and_filters_out ... ok
+test merge_on_create_sets_extra_property ... ok
 test open_in_memory_builds_successfully ... ok
 test multiple_statements_in_one_query_string_execute_in_sequence ... ok
 test negative_integer_value_round_trips ... ok
 test order_by_bool_field_orders_false_before_true ... ok
-test order_by_descending_float ... ok
-test order_by_ascending_sorts_low_to_high ... ok
 test order_by_defaults_to_ascending ... ok
+test order_by_ascending_sorts_low_to_high ... ok
+test order_by_descending_float ... ok
 test order_by_float_field_sorts_numerically ... ok
 test order_by_descending_sorts_high_to_low ... ok
 test order_by_int_and_float_compares_exact_numeric_values ... ok
-test order_by_nulls_last_ascending_and_first_descending ... ok
-test order_by_multi_key_secondary_breaks_ties ... ok
-test order_by_maps_and_lists_precede_scalar_values ... ok
 test ordered_comparison_across_int_and_float_yields_no_match ... ok
+test order_by_multi_key_secondary_breaks_ties ... ok
+test order_by_return_alias ... ok
 test ordered_comparison_with_null_is_false ... ok
+test order_by_maps_and_lists_precede_scalar_values ... ok
+test order_by_then_limit_applies_limit_after_sort ... ok
+test order_by_nulls_last_ascending_and_first_descending ... ok
 test order_by_mixed_types_uses_neo4j_orderability_with_null_last ... ok
 test order_by_string_field ... ok
-test order_by_return_alias ... ok
 test order_by_mixed_primary_and_secondary_directions_match_neo4j ... ok
 test policy_always_allow_does_not_filter ... ok
-test order_by_then_limit_applies_limit_after_sort ... ok
 test policy_and_condition_requires_both ... ok
-test policy_neq_condition_excludes_matching_field ... ok
 test policy_not_condition_negates_inner ... ok
-test policy_role_in_list_allows_matching_role ... ok
+test policy_neq_condition_excludes_matching_field ... ok
 test policy_or_condition_passes_on_either_branch ... ok
 test policy_system_only_allows_system_context ... ok
+test policy_role_in_list_allows_matching_role ... ok
 test policy_system_only_denies_non_system_context ... ok
 test policy_system_context_bypasses_tenant_filter ... ok
-test query_equals_query_with_anonymous_context_for_reads ... ok
-test query_with_anonymous_context_behaves_like_query ... ok
-test query_with_claims_context_succeeds_without_jwt_config ... ok
-test relationship_length_min_exceeds_max_is_parse_error ... ok
 test policy_tenant_filter_scopes_results_by_context ... ok
-test query_with_system_context_succeeds_without_jwt_config ... ok
+test query_with_anonymous_context_behaves_like_query ... ok
+test query_equals_query_with_anonymous_context_for_reads ... ok
 test policy_targets_all_applies_to_labeled_and_unlabeled_nodes ... ok
+test relationship_length_min_exceeds_max_is_parse_error ... ok
+test query_with_claims_context_succeeds_without_jwt_config ... ok
+test query_with_system_context_succeeds_without_jwt_config ... ok
 test relationship_props_pseudo_property_is_map_of_user_props ... ok
 test relationship_pseudo_property_from_and_to_are_node_ids ... ok
+test relationship_property_filter_in_pattern_selects_matching_edge ... ok
 test relationship_pseudo_property_type_via_property_access ... ok
 test return_alias_names_the_output_field ... ok
-test relationship_property_filter_in_pattern_selects_matching_edge ... ok
-test return_multiple_items_produces_all_fields ... ok
-test return_missing_property_yields_null ... ok
-test relationship_wrong_kind_in_pattern_yields_no_match ... ok
 test relationship_user_property_via_property_access ... ok
+test relationship_wrong_kind_in_pattern_yields_no_match ... ok
+test return_missing_property_yields_null ... ok
+test return_multiple_items_produces_all_fields ... ok
 test return_node_id_pseudo_property ... ok
 test return_property_access_projects_scalar ... ok
+test return_relationship_variable_is_map_with_metadata ... ok
 test return_without_alias_uses_expr_string_as_field_name ... ok
 test snapshot_on_in_memory_db_is_noop_ok ... ok
-test return_relationship_variable_is_map_with_metadata ... ok
 test star_argument_on_non_count_is_parse_error ... ok
 test single_hop_outgoing_traversal ... ok
 test unbalanced_parens_is_parse_error ... ok
 test sum_integer_overflow_is_execution_error ... ok
 test traversal_work_budget_exceeded_is_error_value ... ok
-test unknown_function_is_execution_error ... ok
-test unbounded_traversal_with_cycle_terminates_via_uniqueness ... ok
-test unicode_string_property_round_trips ... ok
-test undirected_single_hop_matches_both_orientations ... ok
 test undirected_single_hop_from_source_also_matches ... ok
-test variable_length_over_self_loop_terminates ... ok
+test unicode_string_property_round_trips ... ok
+test unbounded_traversal_with_cycle_terminates_via_uniqueness ... ok
+test unknown_function_is_execution_error ... ok
+test undirected_single_hop_matches_both_orientations ... ok
 test unbounded_star_traversal_reaches_all_reachable_endpoints ... ok
-test variable_length_traversal_exact_length ... ok
+test variable_length_over_self_loop_terminates ... ok
 test undirected_variable_length_traverses_against_edge_direction ... ok
+test variable_length_traversal_exact_length ... ok
 test where_bool_equality ... ok
 test variable_length_traversal_returns_all_endpoints ... ok
 test where_compares_two_bound_node_properties ... ok
-test where_and_requires_both_conditions ... ok
 test where_and_binds_tighter_than_or ... ok
+test where_and_requires_both_conditions ... ok
 test where_eq_matches_exact_value ... ok
-test where_ne_across_mismatched_types_is_true ... ok
 test where_false_filters_all_rows ... ok
-test where_lt_strictly_less ... ok
-test where_gte_includes_boundary ... ok
 test where_gt_strictly_greater ... ok
+test where_gte_includes_boundary ... ok
+test where_ne_across_mismatched_types_is_true ... ok
+test where_lt_strictly_less ... ok
+test where_filters_before_aggregation ... ok
+test where_or_passes_when_only_second_disjunct_true ... ok
 test where_lte_includes_boundary ... ok
+test where_ne_excludes_value ... ok
 test where_with_no_expression_is_parse_error ... ok
 test whitespace_only_query_returns_no_rows ... ok
-test where_ne_excludes_value ... ok
-test where_or_passes_when_only_second_disjunct_true ... ok
 test where_string_comparison_lexicographic ... ok
-test where_or_matches_either_condition ... ok
-test where_filters_before_aggregation ... ok
 test where_on_relationship_property_filters_traversal ... ok
+test where_or_matches_either_condition ... ok
 test where_parenthesized_groups_override_precedence ... ok
 test many_nodes_count_is_accurate ... ok
 test open_on_disk_creates_directory_and_builds ... ok
@@ -868,9 +1063,9 @@ test wal_recovery_restores_nodes_after_reopen ... ok
 test snapshot_then_reopen_restores_graph ... ok
 test snapshot_then_more_writes_then_reopen_replays_wal_on_snapshot ... ok
 
-test result: ok. 172 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+test result: ok. 172 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
 
-     Running tests/index.rs (.target/debug/deps/index-44265f9efdcf35c9)
+     Running tests/index.rs (.target/debug/deps/index-668fd5c9f7a6ad95)
 
 running 8 tests
 test checker_rejects_bad_index_blocks_with_spans ... ok
@@ -882,22 +1077,34 @@ test range_index_answers_comparisons_without_a_scan ... ok
 test indexed_and_unindexed_answers_are_identical ... ok
 test indexes_survive_restart_writes_and_snapshots ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 22.75s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.91s
 
-     Running tests/location.rs (.target/debug/deps/location-9a91ae9865dec9fa)
+     Running tests/location.rs (.target/debug/deps/location-399778c98bb02a5d)
 
 running 7 tests
 test location_load_links_do_not_require_new_coordinates ... ok
 test location_boundaries_optional_points_ties_and_boolean_combinations ... ok
+test location_literals_and_diagnostics ... ok
 test location_multiple_fields_labels_and_relationship_ordering ... ok
 test location_loads_explicit_columns ... ok
-test location_literals_and_diagnostics ... ok
 test location_wal_snapshot_updates_and_deletes ... ok
 test location_seeded_queries_equal_brute_force ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.59s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.95s
 
-     Running tests/path.rs (.target/debug/deps/path-007173d88a8024f6)
+     Running tests/node_shapes.rs (.target/debug/deps/node_shapes-a1d9edfe55b50c40)
+
+running 6 tests
+test url_fields_keep_string_indexes_and_do_not_validate_search_fragments ... ok
+test url_type_grammar_and_edge_properties ... ok
+test url_import_validation_rejects_entire_batch ... ok
+test url_writes_updates_and_string_operations ... ok
+test url_accepts_http_and_https_case_insensitively ... ok
+test invalid_url_writes_and_updates_are_atomic ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/path.rs (.target/debug/deps/path-676d717d408624ea)
 
 running 9 tests
 test astar_needs_a_location_on_every_node_it_reaches ... ok
@@ -910,37 +1117,37 @@ test a_route_returns_its_nodes_edges_and_cost ... ok
 test astar_expands_fewer_nodes_than_dijkstra_on_a_grid ... ok
 test all_three_agree_with_brute_force_on_random_graphs ... ok
 
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
 
-     Running tests/then.rs (.target/debug/deps/then-008f59b750628fab)
+     Running tests/then.rs (.target/debug/deps/then-eefc60b2882487a7)
 
 running 17 tests
-test stage_envelope_protects_identity_from_user_fields_and_obeys_limit ... ok
 test wrong_cross_type_fields_and_vector_shapes_are_errors ... ok
+test stage_envelope_protects_identity_from_user_fields_and_obeys_limit ... ok
 test path_nodes_are_members_but_search_frontier_nodes_are_not ... ok
 test spatial_index_handles_antimeridian_poles_and_nulls ... ok
 test query_projection_without_ids_tracks_nested_members_and_actual_edges ... ok
-test stages_chain_only_previous_nodes_and_skip_never_serializes_them ... ok
+test similar_is_pairwise_scoped_weighted_and_respects_boundaries ... ok
 test single_query_shape_and_empty_results_remain_compatible ... ok
 test and_keeps_evidence_from_both_operands_but_chaining_recomputes_it ... ok
-test similar_is_pairwise_scoped_weighted_and_respects_boundaries ... ok
+test stages_chain_only_previous_nodes_and_skip_never_serializes_them ... ok
 test intersection_union_precedence_and_edge_pruning ... ok
 test near_units_distances_zero_and_previous_scope ... ok
-test text_primitives_scoping_unicode_empty_and_infix ... ok
 test errors_are_checked_even_if_the_query_returns_no_nodes ... ok
-test output_is_deterministic_and_discovery_never_mutates ... ok
+test text_primitives_scoping_unicode_empty_and_infix ... ok
 test threshold_pairs_match_independent_dot_products_after_updates_and_deletion ... ok
+test output_is_deterministic_and_discovery_never_mutates ... ok
 test common_tuples_null_and_linear_star_fanout ... ok
 test text_index_accelerates_without_changing_any_operator ... ok
 
-test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
 
-     Running tests/vector.rs (.target/debug/deps/vector-f3256bf75b1db74d)
+     Running tests/vector.rs (.target/debug/deps/vector-2e732ffc83b0e14e)
 
 running 10 tests
 test near_and_order_diagnostic_has_selection_span ... ok
-test vector_type_diagnostics_have_spans ... ok
 test vector_projection_and_explanations_use_selected_full_vectors ... ok
+test vector_type_diagnostics_have_spans ... ok
 test vector_view_projects_in_independent_dimension_and_metric_groups ... ok
 test near_limit_is_the_brute_force_top_limit ... ok
 test vector_json_csv_queries_filters_relationships_and_metrics ... ok
@@ -950,35 +1157,35 @@ test vector_wal_snapshot_updates_deletes ... ok
 test vector_hnsw_recall_10000_by_128_and_exact has been running for over 60 seconds
 test vector_hnsw_recall_10000_by_128_and_exact ... ok
 
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 329.13s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 312.16s
 
-     Running unittests src/bin/commerce-bench.rs (.target/debug/deps/commerce_bench-54f7579d1fefe964)
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
-     Running unittests src/main.rs (.target/debug/deps/zega_bench-c6aaf8c7d85f14bb)
+     Running unittests src/bin/commerce-bench.rs (.target/debug/deps/commerce_bench-87d46ec3cca5f930)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/parity.rs (.target/debug/deps/parity-4e9299841c1b6c51)
+     Running unittests src/main.rs (.target/debug/deps/zega_bench-849d60177b622d64)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/parity.rs (.target/debug/deps/parity-96a3b2d6848b9c52)
 
 running 8 tests
 test non_finite_float_difference_is_reported ... ok
-test missing_null_and_empty_string_are_not_equal ... ok
-test unordered_rows_compare_equal_after_normalization ... ok
 test float_last_digit_difference_is_reported ... ok
-test ordered_rows_are_not_reordered_before_comparison ... ok
+test missing_null_and_empty_string_are_not_equal ... ok
 test type_only_difference_is_reported ... ok
+test ordered_rows_are_not_reordered_before_comparison ... ok
 test genuine_value_difference_is_reported ... ok
+test unordered_rows_compare_equal_after_normalization ... ok
 test live_zega_neo4j_parity ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/parity_fuzz.rs (.target/debug/deps/parity_fuzz-936517fa547f6f1e)
+     Running tests/parity_fuzz.rs (.target/debug/deps/parity_fuzz-6ad97b39d38ae553)
 
 running 9 tests
 test rejected_queries_are_not_counted_as_parity ... ok
@@ -991,38 +1198,38 @@ test generated_grammar_covers_v2_shapes ... ok
 test v2_shrink_candidates_keep_queries_parseable ... ok
 test generated_cypher_parses ... ok
 
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
 
-     Running unittests src/main.rs (.target/debug/deps/zega-09583234b67d7ae2)
+     Running unittests src/main.rs (.target/debug/deps/zega-fb5a033ef1f01c9f)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/cli.rs (.target/debug/deps/cli-78e27e9139f4b598)
+     Running tests/cli.rs (.target/debug/deps/cli-a95dd8734431d4b9)
 
 running 5 tests
 test help_version_and_defaults_are_available_without_starting_a_server ... ok
 test only_one_cli_process_owns_a_data_directory ... ok
-test token_file_requires_bearer_and_bad_configuration_fails ... ok
 test start_loads_local_json_and_persists_across_process_restart ... ok
+test token_file_requires_bearer_and_bad_configuration_fails ... ok
 test explorer_embeds_assets_and_shares_the_persistent_database ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.55s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.53s
 
-     Running unittests src/lib.rs (.target/debug/deps/zega_cloud-7a4140fff1c1353c)
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
-     Running unittests src/bin/cloud-native.rs (.target/debug/deps/cloud_native-46e44cf2a82b69da)
+     Running unittests src/lib.rs (.target/debug/deps/zega_cloud-d5d5e212a194c287)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/host.rs (.target/debug/deps/host-fcc47d7d72491310)
+     Running unittests src/bin/cloud-native.rs (.target/debug/deps/cloud_native-04235ae2cb3023b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/host.rs (.target/debug/deps/host-06f1cfec00b349c8)
 
 running 3 tests
 test snapshot_metadata_preserves_deleted_highest_ids ... ok
@@ -1031,25 +1238,25 @@ test host_program_keeps_successful_block_when_later_block_fails ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (.target/debug/deps/zega_server-e097dc279ce6ae35)
+     Running unittests src/lib.rs (.target/debug/deps/zega_server-fa4165ff55e1c082)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/server.rs (.target/debug/deps/server-b87b01e3f80a5197)
+     Running tests/server.rs (.target/debug/deps/server-149a5525cd6af0de)
 
 running 8 tests
 test server_refuses_unauthenticated_non_loopback_listener ... ok
-test malformed_json_is_a_json_error ... ok
 test malformed_zql_is_json_error_and_server_stays_healthy ... ok
+test malformed_json_is_a_json_error ... ok
 test every_database_route_requires_the_bearer ... ok
 test zql_mutation_then_query_returns_typed_json ... ok
 test raw_import_uses_the_engine_and_graph_edits_use_wal_paths ... ok
 test vector_view_endpoint_uses_native_vectors_for_both_dimensions ... ok
 test readers_never_observe_half_a_zql_document ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.80s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.67s
 
    Doc-tests zega
 
@@ -1070,5 +1277,4 @@ running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
-COMMAND: cargo test --locked --workspace
-EXIT CODE: 0
+EXIT_CODE=0

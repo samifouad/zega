@@ -17,559 +17,1675 @@
       "id": "constraints/unique_distinct",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Ben\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Ben\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "constraints/unique_insert",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: unique Person { name } is already used\n  schema:4:12\n  mutation { Person(name: \"Ada\" && email: \"other@example.test\") }\n             ^^^^^^\n  help: another Person already has this name\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: unique Person { name } is already used\n  schema:4:12\n  mutation { Person(name: \"Ada\" && email: \"other@example.test\") }\n             ^^^^^^\n  help: another Person already has this name\n"
+      }
     },
     {
       "id": "constraints/unique_relationship",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Person.friends is a relationship\n  schema:2:19\n  unique { Person { friends } }\n                    ^^^^^^^\n  help: unique applies to a field, such as `name`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Person.friends is a relationship\n  schema:2:19\n  unique { Person { friends } }\n                    ^^^^^^^\n  help: unique applies to a field, such as `name`\n"
+      }
     },
     {
       "id": "constraints/unique_second_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: unique Person { email } is already used\n  schema:4:12\n  mutation { Person(name: \"Ben\" && email: \"ada@example.test\") }\n             ^^^^^^\n  help: another Person already has this email\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: unique Person { email } is already used\n  schema:4:12\n  mutation { Person(name: \"Ben\" && email: \"ada@example.test\") }\n             ^^^^^^\n  help: another Person already has this email\n"
+      }
     },
     {
       "id": "constraints/unique_self_update",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"age\":31,\"name\":\"Ada\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"age\":31,\"name\":\"Ada\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "constraints/unique_unknown_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Person has no field email\n  schema:2:19\n  unique { Person { email } }\n                    ^^^^^\n  help: Person has name, age, active, score\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Person has no field email\n  schema:2:19\n  unique { Person { email } }\n                    ^^^^^\n  help: Person has name, age, active, score\n"
+      }
     },
     {
       "id": "constraints/unique_unknown_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: unknown type Ghost\n  schema:2:10\n  unique { Ghost { name } }\n           ^^^^^\n  help: types are Person\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: unknown type Ghost\n  schema:2:10\n  unique { Ghost { name } }\n           ^^^^^\n  help: types are Person\n"
+      }
     },
     {
       "id": "constraints/unique_update",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: unique Person { name } is already used\n  schema:5:36\n  mutation { Person(name: \"Ben\") set name: \"Ada\" }\n                                     ^^^^\n  help: another Person already has this name\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: unique Person { name } is already used\n  schema:5:36\n  mutation { Person(name: \"Ben\") set name: \"Ada\" }\n                                     ^^^^\n  help: another Person already has this name\n"
+      }
     },
     {
       "id": "errors/bad_json",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: bad json: trailing comma at line 1 column 6\n  schema:2:15\n  mutation json [\"x\",] { Person }\n                ^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: bad json: trailing comma at line 1 column 6\n  schema:2:15\n  mutation json [\"x\",] { Person }\n                ^\n"
+      }
     },
     {
       "id": "errors/bad_string",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: bad string\n  schema:2:22\n  query { Person(name: \"broken\\\n                       ^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: bad string\n  schema:2:22\n  query { Person(name: \"broken\\\n                       ^^^^^^^^\n"
+      }
     },
     {
       "id": "errors/bare_not",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: not-equal is `!=`\n  schema:2:20\n  query { Person(age ! 30) }\n                     ^\n  help: a condition uses `=`, `!=`, `&&`, and `||`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: not-equal is `!=`\n  schema:2:20\n  query { Person(age ! 30) }\n                     ^\n  help: a condition uses `=`, `!=`, `&&`, and `||`\n"
+      }
     },
     {
       "id": "errors/column_missing_dollar",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: a column needs `$`\n  schema:2:46\n  mutation csv [\"./people.csv\"] { Person(name: Name) }\n                                               ^^^^\n  help: write `$Team`, or `$\"Type 1\"` when the name has a space\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: a column needs `$`\n  schema:2:46\n  mutation csv [\"./people.csv\"] { Person(name: Name) }\n                                               ^^^^\n  help: write `$Team`, or `$\"Type 1\"` when the name has a space\n"
+      }
     },
     {
       "id": "errors/column_outside_load",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `$` names a column or a key\n  schema:2:26\n  mutation { Person(name: $Name) }\n                           ^^^^\n  help: use `$Name` inside `mutation csv` or `mutation json`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `$` names a column or a key\n  schema:2:26\n  mutation { Person(name: $Name) }\n                           ^^^^\n  help: use `$Name` inside `mutation csv` or `mutation json`\n"
+      }
     },
     {
       "id": "errors/comma_condition",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: and is `&&`\n  schema:2:30\n  mutation { Person(name: \"Ada\", age: 30) }\n                               ^\n  help: a comma separates writes in `set`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: and is `&&`\n  schema:2:30\n  mutation { Person(name: \"Ada\", age: 30) }\n                               ^\n  help: a comma separates writes in `set`\n"
+      }
     },
     {
       "id": "errors/edge_field_at_root",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: &since is an edge field, and this value was not reached by an edge\n  schema:4:18\n  query { Person { &since } }\n                   ^^^^^^\n  help: read `&since` inside the type the edge lands on\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: &since is an edge field, and this value was not reached by an edge\n  schema:4:18\n  query { Person { &since } }\n                   ^^^^^^\n  help: read `&since` inside the type the edge lands on\n"
+      }
     },
     {
       "id": "errors/edge_field_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: &since is not Int\n  schema:4:65\n  mutation { Person(name: \"Ada\") { knows -> Person(name: \"Ben\") { &since: \"yesterday\" } } }\n                                                                  ^^^^^^\n  help: `since` is Int\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: &since is not Int\n  schema:4:65\n  mutation { Person(name: \"Ada\") { knows -> Person(name: \"Ben\") { &since: \"yesterday\" } } }\n                                                                  ^^^^^^\n  help: `since` is Int\n"
+      }
     },
     {
       "id": "errors/edge_set_in_query",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: &since: value is stored by a mutation\n  schema:4:36\n  query { Person { knows -> Person { &since: 2020 } } }\n                                     ^^^^^^\n  help: drop the value to read `&since`, or wrap the query in `mutation`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: &since: value is stored by a mutation\n  schema:4:36\n  query { Person { knows -> Person { &since: 2020 } } }\n                                     ^^^^^^\n  help: drop the value to read `&since`, or wrap the query in `mutation`\n"
+      }
     },
     {
       "id": "errors/equality_ambiguous",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person matched 2 rows\n  schema:4:9\n  query { Person(name: \"Ada\") { name } }\n          ^^^^^^\n  help: an equality filter has to match one row\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person matched 2 rows\n  schema:4:9\n  query { Person(name: \"Ada\") { name } }\n          ^^^^^^\n  help: an equality filter has to match one row\n"
+      }
     },
     {
       "id": "errors/expected_close_brace",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected }\n  schema:3:1\n  \n  ^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected }\n  schema:3:1\n  \n  ^\n"
+      }
     },
     {
       "id": "errors/expected_close_paren",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected )\n  schema:2:25\n  query { Person(age = 30 { name } }\n                          ^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected )\n  schema:2:25\n  query { Person(age = 30 { name } }\n                          ^\n"
+      }
     },
     {
       "id": "errors/expected_colon",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected :\n  schema:2:40\n  mutation { Person(name: \"Ada\") set age 31 }\n                                         ^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected :\n  schema:2:40\n  mutation { Person(name: \"Ada\") set age 31 }\n                                         ^^\n"
+      }
     },
     {
       "id": "errors/expected_name",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected a name\n  schema:1:15\n  schema { type 7 { } }\n                ^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected a name\n  schema:1:15\n  schema { type 7 { } }\n                ^\n"
+      }
     },
     {
       "id": "errors/expected_name_eof",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected a name\n  schema:2:1\n  \n  ^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected a name\n  schema:2:1\n  \n  ^\n"
+      }
     },
     {
       "id": "errors/expected_number",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected a number\n  schema:2:21\n  query { Person(age: nope) }\n                      ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected a number\n  schema:2:21\n  query { Person(age: nope) }\n                      ^^^^\n"
+      }
     },
     {
       "id": "errors/expected_open_brace",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected {\n  schema:1:8\n  schema type Person { }\n         ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected {\n  schema:1:8\n  schema type Person { }\n         ^^^^\n"
+      }
     },
     {
       "id": "errors/expected_range_separator",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected ..\n  schema:2:29\n  query { Person { friends *1 -> Person { name } } }\n                              ^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected ..\n  schema:2:29\n  query { Person { friends *1 -> Person { name } } }\n                              ^^\n"
+      }
     },
     {
       "id": "errors/expected_schema",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected schema\n  schema:1:1\n  query { }\n  ^^^^^\n  help: a file starts with `schema { }`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected schema\n  schema:1:1\n  query { }\n  ^^^^^\n  help: a file starts with `schema { }`\n"
+      }
     },
     {
       "id": "errors/expected_string",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected a string\n  schema:2:30\n  query { Person(name findWith 3) }\n                               ^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected a string\n  schema:2:30\n  query { Person(name findWith 3) }\n                               ^\n"
+      }
     },
     {
       "id": "errors/expected_type_keyword",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected type\n  schema:1:10\n  schema { Person { } }\n           ^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected type\n  schema:1:10\n  schema { Person { } }\n           ^^^^^^\n"
+      }
     },
     {
       "id": "errors/fractional_hops",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected an integer\n  schema:2:27\n  query { Person { friends *1.5..2 -> Person } }\n                            ^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected an integer\n  schema:2:27\n  query { Person { friends *1.5..2 -> Person } }\n                            ^^^\n"
+      }
     },
     {
       "id": "errors/hops_write",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: @hops is measured, not stored\n  schema:2:21\n  mutation { Person { @hops: 2 } }\n                      ^^^^^\n  help: `@hops` counts edges from the start of the query\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: @hops is measured, not stored\n  schema:2:21\n  mutation { Person { @hops: 2 } }\n                      ^^^^^\n  help: `@hops` counts edges from the start of the query\n"
+      }
     },
     {
       "id": "errors/link_missing",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: no Person matched\n  schema:3:50\n  mutation { Person(name: \"Ada\") { friends -> link Person(name: \"Nobody\") } }\n                                                   ^^^^^^\n  help: `link` and `set` need exactly one matching row\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: no Person matched\n  schema:3:50\n  mutation { Person(name: \"Ada\") { friends -> link Person(name: \"Nobody\") } }\n                                                   ^^^^^^\n  help: `link` and `set` need exactly one matching row\n"
+      }
     },
     {
       "id": "errors/load_empty_locations",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: a load reads a file\n  schema:2:17\n  mutation json [] { Person }\n                  ^\n  help: write `[\"./data.csv\"]` or `[\"https://...\"]`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: a load reads a file\n  schema:2:17\n  mutation json [] { Person }\n                  ^\n  help: write `[\"./data.csv\"]` or `[\"https://...\"]`\n"
+      }
     },
     {
       "id": "errors/load_empty_path",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: a load reads a file\n  schema:2:19\n  mutation json [\"\"] { Person }\n                    ^\n  help: write `[\"./data.csv\"]` or `[\"https://...\"]`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: a load reads a file\n  schema:2:19\n  mutation json [\"\"] { Person }\n                    ^\n  help: write `[\"./data.csv\"]` or `[\"https://...\"]`\n"
+      }
     },
     {
       "id": "errors/load_in_query_api",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: a load runs as its own mutation\n  schema:1:1\n  mutation json [\"./people.json\"] { Person(name: $name) }\n  ^^^^^^^^\n  help: `mutation csv` and `mutation json` are one statement\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: a load runs as its own mutation\n  schema:1:1\n  mutation json [\"./people.json\"] { Person(name: $name) }\n  ^^^^^^^^\n  help: `mutation csv` and `mutation json` are one statement\n"
+      }
     },
     {
       "id": "errors/load_inline",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: a load reads a file\n  schema:2:15\n  mutation json \"\"\"[]\"\"\" { Person }\n                ^\n  help: write `[\"./data.csv\"]` or `[\"https://...\"]`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: a load reads a file\n  schema:2:15\n  mutation json \"\"\"[]\"\"\" { Person }\n                ^\n  help: write `[\"./data.csv\"]` or `[\"https://...\"]`\n"
+      }
     },
     {
       "id": "errors/load_missing_location",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: a load reads a file\n  schema:2:15\n  mutation json { Person }\n                ^\n  help: write `[\"./data.csv\"]` or `[\"https://...\"]`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: a load reads a file\n  schema:2:15\n  mutation json { Person }\n                ^\n  help: write `[\"./data.csv\"]` or `[\"https://...\"]`\n"
+      }
     },
     {
       "id": "errors/load_non_string",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: a load reads a file\n  schema:2:18\n  mutation json [1] { Person }\n                   ^\n  help: write `[\"./data.csv\"]` or `[\"https://...\"]`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: a load reads a file\n  schema:2:18\n  mutation json [1] { Person }\n                   ^\n  help: write `[\"./data.csv\"]` or `[\"https://...\"]`\n"
+      }
     },
     {
       "id": "errors/missing_comparison",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected a comparison after age\n  schema:2:19\n  query { Person(age) }\n                    ^\n  help: use `=`, `!=`, `>`, `<`, `>=`, `<=`, `<>`, `findWith`, `startsWith`, or `endsWith`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected a comparison after age\n  schema:2:19\n  query { Person(age) }\n                    ^\n  help: use `=`, `!=`, `>`, `<`, `>=`, `<=`, `<>`, `findWith`, `startsWith`, or `endsWith`\n"
+      }
     },
     {
       "id": "errors/mutation_comparison",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: creating a Person only accepts field: value\n  schema:2:19\n  mutation { Person(age > 30) }\n                    ^^^\n  help: write `name: \"value\"`, and join fields with `&&`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: creating a Person only accepts field: value\n  schema:2:19\n  mutation { Person(age > 30) }\n                    ^^^\n  help: write `name: \"value\"`, and join fields with `&&`\n"
+      }
     },
     {
       "id": "errors/mutation_hop_range",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: a mutation cannot use a hop range\n  schema:2:21\n  mutation { Person { friends *1..2 -> Person } }\n                      ^^^^^^^^^^^^^\n  help: a range walks rows that are already stored\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: a mutation cannot use a hop range\n  schema:2:21\n  mutation { Person { friends *1..2 -> Person } }\n                      ^^^^^^^^^^^^^\n  help: a range walks rows that are already stored\n"
+      }
     },
     {
       "id": "errors/mutation_or",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: creating a Person only accepts field: value\n  schema:2:19\n  mutation { Person(name: \"Ada\" || name: \"Ben\") }\n                    ^^^^\n  help: write `name: \"value\"`, and join fields with `&&`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: creating a Person only accepts field: value\n  schema:2:19\n  mutation { Person(name: \"Ada\" || name: \"Ben\") }\n                    ^^^^\n  help: write `name: \"value\"`, and join fields with `&&`\n"
+      }
     },
     {
       "id": "errors/number_overflow",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: bad number 9223372036854775808\n  schema:2:21\n  query { Person(age: 9223372036854775808) }\n                      ^^^^^^^^^^^^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: bad number 9223372036854775808\n  schema:2:21\n  query { Person(age: 9223372036854775808) }\n                      ^^^^^^^^^^^^^^^^^^^\n"
+      }
     },
     {
       "id": "errors/query_and_mutation",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: a statement is a query or a mutation\n  schema:2:15\n  mutation query { Person }\n                ^\n  help: drop one of the words\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: a statement is a query or a mutation\n  schema:2:15\n  mutation query { Person }\n                ^\n  help: drop one of the words\n"
+      }
     },
     {
       "id": "errors/range_without_arrow",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: friends has a range but no arrow\n  schema:2:18\n  query { Person { friends *1..2 } }\n                   ^^^^^^^^^^^^^\n  help: write `friends *1..3 -> Type`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: friends has a range but no arrow\n  schema:2:18\n  query { Person { friends *1..2 } }\n                   ^^^^^^^^^^^^^\n  help: write `friends *1..3 -> Type`\n"
+      }
     },
     {
       "id": "errors/relationship_as_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person has no field friends\n  schema:2:18\n  query { Person { friends } }\n                   ^^^^^^^\n  help: `friends` is a relationship: `friends -> Person[]`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person has no field friends\n  schema:2:18\n  query { Person { friends } }\n                   ^^^^^^^\n  help: `friends` is a relationship: `friends -> Person[]`\n"
+      }
     },
     {
       "id": "errors/required_edge_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: knows requires &since\n  schema:4:34\n  mutation { Person(name: \"Ada\") { knows -> Person(name: \"Ben\") } }\n                                   ^^^^^\n  help: write `&since: …` inside Person\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: knows requires &since\n  schema:4:34\n  mutation { Person(name: \"Ada\") { knows -> Person(name: \"Ben\") } }\n                                   ^^^^^\n  help: write `&since: …` inside Person\n"
+      }
     },
     {
       "id": "errors/reversed_hop_range",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: bad range *3..1\n  schema:2:18\n  query { Person { friends *3..1 -> Person } }\n                   ^^^^^^^^^^^^^\n  help: write `*min..max`, with min at least 1 and max at least min\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: bad range *3..1\n  schema:2:18\n  query { Person { friends *3..1 -> Person } }\n                   ^^^^^^^^^^^^^\n  help: write `*min..max`, with min at least 1 and max at least min\n"
+      }
     },
     {
       "id": "errors/set_ambiguous",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person matched 3 rows\n  schema:5:12\n  mutation { Person(age > 10) set active: true }\n             ^^^^^^\n  help: `link` and `set` need exactly one matching row\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person matched 3 rows\n  schema:5:12\n  mutation { Person(age > 10) set active: true }\n             ^^^^^^\n  help: `link` and `set` need exactly one matching row\n"
+      }
     },
     {
       "id": "errors/set_in_query",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: `set age` writes a row\n  schema:2:33\n  query { Person(name: \"Ada\") set age: 31 }\n                                  ^^^\n  help: wrap the query in `mutation { }`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: `set age` writes a row\n  schema:2:33\n  query { Person(name: \"Ada\") set age: 31 }\n                                  ^^^\n  help: wrap the query in `mutation { }`\n"
+      }
     },
     {
       "id": "errors/set_missing",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: no Person matched\n  schema:2:12\n  mutation { Person(name: \"Nobody\") set age: 31 }\n             ^^^^^^\n  help: `link` and `set` need exactly one matching row\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: no Person matched\n  schema:2:12\n  mutation { Person(name: \"Nobody\") set age: 31 }\n             ^^^^^^\n  help: `link` and `set` need exactly one matching row\n"
+      }
     },
     {
       "id": "errors/single_and",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: and is `&&`\n  schema:2:25\n  query { Person(age = 20 & age = 30) }\n                          ^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: and is `&&`\n  schema:2:25\n  query { Person(age = 20 & age = 30) }\n                          ^\n"
+      }
     },
     {
       "id": "errors/single_or",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: or is `||`\n  schema:2:25\n  query { Person(age = 20 | age = 30) }\n                          ^\n  help: one `|` joins types, as in `(Book | Movie)`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: or is `||`\n  schema:2:25\n  query { Person(age = 20 | age = 30) }\n                          ^\n  help: one `|` joins types, as in `(Book | Movie)`\n"
+      }
     },
     {
       "id": "errors/unexpected_input",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: unexpected input\n  schema:1:11\n  query { } trailing\n            ^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: unexpected input\n  schema:1:11\n  query { } trailing\n            ^^^^^^^^\n"
+      }
     },
     {
       "id": "errors/unknown_edge_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: knows has no field sinc\n  schema:4:36\n  query { Person { knows -> Person { &sinc } } }\n                                     ^^^^^\n  help: did you mean `&since`?\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: knows has no field sinc\n  schema:4:36\n  query { Person { knows -> Person { &sinc } } }\n                                     ^^^^^\n  help: did you mean `&since`?\n"
+      }
     },
     {
       "id": "errors/unknown_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person has no field nmae\n  schema:2:18\n  query { Person { nmae } }\n                   ^^^^\n  help: did you mean `name`?\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person has no field nmae\n  schema:2:18\n  query { Person { nmae } }\n                   ^^^^\n  help: did you mean `name`?\n"
+      }
     },
     {
       "id": "errors/unknown_filter_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person has no field email\n  schema:2:16\n  query { Person(email = \"x\") { name } }\n                 ^^^^^\n  help: Person has name, age, active, score, friends\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person has no field email\n  schema:2:16\n  query { Person(email = \"x\") { name } }\n                 ^^^^^\n  help: Person has name, age, active, score, friends\n"
+      }
     },
     {
       "id": "errors/unknown_relationship",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person has no relationship parent\n  schema:2:18\n  query { Person { parent -> Person } }\n                   ^^^^^^\n  help: Person has name, age, active, score, friends\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person has no relationship parent\n  schema:2:18\n  query { Person { parent -> Person } }\n                   ^^^^^^\n  help: Person has name, age, active, score, friends\n"
+      }
     },
     {
       "id": "errors/unknown_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: unknown type Ghost\n  schema:2:9\n  query { Ghost { name } }\n          ^^^^^\n  help: types are Person\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: unknown type Ghost\n  schema:2:9\n  query { Ghost { name } }\n          ^^^^^\n  help: types are Person\n"
+      }
     },
     {
       "id": "errors/unknown_union_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: unknown type Ghost\n  schema:2:19\n  query { (Person | Ghost) { name } }\n                    ^^^^^\n  help: types are Person\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: unknown type Ghost\n  schema:2:19\n  query { (Person | Ghost) { name } }\n                    ^^^^^\n  help: types are Person\n"
+      }
     },
     {
       "id": "errors/unterminated_string",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: unterminated string\n  schema:2:22\n  query { Person(name: \"broken\n                       ^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: unterminated string\n  schema:2:22\n  query { Person(name: \"broken\n                       ^^^^^^^\n"
+      }
     },
     {
       "id": "errors/wrong_direction",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person.friends does not point <-\n  schema:2:18\n  query { Person { friends <- Person } }\n                   ^^^^^^^\n  help: `friends` points -> Person[]\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person.friends does not point <-\n  schema:2:18\n  query { Person { friends <- Person } }\n                   ^^^^^^^\n  help: `friends` points -> Person[]\n"
+      }
     },
     {
       "id": "errors/wrong_target",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person.friends does not reach Book\n  schema:2:29\n  query { Person { friends -> Book { title } } }\n                              ^^^^\n  help: `friends` reaches Person\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person.friends does not reach Book\n  schema:2:29\n  query { Person { friends -> Book { title } } }\n                              ^^^^\n  help: `friends` reaches Person\n"
+      }
     },
     {
       "id": "errors/zero_hop_range",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: bad range *0..2\n  schema:2:18\n  query { Person { friends *0..2 -> Person } }\n                   ^^^^^^^^^^^^^\n  help: write `*min..max`, with min at least 1 and max at least min\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: bad range *0..2\n  schema:2:18\n  query { Person { friends *0..2 -> Person } }\n                   ^^^^^^^^^^^^^\n  help: write `*min..max`, with min at least 1 and max at least min\n"
+      }
     },
     {
       "id": "filter/and",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/angle_not_equal",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ben\"},{\"name\":\"Cy\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ben\"},{\"name\":\"Cy\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/boolean",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Cy\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Cy\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/case_sensitive",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/contains",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/ends_with",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Cy\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Cy\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/equality_and",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"age\":30,\"name\":\"Ada\"}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"age\":30,\"name\":\"Ada\"}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/greater",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Cy\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Cy\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/greater_equal",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Cy\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Cy\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/less",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ben\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ben\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/less_equal",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Ben\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Ben\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/negative_float",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ben\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ben\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/no_match",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/not_equal",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ben\"},{\"name\":\"Cy\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ben\"},{\"name\":\"Cy\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/or",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Cy\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Cy\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/parentheses",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ben\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ben\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/precedence",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "filter/starts_with",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ben\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ben\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "import/csv_no_header",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: csv has no header\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: csv has no header\n"
+      }
     },
     {
       "id": "import/csv_quoted",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"age\":30,\"name\":\"Ada, \\\"A\\\"\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"age\":30,\"name\":\"Ada, \\\"A\\\"\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "import/csv_types",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"active\":true,\"age\":30,\"name\":\"Ada\",\"score\":1.5},{\"active\":false,\"age\":20,\"name\":\"Ben\",\"score\":-2.5}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"active\":true,\"age\":30,\"name\":\"Ada\",\"score\":1.5},{\"active\":false,\"age\":20,\"name\":\"Ben\",\"score\":-2.5}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "import/empty_array",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "import/json_array",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"age\":30,\"name\":\"Ada\"},{\"age\":20,\"name\":\"Ben\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"age\":30,\"name\":\"Ada\"},{\"age\":20,\"name\":\"Ben\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "import/json_object",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"age\":30,\"name\":\"Ada\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"age\":30,\"name\":\"Ada\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "import/json_scalar",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: json load expects an object or an array of objects\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: json load expects an object or an array of objects\n"
+      }
     },
     {
       "id": "import/missing_column",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: no column missing\n  schema:2:42\n  mutation json [\"./person.json\"] { Person(name: $missing) }\n                                           ^^^^\n  help: columns are age, name\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: no column missing\n  schema:2:42\n  mutation json [\"./person.json\"] { Person(name: $missing) }\n                                           ^^^^\n  help: columns are age, name\n"
+      }
     },
     {
       "id": "import/multiple_files",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"age\":30,\"name\":\"Ada\"},{\"age\":20,\"name\":\"Ben\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"age\":30,\"name\":\"Ada\"},{\"age\":20,\"name\":\"Ben\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "import/path_escape",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: the path cannot contain ..\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: the path cannot contain ..\n"
+      }
     },
     {
       "id": "import/private_url",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: that address points at a private network\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: that address points at a private network\n"
+      }
     },
     {
       "id": "import/remote_url",
@@ -580,1021 +1696,3061 @@
       "id": "index/index_before_unique",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ben\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ben\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "index/index_duplicate_block",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: duplicate index block\n  schema:3:1\n  index { text Player { name } }\n  ^^^^^\n  help: a file has one index block\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: duplicate index block\n  schema:3:1\n  index { text Player { name } }\n  ^^^^^\n  help: a file has one index block\n"
+      }
     },
     {
       "id": "index/index_duplicate_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Player.salary already has a range index\n  schema:2:55\n  index { range Player { salary } range Player { rating salary } }\n                                                        ^^^^^^\n  help: name each field once per index kind\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Player.salary already has a range index\n  schema:2:55\n  index { range Player { salary } range Player { rating salary } }\n                                                        ^^^^^^\n  help: name each field once per index kind\n"
+      }
     },
     {
       "id": "index/index_follows_updates",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\",\"salary\":9},{\"name\":\"Zed\",\"salary\":5}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\",\"salary\":9},{\"name\":\"Zed\",\"salary\":5}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "index/index_range_not_orderable",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: range index needs an Int, Float or String field; Player.active is Bool\n  schema:2:24\n  index { range Player { active } }\n                         ^^^^^^\n  help: `range` orders values; Point and Vector fields are indexed already\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: range index needs an Int, Float or String field; Player.active is Bool\n  schema:2:24\n  index { range Player { active } }\n                         ^^^^^^\n  help: `range` orders values; Point and Vector fields are indexed already\n"
+      }
     },
     {
       "id": "index/index_range_on_unique",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Player.name is already indexed by unique\n  schema:3:24\n  index { range Player { name } }\n                         ^^^^\n  help: a unique field already has a range index; remove it from `range`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Player.name is already indexed by unique\n  schema:3:24\n  index { range Player { name } }\n                         ^^^^\n  help: a unique field already has a range index; remove it from `range`\n"
+      }
     },
     {
       "id": "index/index_relationship",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Player.team is a relationship\n  schema:2:24\n  index { range Player { team } }\n                         ^^^^\n  help: an index applies to a field, such as `name`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Player.team is a relationship\n  schema:2:24\n  index { range Player { team } }\n                         ^^^^\n  help: an index applies to a field, such as `name`\n"
+      }
     },
     {
       "id": "index/index_text_not_string",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: text index needs a String field; Player.salary is Int\n  schema:2:23\n  index { text Player { salary } }\n                        ^^^^^^\n  help: `text` speeds findWith, startsWith and endsWith on a String\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: text index needs a String field; Player.salary is Int\n  schema:2:23\n  index { text Player { salary } }\n                        ^^^^^^\n  help: `text` speeds findWith, startsWith and endsWith on a String\n"
+      }
     },
     {
       "id": "index/index_unknown_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Player has no field salry\n  schema:2:24\n  index { range Player { salry } }\n                         ^^^^^\n  help: did you mean `salary`?\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Player has no field salry\n  schema:2:24\n  index { range Player { salry } }\n                         ^^^^^\n  help: did you mean `salary`?\n"
+      }
     },
     {
       "id": "index/index_unknown_kind",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: unknown index kind btree\n  schema:2:9\n  index { btree Player { salary } }\n          ^^^^^\n  help: write `range Type { field }` or `text Type { field }`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: unknown index kind btree\n  schema:2:9\n  index { btree Player { salary } }\n          ^^^^^\n  help: write `range Type { field }` or `text Type { field }`\n"
+      }
     },
     {
       "id": "index/index_unknown_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: unknown type Playr\n  schema:2:15\n  index { range Playr { salary } }\n                ^^^^^\n  help: did you mean `Player`?\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: unknown type Playr\n  schema:2:15\n  index { range Playr { salary } }\n                ^^^^^\n  help: did you mean `Player`?\n"
+      }
     },
     {
       "id": "index/range_bounds",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Cora\",\"salary\":3},{\"name\":\"Dan\",\"salary\":4}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Cora\",\"salary\":3},{\"name\":\"Dan\",\"salary\":4}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "index/range_equality",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"name\":\"Cora\"}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"name\":\"Cora\"}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "index/range_float_zero",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\",\"rating\":-0.0},{\"name\":\"Ben\",\"rating\":0.5}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\",\"rating\":-0.0},{\"name\":\"Ben\",\"rating\":0.5}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "index/range_mixed_kinds",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "index/range_or",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Eve\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Eve\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "index/range_string",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Cora\"},{\"name\":\"Dan\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Cora\"},{\"name\":\"Dan\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "index/text_operators",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ben\"},{\"name\":\"Cora\"},{\"name\":\"Eve\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ben\"},{\"name\":\"Cora\"},{\"name\":\"Eve\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "index/text_short_needle",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Cora\"},{\"name\":\"Dan\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Ada\"},{\"name\":\"Cora\"},{\"name\":\"Dan\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "location/antimeridian_box",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":0},{\"n\":1}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":0},{\"n\":1}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "location/csv_mapping",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"at\":{\"lat\":51.0,\"lon\":-114.0},\"n\":0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"at\":{\"lat\":51.0,\"lon\":-114.0},\"n\":0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "location/distance_projection",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"distance\":0.0,\"metres\":0.0,\"n\":0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"distance\":0.0,\"metres\":0.0,\"n\":0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "location/json_object",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"at\":{\"lat\":51.0,\"lon\":-114.0},\"n\":0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"at\":{\"lat\":51.0,\"lon\":-114.0},\"n\":0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "location/latitude_range",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Point latitude must be a number in [-90, 90]\n  schema:2:37\n  mutation { Place(n: 0 && at: @point(91, 0)) { at } }\n                                      ^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Point latitude must be a number in [-90, 90]\n  schema:2:37\n  mutation { Place(n: 0 && at: @point(91, 0)) { at } }\n                                      ^^\n"
+      }
     },
     {
       "id": "location/longitude_range",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Point longitude must be a number in [-180, 180]\n  schema:2:40\n  mutation { Place(n: 0 && at: @point(0, -181)) { at } }\n                                         ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Point longitude must be a number in [-180, 180]\n  schema:2:40\n  mutation { Place(n: 0 && at: @point(0, -181)) { at } }\n                                         ^^^^\n"
+      }
     },
     {
       "id": "location/nearest",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":1},{\"n\":0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":1},{\"n\":0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "location/point_arity",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: @point() needs exactly two numbers: latitude, longitude\n  schema:2:30\n  mutation { Place(n: 0 && at: @point(0)) { at } }\n                               ^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: @point() needs exactly two numbers: latitude, longitude\n  schema:2:30\n  mutation { Place(n: 0 && at: @point(0)) { at } }\n                               ^^^^^^^^\n"
+      }
     },
     {
       "id": "location/point_value",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"at\":{\"lat\":90.0,\"lon\":-180.0},\"n\":0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"at\":{\"lat\":90.0,\"lon\":-180.0},\"n\":0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "location/radius",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":0},{\"n\":1}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":0},{\"n\":1}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "location/source_missing",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: no column lon for Point field at\n  schema:2:31\n  mutation csv [\"points.csv\"] { Place(n: $n) { at } }\n                                ^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: no column lon for Point field at\n  schema:2:31\n  mutation csv [\"points.csv\"] { Place(n: $n) { at } }\n                                ^^^^^\n"
+      }
     },
     {
       "id": "location/source_not_numeric",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Point source column lat must be numeric\n  schema:2:31\n  mutation csv [\"points.csv\"] { Place(n: $n) { at } }\n                                ^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Point source column lat must be numeric\n  schema:2:31\n  mutation csv [\"points.csv\"] { Place(n: $n) { at } }\n                                ^^^^^\n"
+      }
     },
     {
       "id": "mutation/create",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"age\":30,\"name\":\"Ada\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"age\":30,\"name\":\"Ada\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "mutation/edge_properties",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"knows\":[{\"close\":true,\"name\":\"Ben\",\"since\":2020}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"knows\":[{\"close\":true,\"name\":\"Ben\",\"since\":2020}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "mutation/empty",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "mutation/incoming_create",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"books\":[{\"title\":\"Earthsea\"}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"books\":[{\"title\":\"Earthsea\"}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "mutation/inverse_edge_properties",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"known\":[{\"close\":null,\"name\":\"Ada\",\"since\":2020}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"known\":[{\"close\":null,\"name\":\"Ada\",\"since\":2020}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "mutation/link_existing",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"friends\":[{\"name\":\"Ben\"}],\"name\":\"Ada\"},{\"friends\":[],\"name\":\"Ben\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"friends\":[{\"name\":\"Ben\"}],\"name\":\"Ada\"},{\"friends\":[],\"name\":\"Ben\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "mutation/multiple_labels",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"minutes\":5,\"name\":\"Hybrid\",\"pages\":10}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"minutes\":5,\"name\":\"Hybrid\",\"pages\":10}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "mutation/set_fields",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"active\":false,\"age\":31,\"name\":\"Ada\"}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"active\":false,\"age\":31,\"name\":\"Ada\"}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "names/old_distance",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `distance` is built in: write `@distance`\n  schema:2:16\n  query { Sample(distance(at, @point(0,0)) < 1) }\n                 ^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `distance` is built in: write `@distance`\n  schema:2:16\n  query { Sample(distance(at, @point(0,0)) < 1) }\n                 ^^^^^^^^\n"
+      }
     },
     {
       "id": "names/old_endsWith",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `ENDS WITH` was renamed: write `endsWith`\n  schema:2:21\n  query { Sample(name ENDS WITH \"A\") }\n                      ^^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `ENDS WITH` was renamed: write `endsWith`\n  schema:2:21\n  query { Sample(name ENDS WITH \"A\") }\n                      ^^^^^^^^^\n"
+      }
     },
     {
       "id": "names/old_findWith",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `CONTAINS` was renamed: write `findWith`\n  schema:2:21\n  query { Sample(name CONTAINS \"A\") }\n                      ^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `CONTAINS` was renamed: write `findWith`\n  schema:2:21\n  query { Sample(name CONTAINS \"A\") }\n                      ^^^^^^^^\n"
+      }
     },
     {
       "id": "names/old_hops",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: `&hops` is built in: write `@hops`\n  schema:2:18\n  query { Sample { &hops } }\n                   ^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: `&hops` is built in: write `@hops`\n  schema:2:18\n  query { Sample { &hops } }\n                   ^^^^^\n"
+      }
     },
     {
       "id": "names/old_id",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: `id` is built in: write `@id`\n  schema:2:18\n  query { Sample { id } }\n                   ^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: `id` is built in: write `@id`\n  schema:2:18\n  query { Sample { id } }\n                   ^^\n"
+      }
     },
     {
       "id": "names/old_id_filter",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: `id` is built in: write `@id`\n  schema:2:16\n  query { Sample(id: 1) }\n                 ^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: `id` is built in: write `@id`\n  schema:2:16\n  query { Sample(id: 1) }\n                 ^^\n"
+      }
     },
     {
       "id": "names/old_incomplete_starts_with",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `STARTS WITH` was renamed: write `startsWith`\n  schema:2:21\n  query { Person(name STARTS \"A\") { name } }\n                      ^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `STARTS WITH` was renamed: write `startsWith`\n  schema:2:21\n  query { Person(name STARTS \"A\") { name } }\n                      ^^^^^^\n"
+      }
     },
     {
       "id": "names/old_near",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `near` is built in: write `@near`\n  schema:2:16\n  query { Sample near(embedding, @vector[1,0], 1) }\n                 ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `near` is built in: write `@near`\n  schema:2:16\n  query { Sample near(embedding, @vector[1,0], 1) }\n                 ^^^^\n"
+      }
     },
     {
       "id": "names/old_path_cost",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `cost` is a path bound: write `@cost`\n  schema:2:29\n  query { Sample { road *path(cost <= 2) -> Sample } }\n                              ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `cost` is a path bound: write `@cost`\n  schema:2:29\n  query { Sample { road *path(cost <= 2) -> Sample } }\n                              ^^^^\n"
+      }
     },
     {
       "id": "names/old_path_hops",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `hops` is a path bound: write `@hops`\n  schema:2:29\n  query { Sample { road *path(hops <= 2) -> Sample } }\n                              ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `hops` is a path bound: write `@hops`\n  schema:2:29\n  query { Sample { road *path(hops <= 2) -> Sample } }\n                              ^^^^\n"
+      }
     },
     {
       "id": "names/old_point",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `point` is built in: write `@point`\n  schema:2:20\n  query { Sample(at: point(0,0)) }\n                     ^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `point` is built in: write `@point`\n  schema:2:20\n  query { Sample(at: point(0,0)) }\n                     ^^^^^\n"
+      }
     },
     {
       "id": "names/old_score",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: `score` is built in: write `@score`\n  schema:2:18\n  query { Sample { score } }\n                   ^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: `score` is built in: write `@score`\n  schema:2:18\n  query { Sample { score } }\n                   ^^^^^\n"
+      }
     },
     {
       "id": "names/old_similarity",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `similarity` is built in: write `@similarity`\n  schema:2:16\n  query { Sample(similarity(embedding, @vector[1,0]) > 0) }\n                 ^^^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `similarity` is built in: write `@similarity`\n  schema:2:16\n  query { Sample(similarity(embedding, @vector[1,0]) > 0) }\n                 ^^^^^^^^^^\n"
+      }
     },
     {
       "id": "names/old_startsWith",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `STARTS WITH` was renamed: write `startsWith`\n  schema:2:21\n  query { Sample(name STARTS WITH \"A\") }\n                      ^^^^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `STARTS WITH` was renamed: write `startsWith`\n  schema:2:21\n  query { Sample(name STARTS WITH \"A\") }\n                      ^^^^^^^^^^^\n"
+      }
     },
     {
       "id": "names/old_vector",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `vector` is built in: write `@vector`\n  schema:2:27\n  query { Sample(embedding: vector[1,0]) }\n                            ^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `vector` is built in: write `@vector`\n  schema:2:27\n  query { Sample(embedding: vector[1,0]) }\n                            ^^^^^^\n"
+      }
     },
     {
       "id": "names/old_within_box",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: `within_box` is built in: write `@within_box`\n  schema:2:16\n  query { Sample(within_box(at, @point(0,0), @point(1,1))) }\n                 ^^^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: `within_box` is built in: write `@within_box`\n  schema:2:16\n  query { Sample(within_box(at, @point(0,0), @point(1,1))) }\n                 ^^^^^^^^^^\n"
+      }
     },
     {
       "id": "names/user_cost_path_weight",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"road\":{\"cost\":8,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"cost\":8,\"hops\":7,\"shape\":\"map\"},\"to\":2,\"type\":\"road\"}],\"hops\":1,\"nodes\":[{\"cost\":null,\"hops\":null},{\"cost\":8,\"hops\":7}]}}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"road\":{\"cost\":8,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"cost\":8,\"hops\":7,\"shape\":\"map\"},\"to\":2,\"type\":\"road\"}],\"hops\":1,\"nodes\":[{\"cost\":null,\"hops\":null},{\"cost\":8,\"hops\":7}]}}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "names/user_hops_cost_shape",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"cost\":12,\"hops\":11,\"road\":[{\"cost\":8,\"depth\":1,\"hops\":7,\"shape\":\"map\"}],\"shape\":\"circle\"}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"cost\":12,\"hops\":11,\"road\":[{\"cost\":8,\"depth\":1,\"hops\":7,\"shape\":\"map\"}],\"shape\":\"circle\"}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "names/user_id_score",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"id\":99,\"measured\":1.0,\"node\":1,\"score\":42}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"id\":99,\"measured\":1.0,\"node\":1,\"score\":42}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "names/user_language_names",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"Default\":36,\"by\":29,\"center\":48,\"cosine\":37,\"csv\":34,\"display\":14,\"distance\":3,\"dot\":38,\"endsWith\":9,\"exact\":35,\"false\":41,\"findWith\":7,\"from\":27,\"graph\":15,\"image\":45,\"index\":22,\"json\":33,\"l2\":39,\"limit\":30,\"link\":26,\"map\":16,\"mutation\":11,\"near\":6,\"null\":42,\"order\":28,\"path\":32,\"point\":1,\"query\":10,\"range\":23,\"schema\":12,\"set\":25,\"shape\":44,\"similarity\":4,\"size\":43,\"startsWith\":8,\"table\":17,\"text\":24,\"tilt\":47,\"timeline\":18,\"toward\":31,\"true\":40,\"type\":13,\"unique\":21,\"vector\":2,\"vector2d\":19,\"vector3d\":20,\"within_box\":5,\"zoom\":46}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"Default\":36,\"by\":29,\"center\":48,\"cosine\":37,\"csv\":34,\"display\":14,\"distance\":3,\"dot\":38,\"endsWith\":9,\"exact\":35,\"false\":41,\"findWith\":7,\"from\":27,\"graph\":15,\"image\":45,\"index\":22,\"json\":33,\"l2\":39,\"limit\":30,\"link\":26,\"map\":16,\"mutation\":11,\"near\":6,\"null\":42,\"order\":28,\"path\":32,\"point\":1,\"query\":10,\"range\":23,\"schema\":12,\"set\":25,\"shape\":44,\"similarity\":4,\"size\":43,\"startsWith\":8,\"table\":17,\"text\":24,\"tilt\":47,\"timeline\":18,\"toward\":31,\"true\":40,\"type\":13,\"unique\":21,\"vector\":2,\"vector2d\":19,\"vector3d\":20,\"within_box\":5,\"zoom\":46}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/astar_km",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"road\":{\"cost\":1.6,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"km\":0.8},\"to\":2,\"type\":\"road\"},{\"from\":2,\"id\":2,\"props\":{\"km\":0.8},\"to\":3,\"type\":\"road\"}],\"hops\":2,\"nodes\":[{\"km\":null,\"name\":\"A\"},{\"km\":0.8,\"name\":\"B\"},{\"km\":0.8,\"name\":\"C\"}]}}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"road\":{\"cost\":1.6,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"km\":0.8},\"to\":2,\"type\":\"road\"},{\"from\":2,\"id\":2,\"props\":{\"km\":0.8},\"to\":3,\"type\":\"road\"}],\"hops\":2,\"nodes\":[{\"km\":null,\"name\":\"A\"},{\"km\":0.8,\"name\":\"B\"},{\"km\":0.8,\"name\":\"C\"}]}}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/astar_unit",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: road#1 from Junction#1 to Junction#2 has km 0.8, shorter than the 699.773 m straight line between its ends\n  schema:14:56\n  query { Junction(name: \"A\") { road *path by &km toward at -> Junction(name: \"C\") { name } } }\n                                                         ^^\n  help: `toward` needs every km to be at least the straight-line distance; km is declared in m, so check that unit, or drop `toward`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: road#1 from Junction#1 to Junction#2 has km 0.8, shorter than the 699.773 m straight line between its ends\n  schema:14:56\n  query { Junction(name: \"A\") { road *path by &km toward at -> Junction(name: \"C\") { name } } }\n                                                         ^^\n  help: `toward` needs every km to be at least the straight-line distance; km is declared in m, so check that unit, or drop `toward`\n"
+      }
     },
     {
       "id": "path/cost_bound_exclusive",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"road\":null}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"road\":null}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/cost_bound_inclusive",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"road\":{\"cost\":1.6,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"km\":0.8},\"to\":2,\"type\":\"road\"},{\"from\":2,\"id\":2,\"props\":{\"km\":0.8},\"to\":3,\"type\":\"road\"}],\"hops\":2,\"nodes\":[{\"name\":\"A\"},{\"name\":\"B\"},{\"name\":\"C\"}]}}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"road\":{\"cost\":1.6,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"km\":0.8},\"to\":2,\"type\":\"road\"},{\"from\":2,\"id\":2,\"props\":{\"km\":0.8},\"to\":3,\"type\":\"road\"}],\"hops\":2,\"nodes\":[{\"name\":\"A\"},{\"name\":\"B\"},{\"name\":\"C\"}]}}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/dijkstra_km",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"road\":{\"cost\":1.6,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"km\":0.8},\"to\":2,\"type\":\"road\"},{\"from\":2,\"id\":2,\"props\":{\"km\":0.8},\"to\":3,\"type\":\"road\"}],\"hops\":2,\"nodes\":[{\"km\":null,\"name\":\"A\"},{\"km\":0.8,\"name\":\"B\"},{\"km\":0.8,\"name\":\"C\"}]}}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"road\":{\"cost\":1.6,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"km\":0.8},\"to\":2,\"type\":\"road\"},{\"from\":2,\"id\":2,\"props\":{\"km\":0.8},\"to\":3,\"type\":\"road\"}],\"hops\":2,\"nodes\":[{\"km\":null,\"name\":\"A\"},{\"km\":0.8,\"name\":\"B\"},{\"km\":0.8,\"name\":\"C\"}]}}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/fewest_edges",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"name\":\"A\",\"road\":{\"cost\":1,\"edges\":[{\"from\":1,\"id\":5,\"props\":{\"km\":2.5},\"to\":3,\"type\":\"road\"}],\"hops\":1,\"nodes\":[{\"hops\":0,\"km\":null,\"name\":\"A\"},{\"hops\":1,\"km\":2.5,\"name\":\"C\"}]}}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"name\":\"A\",\"road\":{\"cost\":1,\"edges\":[{\"from\":1,\"id\":5,\"props\":{\"km\":2.5},\"to\":3,\"type\":\"road\"}],\"hops\":1,\"nodes\":[{\"hops\":0,\"km\":null,\"name\":\"A\"},{\"hops\":1,\"km\":2.5,\"name\":\"C\"}]}}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/hops_bound",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"road\":null}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"road\":null}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/hops_bound_weighted",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: a weighted path is bounded by cost\n  schema:14:42\n  query { Junction(name: \"A\") { road *path(@hops <= 2) by &km -> Junction(name: \"C\") { name } } }\n                                           ^^^^^^^^^^\n  help: write `*path(@cost <= 50) by &km`; hops bound a path without a weight\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: a weighted path is bounded by cost\n  schema:14:42\n  query { Junction(name: \"A\") { road *path(@hops <= 2) by &km -> Junction(name: \"C\") { name } } }\n                                           ^^^^^^^^^^\n  help: write `*path(@cost <= 50) by &km`; hops bound a path without a weight\n"
+      }
     },
     {
       "id": "path/missing_unit",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: toward needs a unit on the weight: declare km: Float<km>\n  schema:14:56\n  query { Junction(name: \"A\") { road *path by &km toward at -> Junction(name: \"C\") { name &km } } }\n                                                         ^^\n  help: A* compares road.km with straight-line distances; the unit is `m`, `km` or `mi`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: toward needs a unit on the weight: declare km: Float<km>\n  schema:14:56\n  query { Junction(name: \"A\") { road *path by &km toward at -> Junction(name: \"C\") { name &km } } }\n                                                         ^^\n  help: A* compares road.km with straight-line distances; the unit is `m`, `km` or `mi`\n"
+      }
     },
     {
       "id": "path/missing_weight",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: road#2 from Junction#2 to Junction#3 has no km\n  schema:7:31\n  query { Junction(name: \"A\") { road *path by &km -> Junction(name: \"C\") { name } } }\n                                ^^^^\n  help: a path does not guess a missing weight; store `&km` on every road\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: road#2 from Junction#2 to Junction#3 has no km\n  schema:7:31\n  query { Junction(name: \"A\") { road *path by &km -> Junction(name: \"C\") { name } } }\n                                ^^^^\n  help: a path does not guess a missing weight; store `&km` on every road\n"
+      }
     },
     {
       "id": "path/nearest_target",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"road\":{\"cost\":1.4,\"edges\":[{\"from\":1,\"id\":3,\"props\":{\"km\":1.4},\"to\":4,\"type\":\"road\"}],\"hops\":1,\"nodes\":[{\"name\":\"A\"},{\"name\":\"D\"}]}}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"road\":{\"cost\":1.4,\"edges\":[{\"from\":1,\"id\":3,\"props\":{\"km\":1.4},\"to\":4,\"type\":\"road\"}],\"hops\":1,\"nodes\":[{\"name\":\"A\"},{\"name\":\"D\"}]}}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/negative_weight",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: road#1 from Junction#1 to Junction#2 has km -1.5, and a path weight cannot be negative\n  schema:5:31\n  query { Junction(name: \"A\") { road *path by &km -> Junction(name: \"B\") { name } } }\n                                ^^^^\n  help: the cheapest route is only defined for weights of 0 or more\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: road#1 from Junction#1 to Junction#2 has km -1.5, and a path weight cannot be negative\n  schema:5:31\n  query { Junction(name: \"A\") { road *path by &km -> Junction(name: \"B\") { name } } }\n                                ^^^^\n  help: the cheapest route is only defined for weights of 0 or more\n"
+      }
     },
     {
       "id": "path/plain_float_dijkstra",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"road\":{\"cost\":1.6,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"km\":0.8},\"to\":2,\"type\":\"road\"},{\"from\":2,\"id\":2,\"props\":{\"km\":0.8},\"to\":3,\"type\":\"road\"}],\"hops\":2,\"nodes\":[{\"km\":null,\"name\":\"A\"},{\"km\":0.8,\"name\":\"B\"},{\"km\":0.8,\"name\":\"C\"}]}}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"road\":{\"cost\":1.6,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"km\":0.8},\"to\":2,\"type\":\"road\"},{\"from\":2,\"id\":2,\"props\":{\"km\":0.8},\"to\":3,\"type\":\"road\"}],\"hops\":2,\"nodes\":[{\"km\":null,\"name\":\"A\"},{\"km\":0.8,\"name\":\"B\"},{\"km\":0.8,\"name\":\"C\"}]}}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/start_is_target",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"road\":{\"cost\":0.0,\"edges\":[],\"hops\":0,\"nodes\":[{\"name\":\"C\"}]}}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"road\":{\"cost\":0.0,\"edges\":[],\"hops\":0,\"nodes\":[{\"name\":\"C\"}]}}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/start_needs_point",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Depot has no at, and `toward at` needs a location on every node it reaches\n  schema:6:42\n  query { Depot { road *path by &km toward at -> Junction { name } } }\n                                           ^^\n  help: declare `at: Point` on Depot, or drop `toward` to search without a guess\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Depot has no at, and `toward at` needs a location on every node it reaches\n  schema:6:42\n  query { Depot { road *path by &km toward at -> Junction { name } } }\n                                           ^^\n  help: declare `at: Point` on Depot, or drop `toward` to search without a guess\n"
+      }
     },
     {
       "id": "path/tie_lower_id",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"next\":{\"cost\":2000,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"m\":1000},\"to\":2,\"type\":\"next\"},{\"from\":2,\"id\":3,\"props\":{\"m\":1000},\"to\":4,\"type\":\"next\"}],\"hops\":2,\"nodes\":[{\"m\":null,\"n\":0},{\"m\":1000,\"n\":2},{\"m\":1000,\"n\":3}]}}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"next\":{\"cost\":2000,\"edges\":[{\"from\":1,\"id\":1,\"props\":{\"m\":1000},\"to\":2,\"type\":\"next\"},{\"from\":2,\"id\":3,\"props\":{\"m\":1000},\"to\":4,\"type\":\"next\"}],\"hops\":2,\"nodes\":[{\"m\":null,\"n\":0},{\"m\":1000,\"n\":2},{\"m\":1000,\"n\":3}]}}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/toward_needs_weight",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: toward needs a weight measured in a distance\n  schema:14:49\n  query { Junction(name: \"A\") { road *path toward at -> Junction(name: \"C\") { name } } }\n                                                  ^^\n  help: A* guesses the rest of the route as a distance; write `by &km toward at` with `km: Float<km>`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: toward needs a weight measured in a distance\n  schema:14:49\n  query { Junction(name: \"A\") { road *path toward at -> Junction(name: \"C\") { name } } }\n                                                  ^^\n  help: A* guesses the rest of the route as a distance; write `by &km toward at` with `km: Float<km>`\n"
+      }
     },
     {
       "id": "path/unit_in_query",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: the unit is declared on the weight, not here\n  schema:14:59\n  query { Junction(name: \"A\") { road *path by &km toward at in km -> Junction(name: \"C\") { name &km } } }\n                                                            ^^\n  help: declare `km: Float<km>` on the relationship and write `toward at`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: the unit is declared on the weight, not here\n  schema:14:59\n  query { Junction(name: \"A\") { road *path by &km toward at in km -> Junction(name: \"C\") { name &km } } }\n                                                            ^^\n  help: declare `km: Float<km>` on the relationship and write `toward at`\n"
+      }
     },
     {
       "id": "path/unit_mismatch",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: road fields do not match\n  schema:3:45\n    type Junction { name: String road <- Town { km: Float<mi> } }\n                                              ^^^^^^^^^^^^^^^^^\n  help: Town.road already declares `road`. Declare the fields once\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: road fields do not match\n  schema:3:45\n    type Junction { name: String road <- Town { km: Float<mi> } }\n                                              ^^^^^^^^^^^^^^^^^\n  help: Town.road already declares `road`. Declare the fields once\n"
+      }
     },
     {
       "id": "path/unit_on_string",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: a unit needs an Int or Float; String has none\n  schema:1:32\n  schema { type Junction { name: String<km> } }\n                                 ^^^^^^\n  help: declare a distance as `km: Float<km>` or `length: Int<m>`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: a unit needs an Int or Float; String has none\n  schema:1:32\n  schema { type Junction { name: String<km> } }\n                                 ^^^^^^\n  help: declare a distance as `km: Float<km>` or `length: Int<m>`\n"
+      }
     },
     {
       "id": "path/unknown_unit",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: unknown distance unit feet\n  schema:1:80\n  schema { type Junction { name: String at: Point road -> Junction[] { km: Float<feet> } } }\n                                                                                 ^^^^\n  help: the unit is `m`, `km` or `mi`, as in `Float<km>`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: unknown distance unit feet\n  schema:1:80\n  schema { type Junction { name: String at: Point road -> Junction[] { km: Float<feet> } } }\n                                                                                 ^^^^\n  help: the unit is `m`, `km` or `mi`, as in `Float<km>`\n"
+      }
     },
     {
       "id": "path/unreachable",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"name\":\"E\",\"road\":null}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"name\":\"E\",\"road\":null}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "path/weight_not_number",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: a path weight is a number; road.label is String\n  schema:2:34\n  query { Junction { road *path by &label -> Junction { name } } }\n                                   ^^^^^^\n  help: weigh a path by an Int or Float field of the relationship\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: a path weight is a number; road.label is String\n  schema:2:34\n  query { Junction { road *path by &label -> Junction { name } } }\n                                   ^^^^^^\n  help: weigh a path by an Int or Float field of the relationship\n"
+      }
     },
     {
       "id": "query/all_rows",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"age\":30,\"name\":\"Ada\"},{\"age\":20,\"name\":\"Ben\"},{\"age\":40,\"name\":\"Cy\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"age\":30,\"name\":\"Ada\"},{\"age\":20,\"name\":\"Ben\"},{\"age\":40,\"name\":\"Cy\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/empty_block",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "null\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "null\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/empty_scan",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/hop_minimum",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"friends\":[{\"hops\":2,\"name\":\"Cy\"}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"friends\":[{\"hops\":2,\"name\":\"Cy\"}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/hop_range",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"friends\":[{\"hops\":1,\"name\":\"Ben\"},{\"hops\":2,\"name\":\"Cy\"}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"friends\":[{\"hops\":1,\"name\":\"Ben\"},{\"hops\":2,\"name\":\"Cy\"}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/incoming",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"author\":{\"name\":\"Octavia\"},\"title\":\"Kindred\"}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"author\":{\"name\":\"Octavia\"},\"title\":\"Kindred\"}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/missing_equality",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "null\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "null\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/missing_many",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"friends\":[]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"friends\":[]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/missing_one",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"parent\":null}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"parent\":null}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/nested_filter",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"wrote\":[{\"title\":\"Dispossessed\",\"year\":1974}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"wrote\":[{\"title\":\"Dispossessed\",\"year\":1974}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/nested_round_trip",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"wrote\":[{\"author\":{\"name\":\"Octavia\"}}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"wrote\":[{\"author\":{\"name\":\"Octavia\"}}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/outgoing",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"name\":\"Ursula\",\"wrote\":[{\"title\":\"Earthsea\"},{\"title\":\"Dispossessed\"}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"name\":\"Ursula\",\"wrote\":[{\"title\":\"Earthsea\"},{\"title\":\"Dispossessed\"}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/root_hops",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"hops\":0}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"hops\":0}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/selected_fields",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"name\":\"Ada\"}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"name\":\"Ada\"}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "query/union_selection",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"minutes\":null,\"name\":\"Dune\",\"pages\":400},{\"minutes\":116,\"name\":\"Arrival\",\"pages\":null}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"minutes\":null,\"name\":\"Dune\",\"pages\":400},{\"minutes\":116,\"name\":\"Arrival\",\"pages\":null}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "schema/comments",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"hello\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"hello\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "schema/duplicate_edge_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: duplicate edge field year\n  schema:1:56\n  schema { type Person { friends -> Person[] { year: Int year: Int } } }\n                                                         ^^^^\n  help: each field of a relationship is named once\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: duplicate edge field year\n  schema:1:56\n  schema { type Person { friends -> Person[] { year: Int year: Int } } }\n                                                         ^^^^\n  help: each field of a relationship is named once\n"
+      }
     },
     {
       "id": "schema/duplicate_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: duplicate type Person\n  schema:1:31\n  schema { type Person { } type Person { } }\n                                ^^^^^^\n  help: a schema names each type once\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: duplicate type Person\n  schema:1:31\n  schema { type Person { } type Person { } }\n                                ^^^^^^\n  help: a schema names each type once\n"
+      }
     },
     {
       "id": "schema/edge_field_mismatch",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: R fields do not match\n  schema:1:71\n  schema { type A { next: R -> B { value: Int } } type B { prev: R <- A { value: String } } }\n                                                                        ^^^^^^^^^^^^^^^^^\n  help: A.next already declares `prev`. Declare the fields once\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: R fields do not match\n  schema:1:71\n  schema { type A { next: R -> B { value: Int } } type B { prev: R <- A { value: String } } }\n                                                                        ^^^^^^^^^^^^^^^^^\n  help: A.next already declares `prev`. Declare the fields once\n"
+      }
     },
     {
       "id": "schema/empty_schema",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: schema has no types\n  schema:1:11\n  schema { }\n            ^\n  help: start with `type Name { }`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: schema has no types\n  schema:1:11\n  schema { }\n            ^\n  help: start with `type Name { }`\n"
+      }
     },
     {
       "id": "schema/empty_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "schema/expected_arrow",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: expected -> or <-\n  schema:1:31\n  schema { type Person { friend Person } }\n                                ^^^^^^\n  help: a relationship names its direction, `->` or `<-`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: expected -> or <-\n  schema:1:31\n  schema { type Person { friend Person } }\n                                ^^^^^^\n  help: a relationship names its direction, `->` or `<-`\n"
+      }
     },
     {
       "id": "schema/optional_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"active\":null,\"score\":null}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"active\":null,\"score\":null}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "schema/optional_missing_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: name? needs a type\n  schema:1:24\n  schema { type Person { name? } }\n                         ^^^^\n  help: write `name?: String`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: name? needs a type\n  schema:1:24\n  schema { type Person { name? } }\n                         ^^^^\n  help: write `name?: String`\n"
+      }
     },
     {
       "id": "schema/optional_relationship",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: friend cannot be optional and a relationship\n  schema:1:24\n  schema { type Person { friend?: FRIEND -> Person } }\n                         ^^^^^^\n  help: drop the `?`; a relationship is one record or a list\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: friend cannot be optional and a relationship\n  schema:1:24\n  schema { type Person { friend?: FRIEND -> Person } }\n                         ^^^^^^\n  help: drop the `?`; a relationship is one record or a list\n"
+      }
     },
     {
       "id": "schema/primitive_fields",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"active\":false,\"age\":-30,\"name\":\"Ada\",\"score\":1.25}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"active\":false,\"age\":-30,\"name\":\"Ada\",\"score\":1.25}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "schema/string_escapes",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"name\":\"a\\n\\t\\\"b\\\\c\"}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"name\":\"a\\n\\t\\\"b\\\\c\"}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "schema/unicode_string",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Étoile 🚀\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Étoile 🚀\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "schema/union_relationship",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"items\":[{\"name\":\"Dune\"},{\"name\":\"Arrival\"}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"items\":[{\"name\":\"Dune\"},{\"name\":\"Arrival\"}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "schema/unknown_edge_target",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Person.friend points at unknown type Ghost\n  schema:1:34\n  schema { type Person { friend -> Ghost } }\n                                   ^^^^^\n  help: types are Person\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Person.friend points at unknown type Ghost\n  schema:1:34\n  schema { type Person { friend -> Ghost } }\n                                   ^^^^^\n  help: types are Person\n"
+      }
     },
     {
       "id": "then/after_mutation",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: then and display { skip } require a query, not a mutation\n  schema:2:31\n  mutation { Person(name: \"A\") } then { findWith { \"A\" } }\n                                ^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: then and display { skip } require a query, not a mutation\n  schema:2:31\n  mutation { Person(name: \"A\") } then { findWith { \"A\" } }\n                                ^\n"
+      }
     },
     {
       "id": "then/all_skipped",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/and_prunes_edges",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/bad_unit",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: near unit must be m, km, or mi\n  schema:2:40\n  query { Person } then { near { &at < 1 feet } }\n                                         ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: near unit must be m, km, or mi\n  schema:2:40\n  query { Person } then { near { &at < 1 feet } }\n                                         ^^^^\n"
+      }
     },
     {
       "id": "then/common",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"fields\":[\"Person.country\"],\"primitive\":\"common\",\"value\":\"CA\"}}],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"fields\":[\"Person.country\"],\"primitive\":\"common\",\"value\":\"CA\"}}],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/common_across_types",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"fields\":[\"Player.country\",\"Team.country\"],\"primitive\":\"common\",\"value\":\"CA\"}}],\"edges\":[{\"from\":1,\"id\":1,\"props\":{},\"to\":2,\"type\":\"team\"}],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Player\"],\"props\":{\"country\":\"CA\",\"name\":\"Alice\"}},{\"id\":2,\"labels\":[\"Team\"],\"props\":{\"country\":\"CA\",\"name\":\"Oilers\"}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"fields\":[\"Player.country\",\"Team.country\"],\"primitive\":\"common\",\"value\":\"CA\"}}],\"edges\":[{\"from\":1,\"id\":1,\"props\":{},\"to\":2,\"type\":\"team\"}],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Player\"],\"props\":{\"country\":\"CA\",\"name\":\"Alice\"}},{\"id\":2,\"labels\":[\"Team\"],\"props\":{\"country\":\"CA\",\"name\":\"Oilers\"}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/ends_with",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/fanout_star",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"fields\":[\"T.value\"],\"primitive\":\"common\",\"value\":1}},{\"from\":1,\"to\":3,\"via\":{\"fields\":[\"T.value\"],\"primitive\":\"common\",\"value\":1}},{\"from\":1,\"to\":4,\"via\":{\"fields\":[\"T.value\"],\"primitive\":\"common\",\"value\":1}},{\"from\":1,\"to\":5,\"via\":{\"fields\":[\"T.value\"],\"primitive\":\"common\",\"value\":1}},{\"from\":1,\"to\":6,\"via\":{\"fields\":[\"T.value\"],\"primitive\":\"common\",\"value\":1}}],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"T\"],\"props\":{\"name\":\"1\",\"value\":1}},{\"id\":2,\"labels\":[\"T\"],\"props\":{\"name\":\"2\",\"value\":1}},{\"id\":3,\"labels\":[\"T\"],\"props\":{\"name\":\"3\",\"value\":1}},{\"id\":4,\"labels\":[\"T\"],\"props\":{\"name\":\"4\",\"value\":1}},{\"id\":5,\"labels\":[\"T\"],\"props\":{\"name\":\"5\",\"value\":1}},{\"id\":6,\"labels\":[\"T\"],\"props\":{\"name\":\"6\",\"value\":1}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"fields\":[\"T.value\"],\"primitive\":\"common\",\"value\":1}},{\"from\":1,\"to\":3,\"via\":{\"fields\":[\"T.value\"],\"primitive\":\"common\",\"value\":1}},{\"from\":1,\"to\":4,\"via\":{\"fields\":[\"T.value\"],\"primitive\":\"common\",\"value\":1}},{\"from\":1,\"to\":5,\"via\":{\"fields\":[\"T.value\"],\"primitive\":\"common\",\"value\":1}},{\"from\":1,\"to\":6,\"via\":{\"fields\":[\"T.value\"],\"primitive\":\"common\",\"value\":1}}],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"T\"],\"props\":{\"name\":\"1\",\"value\":1}},{\"id\":2,\"labels\":[\"T\"],\"props\":{\"name\":\"2\",\"value\":1}},{\"id\":3,\"labels\":[\"T\"],\"props\":{\"name\":\"3\",\"value\":1}},{\"id\":4,\"labels\":[\"T\"],\"props\":{\"name\":\"4\",\"value\":1}},{\"id\":5,\"labels\":[\"T\"],\"props\":{\"name\":\"5\",\"value\":1}},{\"id\":6,\"labels\":[\"T\"],\"props\":{\"name\":\"6\",\"value\":1}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/find_with",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/find_without",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/indexed_text",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/infix_without_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: then requires discovery sub-blocks, such as `findWith { \"text\" }`\n  schema:2:25\n  query { Person } then { findWith \"a\" }\n                          ^^^^^^^^\n  help: infix filters need a field and belong in query, e.g. `Player(name findWith \"text\")`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: then requires discovery sub-blocks, such as `findWith { \"text\" }`\n  schema:2:25\n  query { Person } then { findWith \"a\" }\n                          ^^^^^^^^\n  help: infix filters need a field and belong in query, e.g. `Player(name findWith \"text\")`\n"
+      }
     },
     {
       "id": "then/near",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"distance\":0.0,\"fields\":[\"at\"],\"primitive\":\"near\"}}],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"distance\":0.0,\"fields\":[\"at\"],\"primitive\":\"near\"}}],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/near_exclusive",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/negative_distance",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: near distance must be finite and non-negative\n  schema:2:33\n  query { Person } then { near { &at < -1 m } }\n                                  ^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: near distance must be finite and non-negative\n  schema:2:33\n  query { Person } then { near { &at < -1 m } }\n                                  ^^\n"
+      }
     },
     {
       "id": "then/no_outside_pairs",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/outside_then",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: discovery sub-blocks are only allowed inside then\n  schema:2:9\n  query { findWith { \"a\" } }\n          ^^^^^^^^\n  help: write `query { ... } then { findWith { \"text\" } }`; a filter uses `field findWith \"text\"`\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: discovery sub-blocks are only allowed inside then\n  schema:2:9\n  query { findWith { \"a\" } }\n          ^^^^^^^^\n  help: write `query { ... } then { findWith { \"text\" } }`; a filter uses `field findWith \"text\"`\n"
+      }
     },
     {
       "id": "then/parentheses",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/precedence",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/regex",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/regex_backreference",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: invalid regex: regex parse error:\n    (a)\\1\n       ^^\nerror: backreferences are not supported\n  schema:2:25\n  query { Person } then { regex { \"(a)\\\\1\" } }\n                          ^^^^^\n  help: Rust regex is linear-time; lookaround and backreferences are unsupported\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: invalid regex: regex parse error:\n    (a)\\1\n       ^^\nerror: backreferences are not supported\n  schema:2:25\n  query { Person } then { regex { \"(a)\\\\1\" } }\n                          ^^^^^\n  help: Rust regex is linear-time; lookaround and backreferences are unsupported\n"
+      }
     },
     {
       "id": "then/regex_lookaround",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: invalid regex: regex parse error:\n    (?=a)\n    ^^^\nerror: look-around, including look-ahead and look-behind, is not supported\n  schema:2:25\n  query { Person } then { regex { \"(?=a)\" } }\n                          ^^^^^\n  help: Rust regex is linear-time; lookaround and backreferences are unsupported\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: invalid regex: regex parse error:\n    (?=a)\n    ^^^\nerror: look-around, including look-ahead and look-behind, is not supported\n  schema:2:25\n  query { Person } then { regex { \"(?=a)\" } }\n                          ^^^^^\n  help: Rust regex is linear-time; lookaround and backreferences are unsupported\n"
+      }
     },
     {
       "id": "then/scoped_text",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/similar",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"fields\":[\"v\"],\"primitive\":\"similar\",\"score\":1.0}}],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"fields\":[\"v\"],\"primitive\":\"similar\",\"score\":1.0}}],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/similar_exclusive",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/skip_alone",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "null\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "null\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/skip_chain",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"couldBeEdges\":[],\"edges\":[],\"index\":2,\"kind\":\"then\",\"nodes\":[]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"couldBeEdges\":[],\"edges\":[],\"index\":2,\"kind\":\"then\",\"nodes\":[]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/starts_with",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/two_conditions",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: then has one condition; join sub-blocks with && or ||\n  schema:2:42\n  query { Person } then { findWith { \"a\" } findWith { \"b\" } }\n                                           ^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: then has one condition; join sub-blocks with && or ||\n  schema:2:42\n  query { Person } then { findWith { \"a\" } findWith { \"b\" } }\n                                           ^^^^^^^^\n"
+      }
     },
     {
       "id": "then/unchanged_infix",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"name\":\"Alice\"}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"name\":\"Alice\"}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/unicode_text",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"T\"],\"props\":{\"name\":\"Émile 油\"}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"couldBeEdges\":[],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"T\"],\"props\":{\"name\":\"Émile 油\"}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/union_deduplicates",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"fields\":[\"Person.country\"],\"primitive\":\"common\",\"value\":\"CA\"}}],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"stages\":[{\"edges\":[],\"index\":0,\"kind\":\"query\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}},{\"id\":3,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":10.0,\"lon\":10.0},\"country\":\"US\",\"name\":\"Carol\",\"v\":[0.0,1.0]}},{\"id\":4,\"labels\":[\"Person\"],\"props\":{\"name\":\"Missing\"}}]},{\"couldBeEdges\":[{\"from\":1,\"to\":2,\"via\":{\"fields\":[\"Person.country\"],\"primitive\":\"common\",\"value\":\"CA\"}}],\"edges\":[],\"index\":1,\"kind\":\"then\",\"nodes\":[{\"id\":1,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"bio\":\"Oilers\",\"country\":\"CA\",\"name\":\"Alice\",\"v\":[1.0,0.0]}},{\"id\":2,\"labels\":[\"Person\"],\"props\":{\"at\":{\"lat\":0.0,\"lon\":0.0},\"country\":\"CA\",\"name\":\"Bob\",\"v\":[1.0,0.0]}}]}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "then/unknown_common_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: unknown type Ghost\n  schema:2:34\n  query { Person } then { common { Ghost { name } } }\n                                   ^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: unknown type Ghost\n  schema:2:34\n  query { Person } then { common { Ghost { name } } }\n                                   ^^^^^\n"
+      }
     },
     {
       "id": "then/unknown_field",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: no field absent in the query result types\n  schema:2:45\n  query { Person } then { endsWith { \"a\" in { absent } } }\n                                              ^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: no field absent in the query result types\n  schema:2:45\n  query { Person } then { endsWith { \"a\" in { absent } } }\n                                              ^^^^^^\n"
+      }
     },
     {
       "id": "then/without_query",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: then requires a preceding query stage\n  schema:2:1\n  then { findWith { \"a\" } }\n  ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: then requires a preceding query stage\n  schema:2:1\n  then { findWith { \"a\" } }\n  ^^^^\n"
+      }
     },
     {
       "id": "then/wrong_point_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person.name must be Point, found String\n  schema:2:33\n  query { Person } then { near { &name < 1 km } }\n                                  ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person.name must be Point, found String\n  schema:2:33\n  query { Person } then { near { &name < 1 km } }\n                                  ^^^^\n"
+      }
     },
     {
       "id": "then/wrong_text_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person.v must be String, found Vector<2,cosine>\n  schema:2:45\n  query { Person } then { findWith { \"a\" in { v } } }\n                                              ^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person.v must be String, found Vector<2,cosine>\n  schema:2:45\n  query { Person } then { findWith { \"a\" in { v } } }\n                                              ^\n"
+      }
     },
     {
       "id": "then/wrong_vector_type",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Person.name must be Vector, found String\n  schema:2:36\n  query { Person } then { similar { &name > 0.9 } }\n                                     ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Person.name must be Vector, found String\n  schema:2:36\n  query { Person } then { similar { &name > 0.9 } }\n                                     ^^^^\n"
+      }
     },
     {
       "id": "vector/component",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Vector components must be finite float32 numbers\n  schema:2:40\n  mutation { Ticket(embedding: @vector[1,\"bad\",3]) { embedding } }\n                                         ^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Vector components must be finite float32 numbers\n  schema:2:40\n  mutation { Ticket(embedding: @vector[1,\"bad\",3]) { embedding } }\n                                         ^^^^^\n"
+      }
     },
     {
       "id": "vector/csv_mapping",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"embedding\":[1.0,0.0,0.0],\"n\":0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"embedding\":[1.0,0.0,0.0],\"n\":0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/dimension",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Vector<3> needs exactly 3 numbers, got 2\n  schema:2:19\n  mutation { Ticket(embedding: @vector[1,2]) { embedding } }\n                    ^^^^^^^^^\n  help: write `@vector[0.1, 0.2, ...]` with the declared dimension\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Vector<3> needs exactly 3 numbers, got 2\n  schema:2:19\n  mutation { Ticket(embedding: @vector[1,2]) { embedding } }\n                    ^^^^^^^^^\n  help: write `@vector[0.1, 0.2, ...]` with the declared dimension\n"
+      }
     },
     {
       "id": "vector/dimension_range",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Vector dimension must be in 1..=4096\n  schema:1:42\n  schema { type Ticket { embedding: Vector<4097> } }\n                                           ^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Vector dimension must be in 1..=4096\n  schema:1:42\n  schema { type Ticket { embedding: Vector<4097> } }\n                                           ^^^^\n"
+      }
     },
     {
       "id": "vector/dot",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":1,\"score\":2.0},{\"n\":0,\"score\":1.0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":1,\"score\":2.0},{\"n\":0,\"score\":1.0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/exact_filter",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":1,\"relevance\":0.0},{\"n\":2,\"relevance\":-1.0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":1,\"relevance\":0.0},{\"n\":2,\"relevance\":-1.0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/json_array",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":0,\"score\":1.0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":0,\"score\":1.0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/l2",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":0,\"score\":-0.0},{\"n\":1,\"score\":-1.0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":0,\"score\":-0.0},{\"n\":1,\"score\":-1.0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/metric",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: Vector metric must be cosine, dot, or l2\n  schema:1:45\n  schema { type Ticket { embedding: Vector<3, angular> } }\n                                              ^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: Vector metric must be cosine, dot, or l2\n  schema:1:45\n  schema { type Ticket { embedding: Vector<3, angular> } }\n                                              ^^^^^^^\n"
+      }
     },
     {
       "id": "vector/near_limit",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":0,\"score\":1.0},{\"n\":1,\"score\":0.9938837341719244},{\"n\":2,\"score\":0.9701425001453319}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":0,\"score\":1.0},{\"n\":1,\"score\":0.9938837341719244},{\"n\":2,\"score\":0.9701425001453319}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/near_order",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: near already orders by similarity\n  schema:2:9\n  query { Ticket @near(embedding, @vector[1,0], 2) order by @distance(at, @point(0,0)) { n } }\n          ^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: near already orders by similarity\n  schema:2:9\n  query { Ticket @near(embedding, @vector[1,0], 2) order by @distance(at, @point(0,0)) { n } }\n          ^^^^^^\n"
+      }
     },
     {
       "id": "vector/nearest",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":0,\"score\":1.0},{\"n\":1,\"score\":0.0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":0,\"score\":1.0},{\"n\":1,\"score\":0.0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/optional_near",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":1,\"score\":1.0},{\"n\":2,\"score\":0.0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":1,\"score\":1.0},{\"n\":2,\"score\":0.0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/projection_groups",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"items\":[{\"id\":2,\"linked\":[{\"id\":3}],\"linked3\":[{\"id\":4}]}]}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"items\":[{\"id\":2,\"linked\":[{\"id\":3}],\"linked3\":[{\"id\":4}]}]}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/query_dimension",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "run",
+        "stderr": "execution error: error: Vector<3> query needs exactly 3 numbers, got 2\n  schema:5:22\n  query { Ticket @near(embedding, @vector[1,0], 2) { n @score } }\n                       ^^^^^^^^^\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "run",
+        "stdout": "",
+        "stderr": "execution error: error: Vector<3> query needs exactly 3 numbers, got 2\n  schema:5:22\n  query { Ticket @near(embedding, @vector[1,0], 2) { n @score } }\n                       ^^^^^^^^^\n"
+      }
     },
     {
       "id": "vector/relationship",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "{\"tickets\":[{\"n\":1,\"score\":0.0}]}\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "{\"tickets\":[{\"n\":1,\"score\":0.0}]}\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/threshold",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":0,\"similarity\":1.0},{\"n\":1,\"similarity\":0.0},{\"n\":2,\"similarity\":-1.0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":0,\"similarity\":1.0},{\"n\":1,\"similarity\":0.0},{\"n\":2,\"similarity\":-1.0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/update",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"n\":1,\"score\":0.0},{\"n\":0,\"score\":-1.0}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"n\":1,\"score\":0.0},{\"n\":0,\"score\":-1.0}]\n",
+        "stderr": ""
+      }
     },
     {
       "id": "vector/view_without_vector",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": false,
+        "stage": "parse",
+        "stderr": "error: display `vector2d` needs a Vector field on type Ticket\n  schema:1:61\n  schema { type Ticket { title: String } display { vector2d { Ticket } } }\n                                                              ^^^^^^\n  help: add `embedding: Vector<384>` to Ticket, or remove Ticket from this view\n",
+        "stdout": ""
+      },
+      "actual": {
+        "ok": false,
+        "stage": "parse",
+        "stdout": "",
+        "stderr": "error: display `vector2d` needs a Vector field on type Ticket\n  schema:1:61\n  schema { type Ticket { title: String } display { vector2d { Ticket } } }\n                                                              ^^^^^^\n  help: add `embedding: Vector<384>` to Ticket, or remove Ticket from this view\n"
+      }
     },
     {
       "id": "vector/views",
       "status": "PASS",
       "differences": [],
-      "parity": true
+      "parity": true,
+      "native": {
+        "ok": true,
+        "stage": "run",
+        "stderr": "",
+        "stdout": "[{\"embedding\":[1.0,0.0,0.0]}]\n"
+      },
+      "actual": {
+        "ok": true,
+        "stage": "run",
+        "stdout": "[{\"embedding\":[1.0,0.0,0.0]}]\n",
+        "stderr": ""
+      }
     }
   ]
 }

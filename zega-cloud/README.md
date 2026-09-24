@@ -259,7 +259,7 @@ Request-Ids are deterministic so a retry resumes the same load. Reads measure
 mutation blocks, each with a fresh request ID. The optional final argument to
 read/write changes the sample count. Quantiles use nearest rank. HTTP timings
 include routing, JSON, transport and durable acknowledgment. If a load fails,
-record it as a size limit; do not report latency on its smaller surviving prefix
+record the failure and acknowledged size; do not assume its cause or report latency on its smaller surviving prefix
 as the requested size. The local driver does this automatically.
 
 - [APS 13](https://github.com/zegadb/aps/issues/13)

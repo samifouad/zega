@@ -1,0 +1,69 @@
+
+> build
+> node build.mjs
+
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+   Compiling memchr v2.8.3
+   Compiling futures-io v0.3.34
+   Compiling futures-sink v0.3.34
+   Compiling once_cell v1.21.4
+   Compiling syn v2.0.119
+   Compiling cfg-if v1.0.5
+   Compiling pin-project-lite v0.2.17
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.34
+   Compiling futures-macro v0.3.34
+   Compiling wasm-bindgen v0.2.128
+   Compiling futures-core v0.3.34
+   Compiling heck v0.5.0
+   Compiling form_urlencoded v1.2.2
+   Compiling bytes v1.12.1
+   Compiling async-trait v0.1.92
+   Compiling tokio v1.53.1
+   Compiling futures-channel v0.3.34
+   Compiling matchit v0.7.3
+   Compiling futures-util v0.3.34
+   Compiling aho-corasick v1.1.5
+   Compiling csv-core v0.1.13
+   Compiling serde_json v1.0.151
+   Compiling url v2.5.8
+   Compiling serde_urlencoded v0.7.1
+   Compiling http v1.5.0
+   Compiling csv v1.4.0
+   Compiling regex-automata v0.4.18
+   Compiling http-body v1.1.0
+   Compiling strum_macros v0.28.0
+   Compiling pin-project-internal v1.1.13
+   Compiling thiserror-impl v1.0.69
+   Compiling js-sys v0.3.105
+   Compiling regex v1.13.1
+   Compiling pin-project v1.1.13
+   Compiling thiserror v1.0.69
+   Compiling strum v0.28.0
+   Compiling web-sys v0.3.105
+   Compiling getrandom v0.2.17
+   Compiling wasm-bindgen-futures v0.4.78
+   Compiling serde-wasm-bindgen v0.6.5
+   Compiling chrono v0.4.45
+   Compiling worker-sys v0.8.6
+   Compiling rand_core v0.6.4
+   Compiling rand_chacha v0.3.1
+   Compiling signature v2.2.0
+   Compiling rand v0.8.8
+   Compiling worker-macros v0.8.6
+   Compiling num-bigint-dig v0.8.6
+   Compiling rsa v0.9.10
+   Compiling zega v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega)
+   Compiling wasm-streams v0.6.0
+   Compiling worker v0.8.6
+   Compiling zega-cloud v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-cloud)
+    Finished `release` profile [optimized] target(s) in 18.54s
+[INFO]: ✨  Done in 19.13s
+[INFO]: 📦   Your wasm pkg is ready to publish at /Volumes/Projects/codex/zega-wt-cloud/zega-cloud/build/.tmp.
+
+  index.js  25.0kb
+
+⚡ Done in 16ms
+
+EXIT_CODE=0

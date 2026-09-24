@@ -7,7 +7,7 @@
     "memoryBytes": 137438953472,
     "macOS": "26.7"
   },
-  "baseCommit": "67b556b355bc3ceb06e2551723dc7fb232d7388d",
+  "baseCommit": "7fa1b47c836cd577d1371fdc84881ac6d7825881",
   "tools": {
     "rust": "1.96.0",
     "node": "26.3.1",
@@ -15,11 +15,14 @@
     "worker-build": "0.8.6",
     "wrangler": "4.137.0",
     "miniflare": "5.20260921.0-alpha",
-    "workerd": "1.20260921.1"
+    "workerd": "1.20260921.1",
+    "wasm-pack": "0.15.0",
+    "wasm-bindgen": "0.2.128",
+    "wasm-opt": "117"
   },
-  "wasmSha256": "a3b278baba94e91b5a607e8f247c0ed28ed708120df8bc2e20d2a21fb1c5f91a",
+  "wasmSha256": "d27e67e5b9d1cce94b292e86769b73c91c5ac56002cf8406ed84f16a3b609298",
   "nativeTests": {
-    "passed": 917,
+    "passed": 930,
     "failed": 0,
     "ignored": 2,
     "exit": 0
@@ -54,20 +57,77 @@
     {
       "command": "npm --prefix zega-cloud test (transactionSync bypassed temporarily)",
       "exit": 1,
-      "expected": "snapshot replacement fault test fails"
+      "expected": "snapshot replacement fault test fails",
+      "revision": "75fae50 (initial spike evidence; transaction wrapper unchanged)"
     },
     {
       "command": "node zega-cloud/bench/local.mjs",
-      "exit": 0,
+      "exit": 1,
       "sizesMiB": [
         10,
         50,
         100
       ],
       "readsPerSize": 10000,
+      "writesPerSize": 2000,
+      "failedSizeMiB": 50,
+      "reason": "unexplained local HTTP 500 connection loss after 47.25 MiB acknowledged; incomplete size excluded from latency measurements"
+    },
+    {
+      "command": "node browser/scripts/check-wasm.mjs",
+      "exit": 0
+    },
+    {
+      "command": "npm --prefix browser test",
+      "exit": 0,
+      "passed": 35
+    },
+    {
+      "command": "node browser/scripts/check-wasm.mjs artifact .tmp/repro-before.wasm",
+      "exit": 1,
+      "expected": "reject ungated spike artifact"
+    },
+    {
+      "command": "node browser/scripts/check-wasm.mjs dependencies (durable-log injected temporarily)",
+      "exit": 1,
+      "expected": "reject feature unification"
+    },
+    {
+      "command": "node browser/scripts/check-wasm.mjs dependencies (wasm32 worker dependency injected temporarily)",
+      "exit": 1,
+      "expected": "reject Cloudflare crate in WASM target tree"
+    },
+    {
+      "command": "node zega-cloud/bench/local.mjs 50",
+      "exit": 0,
+      "sizesMiB": [
+        50
+      ],
+      "readsPerSize": 10000,
       "writesPerSize": 2000
     }
   ],
   "cloudDeployed": false,
-  "cloudBillingMeasured": false
+  "cloudBillingMeasured": false,
+  "testedCommit": "036e9a745b699bfb513aaad585cc521bbaf901ce",
+  "regularWasm": {
+    "bytes": 2745640,
+    "sizeGrowthBytes": 0,
+    "differingBytes": 9,
+    "differenceKind": "only moved Rust panic source-line numbers",
+    "sha256": "b5c1e6a8bb29e369b64e44e153f7af86dcc53f78a35ea11a6227b77d36deef94",
+    "mainSha256": "ab1569e7908715c3e4da33295a148200ff71861d6877de8e94a59393b293fba0",
+    "feature": "durable-log disabled",
+    "cloudflareDependencies": false
+  },
+  "benchmarkSummary": {
+    "completedSizesMiB": [
+      10,
+      50,
+      100
+    ],
+    "successfulPhases": 12,
+    "retainedFailedLoads": 1,
+    "failureCause": "unconfirmed local connection loss; fresh-process rerun passed"
+  }
 }
