@@ -4,7 +4,11 @@
 
 ```zql
 schema {
-  type Place { name: String lat: Float lon: Float }
+  type Place {
+    name: String
+    lat: Float
+    lon: Float
+  }
   type Review { title: String }
   display {
     map { Place }: Default

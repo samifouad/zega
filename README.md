@@ -176,24 +176,49 @@ console.log(JSON.parse(db.run(schema, '{ Person { name } }')));
 
 ```
 
+## Formatting ZQL
+
+`zega fmt paths…` formats files or directories recursively (`*.zql`).
+`zega fmt --check paths…` lists every file that would change and exits 1;
+`zega fmt --stdin` reads source from stdin and writes the canonical layout.
+Invalid or incomplete input is left unchanged. There are no style options.
+
+The explorer uses the same formatter through WASM. Press ⌘S / Ctrl-S or
+**Format** to format and save the active schema or query pane. Formatting is
+undoable and preserves the cursor line (clamped when lines are removed).
+
 ## The query language
 
 ZQL has explicit schemas, mutations and graph-shaped queries:
 
 ```zql
 schema {
-  type Team { name: String players -> Player[] }
-  type Player { name: String salary: Int }
-}
-mutation csv ["./players.csv"] {
-  Team(name: $Team) {
-    players -> Player(name: $Name && salary: $Salary) { name salary }
+  type Team {
+    name: String
+    players -> Player[]
+  }
+  type Player {
+    name: String
+    salary: Int
   }
 }
+
+mutation csv ["./players.csv"] {
+  Team(name: $Team) {
+    players -> Player(name: $Name && salary: $Salary) {
+      name
+      salary
+    }
+  }
+}
+
 query {
   Team {
     name
-    players -> Player(salary > 10000000) { name salary }
+    players -> Player(salary > 10000000) {
+      name
+      salary
+    }
   }
 }
 ```

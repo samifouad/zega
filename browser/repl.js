@@ -1,4 +1,4 @@
-import init, { ZegaWasm } from './pkg/zega_wasm.js';
+import init, { ZegaWasm, format } from './pkg/zega_wasm.js';
 import { renderGraph, stopSim } from './graph.js';
 import { renderMap } from './map.js';
 import { renderVector } from './vector.js';
@@ -20,10 +20,7 @@ const SCHEMA = `type Team {
   name: String
   city: String
   logo: String
-
-  playsFor -> Player[] {
-    since?: Int
-  }
+  playsFor -> Player[] { since?: Int }
 }
 
 type Player {
@@ -31,7 +28,6 @@ type Player {
   position: String
   face: String
   salary: Int
-
   playsFor <- Team
   born <- Country
 }
@@ -39,7 +35,6 @@ type Player {
 type Country {
   name: String
   flag: String
-
   born -> Player[]
 }`;
 
@@ -76,19 +71,30 @@ const TOUR = [
   ['Oilers or Avalanche', `{
   Team(name = "Oilers" || name = "Avalanche") {
     name
-    playsFor -> Player { name &since }
+    playsFor -> Player {
+      name
+      &since
+    }
   }
 }`],
   ['Golden Knights', `{
   Team(name = "Golden Knights") {
     name
-    playsFor -> Player { name salary born <- Country { name } }
+    playsFor -> Player {
+      name
+      salary
+      born <- Country { name }
+    }
   }
 }`],
   ['Germany', `{
   Country(name = "Germany") {
     name
-    born -> Player { name salary playsFor <- Team { name } }
+    born -> Player {
+      name
+      salary
+      playsFor <- Team { name }
+    }
   }
 }`],
   ['Hops from Canada', `{
@@ -96,14 +102,20 @@ const TOUR = [
     born -> Player {
       name
       @hops
-      playsFor <- Team { name @hops }
+      playsFor <- Team {
+        name
+        @hops
+      }
     }
   }
 }`],
   ['Born outside Canada', `{
   Country(name != "Canada") {
     name
-    born -> Player { name playsFor <- Team { name } }
+    born -> Player {
+      name
+      playsFor <- Team { name }
+    }
   }
 }`],
 ];
@@ -232,6 +244,36 @@ if (saved) {
 window.__zega = db;
 
 const { schema: schemaEditor, query: queryEditor, output: outputEditor, raw: rawEditor, monaco } = await editorsReady;
+
+// The CLI and both explorer backends use this same WASM formatter.
+let formatEditor = queryEditor;
+function formatSource(editor) {
+  const source = editor.getValue();
+  const formatted = format(source);
+  if (formatted !== source) {
+    const position = editor.getPosition();
+    const scroll = editor.getScrollTop();
+    editor.pushUndoStop();
+    editor.executeEdits('zega.format', [{ range: editor.getModel().getFullModelRange(), text: formatted }]);
+    editor.pushUndoStop();
+    editor.setPosition(position); // Monaco clamps a line/column that no longer exists.
+    editor.setScrollTop(scroll);
+  }
+  persist();
+}
+for (const editor of [schemaEditor, queryEditor]) {
+  editor.onDidFocusEditorText(() => { formatEditor = editor; });
+  editor.addAction({ id: 'zega.format', label: 'Format ZQL', contextMenuGroupId: '1_modification',
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS], run: () => formatSource(editor) });
+}
+$('#btn-format').onclick = () => { formatSource(formatEditor); formatEditor.focus(); };
+document.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault();
+    event.stopPropagation();
+    formatSource(formatEditor);
+  }
+}, true);
 
 monaco.editor.setTheme(theme === 'dark' ? 'vs-dark' : 'vs');
 $('#btn-theme').textContent = theme === 'dark' ? 'Light' : 'Dark';

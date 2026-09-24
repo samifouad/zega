@@ -1,0 +1,1 @@
+query{Junction(name:"A"){road *path(@cost<=50) by &km toward at ->Junction(name:"B"){name &km @hops}}}

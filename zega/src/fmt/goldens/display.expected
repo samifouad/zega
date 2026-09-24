@@ -1,0 +1,16 @@
+schema {
+  type Place {
+    name: String
+    at: Point
+    year: Int
+    embedding: Vector<3>
+  }
+  display {
+    graph { Place }: Default
+    table
+    map { Place }
+    timeline
+    vector2d { Place }
+    vector3d
+  }
+}

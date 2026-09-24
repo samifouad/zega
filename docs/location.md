@@ -7,10 +7,26 @@ missing or null location.
 
 ```zql
 schema {
-  type Place { name: String at: Point }
-  display { map { Place }: Default table graph }
+  type Place {
+    name: String
+    at: Point
+  }
+  display {
+    map { Place }: Default
+    table
+    graph
+  }
 }
-mutation { Place(name: "Calgary Tower" && at: @point(51.044299581787385, -114.06313508749008)) { name at } }
+
+mutation {
+  Place(
+    name: "Calgary Tower" &&
+    at: @point(51.044299581787385, -114.06313508749008)
+  ) {
+    name
+    at
+  }
+}
 ```
 
 Point results are JSON objects, `{"lat": 51.044299581787385, "lon": -114.06313508749008}`.
@@ -27,7 +43,10 @@ Radius filters use metres and include the boundary with `<=` (`<` excludes it):
 ```zql
 query {
   Place(@distance(at, @point(51.044299581787385, -114.06313508749008)) <= 1500) {
-    @id name at @distance(at, @point(51.044299581787385, -114.06313508749008))
+    @id
+    name
+    at
+    @distance(at, @point(51.044299581787385, -114.06313508749008))
   }
 }
 ```
@@ -38,13 +57,32 @@ Point returns null and does not match spatial filters.
 
 ```zql
 // Inclusive southwest and northeast corners.
-query { Place(@within_box(at, @point(51.03, -114.09), @point(51.06, -114.04))) { @id name at } }
+query {
+  Place(@within_box(at, @point(51.03, -114.09), @point(51.06, -114.04))) {
+    @id
+    name
+    at
+  }
+}
 
 // A west longitude greater than east crosses the antimeridian.
-query { Place(@within_box(at, @point(-10, 179), @point(10, -179))) { @id name at } }
+query {
+  Place(@within_box(at, @point(-10, 179), @point(10, -179))) {
+    @id
+    name
+    at
+  }
+}
 
 // Nearest five, optionally combined with any existing filter.
-query { Place order by @distance(at, @point(51.0443, -114.0631)) limit 5 { @id name at @distance(at, @point(51.0443, -114.0631)) } }
+query {
+  Place order by @distance(at, @point(51.0443, -114.0631)) limit 5 {
+    @id
+    name
+    at
+    @distance(at, @point(51.0443, -114.0631))
+  }
+}
 ```
 
 Spatial predicates combine with `&&` and `||`. `order by @distance(...)` sorts
@@ -70,15 +108,31 @@ binding also works:
 ```
 
 ```zql
-mutation json ["./places.json"] { Place(name: $name && at: $at) { name at } }
+mutation json ["./places.json"] {
+  Place(name: $name && at: $at) {
+    name
+    at
+  }
+}
 ```
 
 Separate columns require an explicit schema mapping. Column names refer to
 source records, not additional fields on the stored type:
 
 ```zql
-schema { type Place { name: String at: Point from (lat, lon) } }
-mutation csv ["./places.csv"] { Place(name: $name) { name at } }
+schema {
+  type Place {
+    name: String
+    at: Point from (lat, lon)
+  }
+}
+
+mutation csv ["./places.csv"] {
+  Place(name: $name) {
+    name
+    at
+  }
+}
 ```
 
 ```csv

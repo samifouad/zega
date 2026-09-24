@@ -2,6 +2,12 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use zega::{Value, Zega};
 
+/// Format a ZQL file or editor pane using the canonical Rust formatter.
+#[wasm_bindgen]
+pub fn format(source: &str) -> Result<String, JsValue> {
+    zega::fmt::format_zql(source).map_err(to_js_error)
+}
+
 #[wasm_bindgen]
 pub struct ZegaWasm {
     inner: Zega,

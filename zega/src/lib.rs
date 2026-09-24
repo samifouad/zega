@@ -35,7 +35,7 @@ mod wal;
 #[cfg(test)]
 mod wal_order_tests;
 
-pub use crate::lang::diagnose;
+pub use crate::lang::{diagnose, fmt};
 pub use crate::validation::{Diagnostic, Pane, Report, Severity};
 
 pub use config::{JwtConfig, JwtKey};

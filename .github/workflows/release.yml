@@ -147,6 +147,22 @@ jobs:
           npm run test:cli
       - name: Build CLI with embedded explorer
         run: cargo build --locked --release -p zega-cli
+      - name: Check canonical ZQL files and embedded samples
+        run: |
+          ".target/release/zega${EXTENSION}" fmt --check .
+          python scripts/fmt-samples.py ".target/release/zega${EXTENSION}" --check --extract .tmp/samples
+      - uses: actions/checkout@v5
+        if: needs.resolve.outputs.tag == '' && matrix.platform == 'linux-x64'
+        with:
+          repository: zegadb/testsuite
+          ref: 95682a5
+          path: .tmp/testsuite
+          persist-credentials: false
+      - name: Prove formatter AST equality and idempotence across the corpus and samples
+        if: needs.resolve.outputs.tag == '' && matrix.platform == 'linux-x64'
+        run: |
+          cp -R .tmp/testsuite/tests .tmp/corpus
+          cargo test --locked -p zega --lib fmt:: -- --ignored --nocapture
       - name: Smoke test the built CLI
         run: python scripts/smoke-cli.py ".target/release/zega${EXTENSION}"
       - name: Prepare native artifact

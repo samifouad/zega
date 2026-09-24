@@ -7,8 +7,17 @@ type error with a source span. Optional fields use `embedding?: Vector<384>`.
 
 ```zql
 schema {
-  type Ticket { title: String status: String embedding: Vector<384> related -> Ticket[] }
-  display { vector2d { Ticket }: Default vector3d { Ticket } table }
+  type Ticket {
+    title: String
+    status: String
+    embedding: Vector<384>
+    related -> Ticket[]
+  }
+  display {
+    vector2d { Ticket }: Default
+    vector3d { Ticket }
+    table
+  }
 }
 ```
 
@@ -21,9 +30,20 @@ node ID. No model is run by the index: text and embeddings are separate fields.
 ## Write and load
 
 ```zql
-schema { type Ticket { title: String embedding: Vector<3> } }
-mutation { Ticket(title: "Reset password" && embedding: @vector[0.8, 0.2, 0.1]) { @id } }
-mutation { Ticket(title: "Reset password") set embedding: @vector[1, 0, 0] { embedding } }
+schema {
+  type Ticket {
+    title: String
+    embedding: Vector<3>
+  }
+}
+
+mutation {
+  Ticket(title: "Reset password" && embedding: @vector[0.8, 0.2, 0.1]) { @id }
+}
+
+mutation {
+  Ticket(title: "Reset password") set embedding: @vector[1, 0, 0] { embedding }
+}
 ```
 
 JSON loads accept arrays under the declared field name, or explicit bindings:
@@ -33,14 +53,27 @@ JSON loads accept arrays under the declared field name, or explicit bindings:
 ```
 
 ```zql
-mutation json ["tickets.json"] { Ticket(title: $title && embedding: $embedding) { @id } }
+mutation json ["tickets.json"] {
+  Ticket(title: $title && embedding: $embedding) { @id }
+}
 ```
 
 CSV requires an explicit mapping of exactly N numeric columns:
 
 ```zql
-schema { type Ticket { title: String embedding: Vector<3> from (x, y, z) } }
-mutation csv ["tickets.csv"] { Ticket(title: $title) { @id embedding } }
+schema {
+  type Ticket {
+    title: String
+    embedding: Vector<3> from (x, y, z)
+  }
+}
+
+mutation csv ["tickets.csv"] {
+  Ticket(title: $title) {
+    @id
+    embedding
+  }
+}
 ```
 
 No coordinate or embedding columns are guessed. The mapping also works with
@@ -55,24 +88,42 @@ and precedes the fields. Select `@score` or alias it as `relevance: @score`.
 ```zql
 query {
   Ticket(status = "Open") @near(embedding, @vector[1, 0, 0], 10) {
-    @id title @score related -> Ticket { @id title }
+    @id
+    title
+    @score
+    related -> Ticket {
+      @id
+      title
+    }
   }
 }
 
 // Explicit exact scan, including all matching vectors.
-query { Ticket @near(embedding, @vector[1, 0, 0], 10, exact) { @id title @score } }
+query {
+  Ticket @near(embedding, @vector[1, 0, 0], 10, exact) {
+    @id
+    title
+    @score
+  }
+}
 
 // Full-vector threshold, combinable with && and ||.
 query {
   Ticket(@similarity(embedding, @vector[1, 0, 0]) >= 0.8 && status = "Open") {
-    @id title relevance: @similarity(embedding, @vector[1, 0, 0])
+    @id
+    title
+    relevance: @similarity(embedding, @vector[1, 0, 0])
   }
 }
 
 // Nearest within the nodes reached by a real relationship.
 query {
   Ticket(title = "Reset password") {
-    related -> Ticket @near(embedding, @vector[1, 0, 0], 5) { @id title @score }
+    related -> Ticket @near(embedding, @vector[1, 0, 0], 5) {
+      @id
+      title
+      @score
+    }
   }
 }
 ```

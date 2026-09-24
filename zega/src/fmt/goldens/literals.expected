@@ -1,0 +1,12 @@
+mutation {
+  Thing(
+    a: "emoji 😀 and \n newline" &&
+    b: -0.0 &&
+    c: 1e-10 &&
+    d: null &&
+    e: false &&
+    f: "quote \" slash \\ unknown \r"
+  ) {
+    a
+  }
+}

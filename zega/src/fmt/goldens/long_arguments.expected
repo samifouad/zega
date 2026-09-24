@@ -1,0 +1,13 @@
+mutation json [
+  "./one-very-long-file-name-that-must-not-be-split.json",
+  "./another-very-long-source-name.json"
+] {
+  Person(
+    name: $FullName &&
+    number: $AccountNumber &&
+    email: $EmailAddress &&
+    address: $StreetAddress
+  ) {
+    name
+  }
+}

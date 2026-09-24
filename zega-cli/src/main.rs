@@ -1,3 +1,5 @@
+mod fmt;
+
 use axum::{
     body::Body,
     http::{header, StatusCode, Uri},
@@ -26,6 +28,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Format ZQL files with the canonical layout.
+    Fmt {
+        /// Files or directories to format recursively (*.zql).
+        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+        paths: Vec<PathBuf>,
+        /// List files that would change and exit with code 1.
+        #[arg(long)]
+        check: bool,
+        /// Read ZQL from stdin and write formatted source to stdout.
+        #[arg(long)]
+        stdin: bool,
+    },
     /// Serve the database over HTTP with ZQL.
     Start {
         #[arg(long, default_value = "./zega-data")]
@@ -54,6 +68,10 @@ enum Command {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    if let Command::Fmt { paths, check, stdin } = cli.command {
+        if !fmt::run(paths, check, stdin)? { std::process::exit(1); }
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(std::thread::available_parallelism()?.get())
         .enable_all()
@@ -63,6 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let (data, host, port, token_file, allow_private, explorer) = match cli.command {
+        Command::Fmt { .. } => unreachable!("fmt runs without a server runtime"),
         Command::Start {
             data,
             host,

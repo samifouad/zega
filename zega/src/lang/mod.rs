@@ -1,6 +1,9 @@
 //! The v2 schema and query language. Users write this. The engine walks the
 //! graph it already stores; this crate does not parse ZQL.
 
+#[path = "../fmt/mod.rs"]
+pub mod fmt;
+
 pub use crate::index::{IndexKind, IndexSpec};
 use crate::location::{Bounds, Point};
 use crate::vector::{Vector, VectorSpec, Metric};

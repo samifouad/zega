@@ -1,4 +1,5 @@
 // Deterministic synthetic vectors for demonstrating views, never model output.
+import { format } from './format.mjs';
 import { writeFile } from 'node:fs/promises';
 const topics = ['Account access', 'Billing', 'Integrations', 'Performance', 'Data export'];
 const issues = [
@@ -19,4 +20,4 @@ for(let i=0;i<200;i++){
 // Most links join the same topic; selected cross-topic links expose disagreement.
 for(let i=1;i<=200;i++)if(i%4===0){const next=i%20===0?(i+47)%200+1:(Math.floor((i-1)/40)*40+i%40+1);lines.push(`mutation { Ticket(@id: ${i}) { related -> link Ticket(@id: ${next}) { @id } } }`);}
 lines.push('query { Ticket { @id title topic status embedding related -> Ticket { @id title } } }','');
-await writeFile(new URL('../samples/tickets.zql',import.meta.url),lines.join('\n'));
+await writeFile(new URL('../samples/tickets.zql',import.meta.url),format(lines.join('\n')));
