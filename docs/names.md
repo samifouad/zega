@@ -83,4 +83,4 @@ globe's `@zoom`, `@tilt` and `@center`
 The removed spellings produce source-spanned errors naming the replacement.
 When `hops`, `id`, or `score` is declared as a user field, it reads that field;
 when the old implicit spelling has no matching declaration, the checker gives
-migration help. Cypher uses its own parser and retains its own syntax.
+migration help.
