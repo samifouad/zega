@@ -28,8 +28,8 @@ zega fmt --check .
 | Exit code | Meaning |
 |---|---|
 | `0` | Every file is already formatted (or, without `--check`, the files were formatted). |
-| `1` | With `--check`, at least one file would be reformatted. Also used when a path cannot be read. |
-| `2` | The arguments are wrong, for example no paths and no `--stdin`. |
+| `1` | With `--check`, at least one file would be reformatted. Nothing else exits `1`. |
+| `2` | `zega fmt` could not do its job: the arguments are wrong (for example no paths and no `--stdin`), or a file or directory could not be read or written. The error, starting `zega fmt:`, names the path. |
 
 Input that does not parse is left unchanged, so `--check` passes on it. Use the
 engine or the explorer to find syntax errors; `zega fmt` only lays out valid

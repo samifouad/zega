@@ -15,6 +15,19 @@ fn stops(n: usize) -> HashMap<String, String> {
     HashMap::from([("stops.json".to_string(), format!("[{}]", rows.join(",")))])
 }
 
+/// Loads `n` stops with no limit, then reopens with `limit`: on a slow runner
+/// the load itself can take longer than the limit under test.
+fn limited_with_stops(n: usize, limit: Duration, budget: Option<usize>) -> (tempfile::TempDir, Zega) {
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().to_str().unwrap().to_string();
+    load_stops(&Zega::open(&path).build().unwrap(), n);
+    let mut builder = Zega::open(&path).query_time_limit(limit);
+    if let Some(budget) = budget {
+        builder = builder.traversal_work_budget(budget);
+    }
+    (data, builder.build().unwrap())
+}
+
 fn load_stops(db: &Zega, n: usize) {
     db.run_lang_with_sources(SCHEMA, r#"mutation json ["stops.json"] { Stop(name: $name && at: $at) }"#, &stops(n))
         .unwrap();
@@ -40,12 +53,7 @@ const SEEN: &str = "query { Stop(seen >= 0) { name } }";
 #[test]
 fn a_slow_read_stops_at_the_limit_with_its_own_error() {
     let limit = Duration::from_millis(200);
-    let db = Zega::in_memory()
-        .traversal_work_budget(usize::MAX)
-        .query_time_limit(limit)
-        .build()
-        .unwrap();
-    load_stops(&db, 2000); // about 4 s of pairs in a debug build
+    let (_data, db) = limited_with_stops(2000, limit, Some(usize::MAX)); // about 4 s of pairs in a debug build
     let started = Instant::now();
     let error = db.run_lang(SCHEMA, PAIRS).unwrap_err();
     let took = started.elapsed();
@@ -66,8 +74,7 @@ fn one_long_scan() -> String {
 #[test]
 fn a_single_long_scan_stops_at_the_limit() {
     let limit = Duration::from_millis(200);
-    let db = Zega::in_memory().query_time_limit(limit).build().unwrap();
-    load_stops(&db, 4000);
+    let (_data, db) = limited_with_stops(4000, limit, None);
     let started = Instant::now();
     let error = db.run_lang(SCHEMA, &one_long_scan()).unwrap_err();
     let took = started.elapsed();
