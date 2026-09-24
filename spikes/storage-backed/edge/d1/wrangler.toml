@@ -1,0 +1,14 @@
+# SPIKE: the same graph and queries over D1 (option B), for comparison.
+# Before the first deploy:  npx wrangler d1 create zega-storage-spike
+# and put the printed database_id below. Deploy:
+#   npx wrangler deploy --config d1/wrangler.toml
+name = "zega-storage-spike-d1"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+send_metrics = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "zega-storage-spike"
+database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"

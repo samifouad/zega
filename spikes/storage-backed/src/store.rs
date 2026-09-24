@@ -65,6 +65,10 @@ pub struct Stats {
     pub rows_written: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
+    /// Rows read and written as the storage backend itself bills them
+    /// (Durable Object cursors), when it reports them.
+    pub billed_rows_read: u64,
+    pub billed_rows_written: u64,
 }
 
 impl Stats {
@@ -75,6 +79,8 @@ impl Stats {
             rows_written: self.rows_written - before.rows_written,
             cache_hits: self.cache_hits - before.cache_hits,
             cache_misses: self.cache_misses - before.cache_misses,
+            billed_rows_read: self.billed_rows_read - before.billed_rows_read,
+            billed_rows_written: self.billed_rows_written - before.billed_rows_written,
         }
     }
 }

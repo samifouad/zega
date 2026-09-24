@@ -5,8 +5,9 @@
 //! measurement rig for that question:
 //!
 //! - [`store::GraphStore`] is the storage seam the engine would run on.
-//! - [`sqlite::SqliteStore`] implements it over SQLite (a native stand-in for
-//!   `ctx.storage.sql`, which is SQLite too) with a byte-bounded cache.
+//! - [`sqlstore::SqlStore`] implements it over SQLite with a byte-bounded
+//!   cache, through a small [`sqlstore::Driver`]: rusqlite natively
+//!   (`sqlite`), `ctx.storage.sql` in a Durable Object (the `edge` crate).
 //! - [`mem::MemStore`] implements it over HashMaps, to separate the cost of
 //!   the seam from the cost of storage.
 //! - [`exec`] runs the measured ZQL subset (create with links, point read by a
@@ -21,5 +22,7 @@ pub mod exec;
 pub mod gen;
 pub mod mem;
 pub mod model;
+#[cfg(feature = "native")]
 pub mod sqlite;
+pub mod sqlstore;
 pub mod store;

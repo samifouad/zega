@@ -157,6 +157,19 @@ pub fn filter(rank: u64) -> Query {
     }
 }
 
+/// 1 hop from one node found by its unique key: 3 neighbors.
+pub fn one_hop(i: u64) -> Query {
+    Query {
+        kind: "1-hop traversal (3 nodes)",
+        zql: format!("{{ Person(handle: \"{}\") {{ handle follows -> Person {{ handle name }} }} }}", handle(i)),
+        plan: person(
+            vec![Pred::Eq("handle".into(), json!(handle(i)))],
+            None,
+            vec![Item::Prop("handle".into()), follows(person(vec![], None, props(&["handle", "name"])))],
+        ),
+    }
+}
+
 /// 2 hops from one node found by its unique key: 3 + 9 neighbors.
 pub fn two_hop(i: u64) -> Query {
     let hop2 = person(vec![], None, props(&["handle", "name"]));

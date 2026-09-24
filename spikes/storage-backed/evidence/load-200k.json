@@ -1,0 +1,1 @@
+{"bytes_per_node":347,"db_mb":66.4,"engine":"sqlite load","load_ms":254776,"n":200000,"tables_mb":{"adj":22.3,"ixn":2.5,"ixs":3.6,"lbl":1.9,"meta":0.0,"names":0.0,"node":25.2,"rel":10.7,"spec":0.0,"sqlite_autoindex_names_1":0.0,"sqlite_autoindex_spec_1":0.0,"sqlite_schema":0.0}}

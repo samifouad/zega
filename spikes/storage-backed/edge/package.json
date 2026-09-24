@@ -1,0 +1,11 @@
+{
+  "name": "zega-storage-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "wrangler dev --local --ip 127.0.0.1 --port 8787",
+    "bench": "node bench/bench.mjs"
+  },
+  "devDependencies": { "wrangler": "4.138.0" }
+}

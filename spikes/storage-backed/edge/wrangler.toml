@@ -1,0 +1,22 @@
+# SPIKE: storage-backed zega in a Durable Object. Deploy with
+#   npx wrangler deploy --config wrangler.toml
+# and delete after the benchmark: npx wrangler delete --config wrangler.toml
+name = "zega-storage-spike"
+main = "entry.mjs"
+compatibility_date = "2026-09-01"
+workers_dev = true
+send_metrics = false
+
+[build]
+command = "node build.mjs"
+
+[vars]
+CACHE_MB = "16"
+
+[[durable_objects.bindings]]
+name = "GRAPHS"
+class_name = "GraphObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GraphObject"]

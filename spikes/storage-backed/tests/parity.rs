@@ -51,6 +51,7 @@ fn reads_and_writes_match_the_in_memory_engine() {
     for k in 0..200u64 {
         let i = 1 + gen::mix(k) % N;
         check(&zega, &sql, &mem, &gen::point(i));
+        check(&zega, &sql, &mem, &gen::one_hop(i));
         check(&zega, &sql, &mem, &gen::two_hop(i));
         let rank = gen::mix(k + 7) % (N / 10);
         let q = gen::filter(rank);
