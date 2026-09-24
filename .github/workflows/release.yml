@@ -149,7 +149,9 @@ jobs:
         run: cargo build --locked --release -p zega-cli
       - name: Check canonical ZQL/JSON files and embedded samples
         run: |
-          ".target/release/zega${EXTENSION}" fmt --check .
+          # Only files git tracks: build output and test reports (Playwright's
+          # test-results/, node_modules/, .target/) are not canonical sources.
+          git ls-files -z -- '*.zql' '*.json' | xargs -0 ".target/release/zega${EXTENSION}" fmt --check
           python scripts/fmt-samples.py ".target/release/zega${EXTENSION}" --check --extract .tmp/samples
       - uses: actions/checkout@v5
         if: needs.resolve.outputs.tag == '' && matrix.platform == 'linux-x64'
