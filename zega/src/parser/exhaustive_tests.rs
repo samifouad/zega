@@ -16,8 +16,9 @@ use std::collections::HashMap;
 
 use super::{
     AggregateFunction, BinaryOperator, Direction, Expr, OrderDirection, Parser,
-    PatternElement, RelationshipLength, ReturnClause, SetClause, Statement, Value,
+    PatternElement, RelationshipLength, ReturnClause, SetClause, Statement,
 };
+use crate::value::Value;
 // `Lexer`, `Token` and `ParseError` are NOT re-exported at the module root
 // (`mod.rs` only `pub use`s ast::*, Parser, Value). Their defining submodules
 // ARE public (`pub mod lexer`, `pub mod parser`), so reach them by full path.

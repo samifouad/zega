@@ -11,7 +11,7 @@ use rsa::signature::Verifier;
 use rsa::RsaPublicKey;
 use serde_json::Value as JsonValue;
 use sha2::Sha256;
-use crate::parser::value::Value;
+use crate::value::Value;
 
 use crate::{JwtConfig, JwtKey, Result, ZegaError};
 #[cfg(target_arch = "wasm32")]

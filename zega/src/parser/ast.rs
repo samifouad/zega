@@ -1,4 +1,4 @@
-use super::value::Value;
+use crate::value::Value;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]

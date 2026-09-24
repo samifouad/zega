@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use thiserror::Error;
 use crate::graph::{Graph, NodeId, RelId};
-pub use crate::parser::Value;
+pub use crate::value::Value;
 use crate::parser::{ast::*, BinaryOperator, Expr, OrderDirection, Parser, Statement};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::wal::{restore, snapshot};
@@ -31,6 +31,7 @@ mod planner;
 pub mod policy;
 mod v2;
 mod validation;
+mod value;
 mod wal;
 #[cfg(test)]
 mod wal_order_tests;

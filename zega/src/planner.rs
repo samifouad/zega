@@ -1,8 +1,8 @@
 use crate::parser::{
     ast::{BinaryOperator, Expr as ZqlExpr, PatternElement, ReturnClause, Statement},
-    value::Value,
     OrderDirection,
 };
+use crate::value::Value;
 
 use crate::{
     policy::{Expr, ExprValue, Policy, PolicyCondition},

@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use crate::graph::{Graph, Node, NodeId, RelId, Relationship};
-use crate::parser::Value;
+use crate::value::Value;
 use crate::wal::{Operation, Wal, WalError};
 
 /// What one change replaced, so a refused statement can be taken back.

@@ -17,7 +17,7 @@ use crate::lang::{
     BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, Pred, Schema, Selection, Span,
     Statement,
 };
-use crate::parser::Value;
+use crate::value::Value;
 use crate::journal::{atomically, Journal};
 use serde_json::{json, Value as Json};
 

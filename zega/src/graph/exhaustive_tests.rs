@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 use super::{Graph, Node, NodeId, RelId, Relationship};
-use crate::parser::Value;
+use crate::value::Value;
 
 // ---------------------------------------------------------------------------
 // Helpers

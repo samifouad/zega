@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::parser::value::Value;
+use crate::value::Value;
 
 use crate::{jwt, JwtConfig, Result};
 

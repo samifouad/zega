@@ -1,4 +1,4 @@
-use crate::parser::value::Value;
+use crate::value::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Policy {
