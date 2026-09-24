@@ -137,7 +137,7 @@ jobs:
         if: needs.resolve.outputs.tag == '' && matrix.platform == 'linux-x64'
         with:
           node-version: '24'
-      - name: Test the embedded explorer against its native database
+      - name: Test the embedded explorer and explorer2 against a native database
         if: needs.resolve.outputs.tag == '' && matrix.platform == 'linux-x64'
         run: |
           cargo build --locked -p zega-cli
@@ -145,6 +145,7 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
           npm run test:cli
+          npm run test:remote
       - name: Build CLI with embedded explorer
         run: cargo build --locked --release -p zega-cli
       - name: Check canonical ZQL/JSON files and embedded samples
