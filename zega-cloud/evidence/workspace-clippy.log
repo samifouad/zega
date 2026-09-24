@@ -3,6 +3,5 @@
     Checking zega-server v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-server)
     Checking zega-cloud v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-cloud)
     Checking zega-bench v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-bench)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.90s
-
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.12s
 EXIT_CODE=0
