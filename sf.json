@@ -5,5 +5,5 @@
   "code": "239",
   "colour": "#A8D8EA",
   "size": "small",
-  "description": "An embeddable graph database with a KV store inside — written in Rust, exportable to wasm"
+  "description": "An embeddable graph database — written in Rust, exportable to wasm"
 }
