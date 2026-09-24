@@ -173,6 +173,48 @@ def aws(*args):
         raise RuntimeError(f"R2 {operation} failed for {key_prefix} (diagnostics withheld)")
 
 
+def aws_list_keys(bucket, prefix):
+    result = subprocess.run(
+        ["aws", "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", f"{prefix}/",
+         "--query", "Contents[].Key", "--output", "json", "--endpoint-url", os.environ["R2_ENDPOINT"]],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    if result.returncode:
+        raise RuntimeError(f"R2 list-objects-v2 failed for {bucket}/{prefix}/ (diagnostics withheld)")
+    keys = json.loads(result.stdout)
+    if keys is None:
+        return []
+    if not isinstance(keys, list) or any(not isinstance(key, str) for key in keys):
+        raise ValueError(f"R2 list-objects-v2 returned invalid keys for {bucket}/{prefix}/")
+    return keys
+
+
+def publish_pointer(directory, bucket, prefix):
+    """Replace a mutable pointer without exposing an empty prefix, then verify its bytes."""
+    directory = Path(directory)
+    local_keys = {f"{prefix}/{path.relative_to(directory).as_posix()}"
+                  for path in directory.rglob("*") if path.is_file()}
+    aws("cp", "--recursive", f"{directory}/", f"s3://{bucket}/{prefix}/")
+    for key in aws_list_keys(bucket, prefix):
+        if key.startswith(f"{prefix}/") and key not in local_keys:
+            aws("rm", f"s3://{bucket}/{key}")
+    readback = Path(".tmp") / f"readback-{bucket}-{prefix}"
+    readback.mkdir(parents=True, exist_ok=False)
+    aws("cp", "--recursive", f"s3://{bucket}/{prefix}/", f"{readback}/")
+    return readback
+
+
+def compare_directories(expected, actual, message):
+    expected = Path(expected)
+    actual = Path(actual)
+    expected_files = {path.relative_to(expected).as_posix(): path.read_bytes()
+                      for path in expected.rglob("*") if path.is_file()}
+    actual_files = {path.relative_to(actual).as_posix(): path.read_bytes()
+                    for path in actual.rglob("*") if path.is_file()}
+    if actual_files != expected_files:
+        raise ValueError(message)
+
+
 def check_commit(directory, tag, commit):
     release = read_json(Path(directory) / "release.json")
     if release["commit"] != commit:
@@ -221,7 +263,8 @@ def publish_r2(tag, directory):
         aws("cp", "--recursive", f"s3://{bucket}/{tag}/", f"{check}/")
         verify(check, tag, commit)
     for bucket in BUCKETS:
-        aws("sync", f"{directory}/", f"s3://{bucket}/canary/", "--delete")
+        check = publish_pointer(directory, bucket, "canary")
+        verify(check, tag, commit)
         aws("cp", f"{directory}/release.json", f"s3://{bucket}/canary.json")
 
 
@@ -258,7 +301,8 @@ def promote(tag, directory):
     git("push", "origin", f"refs/tags/v{base}")
     for bucket in BUCKETS:
         source = work / bucket
-        aws("sync", f"{source}/", f"s3://{bucket}/latest/", "--delete")
+        readback = publish_pointer(source, bucket, "latest")
+        compare_directories(source, readback, "Latest readback differs from the promoted release payload")
         aws("cp", str(source / "release.json"), f"s3://{bucket}/latest.json")
     output(tag=f"v{base}", version=base, commit=commit)
 
