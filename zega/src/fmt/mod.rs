@@ -619,6 +619,7 @@ impl<'a> Printer<'a> {
             order,
             limit: _,
             items,
+            delete: _,
         } = selection;
         if let Some(condition) = condition {
             condition_forms(condition);
@@ -631,8 +632,11 @@ impl<'a> Printer<'a> {
         {
             similarity_form(similarity);
         }
-        if let Some(order) = order {
-            distance_form(order);
+        for OrderKey { by, desc: _, span: _ } in order {
+            match by {
+                OrderBy::Field(_) => {}
+                OrderBy::Distance(distance) => distance_form(distance),
+            }
         }
         let mut p = self.parser();
         p.columns = columns;
@@ -715,6 +719,7 @@ impl<'a> Printer<'a> {
             | Item::Prop(_, _)
             | Item::Hops(_)
             | Item::Id(_)
+            | Item::Detach(_)
             | Item::EdgeProp(_, _)
             | Item::EdgeSet(_, _, _) => Ok(Node::leaf(self.until(end, false))),
         }
