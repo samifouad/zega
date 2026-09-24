@@ -1,0 +1,26 @@
+
+> test
+> node --test test/local.mjs
+
+▶ SQLite Durable Object integration
+  ✔ native JSON envelope; graph isolation; Request-Id required (419.967818ms)
+  ✔ eviction and SIGKILL/restart preserve acknowledged data and ids (3303.985717ms)
+  ✔ same Request-Id returns original result and writes no SQLite rows (363.756641ms)
+  ✔ fail after WAL INSERT and after engine success: rollback then abort; no phantom blocks (2506.794551ms)
+  ✔ lost response after commit is resolved by retry without reapplying (345.614509ms)
+  ✔ separate blocks commit separately; failed block has no partial rows (260.322672ms)
+  ✔ snapshot chunks, rollback replacement, trim, cold replay and retry survive (2445.683188ms)
+  ✔ log size triggers checkpoint and trim automatically (1420.448682ms)
+  ✔ evicted wasm instance survives GC during 10000 later reads (70069.944347ms)
+  ✔ parallel retries apply exactly one mutation block (85.419651ms)
+✔ SQLite Durable Object integration (87862.271641ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 93013.367364
+
+EXIT_CODE=0

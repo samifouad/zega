@@ -1,0 +1,4 @@
+cargo tree -p zega-wasm -e normal (native): no Cloudflare crates
+cargo tree -p zega-wasm -e normal (wasm32-unknown-unknown): no Cloudflare crates
+zega/durable-log is disabled; engine has no Cloudflare dependencies
+EXIT_CODE=0

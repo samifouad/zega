@@ -1,0 +1,25 @@
+name: Regular WASM isolation
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  browser-wasm:
+    # Reads Cargo's resolved graph only; nothing is compiled, so no sccache.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: '1.96.0'
+          targets: wasm32-unknown-unknown
+      - name: Reject Cloudflare dependencies and durable-log in regular WASM
+        run: node browser/scripts/check-wasm.mjs

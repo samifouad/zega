@@ -1,0 +1,63 @@
+
+> zega-explorer@0.0.0 test
+> npm run check && playwright test
+
+
+> zega-explorer@0.0.0 check
+> node scripts/check.mjs
+
+PASS: 47 JavaScript syntax checks; wasm compiles; all pkg/ SHA-256 hashes match engine fafe68a9d444b317f0a4381ddf921f7ee09d0e30
+[WebServer] (node:13869) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 35 tests using 1 worker
+
+(node:14347) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓   1 tests/display.spec.js:16:1 › view tabs follow the explicit schema and its default; coordinates never infer a view (5.5s)
+  ✓   2 tests/display.spec.js:29:1 › table sections respect types, sort numbers in both directions, and inspect relationship chips (4.3s)
+  ✓   3 tests/display.spec.js:50:1 › Calgary map draws query markers, attribution, theme, and the shared inspector without network (6.2s)
+  ✓   4 tests/display.spec.js:79:1 › failed tiles keep the GeoJSON markers and permanent attribution on plain ground (3.6s)
+  ✓   5 tests/display.spec.js:91:1 › bad display produces the engine diagnostic and exact editor underline (2.8s)
+  ✓   6 tests/display.spec.js:102:1 › timeline uses the checked year field and shares the node inspector (2.0s)
+  ✓   7 tests/display.spec.js:120:1 › Calgary Point radius query matches an independent scan and plots exactly those places (3.4s)
+  ✓   8 tests/display.spec.js:153:1 › map still plots the legacy Float coordinate pair (2.5s)
+  ✓   9 tests/explorer.spec.js:3:1 › explorer header links the zega wordmark and back button to zega.dev (1.3s)
+PASS: HTML, ES modules and wasm MIME types; missing/private files return 404.
+  ✓  10 tests/explorer.spec.js:15:1 › Wrangler serves modules and wasm with the correct MIME types (423ms)
+ZQL: mutation { Country(name: "Extraction smoke" && flag: "") { name } }
+RESULT: {
+  "name": "Extraction smoke"
+}
+ZQL: { Country(name = "Extraction smoke") { name flag } }
+RESULT: {"flag":"","name":"Extraction smoke"}
+PASS: headless Chromium; real editor, Run button, wasm and graph; no page errors.
+  ✓  11 tests/explorer.spec.js:31:1 › standalone explorer runs a ZQL mutation and read through the editor (1.8s)
+  ✓  12 tests/explorer.spec.js:67:1 › Import UI sends raw CSV and JSON to Rust and inserts every row (1.9s)
+  ✓  13 tests/explorer.spec.js:96:1 › ZQL editor fetches source text and Rust loads JSON and CSV (1.8s)
+  ✓  14 tests/index.spec.js:3:1 › WASM index block narrows rows tested and answers like a scan (1.6s)
+  ✓  15 tests/location.spec.js:3:1 › WASM spatial queries equal a seeded 10000-point scan and survive snapshot restore (2.0s)
+  ✓  16 tests/names.spec.js:7:1 › editor runs user fields beside built-ins, highlights them, and completes @ names (1.7s)
+  ✓  17 tests/names.spec.js:37:1 › WASM rejects removed language spellings with migration diagnostics (1.4s)
+  ✓  18 tests/node-shapes.spec.js:65:1 › document outline, fold, icon, clipped images and failure fallback (1.6s)
+  ✓  19 tests/node-shapes.spec.js:90:1 › plain cross-origin images load without CORS and send no referrer (1.7s)
+  ✓  20 tests/node-shapes.spec.js:126:1 › archives stays clear of Field notes and every caption and node body (1.7s)
+  ✓  21 tests/node-shapes.spec.js:134:1 › dense fixed graph has no label/caption or label/body intersections (1.5s)
+  ✓  22 tests/node-shapes.spec.js:160:1 › paper is white in light mode and grey with AA dark ink in dark mode (1.8s)
+  ✓  23 tests/node-shapes.spec.js:186:1 › size scales the geometry and curved edges terminate on both outlines (1.5s)
+  ✓  24 tests/node-shapes.spec.js:210:1 › self relationships loop outside a scaled page (1.5s)
+  ✓  25 tests/node-shapes.spec.js:225:1 › Space previews each shape with readable fields, focus trapping and all closing gestures (1.7s)
+  ✓  26 tests/node-shapes.spec.js:248:1 › zoom mini shares preview content, truncates to five rows and culls offscreen pages (2.1s)
+  ✓  27 tests/node-shapes.spec.js:262:1 › lazy image completion and failure leave the page outline unchanged (1.5s)
+  ✓  28 tests/node-shapes.spec.js:279:1 › checked WASM display reaches the graph and survives reload; URL errors underline the field (2.9s)
+  ✓  29 tests/node-shapes.spec.js:300:1 › evidence: light, dark, preview and zoom (2.1s)
+  ✓  30 tests/path.spec.js:23:1 › WASM path finding returns the native routes and A* expands fewer nodes (1.3s)
+  ✓  31 tests/then.spec.js:8:1 › native WASM API carries stages, typed evidence, skip and chaining (1.5s)
+  ✓  32 tests/then.spec.js:36:1 › WASM rejects misplaced discovery and unsupported regex, keeps infix filters (1.3s)
+  ✓  33 tests/then.spec.js:57:1 › explorer editor executes a pipeline and shows only its visible stages (1.4s)
+  ✓  34 tests/vector.spec.js:11:43 › vector2d renders the sample, ranks full vectors, and flags actual relationships (5.4s)
+  ✓  35 tests/vector.spec.js:11:43 › vector3d renders the sample, ranks full vectors, and flags actual relationships (5.2s)
+
+  35 passed (1.7m)
+
+EXIT_CODE=0

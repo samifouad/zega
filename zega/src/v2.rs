@@ -3174,3 +3174,8 @@ mod tests {
         assert!(password.to_string().contains("password"), "{password}");
     }
 }
+
+#[cfg(feature = "durable-log")]
+mod durable;
+#[cfg(feature = "durable-log")]
+pub use durable::ZqlProgram;

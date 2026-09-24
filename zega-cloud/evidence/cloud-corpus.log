@@ -1,0 +1,7 @@
+
+> corpus
+> node test/corpus.mjs
+
+{"corpus":"zegadb/testsuite","revision":"d9684641b3a77f772f920c47bb40cc7d5b0e2995","digest":"b0e247247ddfa20c9c65cf7a253fb46fe3622538c93bc52fec150dd3843d8353","endpoint":"http://127.0.0.1:8800","counts":{"PASS":263,"FAIL":0,"XFAIL":0,"XPASS":0,"SKIP":1,"parity":263},"total":264}
+
+EXIT_CODE=0

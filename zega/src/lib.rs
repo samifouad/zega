@@ -14,7 +14,7 @@ use crate::parser::{ast::*, BinaryOperator, Expr, OrderDirection, Parser, Statem
 #[cfg(not(target_arch = "wasm32"))]
 use crate::wal::{restore, snapshot};
 use crate::journal::{atomically, Journal};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), feature = "durable-log"))]
 use crate::wal::Operation;
 use crate::wal::Wal;
 
@@ -154,6 +154,7 @@ pub struct Zega {
     wal: Wal,
     #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
+    #[cfg(any(not(target_arch = "wasm32"), not(feature = "durable-log")))]
     in_memory: bool,
     jwt_config: Option<JwtConfig>,
     policies: Vec<Policy>,
@@ -290,7 +291,10 @@ impl Zega {
 
         #[cfg(not(target_arch = "wasm32"))]
         let snapshot_path = path.join("snapshot.bin");
+        #[cfg(any(not(target_arch = "wasm32"), not(feature = "durable-log")))]
         let wal_path = path.join("wal.bin");
+        #[cfg(all(target_arch = "wasm32", feature = "durable-log"))]
+        let _ = (path, builder.wal_flush_every, builder.in_memory);
 
         // Restore from snapshot if exists
         #[cfg(not(target_arch = "wasm32"))]
@@ -325,6 +329,7 @@ impl Zega {
             wal,
             #[cfg(not(target_arch = "wasm32"))]
             path,
+            #[cfg(any(not(target_arch = "wasm32"), not(feature = "durable-log")))]
             in_memory: builder.in_memory,
             jwt_config,
             policies,
@@ -2971,7 +2976,7 @@ fn extreme_value(values: &[Value], desired: std::cmp::Ordering) -> Value {
         .unwrap_or(Value::Null)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), feature = "durable-log"))]
 fn apply_op_to_memory(graph: &mut Graph, op: &Operation) {
     match op {
         Operation::InsertNode { id, labels, props } => {
@@ -5162,3 +5167,11 @@ mod tests {
             .unwrap()
     }
 }
+
+// Host-storage API is opt-in on every target; it has no Cloudflare dependency.
+#[cfg(feature = "durable-log")]
+mod durable;
+#[cfg(feature = "durable-log")]
+pub use wal::AppendTarget;
+#[cfg(feature = "durable-log")]
+pub use v2::ZqlProgram;

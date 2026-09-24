@@ -1,0 +1,7 @@
+   Compiling zega-cli v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-cli)
+    Checking zega v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega)
+    Checking zega-server v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-server)
+    Checking zega-cloud v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-cloud)
+    Checking zega-bench v0.1.2 (/Volumes/Projects/codex/zega-wt-cloud/zega-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.12s
+EXIT_CODE=0

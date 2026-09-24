@@ -1,0 +1,12 @@
+{
+  "name": "zega-cloud-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "wrangler dev --local --ip 127.0.0.1",
+    "test": "node --test test/local.mjs",
+    "corpus": "node test/corpus.mjs"
+  },
+  "devDependencies": {"wrangler": "4.137.0"}
+}

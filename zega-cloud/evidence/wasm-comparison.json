@@ -1,0 +1,167 @@
+{
+  "procedure": "Both trees exported with git archive into the SAME directory (/Volumes/Projects/claude/zega-wasm-compare/src), built back to back on samis-imac with rustc 1.96.0 (ac68faa20 2026-05-25), wasm-pack 0.15.0, wasm-pack build zega-wasm --target web --release --locked, --remap-path-prefix for checkout/cargo/sysroot, one fresh CARGO_TARGET_DIR. Order: main, branch, main again.",
+  "branchRevision": "b229cbaea8f72bbf1e8fe3c267518363d9e7fe90",
+  "reproducibility": {
+    "mainRebuiltAfterBranch": {
+      "sha256": "aab5f8b42960598a8dc4fcb2fae29988355828a613241de515415ac029047eb3",
+      "bytes": 2757992,
+      "matchesFirstMainBuild": true
+    },
+    "sameMainSourceAtAnotherPath": {
+      "sha256": "ebcf6644ae8261f3e76c0161bc991311cc3d27ae982970e4b5f17f0680ea20e6",
+      "bytes": 2743134,
+      "note": "Identical main source built at a different directory produces a different binary (code section and function order differ), most likely because Cargo package ids include the path and feed symbol hashes. A committed hash is therefore not a portable gate; compare same-path builds."
+    }
+  },
+  "codeSectionIdentical": true,
+  "functionBodies": {
+    "main": 2170,
+    "branch": 2170,
+    "differing": 0
+  },
+  "mainRevision": "7fa1b47c836cd577d1371fdc84881ac6d7825881",
+  "main": {
+    "bytes": 2757992,
+    "sha256": "aab5f8b42960598a8dc4fcb2fae29988355828a613241de515415ac029047eb3"
+  },
+  "branch": {
+    "bytes": 2757992,
+    "sha256": "e4fefa5b07a5a8e2d747a50fca7ec85a0ca69a3e20058acb64a3d57f7bc5d02a"
+  },
+  "byteIdentical": false,
+  "sizeGrowthBytes": 0,
+  "identicalSections": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    9,
+    12,
+    10,
+    0,
+    0
+  ],
+  "differences": [
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 2689,
+      "branchLine": 2694,
+      "column": 19,
+      "source": "groups[group_index].1.push(binding);",
+      "bytes": [
+        {
+          "offset": 2202783,
+          "main": 129,
+          "branch": 134
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 2218,
+      "branchLine": 2223,
+      "column": 29,
+      "source": "let frac: String = s[20..].chars().take_while(|c| c.is_ascii_digit()).take(3).collect();",
+      "bytes": [
+        {
+          "offset": 2202799,
+          "main": 170,
+          "branch": 175
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 2955,
+      "branchLine": 2960,
+      "column": 14,
+      "source": "_ => unreachable!(),",
+      "bytes": [
+        {
+          "offset": 2202863,
+          "main": 139,
+          "branch": 144
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 2066,
+      "branchLine": 2071,
+      "column": 36,
+      "source": "Value::String(chars[start..end].iter().collect())",
+      "bytes": [
+        {
+          "offset": 2203089,
+          "main": 18,
+          "branch": 23
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 1055,
+      "branchLine": 1060,
+      "column": 70,
+      "source": "Rc::clone(relationship_variable.as_ref().unwrap()),",
+      "bytes": [
+        {
+          "offset": 2203105,
+          "main": 31,
+          "branch": 36
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 971,
+      "branchLine": 976,
+      "column": 48,
+      "source": "let retain_used_relationships = pattern[index + 1..]",
+      "bytes": [
+        {
+          "offset": 2203121,
+          "main": 203,
+          "branch": 208
+        }
+      ]
+    },
+    {
+      "file": "zega/src/lib.rs",
+      "mainLine": 2290,
+      "branchLine": 2295,
+      "column": 64,
+      "source": "Value::String(iso8601_from_millis(parse_iso8601(s).unwrap() + ms))",
+      "bytes": [
+        {
+          "offset": 2203325,
+          "main": 242,
+          "branch": 247
+        }
+      ]
+    },
+    {
+      "file": "zega/src/wal/mod.rs",
+      "mainLine": 231,
+      "branchLine": 261,
+      "column": 35,
+      "source": "1 => self.append(&ops.remove(0)),",
+      "bytes": [
+        {
+          "offset": 2212701,
+          "main": 231,
+          "branch": 5
+        },
+        {
+          "offset": 2212702,
+          "main": 0,
+          "branch": 1
+        }
+      ]
+    }
+  ],
+  "differingBytes": 9
+}
