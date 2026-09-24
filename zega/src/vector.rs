@@ -281,14 +281,15 @@ mod vector_search_width {
         }
     }
 
-    /// Fails with a fixed search width of 768 (zega#26): the uniform corpus
-    /// scored ~53% of N per query and the clustered one ~6.5%.
+    /// Fails with main's fixed search width of 768 (zega#26), which scored
+    /// ~87% of N per query on the uniform corpus and ~32% on the clustered one.
+    /// Sized to run in well under a minute in a debug build.
     #[test]
-    fn vector_hnsw_search_width_20000_by_32() {
+    fn vector_hnsw_search_width_6000_by_16() {
         std::thread::scope(|s| {
-            for (clustered, max_visited) in [(false, 0.20), (true, 0.04)] {
+            for (clustered, max_visited) in [(false, 0.45), (true, 0.08)] {
                 s.spawn(move || {
-                    let c = corpus(clustered, 20_000, 32, 50);
+                    let c = corpus(clustered, 6_000, 16, 30);
                     let m = measure(&c);
                     assert!(m.recall >= 0.95, "{} recall@10={}", c.name, m.recall);
                     assert!(
@@ -358,7 +359,7 @@ pub struct Hnsw {
 const M: usize = 24;
 const EF_CONSTRUCTION: usize = 160;
 /// First search width; it grows with k and doubles until the top k settle.
-const EF_START: usize = 32;
+const EF_START: usize = 64;
 
 /// Resumable bounded best-first search of one layer (the paper's SEARCH-LAYER).
 /// Every score is computed at most once per query; widening keeps the work
