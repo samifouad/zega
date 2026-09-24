@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // explorer2: the explorer against a remote zega in a Cloudflare container.
+  // explorer2: the explorer against a remote zega on a Fly Machine
+  // (zega-explorer2-api). This Worker only serves the static bundle.
   // Build with `npm run build:remote` (dist-remote/); explorer.zega.dev keeps
   // wrangler.jsonc and the in-browser wasm build (dist/).
   "name": "zega-explorer2",

@@ -1,15 +1,14 @@
-// explorer2: the explorer against a remote zega server, reached through the
-// containers Worker at <base>/c/<size>/<graph>. `npm run build -- --remote`
+// explorer2: the explorer against a remote zega server: one Fly Machine
+// (zega-explorer2-api) that Fly's proxy stops when idle and starts on the next
+// request, with the graph on a volume. `npm run build -- --remote`
 // puts this file in dist-remote/ as backend.js; the regular build never
 // includes it. The protocol is the native backend's (native.js is backend.js
 // with its class exported); only the transport differs: an absolute URL, a
 // Bearer token the viewer types in, and a latency readout on every request.
 import { NativeDatabase } from './native.js';
 
-const KEYS = { token: 'zega.remote.token', size: 'zega.remote.size', graph: 'zega.remote.graph' };
-const SIZES = [['basic', 'basic'], ['std1', 'standard-1'], ['lite', 'lite']];
-const GRAPH = /^[a-z0-9][a-z0-9-]{0,62}$/;
-// A request slower than this is almost always the container waking up.
+const KEYS = { token: 'zega.remote.token' };
+// A request slower than this is almost always the Machine waking up.
 const WAKING_AFTER_MS = 1000;
 
 const $ = (sel) => document.querySelector(sel);
@@ -33,12 +32,10 @@ export async function connectDatabase(parser) {
   if (!response.ok) throw new Error(`Cannot configure explorer: HTTP ${response.status}`);
   const config = await response.json();
   if (config.backend !== 'remote' || !config.base) throw new Error('Unknown explorer backend');
-  const size = SIZES.some(([id]) => id === localStorage.getItem(KEYS.size)) ? localStorage.getItem(KEYS.size) : 'basic';
-  const graph = GRAPH.test(localStorage.getItem(KEYS.graph) || '') ? localStorage.getItem(KEYS.graph) : 'explorer';
   document.head.append(element('link', { rel: 'stylesheet', href: 'remote.css' }));
-  const ui = new RemoteBar(config.base, size, graph);
+  const ui = new RemoteBar(config.base);
   if (!localStorage.getItem(KEYS.token)) await ui.askToken();
-  const db = new RemoteDatabase(parser, `${config.base}/c/${size}/${encodeURIComponent(graph)}`, ui);
+  const db = new RemoteDatabase(parser, config.base, ui);
   try {
     await db.refresh();
   } catch (error) {
@@ -92,33 +89,18 @@ class RemoteDatabase extends NativeDatabase {
 class RemoteBar {
   samples = [];
   pending = 0;
-  constructor(base, size, graph) {
+  constructor(base) {
     this.host = new URL(base).host;
-    const sizeSelect = element('select', { id: 'remote-size', title: 'container instance type' },
-      SIZES.map(([id, label]) => element('option', { value: id, textContent: label, selected: id === size })));
-    sizeSelect.onchange = () => { localStorage.setItem(KEYS.size, sizeSelect.value); location.reload(); };
-    const graphInput = element('input', { id: 'remote-graph', value: graph, spellcheck: false, title: 'graph name (one container per name)' });
-    graphInput.onchange = () => {
-      const next = graphInput.value.trim();
-      if (!GRAPH.test(next)) {
-        graphInput.value = graph;
-        this.status('graph names are lowercase letters, digits and dashes', 'warn');
-        return;
-      }
-      localStorage.setItem(KEYS.graph, next);
-      location.reload();
-    };
     this.latency = element('span', { id: 'remote-latency', textContent: 'no requests yet' });
     this.statusText = element('span', { id: 'remote-status', role: 'status' });
-    this.empty = element('span', { id: 'remote-empty', hidden: true, textContent: 'graph is empty (a container wipes it after 5 min idle)' });
+    this.empty = element('span', { id: 'remote-empty', hidden: true, textContent: 'graph is empty' });
     const sample = element('button', { id: 'remote-sample', textContent: 'load sample', title: 'load the Calgary sample into this remote graph' });
     sample.onclick = () => $('#btn-calgary').click();
     const forget = element('button', { id: 'remote-forget', textContent: 'forget token' });
     forget.onclick = () => { localStorage.removeItem(KEYS.token); location.reload(); };
     this.bar = element('div', { id: 'remote-bar' }, [
       element('span', { className: 'remote-where' }, [
-        element('span', { className: 'conn-dot' }), `remote · ${this.host} ·`,
-        sizeSelect, element('label', { htmlFor: 'remote-graph', textContent: 'graph' }), graphInput,
+        element('span', { className: 'conn-dot' }), `remote · ${this.host} · Fly shared-cpu-1x, 256 MB`,
       ]),
       this.latency, this.statusText, element('span', { className: 'spacer' }), this.empty, sample, forget,
     ]);
@@ -134,7 +116,7 @@ class RemoteBar {
   begin(method, path) {
     const started = performance.now();
     this.pending++;
-    const waking = setTimeout(() => this.status('waking the container (~6 s)…', 'waking'), WAKING_AFTER_MS);
+    const waking = setTimeout(() => this.status('waking the Machine (it stops when idle)…', 'waking'), WAKING_AFTER_MS);
     const settle = () => {
       clearTimeout(waking);
       this.pending--;
@@ -150,7 +132,7 @@ class RemoteBar {
         this.latency.dataset.last = String(Math.round(elapsed));
         this.latency.dataset.median = String(Math.round(middle));
         this.latency.dataset.count = String(this.samples.length);
-        if (elapsed > WAKING_AFTER_MS) this.status(`container answered after ${(elapsed / 1000).toFixed(1)} s (cold start)`, 'cold');
+        if (elapsed > WAKING_AFTER_MS) this.status(`Machine answered after ${(elapsed / 1000).toFixed(1)} s (woke from idle stop)`, 'cold');
       },
       fail: settle,
     };
@@ -163,7 +145,7 @@ class RemoteBar {
     const input = element('input', { id: 'remote-token-input', type: 'password', autocomplete: 'off', required: true, spellcheck: false });
     const dialog = element('dialog', { id: 'remote-token' }, [element('form', { method: 'dialog' }, [
       element('h2', { textContent: 'Remote zega access token' }),
-      element('p', { textContent: `explorer2 runs your queries on zega in a Cloudflare container behind ${this.host}. The token stays in this browser (localStorage) and is sent only there, as a Bearer header.` }),
+      element('p', { textContent: `explorer2 runs your queries on zega on a Fly Machine at ${this.host}. The token stays in this browser (localStorage) and is sent only there, as a Bearer header.` }),
       ...(message ? [element('p', { className: 'remote-error', textContent: message })] : []),
       element('label', { htmlFor: 'remote-token-input', textContent: 'access token' }), input,
       element('footer', {}, [element('button', { type: 'submit', className: 'primary', textContent: 'Save token' })]),

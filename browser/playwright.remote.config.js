@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
 // explorer2 (dist-remote/) served by its own Worker config, talking to a
-// local `zega start --token-file` behind a stand-in for the containers Worker.
+// local `zega start --token-file` behind a stand-in for the Fly Machine.
 export default defineConfig({
   testDir: './remote-tests',
   workers: 1,

@@ -14,15 +14,6 @@
 }
 #remote-bar .spacer { flex: 1; }
 .remote-where { display: flex; align-items: center; gap: 6px; color: var(--ink); }
-#remote-bar select, #remote-bar input {
-  font: inherit;
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--ink);
-}
-#remote-graph { width: 12ch; }
 #remote-latency {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
