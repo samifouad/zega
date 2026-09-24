@@ -2,7 +2,8 @@ import { layers, namedFlavor } from './vendor/basemaps/index.js';
 import { palettes } from './theme.js';
 export const TILE_ORIGIN = 'https://tiles.zega.dev';
 export const ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>';
-export function mapStyle(theme, data, basemap = true) {
+/** The Protomaps flavor recoloured with the explorer's theme tokens. */
+export function basemapFlavor(theme) {
   const c = palettes[theme];
   const base = namedFlavor(theme);
   const flavor = { ...base };
@@ -14,6 +15,12 @@ export function mapStyle(theme, data, basemap = true) {
   }
   flavor.landcover = Object.fromEntries(Object.keys(base.landcover).map((key) => [key, /forest|grass|scrub/.test(key) ? c.park : c.ground]));
   flavor.pois = Object.fromEntries(Object.keys(base.pois).map((key) => [key, c.soft]));
+  return flavor;
+}
+
+export function mapStyle(theme, data, basemap = true) {
+  const c = palettes[theme];
+  const flavor = basemapFlavor(theme);
   return {
     version: 8,
     ...(basemap ? { glyphs: `${TILE_ORIGIN}/fonts/{fontstack}/{range}.pbf`, sprite: `${TILE_ORIGIN}/sprites/v4/${theme}` } : {}),

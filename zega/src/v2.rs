@@ -1080,8 +1080,8 @@ fn require_edge_props(
             if !edge_value_matches(&field.ty, value) {
                 return Err(
                     LangError::at(span, format!("&{} is not {}", field.name, field.ty))
-                        .with_help(if field.ty == "String<url>" {
-                            crate::lang::URL_HELP.into()
+                        .with_help(if crate::lang::is_unit_string(&field.ty) {
+                            crate::lang::unit_string_help(&field.ty).into()
                         } else {
                             format!("`{}` is {}", field.name, field.ty)
                         }),
@@ -1100,7 +1100,9 @@ fn require_edge_props(
 fn edge_value_matches(ty: &str, value: &Value) -> bool {
     match ty {
         "String" => matches!(value, Value::String(_)),
-        "String<url>" => matches!(value, Value::String(text) if crate::lang::valid_url(text)),
+        "String<url>" | "String<iso2>" => {
+            matches!(value, Value::String(text) if crate::lang::valid_unit_string(ty, text))
+        }
         "Int" => matches!(value, Value::Int(_)),
         "Float" => matches!(value, Value::Float(_) | Value::Int(_)),
         "Bool" => matches!(value, Value::Bool(_)),

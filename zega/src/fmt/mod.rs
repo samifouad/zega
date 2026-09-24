@@ -363,22 +363,20 @@ impl<'a> Printer<'a> {
                         kind,
                         types,
                         nodes: _,
+                        globe: _,
                     },
                 span: _,
+                settings,
                 type_spans: _,
                 attributes,
                 default_span,
             } = entry;
-            let name = match kind {
-                ViewKind::Graph => "graph",
-                ViewKind::Table => "table",
-                ViewKind::Map => "map",
-                ViewKind::Timeline => "timeline",
-                ViewKind::Vector2d => "vector2d",
-                ViewKind::Vector3d => "vector3d",
-            };
             let mut p = self.parser();
-            p.expect_word(name)?;
+            p.expect_word(globe::view_name(kind))?;
+            // `globe(@zoom: …)` stays one leaf with the view name.
+            if settings.is_some() {
+                p.parse_view_settings()?;
+            }
             let mut node = if let Some(types) = types {
                 p.expect("{")?;
                 let h = self.until(p.i, false);

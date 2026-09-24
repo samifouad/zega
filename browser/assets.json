@@ -9,6 +9,8 @@
   "csv.js",
   "vector.js",
   "map.js",
+  "globe.js",
+  "data",
   "map-style.js",
   "table.js",
   "theme.js",

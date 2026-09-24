@@ -1,0 +1,1 @@
+schema{type Country{name:String iso:String<iso2>}type City{name:String at:Point}display{globe(@zoom:1.4,@tilt:20,@center:@point(51.05,-114.07)){Country}:Default map{City}}}

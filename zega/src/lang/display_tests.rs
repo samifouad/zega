@@ -127,12 +127,12 @@ fn display_timeline_requirements() {
 #[test]
 fn display_syntax_errors() {
     error(
-        "type Place {}\ndisplay { globe }",
-        "unknown display view globe",
+        "type Place {}\ndisplay { sphere }",
+        "unknown display view sphere",
         2,
         11,
-        16,
-        "use `graph`, `table`, `map`, `timeline`, `vector2d`, or `vector3d`",
+        17,
+        "use `graph`, `table`, `map`, `globe`, `timeline`, `vector2d`, or `vector3d`",
     );
     error(
         "type Place {}\ndisplay { graph: default }",
