@@ -49,14 +49,14 @@ test('globe renders a sphere at the checked camera and highlights countries by I
   expect(await globeness(page)).toBe(1);
   expect(await map(page, 'const c = map.getCenter(); return [map.getZoom(), map.getPitch(), +c.lat.toFixed(4), +c.lng.toFixed(4)]')).toEqual([2, 20, 50, -60]);
   // The engine checked String<iso2>; the outlines carry the same codes.
-  expect(await highlightAt(page, ...CANADA)).toBe('CA');
-  expect(await highlightAt(page, ...USA)).toBe(null);
+  await expect.poll(() => highlightAt(page, ...CANADA)).toBe('CA');
+  await expect.poll(() => highlightAt(page, ...USA)).toBe(null);
   await map(page, 'map.jumpTo({ center: [138, 36] })');
   await idle(page);
-  expect(await highlightAt(page, ...JAPAN)).toBe('JP');
+  await expect.poll(() => highlightAt(page, ...JAPAN)).toBe('JP');
   await map(page, 'map.jumpTo({ center: [-55, -10] })');
   await idle(page);
-  expect(await highlightAt(page, -55, -10)).toBe('BR');
+  await expect.poll(() => highlightAt(page, -55, -10)).toBe('BR');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('© OpenStreetMap contributors');
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('Natural Earth');
 });
@@ -99,11 +99,12 @@ for (const width of [1440, 390]) test(`globe follows the theme in light and dark
       if (await page.locator('html').getAttribute('data-theme') !== theme) {
         await page.locator('#btn-theme').click();
         await expect.poll(() => map(page, 'return !!map && map.loaded() && !!map.getLayer("globe-countries")')).toBe(true);
+        await page.evaluate(() => document.querySelector('#graph')._outlines);
         await idle(page);
       }
       expect(await map(page, 'return [map.getPaintProperty("globe-water", "background-color"), map.getPaintProperty("globe-countries", "fill-color")]'))
         .toEqual([palettes[theme].water, palettes[theme].accent]);
-      expect(await highlightAt(page, ...CANADA)).toBe('CA');
+      await expect.poll(() => highlightAt(page, ...CANADA)).toBe('CA');
       // The globe, its canvas and its controls fit the view pane and the
       // viewport. (The explorer's header row overflows 390px on main too.)
       const pane = await page.locator('#graph').boundingBox();
