@@ -187,7 +187,10 @@ test('checked WASM display reaches the graph and survives reload; URL errors und
   await expect(page.locator('g[data-shape="document"]')).toHaveAttribute('data-size','3');
   await page.reload();
   await expect(page.locator('g[data-shape="document"]')).toHaveCount(1);
-  await page.locator('g[data-shape="document"] .node-plate').click(); await page.keyboard.press('Space');
+  // Nodes deliberately drift; click their current centre without waiting for animation to stop.
+  const bounds = await page.locator('g[data-shape="document"] .node-plate').boundingBox();
+  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.keyboard.press('Space');
   await expect(page.getByRole('dialog',{name:'Engine to explorer'})).toBeVisible(); await page.keyboard.press('Escape');
   await set('schema','type Note { scan: String } display { graph { Note(@image: &scan) } }');
   await expect.poll(() => page.evaluate(() => window.monaco.editor.getModelMarkers({owner:'zega'}).map(m => m.message).join('\n'))).toContain('declare `scan: String<url>` on Note');
