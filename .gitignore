@@ -29,3 +29,4 @@ zega-cloud/node_modules/
 zega-cloud/build/
 zega-cloud/.wrangler/
 zega-cloud/.tmp/
+/evidence/node-shapes/

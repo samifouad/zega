@@ -1,4 +1,9 @@
 :root {
+  --paper: #ffffff;
+  --paper-ink: var(--ink);
+  --paper-lines: var(--dim);
+  --paper-fold: var(--border);
+  --paper-rule: var(--border);
   --bg: #f4f4f6;
   --panel: #ffffff;
   --border: #e3e3e8;
@@ -678,3 +683,22 @@ pre.result-json {
 .vector-nearest li { display: list-item; padding: 5px 0; border-bottom: 1px solid #81918a20; }
 .vector-nearest button { width: calc(100% - 42px); vertical-align: top; line-height: 1.45; }
 .vector-nearest span { width: 40px; text-align: right; line-height: 1.45; }
+
+/* Page paper, fold and ink share the explorer's light/dark tokens. */
+.graph-wrap g[data-node]:focus { outline: none; }
+.graph-wrap g[data-node]:focus-visible .node-plate { stroke: var(--accent); stroke-width: 2.5; }
+.node-preview { width: min(640px, 90vw); max-height: 85vh; overflow: auto; border: 1px solid var(--border); border-radius: 12px; padding: 24px; background: var(--panel); color: var(--ink); box-shadow: 0 16px 80px #0005; }
+.node-preview::backdrop { background: #0007; }
+.node-preview > button { float: right; color: var(--ink); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 6px 10px; }
+.node-preview h2 { font-size: 20px; margin: 0 0 20px; overflow-wrap: anywhere; }
+.node-preview table { clear: both; width: 100%; border-collapse: collapse; table-layout: fixed; }
+.node-preview th, .node-preview td { padding: 9px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; overflow-wrap: anywhere; white-space: pre-wrap; }
+.node-preview th:first-child { width: 30%; }
+
+[data-theme="dark"] {
+  --paper: #cbd5e1;
+  --paper-ink: #334155;
+  --paper-lines: #334155;
+  --paper-fold: #94a3b8;
+  --paper-rule: #334155;
+}
