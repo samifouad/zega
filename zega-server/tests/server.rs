@@ -222,6 +222,65 @@ async fn malformed_zql_is_json_error_and_server_stays_healthy() {
         .is_success());
 }
 
+/// zegadb/zega#48: each payload once aborted the whole process from a worker
+/// thread. Now each is a 400, and the same server answers the next request.
+#[tokio::test]
+async fn deeply_nested_zql_is_a_400_and_the_server_keeps_serving() {
+    let server = start_server().await;
+    let client = Client::new();
+    let schema = "type Item { key: String c?: Int links -> Item[] }";
+    let chain: Vec<String> = (0..5_000).map(|n| format!("c = {n}")).collect();
+    let deep = [
+        format!("{{ Item({}key: \"s1\"{}) {{ key }} }}", "(".repeat(2_000), ")".repeat(2_000)),
+        format!("{{ Item(key: \"s1\") {{ {}key{} }} }}", "links -> Item { ".repeat(1_000), " }".repeat(1_000)),
+        format!(
+            "mutation {{ Item(key: \"s0\") {{ {}key{} }} }}",
+            (1..=1_000).map(|n| format!("links -> Item(key: \"s{n}\") {{ ")).collect::<String>(),
+            " }".repeat(1_000)
+        ),
+    ];
+    for query in &deep {
+        let response = post(&client, &server)
+            .json(&json!({"schema": schema, "query": query}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response.json().await.unwrap();
+        assert!(
+            body["error"].as_str().unwrap().contains("nested too deeply (limit 128)"),
+            "{body}"
+        );
+        let document = format!("schema {{ {schema} }}\n{query}");
+        let response = post(&client, &server)
+            .json(&json!({"query": document, "document": true}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    // A flat 5,000-term chain is not nesting: it runs.
+    let query = format!("{{ Item({}) {{ key }} }}", chain.join(" || "));
+    let body: Value = post(&client, &server)
+        .json(&json!({"schema": schema, "query": query}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body, json!({"ok": true, "result": []}));
+    let body: Value = post(&client, &server)
+        .json(&json!({"schema": schema, "query": "mutation { Item(key: \"after\") { key } }"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body, json!({"ok": true, "result": {"key": "after"}}));
+}
+
 #[tokio::test]
 async fn malformed_json_is_a_json_error() {
     let server = start_server().await;

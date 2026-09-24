@@ -970,10 +970,8 @@ fn unique_candidates(
 fn guaranteed_eq<'a>(expr: &'a BoolExpr, field: &str) -> Option<&'a Json> {
     match expr {
         BoolExpr::Test(Pred::Eq(name, value, _)) if name == field => Some(value),
-        BoolExpr::And(left, right) => {
-            guaranteed_eq(left, field).or_else(|| guaranteed_eq(right, field))
-        }
-        BoolExpr::Test(_) | BoolExpr::Or(_, _) => None,
+        BoolExpr::And(terms) => terms.iter().find_map(|term| guaranteed_eq(term, field)),
+        BoolExpr::Test(_) | BoolExpr::Or(_) => None,
     }
 }
 
@@ -1745,9 +1743,10 @@ fn range_interval(pred: &Pred) -> Option<(&str, Interval)> {
 
 fn and_terms<'a>(expr: &'a BoolExpr, out: &mut Vec<&'a BoolExpr>) {
     match expr {
-        BoolExpr::And(left, right) => {
-            and_terms(left, out);
-            and_terms(right, out);
+        BoolExpr::And(terms) => {
+            for term in terms {
+                and_terms(term, out);
+            }
         }
         other => out.push(other),
     }
@@ -1787,7 +1786,7 @@ fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSe
             let (field, interval) = range_interval(pred)?;
             graph.range_candidates(types, field, &interval)
         }
-        BoolExpr::And(_, _) => {
+        BoolExpr::And(_) => {
             // Bounds on one field join into one range scan: `a > 1 && a < 9`.
             let mut terms = Vec::new();
             and_terms(expr, &mut terms);
@@ -1819,11 +1818,13 @@ fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSe
             }
             found
         }
-        BoolExpr::Or(left, right) => {
+        BoolExpr::Or(terms) => {
             // A branch with no index may match anywhere.
-            let mut left = index_filter(graph, types, left)?;
-            left.extend(index_filter(graph, types, right)?);
-            Some(left)
+            let mut found = HashSet::new();
+            for term in terms {
+                found.extend(index_filter(graph, types, term)?);
+            }
+            Some(found)
         }
     }
 }
@@ -1969,8 +1970,8 @@ fn node_matches(graph: &Graph, id: NodeId, condition: Option<&BoolExpr>) -> bool
 fn eval_expr(graph: &Graph, id: NodeId, expr: &BoolExpr) -> bool {
     match expr {
         BoolExpr::Test(pred) => pred_matches(graph, id, pred),
-        BoolExpr::And(left, right) => eval_expr(graph, id, left) && eval_expr(graph, id, right),
-        BoolExpr::Or(left, right) => eval_expr(graph, id, left) || eval_expr(graph, id, right),
+        BoolExpr::And(terms) => terms.iter().all(|term| eval_expr(graph, id, term)),
+        BoolExpr::Or(terms) => terms.iter().any(|term| eval_expr(graph, id, term)),
     }
 }
 
@@ -1981,9 +1982,11 @@ fn assign_props(
     props: &mut HashMap<String, Value>,
 ) -> Result<(), LangError> {
     match expr {
-        BoolExpr::And(left, right) => {
-            assign_props(left, sel, schema, props)?;
-            assign_props(right, sel, schema, props)
+        BoolExpr::And(terms) => {
+            for term in terms {
+                assign_props(term, sel, schema, props)?;
+            }
+            Ok(())
         }
         BoolExpr::Test(Pred::Eq(field, value, _)) if field != "@id" => {
             props.insert(field.clone(), json_to_prop(schema, sel, field, value)?);

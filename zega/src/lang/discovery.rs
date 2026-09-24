@@ -8,11 +8,14 @@ pub struct ThenStage {
     pub skip: bool,
 }
 
+/// Like [`BoolExpr`](super::BoolExpr), `&&` and `||` are n-ary so a flat
+/// chain does not nest; only parentheses do, bounded by
+/// [`MAX_NESTING`](super::MAX_NESTING).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DiscoveryExpr {
     Test(Primitive),
-    And(Box<Self>, Box<Self>),
-    Or(Box<Self>, Box<Self>),
+    And(Vec<Self>),
+    Or(Vec<Self>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,11 +98,7 @@ impl Parser<'_> {
     // identifies an accidentally placed text primitive, without reserving names.
     pub(super) fn reject_discovery_literal(&self) -> Result<()> {
         for name in PRIMITIVES {
-            let mut p = Parser {
-                src: self.src,
-                i: self.i,
-                columns: self.columns,
-            };
+            let mut p = self.fork();
             if p.eat_word(name) && p.eat("{") {
                 p.skip();
                 if p.src[p.i..].starts_with(['"', '&']) {
@@ -107,11 +106,7 @@ impl Parser<'_> {
                 }
             }
         }
-        let mut p = Parser {
-            src: self.src,
-            i: self.i,
-            columns: self.columns,
-        };
+        let mut p = self.fork();
         if p.discovery_atom().is_ok() {
             return self.reject_discovery_block();
         }
@@ -152,25 +147,36 @@ impl Parser<'_> {
     }
 
     fn discovery_or(&mut self) -> Result<DiscoveryExpr> {
-        let mut left = self.discovery_and()?;
+        let mut terms = vec![self.discovery_and()?];
         while self.eat("||") {
-            left = DiscoveryExpr::Or(Box::new(left), Box::new(self.discovery_and()?));
+            terms.push(self.discovery_and()?);
         }
-        Ok(left)
+        Ok(if terms.len() == 1 { terms.remove(0) } else { DiscoveryExpr::Or(terms) })
     }
     fn discovery_and(&mut self) -> Result<DiscoveryExpr> {
-        let mut left = self.discovery_atom()?;
+        let mut terms = vec![self.discovery_atom()?];
         while self.eat("&&") {
-            left = DiscoveryExpr::And(Box::new(left), Box::new(self.discovery_atom()?));
+            terms.push(self.discovery_atom()?);
         }
-        Ok(left)
+        Ok(if terms.len() == 1 { terms.remove(0) } else { DiscoveryExpr::And(terms) })
     }
     pub(super) fn discovery_atom(&mut self) -> Result<DiscoveryExpr> {
+        self.skip();
+        let start = self.i;
         if self.eat("(") {
-            let inner = self.discovery_or()?;
-            self.expect(")")?;
-            return Ok(inner);
+            return self.nested(start, |p| {
+                let inner = p.discovery_or()?;
+                p.expect(")")?;
+                Ok(inner)
+            });
         }
+        self.discovery_primitive()
+    }
+
+    /// One sub-block. Kept out of [`Self::discovery_atom`] so the frame that
+    /// recurses per parenthesis stays small (zegadb/zega#48).
+    #[inline(never)]
+    fn discovery_primitive(&mut self) -> Result<DiscoveryExpr> {
         let (name, span) = self.ident()?;
         if !PRIMITIVES.contains(&name.as_str()) || !self.eat("{") {
             return Err(Error::at(span, "then requires discovery sub-blocks, such as `findWith { \"text\" }`")
@@ -309,9 +315,11 @@ pub(crate) fn check_pipeline(schema: &Schema, query: &Query) -> Result<()> {
 
 fn check_expr(schema: &Schema, types: &BTreeSet<&str>, expr: &DiscoveryExpr) -> Result<()> {
     match expr {
-        DiscoveryExpr::And(a, b) | DiscoveryExpr::Or(a, b) => {
-            check_expr(schema, types, a)?;
-            check_expr(schema, types, b)
+        DiscoveryExpr::And(terms) | DiscoveryExpr::Or(terms) => {
+            for term in terms {
+                check_expr(schema, types, term)?;
+            }
+            Ok(())
         }
         DiscoveryExpr::Test(Primitive::Text { fields, span, .. }) => {
             if fields.is_empty() {
@@ -446,14 +454,14 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(&q.then[0].condition, DiscoveryExpr::Or(_, right) if matches!(**right, DiscoveryExpr::And(..)))
+            matches!(&q.then[0].condition, DiscoveryExpr::Or(terms) if matches!(terms.as_slice(), [_, DiscoveryExpr::And(..)]))
         );
         let q = parse_query(
             r#"query { A } then { (findWith { "a" } || startsWith { "b" }) && endsWith { "c" } }"#,
         )
         .unwrap();
         assert!(
-            matches!(&q.then[0].condition, DiscoveryExpr::And(left, _) if matches!(**left, DiscoveryExpr::Or(..)))
+            matches!(&q.then[0].condition, DiscoveryExpr::And(terms) if matches!(terms.as_slice(), [DiscoveryExpr::Or(..), _]))
         );
     }
 
