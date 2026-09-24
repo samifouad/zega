@@ -37,6 +37,8 @@ pub struct Graph {
     next_rel_id: AtomicU64,
     /// Rows a ZQL filter has been tested on. Indexes lower it.
     examined: AtomicU64,
+    /// Nodes a ZQL path search has expanded. A* lowers it.
+    expanded: AtomicU64,
 }
 
 impl Clone for Graph {
@@ -56,6 +58,7 @@ impl Clone for Graph {
             next_node_id: AtomicU64::new(self.next_node_id.load(Ordering::SeqCst)),
             next_rel_id: AtomicU64::new(self.next_rel_id.load(Ordering::SeqCst)),
             examined: AtomicU64::new(self.examined.load(Ordering::Relaxed)),
+            expanded: AtomicU64::new(self.expanded.load(Ordering::Relaxed)),
         }
     }
 }
@@ -81,6 +84,7 @@ impl Graph {
             next_node_id: AtomicU64::new(1),
             next_rel_id: AtomicU64::new(1),
             examined: AtomicU64::new(0),
+            expanded: AtomicU64::new(0),
         }
     }
 
@@ -152,6 +156,14 @@ impl Graph {
 
     pub fn examined(&self) -> u64 {
         self.examined.load(Ordering::Relaxed)
+    }
+
+    pub fn note_expanded(&self, nodes: usize) {
+        self.expanded.fetch_add(nodes as u64, Ordering::Relaxed);
+    }
+
+    pub fn expanded(&self) -> u64 {
+        self.expanded.load(Ordering::Relaxed)
     }
 
     pub fn create_node(&mut self, labels: Vec<String>, props: HashMap<String, Value>) -> NodeId {

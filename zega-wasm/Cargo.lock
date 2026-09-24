@@ -638,6 +638,7 @@ dependencies = [
  "getrandom",
  "hmac",
  "js-sys",
+ "libm",
  "rsa",
  "serde",
  "serde_json",
