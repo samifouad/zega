@@ -327,7 +327,10 @@ fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
         Statement::Load { template, .. } => (template.root.as_ref(), true),
     };
     if let Some(root) = root {
-        crate::lang::check(schema, root, mutation)?;
+        match statement {
+            Statement::Run(_) => crate::lang::check(schema, root, mutation)?,
+            Statement::Load { .. } => crate::lang::check_template(schema, root)?,
+        }
     }
     Ok(())
 }
@@ -991,6 +994,9 @@ fn insert_node(
     let mut props = HashMap::new();
     if let Some(expr) = &sel.condition {
         assign_props(expr, sel, schema, &mut props)?;
+    }
+    if let Some(error) = crate::lang::missing_fields(schema, sel, false).into_iter().next() {
+        return Err(error);
     }
     let labels: Vec<String> = std::iter::once(sel.type_name.clone())
         .chain(sel.also.iter().cloned())
@@ -2301,7 +2307,7 @@ mod tests {
             .unwrap();
         zega.run_lang(
             SCHEMA,
-            r#"mutation { Book(title: "The Dispossessed") { title } }"#,
+            r#"mutation { Book(title: "The Dispossessed" && pages: 387) { title } }"#,
         )
         .unwrap();
         let graph = zega.graph_json().unwrap();
@@ -2437,6 +2443,90 @@ mod tests {
             .unwrap();
         assert_eq!(read["playsFor"]["name"], "Oilers");
         assert_eq!(read["playsFor"]["years"], 10);
+    }
+
+    #[test]
+    fn required_node_field_rejects_a_create_without_it() {
+        let schema = r#"
+            type Team {
+              name: String
+              founded: Int
+              city?: String
+              plays -> Team[]
+            }
+        "#;
+        let zega = Zega::in_memory().build().unwrap();
+        // The editor and the database report the same thing at the same place.
+        let query = r#"mutation { Team(name: "Flames") { name founded } }"#;
+        let report = crate::diagnose(schema, query);
+        assert_eq!(report.diagnostics.len(), 1, "{}", report.text);
+        let diag = &report.diagnostics[0];
+        assert_eq!(diag.message, "Team requires founded");
+        assert_eq!(
+            diag.help.as_deref(),
+            Some("write `founded: …` when creating a Team, or declare it `founded?: Int`")
+        );
+        assert_eq!((diag.line, diag.column, diag.underline_length), (1, 12, 4));
+        let missing = zega.run_lang(schema, query).unwrap_err().to_string();
+        assert!(missing.contains(&report.text), "{missing}\n---\n{}", report.text);
+        // A null is not a value for a required field.
+        let null = zega
+            .run_lang(schema, r#"mutation { Team(name: "Flames" && founded: null) { name } }"#)
+            .unwrap_err();
+        assert!(null.to_string().contains("Team requires founded"), "{null}");
+        assert!(null.to_string().contains("so it cannot be null"), "{null}");
+        // A condition that is not `field: value` is reported as that first.
+        let shape = zega
+            .run_lang(schema, r#"mutation { Team(founded > 1900) { name } }"#)
+            .unwrap_err();
+        assert!(shape.to_string().contains("creating a Team only accepts field: value"), "{shape}");
+        // A nested create is a create too.
+        let nested = zega
+            .run_lang(
+                schema,
+                r#"mutation { Team(name: "Flames" && founded: 1980) { plays -> Team(name: "Oilers") { name } } }"#,
+            )
+            .unwrap_err();
+        assert!(nested.to_string().contains("Team requires founded"), "{nested}");
+        assert!(zega.graph_json().unwrap()["nodes"].as_array().unwrap().is_empty());
+        // Optional fields may be left out, and `set` and `link` create nothing.
+        zega.run_lang(schema, r#"mutation { Team(name: "Flames" && founded: 1980) { name } }"#)
+            .unwrap();
+        zega.run_lang(schema, r#"mutation { Team(name: "Oilers" && founded: 1972) { name } }"#)
+            .unwrap();
+        zega.run_lang(schema, r#"mutation { Team(name: "Flames") set city: "Calgary" { name } }"#)
+            .unwrap();
+        zega.run_lang(
+            schema,
+            r#"mutation { Team(name: "Flames") { plays -> link Team(name: "Oilers") { name } } }"#,
+        )
+        .unwrap();
+        let read = zega
+            .run_lang(schema, r#"{ Team(name = "Flames") { founded city plays -> Team { founded } } }"#)
+            .unwrap();
+        assert_eq!(read["founded"], 1980);
+        assert_eq!(read["city"], "Calgary");
+        assert_eq!(read["plays"][0]["founded"], 1972);
+    }
+
+    #[test]
+    fn required_node_field_rejects_a_load_row_without_it() {
+        let source = r#"
+            schema { type Team { name: String founded: Int } }
+            mutation csv "teams.csv" { Team(name: $name && founded: $founded) { name } }
+        "#;
+        // The template names every field, so it checks clean before any row.
+        let template = crate::diagnose("type Team { name: String founded: Int }", r#"mutation csv "teams.csv" { Team(name: $name && founded: $founded) { name } }"#);
+        assert!(template.diagnostics.is_empty(), "{}", template.text);
+        let zega = Zega::in_memory().build().unwrap();
+        let sources = HashMap::from([(
+            "teams.csv".to_string(),
+            "name,founded\nFlames,1980\nOilers,\n".to_string(),
+        )]);
+        let error = zega.apply_zql_with_sources(source, &sources).unwrap_err();
+        assert!(error.to_string().contains("Team requires founded"), "{error}");
+        // The statement is all or nothing: the good row is not kept either.
+        assert!(zega.graph_json().unwrap()["nodes"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -2586,9 +2676,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
         let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
-        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#)
             .unwrap();
-        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#)
             .unwrap();
         let missing_author = zega.run_lang(
             SCHEMA,
@@ -2647,7 +2737,7 @@ mod tests {
             .filter(|node| node["title"] == "Twin")
             .collect();
         assert_eq!(books.len(), 2);
-        assert!(books.iter().all(|book| book["pages"].is_null()));
+        assert!(books.iter().all(|book| book["pages"] == 100));
         let before = zega.graph_json().unwrap();
         drop(zega);
         let reopened = Zega::open(path).wal_flush_every_write().build().unwrap();
@@ -2685,7 +2775,7 @@ mod tests {
             .to_string()
             .contains("no Book matched"));
         plain
-            .run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+            .run_lang(SCHEMA, r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#)
             .unwrap();
         assert_eq!(
             plain
@@ -2729,7 +2819,7 @@ mod tests {
         unique
             .run_lang(
                 UNIQUE_SCHEMA,
-                r#"mutation { Book(title: "Twin") { title } }"#,
+                r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#,
             )
             .unwrap();
         assert_eq!(

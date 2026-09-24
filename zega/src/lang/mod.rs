@@ -2840,6 +2840,7 @@ fn note_statement(schema: &Schema, statement: &Statement, pane: Pane, out: &mut 
         Check {
             schema,
             mutation,
+            template: matches!(statement, Statement::Load { .. }),
             pane,
             out,
         }
@@ -2901,12 +2902,97 @@ pub fn diagnose(schema_src: &str, query_src: &str) -> Report {
     Report::new(schema_src, query_src, out)
 }
 
+/// Whether a mutation selection creates its node. `set` and `link` find one
+/// existing row instead, and so does the node a `link` walk lands on.
+pub fn creates(sel: &Selection, linked: bool) -> bool {
+    !linked
+        && sel.sets.is_empty()
+        && !sel
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Walk { link: true, .. }))
+}
+
+/// The required fields a new node leaves out: every field declared without
+/// `?` on each of its types that the create does not write, or writes as
+/// null. The checker and the runtime both call this, so a create the editor
+/// accepts is a create the database accepts.
+///
+/// A load template is checked before its rows are bound. Its Point and
+/// Vector fields can still come from columns then (`bind_points` fills
+/// them and reports its own error), so `template` leaves those to the
+/// bound row, which is checked again.
+pub fn missing_fields(schema: &Schema, sel: &Selection, template: bool) -> Vec<Error> {
+    // `Person(age > 30)` or `||` is not a create at all. The runtime says so
+    // (`assign_props`); a missing field is not the first problem to report.
+    if sel.condition.as_ref().is_some_and(|expr| !expr.is_equality_and()) {
+        return Vec::new();
+    }
+    // `Some(true)` when the create writes the field as null.
+    let written = |name: &str| {
+        sel.condition.as_ref().and_then(|expr| {
+            and_eqs(expr)
+                .into_iter()
+                .find(|(field, _)| *field == name)
+                .map(|(_, value)| value.is_null())
+        })
+    };
+    let mut out = Vec::new();
+    let mut named = std::collections::HashSet::new();
+    for ty in selection_types(sel) {
+        let Ok(def) = schema.get(ty) else { continue };
+        for field in &def.fields {
+            let Field::Prop { name, ty: field_ty, optional: false, .. } = field else {
+                continue;
+            };
+            if template && (field_ty == "Point" || VectorSpec::parse(field_ty).is_some()) {
+                continue;
+            }
+            // `(Book | Movie)` shares `title`: one report for the field.
+            let null = match written(name) {
+                Some(false) => continue,
+                Some(true) => true,
+                None => false,
+            };
+            if !named.insert(name.as_str()) {
+                continue;
+            }
+            let help = if null {
+                format!("`{name}` is required, so it cannot be null; declare it `{name}?: {field_ty}` to allow null")
+            } else {
+                format!("write `{name}: …` when creating a {}, or declare it `{name}?: {field_ty}`", def.name)
+            };
+            out.push(Error::at(sel.type_span, format!("{} requires {name}", def.name)).with_help(help));
+        }
+    }
+    out
+}
+
+/// The `field = value` terms a create writes: the equalities joined by `&&`.
+fn and_eqs(expr: &BoolExpr) -> Vec<(&str, &Json)> {
+    match expr {
+        BoolExpr::Test(Pred::Eq(field, value, _)) => vec![(field.as_str(), value)],
+        BoolExpr::And(terms) => terms.iter().flat_map(and_eqs).collect(),
+        BoolExpr::Test(_) | BoolExpr::Or(_) => Vec::new(),
+    }
+}
+
 /// The same check the editor uses. Execution stops on the first problem.
 pub fn check(schema: &Schema, sel: &Selection, mutation: bool) -> Result<()> {
+    check_with(schema, sel, mutation, false)
+}
+
+/// [`check`] for a load template, before its rows are bound.
+pub fn check_template(schema: &Schema, sel: &Selection) -> Result<()> {
+    check_with(schema, sel, true, true)
+}
+
+fn check_with(schema: &Schema, sel: &Selection, mutation: bool, template: bool) -> Result<()> {
     let mut out = Vec::new();
     Check {
         schema,
         mutation,
+        template,
         pane: Pane::Query,
         out: &mut out,
     }
@@ -2927,6 +3013,8 @@ pub fn check(schema: &Schema, sel: &Selection, mutation: bool) -> Result<()> {
 struct Check<'a> {
     schema: &'a Schema,
     mutation: bool,
+    /// A load template, checked before its rows are bound.
+    template: bool,
     pane: Pane,
     out: &'a mut Vec<Diagnostic>,
 }
@@ -2945,10 +3033,10 @@ impl Check<'_> {
     }
 
     fn selection(&mut self, sel: &Selection, root: bool) {
-        self.visit(sel, root, None);
+        self.visit(sel, root, None, false);
     }
 
-    fn visit(&mut self, sel: &Selection, _root: bool, arrived: Option<(&str, &str)>) {
+    fn visit(&mut self, sel: &Selection, _root: bool, arrived: Option<(&str, &str)>, linked: bool) {
         let known = self.schema.types.iter().any(|ty| ty.name == sel.type_name);
         if !known {
             self.push(
@@ -3045,7 +3133,7 @@ impl Check<'_> {
                     path,
                     direction,
                     target,
-                    ..
+                    link,
                 } => {
                     if let Some(path) = path {
                         self.path(sel, field, *span, *direction, path, target);
@@ -3061,8 +3149,14 @@ impl Check<'_> {
                     if self.mutation {
                         self.require_edge_fields(sel, field, *span, target);
                     }
-                    self.visit(target, false, Some((sel.type_name.as_str(), field)));
+                    self.visit(target, false, Some((sel.type_name.as_str(), field)), *link);
                 }
+            }
+        }
+        // Last, so a statement that cannot run at all says why first.
+        if self.mutation && creates(sel, linked) {
+            for error in missing_fields(self.schema, sel, self.template) {
+                self.push(sel.type_span, error.message, error.help);
             }
         }
     }
