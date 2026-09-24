@@ -5,6 +5,8 @@
 //! or `set`. Writes go through the same node, relationship, and WAL operations
 //! as the existing executor.
 
+mod discovery;
+
 use crate::location::{Bounds, Point, EARTH_RADIUS};
 use crate::vector::{Vector, VectorSpec, Metric};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -262,11 +264,6 @@ impl Zega {
         source: &str,
         loader: &dyn Fn(&str) -> Result<String, LangError>,
     ) -> Result<Json, ZegaError> {
-        if let Statement::Run(query) = statement {
-            if query.root.is_none() {
-                return Ok(Json::Null);
-            }
-        }
         prepare(schema, statement).map_err(|error| explain(error, source_name, source))?;
         // I/O and parsing happen before the graph lock. Each complete load is
         // inserted under the same lock as ordinary mutations.
@@ -322,6 +319,9 @@ struct Declared<'a> {
 }
 
 fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
+    if let Statement::Run(query) = statement {
+        crate::lang::check_pipeline(schema, query)?;
+    }
     let (root, mutation) = match statement {
         Statement::Run(query) => (query.root.as_ref(), query.mutation),
         Statement::Load { template, .. } => (template.root.as_ref(), true),
@@ -343,13 +343,16 @@ fn run_statement(
 ) -> Result<Json, LangError> {
     match statement {
         Statement::Run(query) => {
+            if !query.mutation && (!query.then.is_empty() || query.skip) {
+                return discovery::pipeline(graph, schema, query, budget);
+            }
             let Some(root) = &query.root else {
                 return Ok(Json::Null);
             };
             if query.mutation {
                 mutate(graph, journal, schema, root, uniques)
             } else {
-                read(graph, schema, root, budget)
+                read(graph, schema, root, &mut ReadContext { budget, trace: None })
             }
         }
         Statement::Load { template, .. } => {
@@ -672,11 +675,22 @@ fn explain(error: LangError, source_name: &str, source: &str) -> ZegaError {
     ZegaError::Execution(crate::lang::render_error(source_name, source, &error))
 }
 
+#[derive(Default)]
+struct ReadTrace {
+    nodes: std::collections::BTreeSet<NodeId>,
+    rels: std::collections::BTreeSet<RelId>,
+}
+
+struct ReadContext<'a> {
+    budget: &'a mut usize,
+    trace: Option<ReadTrace>,
+}
+
 fn read(
     graph: &Graph,
     schema: &Schema,
     root: &Selection,
-    budget: &mut usize,
+    context: &mut ReadContext<'_>,
 ) -> Result<Json, LangError> {
     let mut ids = candidates(graph, root);
     retain_matches(graph, &mut ids, root.condition.as_ref());
@@ -684,7 +698,7 @@ fn read(
     if equality_lookup(root) {
         return match ids.len() {
             0 => Ok(Json::Null),
-            1 => project(graph, schema, root, ids[0], 0, None, budget),
+            1 => project(graph, schema, root, ids[0], 0, None, context),
             n => Err(LangError::at(
                 root.type_span,
                 format!("{} matched {n} rows", root.type_name),
@@ -694,7 +708,7 @@ fn read(
     }
     let mut rows = Vec::new();
     for id in ids {
-        rows.push(project(graph, schema, root, id, 0, None, budget)?);
+        rows.push(project(graph, schema, root, id, 0, None, context)?);
     }
     Ok(Json::Array(rows))
 }
@@ -1200,11 +1214,15 @@ fn project(
     id: NodeId,
     hops: usize,
     arrived: Option<RelId>,
-    budget: &mut usize,
+    context: &mut ReadContext<'_>,
 ) -> Result<Json, LangError> {
     let node = graph
         .get_node(id)
         .ok_or_else(|| LangError::bare(format!("missing node {id}")))?;
+    if let Some(trace) = &mut context.trace {
+        trace.nodes.insert(id);
+        if let Some(rel) = arrived { trace.rels.insert(rel); }
+    }
     let mut object = serde_json::Map::new();
     for item in &sel.items {
         match item {
@@ -1290,7 +1308,7 @@ fn project(
                         weight_ty: weight_ty.map(|prop| prop.ty.as_str()),
                         weight_unit: weight_ty.and_then(|prop| prop.unit),
                     };
-                    let value = route(graph, schema, id, hops, walk, budget)?;
+                    let value = route(graph, schema, id, hops, walk, context)?;
                     object.insert(field.clone(), value);
                     continue;
                 }
@@ -1307,13 +1325,13 @@ fn project(
                             single_valued: !many,
                             span: *span,
                         },
-                        budget,
+                        context.budget,
                     )?
                 } else {
                     if !many {
                         ensure_single_valued(graph, id, rel, field, *direction, *span)?;
                     }
-                    charge(budget, 1)?;
+                    charge(context.budget, 1)?;
                     neighbors(graph, id, rel, *direction)
                         .into_iter()
                         .filter(|(next, _)| node_has_any_label(graph, *next, targets))
@@ -1332,7 +1350,7 @@ fn project(
                         next,
                         hops + depth,
                         Some(rel_id),
-                        budget,
+                        context,
                     )?);
                 }
                 let list = many || range.is_some() || !target.also.is_empty();
@@ -1419,7 +1437,7 @@ fn route(
     start: NodeId,
     hops: usize,
     walk: PathWalk<'_>,
-    budget: &mut usize,
+    context: &mut ReadContext<'_>,
 ) -> Result<Json, LangError> {
     use crate::lang::PathBound;
     use crate::path::{cheapest, fewest_edges, Limit, Step};
@@ -1456,7 +1474,7 @@ fn route(
                     Some(most as usize)
                 }
             };
-            fewest_edges(start, is_goal, max_hops, |node| next(node, budget))?
+            fewest_edges(start, is_goal, max_hops, |node| next(node, context.budget))?
         }
         Some((weight, _)) => {
             let limit = match path.bound {
@@ -1570,7 +1588,7 @@ fn route(
                 }
                 Ok(out)
             };
-            cheapest(start, is_goal, limit, |node| steps(node, budget), guess)?
+            cheapest(start, is_goal, limit, |node| steps(node, context.budget), guess)?
         }
     };
     graph.note_expanded(found.expanded);
@@ -1597,7 +1615,7 @@ fn route(
     let mut nodes = Vec::with_capacity(route.nodes.len());
     for (i, node) in route.nodes.iter().enumerate() {
         if i == 0 {
-            let mut row = project(graph, schema, &first, *node, hops, None, budget)?;
+            let mut row = project(graph, schema, &first, *node, hops, None, context)?;
             if let Json::Object(object) = &mut row {
                 for name in &edge_fields {
                     object.insert(name.clone(), Json::Null);
@@ -1606,7 +1624,7 @@ fn route(
             nodes.push(row);
         } else {
             let arrived = Some(route.rels[i - 1]);
-            nodes.push(project(graph, schema, target, *node, hops + i, arrived, budget)?);
+            nodes.push(project(graph, schema, target, *node, hops + i, arrived, context)?);
         }
     }
     let edges: Vec<Json> = route
