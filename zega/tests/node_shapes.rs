@@ -38,6 +38,14 @@ fn invalid_url_writes_and_updates_are_atomic() {
     .unwrap();
     let before = db.graph_json().unwrap();
     for value in [
+        r#""javascript:alert(1)""#,
+        r#""data:image/png;base64,AAAA""#,
+        r#""file:///image.png""#,
+        r#""ftp://example.org/image.png""#,
+        r#""mailto:user@example.org""#,
+        r#""https://user:pass@example.org/image.png""#,
+        r#""https://user@example.org/image.png""#,
+        r#""https://@example.org/image.png""#,
         r#""relative/path""#,
         r#""https://""#,
         r#""https://bad host/a""#,
@@ -55,7 +63,10 @@ fn invalid_url_writes_and_updates_are_atomic() {
                 error.contains("Document.scan must be String<url>"),
                 "{error}"
             );
-            assert!(error.contains("absolute URL"), "{error}");
+            assert!(
+                error.contains("http:// or https:// URL with a host and no userinfo"),
+                "{error}"
+            );
             assert_eq!(db.graph_json().unwrap(), before);
         }
     }
@@ -127,4 +138,25 @@ fn url_fields_keep_string_indexes_and_do_not_validate_search_fragments() {
         .unwrap(),
         json!(null)
     );
+}
+
+#[test]
+fn url_accepts_http_and_https_case_insensitively() {
+    for url in [
+        "http://example.org/image.png",
+        "https://example.org/image.png",
+        "HTTP://example.org/image.png",
+        "HtTpS://example.org/image.png",
+        "https://example.org/@image.png?email=user@example.org",
+        "http://[::1]:8080/image.png",
+    ] {
+        let db = Zega::in_memory().build().unwrap();
+        let source = format!("mutation {{ Document(name: \"A\" && scan: {url:?}) }}");
+        db.run_lang(SCHEMA, &source).unwrap();
+        assert_eq!(
+            db.run_lang(SCHEMA, r#"query { Document(name: "A") { scan } }"#)
+                .unwrap(),
+            json!({"scan": url})
+        );
+    }
 }

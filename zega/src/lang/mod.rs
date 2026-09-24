@@ -667,9 +667,24 @@ fn unify_edge_props(types: &mut [TypeDef]) -> Result<()> {
     Ok(())
 }
 
+pub(crate) const URL_HELP: &str = "write an absolute http:// or https:// URL with a host and no userinfo, e.g. `https://example.com/image.png`";
+
 pub(crate) fn valid_url(value: &str) -> bool {
     !value.chars().any(|c| c.is_whitespace() || c.is_control())
-        && url::Url::parse(value).is_ok()
+        // Require an authority and reject even empty userinfo, which URL parsing normalizes away.
+        && value.split_once("://").is_some_and(|(_, rest)| {
+            !rest
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap_or_default()
+                .contains('@')
+        })
+        && url::Url::parse(value).is_ok_and(|url| {
+            matches!(url.scheme(), "http" | "https")
+                && url.has_host()
+                && url.username().is_empty()
+                && url.password().is_none()
+        })
 }
 
 fn json_matches(ty: &str, value: &Json) -> bool {
@@ -3234,7 +3249,7 @@ impl Check<'_> {
             if let Ok(Field::Prop { ty, optional, .. }) = self.schema.prop(type_name, name) {
                 if self.mutation && ty == "String<url>" && !(value.is_null() && *optional) && !json_matches(ty, value) {
                     self.push(span, format!("{type_name}.{name} must be String<url>"),
-                        Some("write an absolute URL, e.g. `https://example.com/image.png`".into()));
+                        Some(URL_HELP.into()));
                 }
                 if let Some(spec) = VectorSpec::parse(ty) {
                     if !(value.is_null() && *optional) { if let Err(m) = spec.value(value) { self.push(span, m, Some("write `@vector[0.1, 0.2, ...]` with the declared dimension".into())); } }

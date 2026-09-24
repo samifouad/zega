@@ -105,10 +105,10 @@ export function drawNode(g, defs, geometry, picture, color, content) {
   const { page, scale } = geometry;
   const body = svg('g', { class: 'node-body', transform: `scale(${scale})` });
   const plate = page ? svg('path', { d: PAGE_PATH, class: 'node-plate document-page' }) : svg('circle', { r: 22, class: 'node-plate' });
-  plate.setAttribute('fill', page ? 'var(--panel)' : color);
+  plate.setAttribute('fill', page ? 'var(--paper)' : color);
   plate.setAttribute('stroke', 'var(--strongRule)');
   body.append(plate);
-  const icon = svg('g', { class: 'document-icon', stroke: 'var(--dim)', 'stroke-width': 1.2, 'stroke-linecap': 'round' });
+  const icon = svg('g', { class: 'document-icon', stroke: 'var(--paper-lines)', 'stroke-width': 1.2, 'stroke-linecap': 'round' });
   if (page) {
     icon.append(svg('path', { d: 'M -11 -13 H 2', 'stroke-width': 2 }));
     for (const y of [-5, 0, 5, 10, 15]) icon.append(svg('path', { d: `M -11 ${y} H ${y === 15 ? 3 : 11}` }));
@@ -118,14 +118,15 @@ export function drawNode(g, defs, geometry, picture, color, content) {
   const clip = svg('clipPath', { id: clipId });
   clip.append(page ? svg('path', { d: PAGE_PATH }) : svg('circle', { r: 22 }));
   defs.append(clip);
-  const image = svg('image', { class: 'node-image', x: page ? -18 : -22, y: -22, width: page ? 36 : 44, height: 44, 'clip-path': `url(#${clipId})`, preserveAspectRatio: 'xMidYMid slice', visibility: 'hidden' });
+  // Keep plain image loads working on hosts without CORS; suppress referrers separately.
+  const image = svg('image', { class: 'node-image', x: page ? -18 : -22, y: -22, width: page ? 36 : 44, height: 44, 'clip-path': `url(#${clipId})`, preserveAspectRatio: 'xMidYMid slice', referrerpolicy: 'no-referrer', visibility: 'hidden' });
   let started = false, loaded = false;
   // Setting href only on visibility starts the request. Geometry never depends on it.
   image.onload = () => { loaded = true; image.setAttribute('visibility', 'visible'); icon.style.display = 'none'; g.dataset.image = 'loaded'; };
   image.onerror = () => { image.remove(); icon.style.display = ''; g.dataset.image = 'failed'; };
   if (picture) { g.dataset.image = 'pending'; body.append(image); }
   let mini = null;
-  if (page) body.append(svg('path', { d: FOLD_PATH, class: 'document-fold', fill: 'var(--border)', stroke: 'var(--strongRule)', 'stroke-width': 0.6 }));
+  if (page) body.append(svg('path', { d: FOLD_PATH, class: 'document-fold', fill: 'var(--paper-fold)', stroke: 'var(--strongRule)', 'stroke-width': 0.6 }));
   g.append(body);
   const truncate = (value, count) => value.length > count ? value.slice(0, count - 1) + '…' : value;
   return {
@@ -137,14 +138,14 @@ export function drawNode(g, defs, geometry, picture, color, content) {
       if (!showMini) { mini?.remove(); mini = null; return; }
       if (mini) return;
       mini = svg('g', { class: 'document-mini', 'aria-hidden': 'true', 'pointer-events': 'none' });
-      mini.append(svg('rect', { x: -16, y: -11, width: 32, height: 30, rx: 1, fill: 'var(--panel)' }));
-      const heading = svg('text', { x: -13, y: -6, fill: 'var(--ink)', 'font-size': 3.1, 'font-weight': 700 });
+      mini.append(svg('rect', { x: -16, y: -11, width: 32, height: 30, rx: 1, fill: 'var(--paper)' }));
+      const heading = svg('text', { x: -13, y: -6, fill: 'var(--paper-ink)', 'font-size': 3.1, 'font-weight': 700 });
       heading.textContent = truncate(content.heading, 17); mini.append(heading);
       content.rows.slice(0, MINI_ROWS).forEach(([field, value], i) => {
         const y = i * 4.4;
-        mini.append(svg('path', { d: `M -13 ${y - 2.8} H 13`, stroke: 'var(--border)', 'stroke-width': 0.3 }));
+        mini.append(svg('path', { d: `M -13 ${y - 2.8} H 13`, stroke: 'var(--paper-rule)', 'stroke-width': 0.3 }));
         for (const [text, x, max] of [[field, -13, 9], [value, -1, 12]]) {
-          const cell = svg('text', { x, y, fill: 'var(--ink)', 'font-size': 2.3 });
+          const cell = svg('text', { x, y, fill: 'var(--paper-ink)', 'font-size': 2.3 });
           cell.textContent = truncate(text, max); mini.append(cell);
         }
       });

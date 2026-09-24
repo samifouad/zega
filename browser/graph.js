@@ -193,7 +193,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     vp.appendChild(label);
     label.dataset.rel = String(rel.id);
     label.style.cursor = 'pointer';
-    edges.set(rel.id, { path, hit, label, rel });
+    edges.set(rel.id, { path, hit, label, rel, box: label.getBBox() });
   }
 
   function drift(node) {
@@ -207,11 +207,46 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     };
   }
 
-  function drawEdge(rel) {
+  const intersects = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+  const inView = (box) => intersects(box, {
+    x: -state.tx / state.scale, y: -state.ty / state.scale,
+    width: 800 / state.scale, height: 480 / state.scale,
+  });
+
+  function placeLabel(drawn, pointAt, obstacles) {
+    if (drawn.label.style.display === 'none') return;
+    const { box, label } = drawn;
+    const baseline = -box.y - box.height / 2;
+    const at = (point) => ({ x: point.x + box.x, y: point.y + baseline + box.y, width: box.width, height: box.height });
+    const middle = pointAt(0.5);
+    const set = (point) => {
+      label.setAttribute('x', point.x);
+      label.setAttribute('y', point.y + baseline);
+    };
+    set(middle);
+    // Text metrics are cached at creation. Offscreen labels do no collision work.
+    if (!inView(at(middle))) return;
+    const candidates = [0.5, 0.35, 0.65, 0.25, 0.75].map(pointAt);
+    const clear = (point) => !obstacles.some((obstacle) => intersects(at(point), obstacle));
+    for (const point of candidates) {
+      if (clear(point)) { set(point); return; }
+    }
+    // Use the local tangent of this edge, including curves and self loops.
+    // Bounded offsets keep the label close to its own edge in crowded graphs.
+    for (const distance of [12, -12, 24, -24, 36, -36, 48, -48]) {
+      for (const point of candidates) {
+        const length = Math.hypot(point.dx, point.dy) || 1;
+        const offset = { x: point.x - point.dy / length * distance, y: point.y + point.dx / length * distance };
+        if (clear(offset)) { set(offset); return; }
+      }
+    }
+  }
+
+  function drawEdge(rel, positions, obstacles) {
     const from = byId.get(rel.from);
     const to = byId.get(rel.to);
-    const a = from && drift(from);
-    const b = to && drift(to);
+    const a = positions.get(rel.from);
+    const b = positions.get(rel.to);
     if (!a || !b) return;
     if (rel.from === rel.to) {
       const shape = geometry.get(from.id);
@@ -221,8 +256,15 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
       const d = `M ${a.x + start.x} ${a.y + start.y} C ${a.x - reach} ${a.y - reach * 2} ${a.x + reach} ${a.y - reach * 2} ${a.x + end.x} ${a.y + end.y}`;
       drawn.path.setAttribute('d', d);
       drawn.hit.setAttribute('d', d);
-      drawn.label.setAttribute('x', a.x);
-      drawn.label.setAttribute('y', a.y - reach * 1.5);
+      placeLabel(drawn, (t) => {
+        const u = 1 - t;
+        return {
+          x: a.x + u ** 3 * start.x - 3 * u * u * t * reach + 3 * u * t * t * reach + t ** 3 * end.x,
+          y: a.y + u ** 3 * start.y - 6 * u * t * reach + t ** 3 * end.y,
+          dx: 3 * u * u * (-reach - start.x) + 12 * u * t * reach + 3 * t * t * (end.x - reach),
+          dy: 3 * u * u * (-2 * reach - start.y) + 3 * t * t * (end.y + 2 * reach),
+        };
+      }, obstacles);
       dim(drawn.path, lit(from), 0.2);
       dim(drawn.label, lit(from), 0.2);
       return;
@@ -245,8 +287,15 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     const pathD = `M ${a.x + start.x} ${a.y + start.y} Q ${cx} ${cy} ${b.x + end.x} ${b.y + end.y}`;
     drawn.path.setAttribute('d', pathD);
     drawn.hit.setAttribute('d', pathD);
-    drawn.label.setAttribute('x', cx);
-    drawn.label.setAttribute('y', cy - 6);
+    placeLabel(drawn, (t) => {
+      const u = 1 - t, sx = a.x + start.x, sy = a.y + start.y, ex = b.x + end.x, ey = b.y + end.y;
+      return {
+        x: u * u * sx + 2 * u * t * cx + t * t * ex,
+        y: u * u * sy + 2 * u * t * cy + t * t * ey,
+        dx: 2 * u * (cx - sx) + 2 * t * (ex - cx),
+        dy: 2 * u * (cy - sy) + 2 * t * (ey - cy),
+      };
+    }, obstacles);
     dim(drawn.path, lit(from) && lit(to), 0.2);
     dim(drawn.label, lit(from) && lit(to), 0.2);
   }
@@ -306,7 +355,7 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     });
     g.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
     vp.appendChild(g);
-    circles.set(node.id, { g, node, plate, visual });
+    circles.set(node.id, { g, node, plate, visual, captionBox: text.getBBox() });
   }
 
   function select(id) {
@@ -335,18 +384,29 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
   }
 
   function place() {
+    const positions = new Map();
+    const obstacles = [];
+    const block = (box) => {
+      // Include the caption's painted halo and a little breathing room.
+      const padded = { x: box.x - 5, y: box.y - 5, width: box.width + 10, height: box.height + 10 };
+      if (inView(padded)) obstacles.push(padded);
+    };
     for (const node of graph.nodes) {
       const entry = circles.get(node.id);
       const at = entry && drift(node);
       if (at) {
+        positions.set(node.id, at);
         entry.g.setAttribute('transform', `translate(${at.x},${at.y})`);
         const shape = geometry.get(node.id);
+        block({ x: at.x - shape.width, y: at.y - shape.height, width: shape.width * 2, height: shape.height * 2 });
+        const box = entry.captionBox;
+        block({ x: at.x + box.x, y: at.y + box.y, width: box.width, height: box.height });
         const x = at.x * state.scale + state.tx, y = at.y * state.scale + state.ty;
         const visible = x + shape.width * state.scale >= 0 && x - shape.width * state.scale <= 800 && y + shape.height * state.scale >= 0 && y - shape.height * state.scale <= 480;
         entry.visual.update(visible, state.scale);
       }
     }
-    for (const rel of graph.rels) drawEdge(rel);
+    for (const rel of graph.rels) drawEdge(rel, positions, obstacles);
   }
 
   function onTick() {

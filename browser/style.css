@@ -1,4 +1,9 @@
 :root {
+  --paper: #ffffff;
+  --paper-ink: var(--ink);
+  --paper-lines: var(--dim);
+  --paper-fold: var(--border);
+  --paper-rule: var(--border);
   --bg: #f4f4f6;
   --panel: #ffffff;
   --border: #e3e3e8;
@@ -689,3 +694,11 @@ pre.result-json {
 .node-preview table { clear: both; width: 100%; border-collapse: collapse; table-layout: fixed; }
 .node-preview th, .node-preview td { padding: 9px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; overflow-wrap: anywhere; white-space: pre-wrap; }
 .node-preview th:first-child { width: 30%; }
+
+[data-theme="dark"] {
+  --paper: #cbd5e1;
+  --paper-ink: #334155;
+  --paper-lines: #334155;
+  --paper-fold: #94a3b8;
+  --paper-rule: #334155;
+}

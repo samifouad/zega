@@ -1,5 +1,6 @@
 import { test, expect } from './offline.js';
 import { mkdir } from 'node:fs/promises';
+import { createServer } from 'node:http';
 
 const pagePath = 'M -14 -22 H 9 L 18 -13 V 18 Q 18 22 14 22 H -14 Q -18 22 -18 18 V -18 Q -18 -22 -14 -22 Z';
 const foldPath = 'M 9 -22 L 18 -13 H 9 Z';
@@ -80,6 +81,106 @@ test('document outline, fold, icon, clipped images and failure fallback', async 
   await expect(node(page,8)).toHaveAttribute('data-image','pending');
   expect(requests).not.toContain('https://images.example/lazy.svg');
   await expect(node(page,8).locator('.node-image')).not.toHaveAttribute('href', /./);
+  for (const image of await page.locator('#graph .node-image').all()) {
+    await expect(image).toHaveAttribute('referrerpolicy', 'no-referrer');
+  }
+  await expect(page.locator('meta[name="referrer"]')).toHaveAttribute('content', 'no-referrer');
+});
+
+test('plain cross-origin images load without CORS and send no referrer', async ({page}) => {
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push(request.headers);
+    response.writeHead(200, {'Content-Type': 'image/svg+xml'});
+    response.end(scan); // Deliberately no Access-Control-Allow-Origin.
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    await fixture(page);
+    await page.evaluate(async (url) => {
+      const {drawNode, nodeGeometry} = await import('/node-display.js');
+      const g = document.querySelector('g[data-node="2"]'); g.replaceChildren();
+      const visual = drawNode(g, document.querySelector('#graph defs'), nodeGeometry({shape:'document'}), url, '#aaa', {heading:'Plain image',rows:[]});
+      visual.update(true, 1);
+    }, `http://127.0.0.1:${server.address().port}/scan.svg`);
+    await expect(node(page,2)).toHaveAttribute('data-image', 'loaded');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].referer).toBeUndefined();
+    expect(requests[0].origin).toBeUndefined();
+    await expect(node(page,2).locator('image')).toHaveAttribute('referrerpolicy', 'no-referrer');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+async function overlaps(page) {
+  return page.evaluate(() => {
+    const rect = el => el.getBoundingClientRect();
+    const captions = [...document.querySelectorAll('#graph .cap, #graph .node-plate')];
+    const labels = [...document.querySelectorAll('#graph .rlab')].filter(el => rect(el).width > 0);
+    const intersects = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    return labels.flatMap(label => captions.filter(cap => intersects(rect(label),rect(cap))).map(cap => ({label:label.textContent,node:cap.closest('[data-node]').dataset.node,kind:cap.getAttribute('class')})));
+  });
+}
+
+test('archives stays clear of Field notes and every caption and node body', async ({page}) => {
+  await fixture(page);
+  await expect(page.locator('.rlab[data-rel="3"]')).toHaveText('archives');
+  await expect.poll(() => overlaps(page)).toEqual([]);
+  await zoom(page);
+  await expect.poll(() => overlaps(page)).toEqual([]);
+});
+
+test('dense fixed graph has no label/caption or label/body intersections', async ({page}) => {
+  await ready(page);
+  await page.evaluate(async () => {
+    const {renderGraph,stopSim} = await import('/graph.js');
+    const container=document.querySelector('#graph'); stopSim(container);
+    const nodes=Array.from({length:20},(_,i) => ({id:i+1,labels:[i%2?'Page':'Person'],name:`Field notes ${i+1}`,x:(i%5)*125,y:Math.floor(i/5)*115})).map(n => ({...n,fx:n.x,fy:n.y}));
+    const rels=[];
+    for(const n of nodes) {
+      if(n.id%5) rels.push({id:rels.length+1,from:n.id,to:n.id+1,type:'describes'});
+      if(n.id<=15) rels.push({id:rels.length+1,from:n.id,to:n.id+5,type:'archives'});
+    }
+    // Include parallel curves and a self loop, with repeatable screen positions.
+    rels.push({id:32,from:1,to:2,type:'reviews'},{id:33,from:2,to:1,type:'cites'},{id:34,from:3,to:3,type:'revises'});
+    container._graph={capture:() => ({positions:new Map(),view:{scale:1,tx:100,ty:70}})};
+    renderGraph(container,{nodes,rels},new Set(),null,{nodes:{Page:{shape:'document',size:2},Person:{size:1}}},[{name:'Page',fields:[{kind:'prop',name:'name'}]},{name:'Person',fields:[{kind:'prop',name:'name'}]}]);
+    container._sim.stop();
+  });
+  await expect(page.locator('#graph .rlab:visible')).toHaveCount(34);
+  await expect.poll(() => overlaps(page)).toEqual([]);
+  const positions = () => page.locator('#graph .rlab').evaluateAll(els => els.map(el => [el.getAttribute('x'),el.getAttribute('y')]));
+  const before = await positions();
+  // Repeated production animation frames must give the same placement.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  expect(await positions()).toEqual(before);
+});
+
+test('paper is white in light mode and grey with AA dark ink in dark mode', async ({page}) => {
+  await fixture(page);
+  await zoom(page);
+  for (const [theme,paper] of [['light','rgb(255, 255, 255)'],['dark','rgb(203, 213, 225)']]) {
+    await page.evaluate(async theme => (await import('/theme.js')).applyTheme(theme),theme);
+    for (const plate of await page.locator('.document-page').all()) {
+      expect(await plate.evaluate(el => getComputedStyle(el).fill)).toBe(paper);
+    }
+    const contrast = await node(page,1).evaluate((g,theme) => {
+      const luminance = color => {
+        const rgb = color.match(/[\d.]+/g).slice(0,3).map(Number).map(v => v/255).map(v => v <= .04045 ? v/12.92 : ((v+.055)/1.055)**2.4);
+        return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;
+      };
+      const background = luminance(getComputedStyle(g.querySelector('.document-mini rect')).fill);
+      return [...g.querySelectorAll(theme === 'dark' ? '.document-mini text, .document-icon path' : '.document-mini text')].map(el => {
+        const style = getComputedStyle(el);
+        const ink = luminance(el.tagName === 'text' ? style.fill : style.stroke);
+        return (Math.max(ink,background)+.05)/(Math.min(ink,background)+.05);
+      });
+    }, theme);
+    // Light-mode icon ink retains its existing muted treatment.
+    for (const ratio of contrast) expect(ratio).toBeGreaterThanOrEqual(4.5);
+    if (theme === 'dark') expect(await node(page,1).locator('.document-fold').evaluate(el => getComputedStyle(el).fill)).toBe('rgb(148, 163, 184)');
+  }
 });
 
 test('size scales the geometry and curved edges terminate on both outlines', async ({ page }) => {
@@ -202,7 +303,8 @@ test('evidence: light, dark, preview and zoom', async ({page}) => {
   await page.locator('#graph').screenshot({path:'../evidence/node-shapes/graph-light.png'});
   await page.evaluate(async () => (await import('/theme.js')).applyTheme('dark'));
   const paper = await node(page,1).locator('.document-page').evaluate(el => getComputedStyle(el).fill);
-  expect(paper).toBe('rgb(40, 30, 22)');
+  expect(paper).toBe('rgb(203, 213, 225)');
+  expect(await overlaps(page)).toEqual([]);
   await page.locator('#graph').screenshot({path:'../evidence/node-shapes/graph-dark.png'});
   await node(page,1).focus(); await page.keyboard.press('Space');
   await page.getByRole('dialog').screenshot({path:'../evidence/node-shapes/preview.png'});

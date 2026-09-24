@@ -1082,7 +1082,11 @@ fn require_edge_props(
             if !edge_value_matches(&field.ty, value) {
                 return Err(
                     LangError::at(span, format!("&{} is not {}", field.name, field.ty))
-                        .with_help(format!("`{}` is {}", field.name, field.ty)),
+                        .with_help(if field.ty == "String<url>" {
+                            crate::lang::URL_HELP.into()
+                        } else {
+                            format!("`{}` is {}", field.name, field.ty)
+                        }),
                 );
             }
         }
