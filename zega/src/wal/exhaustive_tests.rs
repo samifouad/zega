@@ -1870,30 +1870,10 @@ fn snapshot_with_unicode_and_extreme_values_roundtrips() {
 // that a later DeleteNode in the log wins over an earlier insert.
 // ===========================================================================
 
+// Replay through the same function `Zega::open` uses, so this test cannot
+// drift from real recovery.
 fn apply_op(graph: &mut Graph, op: &Operation) {
-    match op {
-        Operation::InsertNode { id, labels, props } => {
-            graph.restore_node(*id, labels.clone(), props.clone());
-        }
-        Operation::UpdateNode { id, props } => {
-            graph.update_node(*id, props.clone());
-        }
-        Operation::DeleteNode { id } => {
-            graph.delete_node(*id);
-        }
-        Operation::InsertRel {
-            id,
-            kind,
-            from,
-            to,
-            props,
-        } => {
-            graph.restore_relationship(*id, kind.clone(), *from, *to, props.clone());
-        }
-        Operation::DeleteRel { id } => {
-            graph.delete_relationship(*id);
-        }
-    }
+    crate::apply_op_to_memory(graph, op);
 }
 
 #[test]

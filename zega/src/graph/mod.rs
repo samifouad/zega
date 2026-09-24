@@ -39,27 +39,6 @@ pub struct Graph {
     examined: AtomicU64,
 }
 
-impl Clone for Graph {
-    fn clone(&self) -> Self {
-        // Transaction staging preserves index topology, including routing
-        // tombstones. Rebuilding HNSW here would make every write quadratic.
-        Self {
-            nodes: self.nodes.clone(),
-            relationships: self.relationships.clone(),
-            label_index: self.label_index.clone(),
-            property_index: self.property_index.clone(),
-            spatial_index: self.spatial_index.clone(),
-            vector_index: self.vector_index.clone(),
-            declared: self.declared.clone(),
-            outgoing: self.outgoing.clone(),
-            incoming: self.incoming.clone(),
-            next_node_id: AtomicU64::new(self.next_node_id.load(Ordering::SeqCst)),
-            next_rel_id: AtomicU64::new(self.next_rel_id.load(Ordering::SeqCst)),
-            examined: AtomicU64::new(self.examined.load(Ordering::Relaxed)),
-        }
-    }
-}
-
 impl Default for Graph {
     fn default() -> Self {
         Self::new()
@@ -152,6 +131,21 @@ impl Graph {
 
     pub fn examined(&self) -> u64 {
         self.examined.load(Ordering::Relaxed)
+    }
+
+    /// The ids the next created node and relationship will get.
+    pub fn next_ids(&self) -> (NodeId, RelId) {
+        (
+            self.next_node_id.load(Ordering::SeqCst),
+            self.next_rel_id.load(Ordering::SeqCst),
+        )
+    }
+
+    /// Put the id counters back to an earlier [`Graph::next_ids`], after the
+    /// writes that advanced them have been taken back.
+    pub fn reset_next_ids(&mut self, (node, rel): (NodeId, RelId)) {
+        self.next_node_id.store(node, Ordering::SeqCst);
+        self.next_rel_id.store(rel, Ordering::SeqCst);
     }
 
     pub fn create_node(&mut self, labels: Vec<String>, props: HashMap<String, Value>) -> NodeId {
