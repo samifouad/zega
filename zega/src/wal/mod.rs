@@ -68,7 +68,7 @@ pub enum Operation {
 
 #[cfg(not(target_arch = "wasm32"))]
 struct WalState {
-    file: Option<File>,
+    file: Option<Box<dyn AppendTarget + Send>>,
     next_sequence: u64,
     durable_sequence: u64,
     pending_entries: usize,
@@ -162,31 +162,51 @@ impl Wal {
         {
             prepare_wal(path)?;
             let file = open_wal_writer(path)?;
-            let group = Arc::new(GroupCommit {
-                state: Mutex::new(WalState {
-                    file: Some(file),
-                    next_sequence: 0,
-                    durable_sequence: 0,
-                    pending_entries: 0,
-                    durability_error: None,
-                    shutdown: false,
-                }),
-                wake: Condvar::new(),
-                interval,
-                batch_size: batch_size.max(1),
+            Ok(Self::from_target(
+                path,
+                Box::new(file),
                 flush_every,
-            });
-            let worker = if flush_every {
-                None
-            } else {
-                let group = Arc::clone(&group);
-                Some(thread::spawn(move || group_commit_worker(group)))
-            };
-            Ok(Wal {
-                path: path.to_path_buf(),
-                group,
-                worker,
-            })
+                interval,
+                batch_size,
+            ))
+        }
+    }
+
+    /// Builds a file-backed WAL around an already opened append target.
+    /// `with_group_commit` passes the real WAL file; the durability tests
+    /// pass a fault-injecting target through this same path.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn from_target(
+        path: &Path,
+        target: Box<dyn AppendTarget + Send>,
+        flush_every: bool,
+        interval: Duration,
+        batch_size: usize,
+    ) -> Self {
+        let group = Arc::new(GroupCommit {
+            state: Mutex::new(WalState {
+                file: Some(target),
+                next_sequence: 0,
+                durable_sequence: 0,
+                pending_entries: 0,
+                durability_error: None,
+                shutdown: false,
+            }),
+            wake: Condvar::new(),
+            interval,
+            batch_size: batch_size.max(1),
+            flush_every,
+        });
+        let worker = if flush_every {
+            None
+        } else {
+            let group = Arc::clone(&group);
+            Some(thread::spawn(move || group_commit_worker(group)))
+        };
+        Wal {
+            path: path.to_path_buf(),
+            group,
+            worker,
         }
     }
 
@@ -218,11 +238,14 @@ impl Wal {
                     .file
                     .as_mut()
                     .ok_or_else(|| WalError::Durability("WAL file is not available".to_string()))?;
-                append_entry(file, len, crc, &bytes)
+                append_entry(file.as_mut(), len, crc, &bytes)
             };
             if let Err(error) = append_result {
-                if matches!(error, WalError::Durability(_)) {
-                    state.durability_error = Some(error.to_string());
+                // Poison: every later append returns this error until the
+                // store is reopened. Keep the bare message so the replayed
+                // error reads the same as the first one.
+                if let WalError::Durability(message) = &error {
+                    state.durability_error = Some(message.clone());
                 }
                 return Err(error);
             }
@@ -521,6 +544,10 @@ fn open_wal_writer(path: &Path) -> io::Result<File> {
 trait AppendTarget: Write {
     fn seek_end(&mut self) -> io::Result<u64>;
     fn truncate(&mut self, len: u64) -> io::Result<()>;
+    /// Makes every earlier write and truncate durable, including the file
+    /// length. A truncate changes no directory entry, so no platform needs
+    /// the parent directory synced for it (unlike `persist_replacement`).
+    fn sync(&mut self) -> io::Result<()>;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -532,10 +559,17 @@ impl AppendTarget for File {
     fn truncate(&mut self, len: u64) -> io::Result<()> {
         self.set_len(len)
     }
+
+    // sync_all, not sync_data: the rollback changes only the file length,
+    // which is metadata. On Windows this is FlushFileBuffers, which needs
+    // the write access open_wal_writer already requests.
+    fn sync(&mut self) -> io::Result<()> {
+        self.sync_all()
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn append_entry<T: AppendTarget>(
+fn append_entry<T: AppendTarget + ?Sized>(
     target: &mut T,
     len: u64,
     crc: u32,
@@ -549,9 +583,20 @@ fn append_entry<T: AppendTarget>(
         .and_then(|()| target.write_all(&crc.to_le_bytes()))
         .and_then(|()| target.write_all(payload));
     if let Err(write_error) = result {
+        // The rollback is only a rollback once it is durable: an unsynced
+        // truncate can leave the torn tail on disk after a crash. Either
+        // failure is a Durability error, which poisons the WAL (see
+        // `Wal::append`) until the store is reopened and replay repairs it.
         target.truncate(offset).map_err(|truncate_error| {
             WalError::Durability(format!(
-                "WAL append failed ({write_error}); rollback failed ({truncate_error})"
+                "WAL append failed ({write_error}); rollback to byte {offset} failed \
+                 ({truncate_error}); the WAL may be inconsistent until the store is reopened"
+            ))
+        })?;
+        target.sync().map_err(|sync_error| {
+            WalError::Durability(format!(
+                "WAL append failed ({write_error}); rollback to byte {offset} could not be \
+                 synced ({sync_error}); the WAL may be inconsistent until the store is reopened"
             ))
         })?;
         return Err(WalError::Io(write_error));
@@ -579,7 +624,7 @@ fn sync_pending(state: &mut WalState) -> Result<(), WalError> {
     }
     if let Some(file) = state.file.as_mut() {
         file.flush()?;
-        file.sync_all()?;
+        file.sync()?;
     }
     state.durable_sequence = state.next_sequence;
     state.pending_entries = 0;
@@ -835,6 +880,10 @@ mod tests {
         fn truncate(&mut self, len: u64) -> io::Result<()> {
             self.file.set_len(len)
         }
+
+        fn sync(&mut self) -> io::Result<()> {
+            self.file.sync_all()
+        }
     }
 
     #[test]
@@ -881,6 +930,184 @@ mod tests {
         assert_eq!(
             node_labels(&wal.iter().unwrap()),
             ["before", "same-handle", "after"]
+        );
+    }
+
+    /// What a `FaultyTarget` did to the real WAL file underneath it, in order.
+    #[derive(Clone, Debug, PartialEq)]
+    enum FileEvent {
+        Write,
+        Truncate(u64),
+        Sync,
+    }
+
+    /// Wraps the real WAL file and fails the operations a test asks for.
+    /// The log is shared so a test can inspect it after `Wal` owns the target.
+    struct FaultyTarget {
+        file: File,
+        log: Arc<Mutex<Vec<FileEvent>>>,
+        fail_writes: Arc<Mutex<bool>>,
+        fail_syncs: Arc<Mutex<bool>>,
+    }
+
+    impl Write for FaultyTarget {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if *self.fail_writes.lock().unwrap() {
+                // Leave torn bytes behind, as a real short write would.
+                let torn = buf.len().min(3);
+                self.file.write_all(&buf[..torn])?;
+                self.log.lock().unwrap().push(FileEvent::Write);
+                return Err(io::Error::other("injected write failure"));
+            }
+            let written = self.file.write(buf)?;
+            self.log.lock().unwrap().push(FileEvent::Write);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.file.flush()
+        }
+    }
+
+    impl AppendTarget for FaultyTarget {
+        fn seek_end(&mut self) -> io::Result<u64> {
+            self.file.seek_end()
+        }
+
+        fn truncate(&mut self, len: u64) -> io::Result<()> {
+            self.file.truncate(len)?;
+            self.log.lock().unwrap().push(FileEvent::Truncate(len));
+            Ok(())
+        }
+
+        fn sync(&mut self) -> io::Result<()> {
+            if *self.fail_syncs.lock().unwrap() {
+                return Err(io::Error::other("injected sync failure"));
+            }
+            AppendTarget::sync(&mut self.file)?;
+            self.log.lock().unwrap().push(FileEvent::Sync);
+            Ok(())
+        }
+    }
+
+    struct FaultyWal {
+        wal: Wal,
+        path: PathBuf,
+        log: Arc<Mutex<Vec<FileEvent>>>,
+        fail_writes: Arc<Mutex<bool>>,
+        fail_syncs: Arc<Mutex<bool>>,
+        _dir: tempfile::TempDir,
+    }
+
+    /// A flush-every WAL holding one acknowledged entry, built through the
+    /// same `from_target` path as `with_group_commit`, over a faulty target.
+    fn faulty_wal() -> FaultyWal {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("wal.bin");
+        drop(Wal::new(&path, true).unwrap());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let fail_writes = Arc::new(Mutex::new(false));
+        let fail_syncs = Arc::new(Mutex::new(false));
+        let target = FaultyTarget {
+            file: open_wal_writer(&path).unwrap(),
+            log: Arc::clone(&log),
+            fail_writes: Arc::clone(&fail_writes),
+            fail_syncs: Arc::clone(&fail_syncs),
+        };
+        let wal = Wal::from_target(
+            &path,
+            Box::new(target),
+            true,
+            DEFAULT_GROUP_COMMIT_INTERVAL,
+            DEFAULT_GROUP_COMMIT_BATCH_SIZE,
+        );
+        wal.append(&insert_node("acked")).unwrap();
+        log.lock().unwrap().clear();
+        FaultyWal {
+            wal,
+            path,
+            log,
+            fail_writes,
+            fail_syncs,
+            _dir: dir,
+        }
+    }
+
+    #[test]
+    fn failed_append_syncs_the_rollback_before_returning() {
+        let faulty = faulty_wal();
+        let valid_len = std::fs::metadata(&faulty.path).unwrap().len();
+        *faulty.fail_writes.lock().unwrap() = true;
+
+        let error = faulty.wal.append(&insert_node("torn")).unwrap_err();
+
+        assert!(
+            matches!(error, WalError::Io(_)),
+            "unexpected error: {error}"
+        );
+        // By the time the error surfaced, the truncate back to the last good
+        // length had happened AND been synced, and nothing came after it.
+        assert_eq!(
+            *faulty.log.lock().unwrap(),
+            [
+                FileEvent::Write,
+                FileEvent::Truncate(valid_len),
+                FileEvent::Sync
+            ]
+        );
+        assert_eq!(std::fs::metadata(&faulty.path).unwrap().len(), valid_len);
+
+        // A synced rollback is a clean state: the WAL is not poisoned.
+        *faulty.fail_writes.lock().unwrap() = false;
+        faulty.wal.append(&insert_node("after")).unwrap();
+        assert_eq!(node_labels(&faulty.wal.iter().unwrap()), ["acked", "after"]);
+    }
+
+    #[test]
+    fn unsynced_rollback_poisons_the_wal() {
+        let faulty = faulty_wal();
+        let valid_len = std::fs::metadata(&faulty.path).unwrap().len();
+        *faulty.fail_writes.lock().unwrap() = true;
+        *faulty.fail_syncs.lock().unwrap() = true;
+
+        let error = faulty.wal.append(&insert_node("torn")).unwrap_err();
+
+        let WalError::Durability(message) = &error else {
+            panic!("expected a durability error, got {error}");
+        };
+        assert!(
+            message.contains("may be inconsistent"),
+            "error must say the WAL may be inconsistent: {message}"
+        );
+        assert_eq!(
+            *faulty.log.lock().unwrap(),
+            [FileEvent::Write, FileEvent::Truncate(valid_len)]
+        );
+
+        // Even once the disk recovers, the WAL refuses every further write
+        // without touching the file, until it is reopened.
+        *faulty.fail_writes.lock().unwrap() = false;
+        *faulty.fail_syncs.lock().unwrap() = false;
+        faulty.log.lock().unwrap().clear();
+        for label in ["refused-1", "refused-2"] {
+            let refused = faulty.wal.append(&insert_node(label)).unwrap_err();
+            assert!(
+                matches!(&refused, WalError::Durability(m) if m == message),
+                "poisoned WAL accepted or changed its error: {refused}"
+            );
+        }
+        assert!(faulty.log.lock().unwrap().is_empty());
+        assert_eq!(std::fs::metadata(&faulty.path).unwrap().len(), valid_len);
+
+        // Reopening replays only what was acknowledged.
+        let path = faulty.path.clone();
+        drop(faulty.wal);
+        let reopened = Wal::new(&path, true).unwrap();
+        assert_eq!(node_labels(&reopened.iter().unwrap()), ["acked"]);
+        reopened.append(&insert_node("after-reopen")).unwrap();
+        assert_eq!(
+            node_labels(&reopened.iter().unwrap()),
+            ["acked", "after-reopen"]
         );
     }
 
