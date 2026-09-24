@@ -111,8 +111,9 @@ The checker, at the name's span:
 
 - the weight is not a field of the relationship, or is not `Int` or `Float`
 - `hops` bound on a weighted path
-- `toward` without `by &weight`, or on a field that is not a `Point` on every
-  target type
+- `toward` without `by &weight`, or on a field that is not a `Point` on the
+  start's type and every target type (the start's roads are checked against
+  the straight line too)
 - a target type without the relationship
 - `*path` in a mutation, or a target with `near`, `order by` or `limit`
 - `toward at` without `in m`, `in km` or `in mi`
@@ -122,8 +123,8 @@ At run time, naming the edge or node:
 - a road without the weight (`road#2 from Junction#2 to Junction#3 has no km`).
   A missing weight is never read as 0 or 1.
 - a negative weight
-- with `toward`: a node without its `Point`, or a road shorter than its
-  straight line
+- with `toward`: a node without its `Point` (the start included, for an
+  optional `at?: Point`), or a road shorter than its straight line
 
 Each road a search reads costs one unit of the traversal work budget, the same
 as `*1..3`. `Zega::nodes_expanded()` (and `nodes_expanded()` in the WASM build)

@@ -1585,11 +1585,6 @@ fn route(
                 if toward.is_none() || goal_points.is_empty() {
                     return Ok(0.0);
                 }
-                // The start may be a type without the Point; guessing 0 there
-                // keeps the guess consistent.
-                if node == start && point_of(node).is_err() {
-                    return Ok(0.0);
-                }
                 let here = point_of(node)?.expect("toward is set");
                 let nearest = goal_points
                     .iter()
@@ -1626,7 +1621,9 @@ fn route(
                         .with_help("the cheapest route is only defined for weights of 0 or more"));
                     }
                     if let Some(toward) = toward {
-                        if let (Ok(Some(from)), Ok(Some(to_point))) = (point_of(node), point_of(to)) {
+                        // Every node, the start included, has its Point here:
+                        // a missing one is an error, never a skipped check.
+                        if let (Some(from), Some(to_point)) = (point_of(node)?, point_of(to)?) {
                             let line = straight(from, to_point);
                             if weight_value < STRAIGHT_LINE_SHARE * line {
                                 return Err(LangError::at(

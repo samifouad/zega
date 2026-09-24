@@ -3013,6 +3013,34 @@ impl Check<'_> {
                     )),
                 );
             }
+            // The start's roads are checked against the straight line too,
+            // so the start needs the Point as much as every node after it.
+            // A start type that is also a target type is checked below.
+            let targets = selection_types(target);
+            for name in selection_types(sel) {
+                if targets.contains(&name) {
+                    continue;
+                }
+                match self.schema.prop(name, &toward.field) {
+                    Ok(Field::Prop { ty, .. }) if ty == "Point" => {}
+                    Ok(Field::Prop { ty, .. }) => self.push(
+                        toward.span,
+                        format!("toward needs a Point; {name}.{} is {ty}", toward.field),
+                        Some("A* measures the straight line to the target from a Point field".into()),
+                    ),
+                    _ => self.push(
+                        toward.span,
+                        format!(
+                            "{name} has no {}, and `toward {}` needs a location on every node it reaches",
+                            toward.field, toward.field
+                        ),
+                        Some(format!(
+                            "declare `{}: Point` on {name}, or drop `toward` to search without a guess",
+                            toward.field
+                        )),
+                    ),
+                }
+            }
             for name in selection_types(target) {
                 if self.schema.types.iter().all(|ty| ty.name != name) {
                     continue;

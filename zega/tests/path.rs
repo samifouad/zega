@@ -412,6 +412,44 @@ fn astar_needs_a_location_on_every_node_it_reaches() {
 }
 
 #[test]
+fn astar_needs_a_location_on_the_start_too() {
+    // A start type without the Point: the checker refuses before any search.
+    let schema = "type Depot { name: String road -> Junction[] { m: Int } }\ntype Junction { name: String at: Point road -> Junction[] { m: Int } }\n";
+    let query = "{ Depot { road *path by &m toward at in m -> Junction { name } } }";
+    let report = zega::diagnose(schema, query);
+    let message = "Depot has no at, and `toward at` needs a location on every node it reaches";
+    let diag = report
+        .diagnostics
+        .iter()
+        .find(|diag| diag.message == message)
+        .unwrap_or_else(|| panic!("{:?}", report.diagnostics));
+    let start = diag.column as usize - 1;
+    assert_eq!(&query[start..start + diag.underline_length as usize], "at");
+    let db = Zega::in_memory().build().unwrap();
+    db.run_lang(schema, "mutation { Depot(name: \"D\") { road -> Junction(name: \"J\" && at: point(51.0, -114.0)) { name &m: 1 } } }")
+        .unwrap();
+    let error = db.run_lang(schema, query).unwrap_err().to_string();
+    assert!(error.contains(message), "{error}");
+    // Without `toward` the same route is fine.
+    let found = db.run_lang(schema, "{ Depot { road *path by &m -> Junction { name } } }").unwrap();
+    assert_eq!(found[0]["road"]["cost"], json!(1));
+
+    // An optional Point missing on the start: the runtime refuses too, rather
+    // than skipping the straight-line check on the roads leaving it (this
+    // 1 m road is far shorter than its straight line).
+    let schema = "type Stop { n: Int at?: Point next -> Stop[] { m: Int } }";
+    let db = Zega::in_memory().build().unwrap();
+    db.run_lang(schema, "mutation { Stop(n: 1) { n } }").unwrap();
+    db.run_lang(schema, "mutation { Stop(n: 2 && at: point(51.0, -114.0)) { n } }").unwrap();
+    db.run_lang(schema, "mutation { Stop(n: 1) { next -> link Stop(n: 2) { &m: 1 } } }").unwrap();
+    let error = db
+        .run_lang(schema, "{ Stop(n: 1) { next *path by &m toward at in m -> Stop(n: 2) { n } } }")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Stop#1 has no at, and `toward at` needs a location on every node it reaches"), "{error}");
+}
+
+#[test]
 fn the_checker_rejects_paths_it_cannot_run() {
     let schema = "type Junction { name: String at: Point road -> Junction[] { km: Float label?: String } go -> Place[] }\ntype Place { name: String }\n";
     let cases = [
