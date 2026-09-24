@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io;
+#[cfg(any(not(target_arch = "wasm32"), feature = "durable-log"))]
+use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -27,6 +29,7 @@ const WAL_VERSION: u16 = 2;
 const WAL_FILE_HEADER: &[u8; 6] = b"ZWAL\x02\x00";
 #[cfg(not(target_arch = "wasm32"))]
 const WAL_FILE_HEADER_LEN: u64 = WAL_FILE_HEADER.len() as u64;
+#[cfg(any(not(target_arch = "wasm32"), feature = "durable-log"))]
 const ENTRY_HEADER_LEN: u64 = 12;
 #[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_GROUP_COMMIT_INTERVAL: Duration = Duration::from_millis(5);
@@ -100,7 +103,7 @@ struct GroupCommit {
 }
 
 pub struct Wal {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "durable-log"))]
     target: std::sync::Mutex<Option<Box<dyn AppendTarget + Send>>>,
     #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
@@ -113,6 +116,7 @@ pub struct Wal {
 impl Wal {
     /// A synchronous host target. The host must hold its output gate until
     /// the transaction containing this append commits. No group-commit thread.
+    #[cfg(feature = "durable-log")]
     pub fn with_append_target(target: Box<dyn AppendTarget + Send>) -> Self {
         #[cfg(target_arch = "wasm32")]
         { Self { target: std::sync::Mutex::new(Some(target)) } }
@@ -124,7 +128,10 @@ impl Wal {
     pub fn in_memory() -> Self {
         #[cfg(target_arch = "wasm32")]
         {
-            Wal { target: std::sync::Mutex::new(None) }
+            Wal {
+                #[cfg(feature = "durable-log")]
+                target: std::sync::Mutex::new(None),
+            }
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -158,7 +165,10 @@ impl Wal {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (path, flush_every);
-            Ok(Wal { target: std::sync::Mutex::new(None) })
+            Ok(Wal {
+                #[cfg(feature = "durable-log")]
+                target: std::sync::Mutex::new(None),
+            })
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -183,7 +193,10 @@ impl Wal {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (path, flush_every, interval, batch_size);
-            Ok(Wal { target: std::sync::Mutex::new(None) })
+            Ok(Wal {
+                #[cfg(feature = "durable-log")]
+                target: std::sync::Mutex::new(None),
+            })
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -251,7 +264,12 @@ impl Wal {
     }
 
     pub fn append(&self, op: &Operation) -> Result<(), WalError> {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(feature = "durable-log")))]
+        {
+            let _ = op;
+            Ok(())
+        }
+        #[cfg(all(target_arch = "wasm32", feature = "durable-log"))]
         {
             let mut target = self.target.lock()
                 .map_err(|_| WalError::Durability("append target lock poisoned".into()))?;
@@ -593,6 +611,7 @@ fn open_wal_writer(path: &Path) -> io::Result<File> {
 /// a rollback checkpoint (a byte offset for files, a sequence for row stores).
 /// `write_entry` receives the native frame header and payload. A host must discard
 /// its engine after an uncertain durability error, just as it would reopen a file.
+#[cfg(any(not(target_arch = "wasm32"), feature = "durable-log"))]
 pub trait AppendTarget: Write {
     /// File targets keep their existing streaming writes. Row targets override
     /// this to insert the header and payload as one opaque BLOB.
@@ -629,6 +648,7 @@ impl AppendTarget for File {
 
 /// Writes one entry at the end of the file and returns the offset it starts
 /// at; on a failed write, nothing of it is left in the file.
+#[cfg(any(not(target_arch = "wasm32"), feature = "durable-log"))]
 fn append_entry<T: AppendTarget + ?Sized>(
     target: &mut T,
     len: u64,
@@ -752,6 +772,7 @@ fn group_commit_worker(group: Arc<GroupCommit>) {
 /// Decode exactly one native `[u64 length][u32 CRC][bincode payload]` frame.
 /// SQL replay fails closed on any malformed row; it never silently trims a
 /// committed row. Native replay still repairs torn file tails before decoding.
+#[cfg(feature = "durable-log")]
 pub(crate) fn decode_entry(frame: &[u8]) -> Result<Operation, WalError> {
     let corrupt = |reason: &str| WalError::Corruption { offset: 0, reason: reason.into() };
     if frame.len() < ENTRY_HEADER_LEN as usize { return Err(corrupt("truncated entry header")); }
@@ -763,6 +784,7 @@ pub(crate) fn decode_entry(frame: &[u8]) -> Result<Operation, WalError> {
     decode_payload(payload, 0)
 }
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "durable-log"))]
 fn decode_payload(payload: &[u8], offset: u64) -> Result<Operation, WalError> {
     bincode::DefaultOptions::new().with_fixint_encoding().reject_trailing_bytes()
         .with_limit(payload.len() as u64).deserialize(payload)
@@ -812,14 +834,21 @@ pub fn restore(graph: &mut Graph, path: &Path) -> Result<bool, WalError> {
 /// Serialize the full graph state to bytes (platform-independent; the
 /// basis for the file-based snapshot and for wasm export/import).
 pub fn encode_snapshot(graph: &Graph) -> Result<Vec<u8>, WalError> {
+    #[cfg(feature = "durable-log")]
     #[derive(Serialize)]
     struct SnapshotRef<'a> {
         nodes: &'a HashMap<NodeId, Node>,
         relationships: &'a HashMap<RelId, Relationship>,
     }
+    #[cfg(feature = "durable-log")]
     let snapshot = SnapshotRef {
         nodes: graph.all_nodes(),
         relationships: graph.all_relationships(),
+    };
+    #[cfg(not(feature = "durable-log"))]
+    let snapshot = Snapshot {
+        nodes: graph.all_nodes().clone(),
+        relationships: graph.all_relationships().clone(),
     };
     let mut bytes = Vec::new();
     serialize_into(&mut bytes, &snapshot)?;

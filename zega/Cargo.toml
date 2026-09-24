@@ -13,6 +13,8 @@ categories = ["database-implementations"]
 [features]
 default = ["http"]
 http = ["dep:ureq"]
+# Explicit host-storage opt-in; ordinary WASM consumers keep the in-memory WAL.
+durable-log = []
 
 [dependencies]
 csv = "1.3"

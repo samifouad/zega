@@ -9,7 +9,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-zega = { path = "../zega", default-features = false }
+zega = { path = "../zega", default-features = false, features = ["durable-log"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
