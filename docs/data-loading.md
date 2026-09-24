@@ -42,9 +42,9 @@ callers authorized to execute ZQL may read files accessible to the process.
 
 Fetching and parsing happen before taking the graph lock. Rows insert under
 that lock through the same mutation and WAL operations as handwritten ZQL.
-A malformed source is rejected before insertion. A later mutation/constraint
-failure can leave earlier successful rows written, as with ordinary mutations;
-an import is not a transaction.
+A malformed source is rejected before insertion. A load is one statement, and
+every statement is all-or-nothing: if any row fails a constraint, or the WAL
+refuses the write, no row of the load is kept, in memory or in the WAL.
 
 ## Browser hosts
 

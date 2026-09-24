@@ -267,6 +267,18 @@ export class ZegaWasm {
         }
     }
     /**
+     * Rows a ZQL filter has been tested on since this database was created.
+     * An `index { }` block lowers it; results never change.
+     * @returns {number}
+     */
+    rows_examined() {
+        const ret = wasm.zegawasm_rows_examined(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
      * @param {string} schema
      * @param {string} source
      * @returns {string}

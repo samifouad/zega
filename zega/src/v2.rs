@@ -10,12 +10,13 @@ use crate::vector::{Vector, VectorSpec, Metric};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::graph::{Graph, Node, NodeId, RelId};
+use crate::index::{IndexKind, Interval, TextPattern};
 use crate::lang::{
     BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, Pred, Schema, Selection, Span,
     Statement,
 };
 use crate::parser::Value;
-use crate::wal::Operation;
+use crate::journal::{atomically, Journal};
 use serde_json::{json, Value as Json};
 
 use crate::{Zega, ZegaError};
@@ -87,9 +88,23 @@ impl Zega {
             .map_err(|error| explain(error, "schema", schema_src))?;
         let uniques = crate::lang::parse_uniques(schema_src)
             .map_err(|error| explain(error, "schema", schema_src))?;
+        let indexes = crate::lang::parse_indexes(schema_src)
+            .map_err(|error| explain(error, "schema", schema_src))?;
         let statement = crate::lang::parse_statement(source)
             .map_err(|error| explain(error, "query", source))?;
-        self.execute(&schema, &uniques, &statement, "query", source, loader)
+        let declared = Declared { uniques: &uniques, indexes: &indexes };
+        self.execute(&schema, declared, &statement, "query", source, loader)
+    }
+
+    /// Rows a ZQL filter has been tested on since this database opened. An
+    /// index lowers this number and never changes a result; tests use it to
+    /// show an index was used.
+    pub fn rows_examined(&self) -> Result<u64, ZegaError> {
+        let graph = self
+            .graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        Ok(graph.examined())
     }
 
     pub fn delete_node(&self, id: u64) -> Result<(), ZegaError> {
@@ -97,13 +112,10 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        if graph.get_node(id).is_none() {
-            return Ok(());
-        }
-        graph.delete_node(id);
-        self.wal
-            .append(&Operation::DeleteNode { id })
-            .map_err(|error| ZegaError::Execution(error.to_string()))
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            journal.delete_node(graph, id);
+            Ok(())
+        })
     }
 
     pub fn delete_relationship(&self, id: u64) -> Result<(), ZegaError> {
@@ -111,13 +123,10 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        if graph.get_relationship(id).is_none() {
-            return Ok(());
-        }
-        graph.delete_relationship(id);
-        self.wal
-            .append(&Operation::DeleteRel { id })
-            .map_err(|error| ZegaError::Execution(error.to_string()))
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            journal.delete_relationship(graph, id);
+            Ok(())
+        })
     }
 
     /// Store one schema relationship from `from_id` to `to_id`.
@@ -171,26 +180,28 @@ impl Zega {
             },
         )
         .map_err(|error| explain(error, "schema", schema_src))?;
-        connect(
-            &mut graph,
-            &self.wal,
-            from_id,
-            to_id,
-            direction,
-            RelationshipSpec {
-                field,
-                kind: rel,
-                many,
-                span: Span {
-                    line: 0,
-                    column: 0,
-                    end_line: 0,
-                    end_column: 0,
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            connect(
+                graph,
+                journal,
+                from_id,
+                to_id,
+                direction,
+                RelationshipSpec {
+                    field,
+                    kind: rel,
+                    many,
+                    span: Span {
+                        line: 0,
+                        column: 0,
+                        end_line: 0,
+                        end_column: 0,
+                    },
                 },
-            },
-            props,
-        )
-            .map_err(|error| explain(error, "schema", schema_src))?;
+                props,
+            )
+            .map_err(|error| explain(error, "schema", schema_src))
+        })?;
         Ok(())
     }
 
@@ -221,7 +232,7 @@ impl Zega {
         for statement in &file.statements {
             last = self.execute(
                 &file.schema,
-                &file.uniques,
+                Declared { uniques: &file.uniques, indexes: &file.indexes },
                 statement,
                 "schema",
                 source,
@@ -234,7 +245,7 @@ impl Zega {
     fn execute(
         &self,
         schema: &Schema,
-        uniques: &[(String, String)],
+        declared: Declared<'_>,
         statement: &Statement,
         source_name: &str,
         source: &str,
@@ -257,48 +268,26 @@ impl Zega {
         } else {
             Vec::new()
         };
+        let uniques = declared.uniques;
         let mut graph = self
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
+        // The schema of this statement says which indexes exist; the writes
+        // below keep them current, and a rollback restores them with the rows.
+        graph.sync_indexes(&crate::lang::effective_indexes(
+            schema,
+            declared.uniques,
+            declared.indexes,
+        ));
         let mut budget = self.traversal_work_budget;
-        let is_mutation = matches!(statement, Statement::Load { .. })
-            || matches!(statement, Statement::Run(query) if query.mutation);
-        if !is_mutation {
-            return run_statement(
-            &mut graph,
-            &self.wal,
-            schema,
-            uniques,
-            statement,
-            &mut budget,
-            &rows,
-        )
-            .map_err(|error| explain(error, source_name, source));
-        }
-
-        // Run writes against an isolated graph first. A validation failure in
-        // any nested selection or imported row must leave the live graph and
-        // its WAL untouched.
-        let mut staged = graph.clone();
-        let result = run_statement(
-            &mut staged,
-            &crate::Wal::in_memory(),
-            schema,
-            uniques,
-            statement,
-            &mut budget,
-            &rows,
-        )
-        .map_err(|error| explain(error, source_name, source))?;
-        let operations = graph_operations(&graph, &staged);
-        for operation in &operations {
-            self.wal
-                .append(operation)
-                .map_err(|error| ZegaError::Execution(error.to_string()))?;
-        }
-        *graph = staged;
-        Ok(result)
+        // A read logs nothing. A mutation or load is one statement: every row
+        // and nested selection is applied, or (on a validation error or a
+        // refused WAL append) none is, in memory and in the WAL alike.
+        atomically(&mut graph, &self.wal, |graph, journal| {
+            run_statement(graph, journal, schema, uniques, statement, &mut budget, &rows)
+                .map_err(|error| explain(error, source_name, source))
+        })
     }
 
     pub fn graph_json(&self) -> Result<Json, ZegaError> {
@@ -330,6 +319,13 @@ impl Zega {
     }
 }
 
+/// The `unique` and `index` blocks that travel with a schema.
+#[derive(Clone, Copy)]
+struct Declared<'a> {
+    uniques: &'a [(String, String)],
+    indexes: &'a [crate::lang::IndexSpec],
+}
+
 fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
     let (root, mutation) = match statement {
         Statement::Run(query) => (query.root.as_ref(), query.mutation),
@@ -341,52 +337,9 @@ fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
     Ok(())
 }
 
-fn graph_operations(before: &Graph, after: &Graph) -> Vec<Operation> {
-    let mut operations = Vec::new();
-    let mut nodes: Vec<_> = after.all_nodes().values().collect();
-    nodes.sort_by_key(|node| node.id);
-    for node in nodes {
-        match before.get_node(node.id) {
-            None => operations.push(Operation::InsertNode {
-                id: node.id,
-                labels: node.labels.clone(),
-                props: node.props.clone(),
-            }),
-            Some(previous) => {
-                let changed: HashMap<_, _> = node
-                    .props
-                    .iter()
-                    .filter(|(key, value)| previous.props.get(*key) != Some(*value))
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect();
-                if !changed.is_empty() {
-                    operations.push(Operation::UpdateNode {
-                        id: node.id,
-                        props: changed,
-                    });
-                }
-            }
-        }
-    }
-    let mut relationships: Vec<_> = after.all_relationships().values().collect();
-    relationships.sort_by_key(|rel| rel.id);
-    for rel in relationships {
-        if before.get_relationship(rel.id).is_none() {
-            operations.push(Operation::InsertRel {
-                id: rel.id,
-                kind: rel.kind.clone(),
-                from: rel.from,
-                to: rel.to,
-                props: rel.props.clone(),
-            });
-        }
-    }
-    operations
-}
-
 fn run_statement(
     graph: &mut Graph,
-    wal: &crate::Wal,
+    journal: &mut Journal,
     schema: &Schema,
     uniques: &[(String, String)],
     statement: &Statement,
@@ -399,7 +352,7 @@ fn run_statement(
                 return Ok(Json::Null);
             };
             if query.mutation {
-                mutate(graph, wal, schema, root, uniques)
+                mutate(graph, journal, schema, root, uniques)
             } else {
                 read(graph, schema, root, budget)
             }
@@ -420,7 +373,7 @@ fn run_statement(
                 let Some(root) = &query.root else {
                     continue;
                 };
-                out.push(mutate(graph, wal, schema, root, uniques)?);
+                out.push(mutate(graph, journal, schema, root, uniques)?);
             }
             Ok(Json::Array(out))
         }
@@ -731,7 +684,7 @@ fn read(
     budget: &mut usize,
 ) -> Result<Json, LangError> {
     let mut ids = candidates(graph, root);
-    ids.retain(|id| node_matches(graph, *id, root.condition.as_ref()));
+    retain_matches(graph, &mut ids, root.condition.as_ref());
     order_limit(graph, root, &mut ids, |id| *id);
     if equality_lookup(root) {
         return match ids.len() {
@@ -753,18 +706,18 @@ fn read(
 
 fn mutate(
     graph: &mut Graph,
-    wal: &crate::Wal,
+    journal: &mut Journal,
     schema: &Schema,
     root: &Selection,
     uniques: &[(String, String)],
 ) -> Result<Json, LangError> {
-    apply_node(graph, wal, schema, root, None, uniques)
+    apply_node(graph, journal, schema, root, None, uniques)
 }
 
 /// Writes or finds this selection and returns only the rows this statement touched.
 fn apply_node(
     graph: &mut Graph,
-    wal: &crate::Wal,
+    journal: &mut Journal,
     schema: &Schema,
     sel: &Selection,
     parent: Option<(NodeId, Direction, String, String, bool, Span)>,
@@ -775,7 +728,7 @@ fn apply_node(
         lookup_one(graph, sel, uniques)?
     } else {
         require_points(schema, sel)?;
-        insert_node(graph, wal, schema, sel, uniques)?
+        insert_node(graph, journal, schema, sel, uniques)?
     };
     if !sel.sets.is_empty() {
         let props = sel
@@ -796,9 +749,7 @@ fn apply_node(
                 .unwrap_or(sel.type_span);
             return Err(unique_conflict(&ty, &field, span));
         }
-        graph.update_node(id, props.clone());
-        wal.append(&Operation::UpdateNode { id, props })
-            .map_err(|error| LangError::bare(error.to_string()))?;
+        journal.update_node(graph, id, props);
     }
     if let Some((parent_id, direction, field, rel, many, edge_span)) = &parent {
         let props = edge_sets(sel)?;
@@ -813,7 +764,7 @@ fn apply_node(
         require_edge_props(schema, rel, &props, props_span)?;
         connect(
             graph,
-            wal,
+            journal,
             *parent_id,
             id,
             *direction,
@@ -890,7 +841,7 @@ fn apply_node(
                     require_edge_props(schema, rel, &props, props_span)?;
                     connect(
                         graph,
-                        wal,
+                        journal,
                         id,
                         child_id,
                         *direction,
@@ -927,7 +878,7 @@ fn apply_node(
                 } else {
                     apply_node(
                         graph,
-                        wal,
+                        journal,
                         schema,
                         target,
                         Some((id, *direction, field.clone(), rel.to_string(), many, *span)),
@@ -955,7 +906,7 @@ fn lookup_one(
     uniques: &[(String, String)],
 ) -> Result<NodeId, LangError> {
     let mut ids = unique_candidates(graph, sel, uniques).unwrap_or_else(|| candidates(graph, sel));
-    ids.retain(|id| node_matches(graph, *id, sel.condition.as_ref()));
+    retain_matches(graph, &mut ids, sel.condition.as_ref());
     match ids.len() {
         1 => Ok(ids[0]),
         0 => Err(
@@ -1020,7 +971,7 @@ fn has_link(sel: &Selection) -> bool {
 
 fn insert_node(
     graph: &mut Graph,
-    wal: &crate::Wal,
+    journal: &mut Journal,
     schema: &Schema,
     sel: &Selection,
     uniques: &[(String, String)],
@@ -1035,10 +986,7 @@ fn insert_node(
     if let Some((ty, field)) = find_duplicate(graph, &labels, &props, uniques, None) {
         return Err(unique_conflict(&ty, &field, sel.type_span));
     }
-    let id = graph.create_node(labels.clone(), props.clone());
-    wal.append(&Operation::InsertNode { id, labels, props })
-        .map_err(|error| LangError::bare(error.to_string()))?;
-    Ok(id)
+    Ok(journal.create_node(graph, labels, props))
 }
 
 fn unique_conflict(ty: &str, field: &str, span: Span) -> LangError {
@@ -1162,7 +1110,7 @@ struct RelationshipSpec<'a> {
 
 fn connect(
     graph: &mut Graph,
-    wal: &crate::Wal,
+    journal: &mut Journal,
     parent: NodeId,
     child: NodeId,
     direction: Direction,
@@ -1202,16 +1150,7 @@ fn connect(
         Direction::Out => (parent, child),
         Direction::In => (child, parent),
     };
-    let id = graph.create_relationship(kind.to_string(), from, to, props.clone());
-    wal.append(&Operation::InsertRel {
-        id,
-        kind: kind.to_string(),
-        from,
-        to,
-        props,
-    })
-    .map_err(|error| LangError::bare(error.to_string()))?;
-    Ok(id)
+    Ok(journal.create_relationship(graph, kind.to_string(), from, to, props))
 }
 
 fn node_description(node: &Node) -> String {
@@ -1495,7 +1434,50 @@ fn neighbors(
     out
 }
 
-fn spatial_filter(graph: &Graph, expr: &BoolExpr) -> Option<HashSet<NodeId>> {
+/// Keep the rows whose condition holds, and count each row tested.
+fn retain_matches(graph: &Graph, ids: &mut Vec<NodeId>, condition: Option<&BoolExpr>) {
+    if condition.is_some() {
+        graph.note_examined(ids.len());
+    }
+    ids.retain(|id| node_matches(graph, *id, condition));
+}
+
+/// A condition on one field that a range index can answer.
+fn range_interval(pred: &Pred) -> Option<(&str, Interval)> {
+    let (field, interval) = match pred {
+        Pred::Eq(field, value, _) => (field, Interval::exactly(value)?),
+        Pred::Cmp(field, Cmp::Gt | Cmp::Gte, value, _) => (field, Interval::at_least(value)?),
+        Pred::Cmp(field, Cmp::Lt | Cmp::Lte, value, _) => (field, Interval::at_most(value)?),
+        _ => return None,
+    };
+    // `id` reads the node id, not a stored field.
+    (field != "id").then_some((field.as_str(), interval))
+}
+
+fn and_terms<'a>(expr: &'a BoolExpr, out: &mut Vec<&'a BoolExpr>) {
+    match expr {
+        BoolExpr::And(left, right) => {
+            and_terms(left, out);
+            and_terms(right, out);
+        }
+        other => out.push(other),
+    }
+}
+
+fn intersect(found: Option<HashSet<NodeId>>, next: HashSet<NodeId>) -> Option<HashSet<NodeId>> {
+    Some(match found {
+        None => next,
+        Some(mut found) => {
+            found.retain(|id| next.contains(id));
+            found
+        }
+    })
+}
+
+/// Candidates from the spatial index and the declared `index { }` block.
+/// Every row the condition accepts is in the set; the caller still tests each
+/// one. None means no index applies and the caller scans the types.
+fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSet<NodeId>> {
     match expr {
         BoolExpr::Test(Pred::Box(field, bounds, _)) => {
             Some(graph.spatial_candidates(field, *bounds))
@@ -1503,27 +1485,60 @@ fn spatial_filter(graph: &Graph, expr: &BoolExpr) -> Option<HashSet<NodeId>> {
         BoolExpr::Test(Pred::Distance(distance, Cmp::Lt | Cmp::Lte, metres)) => Some(
             graph.spatial_candidates(&distance.field, Bounds::radius(distance.origin, *metres)),
         ),
-        BoolExpr::And(left, right) => {
-            match (spatial_filter(graph, left), spatial_filter(graph, right)) {
-                (Some(mut a), Some(b)) => {
-                    a.retain(|id| b.contains(id));
-                    Some(a)
+        BoolExpr::Test(Pred::Contains(field, needle, _)) => {
+            graph.text_candidates(types, field, TextPattern::Contains(needle))
+        }
+        BoolExpr::Test(Pred::StartsWith(field, needle, _)) => {
+            graph.text_candidates(types, field, TextPattern::StartsWith(needle))
+        }
+        BoolExpr::Test(Pred::EndsWith(field, needle, _)) => {
+            graph.text_candidates(types, field, TextPattern::EndsWith(needle))
+        }
+        BoolExpr::Test(pred) => {
+            let (field, interval) = range_interval(pred)?;
+            graph.range_candidates(types, field, &interval)
+        }
+        BoolExpr::And(_, _) => {
+            // Bounds on one field join into one range scan: `a > 1 && a < 9`.
+            let mut terms = Vec::new();
+            and_terms(expr, &mut terms);
+            let mut ranges: Vec<(&str, Interval)> = Vec::new();
+            let mut found = None;
+            for term in terms {
+                if let BoolExpr::Test(pred) = term {
+                    if let Some((field, interval)) = range_interval(pred) {
+                        if graph.has_index(IndexKind::Range, types, field) {
+                            match ranges.iter_mut().find(|(name, _)| *name == field) {
+                                Some((_, joined)) => {
+                                    *joined = std::mem::replace(joined, Interval::Empty)
+                                        .intersect(interval)
+                                }
+                                None => ranges.push((field, interval)),
+                            }
+                            continue;
+                        }
+                    }
                 }
-                (a, b) => a.or(b),
+                if let Some(set) = index_filter(graph, types, term) {
+                    found = intersect(found, set);
+                }
             }
+            for (field, interval) in ranges {
+                if let Some(set) = graph.range_candidates(types, field, &interval) {
+                    found = intersect(found, set);
+                }
+            }
+            found
         }
         BoolExpr::Or(left, right) => {
-            match (spatial_filter(graph, left), spatial_filter(graph, right)) {
-                (Some(mut a), Some(b)) => {
-                    a.extend(b);
-                    Some(a)
-                }
-                _ => None, // A non-spatial branch may match anywhere.
-            }
+            // A branch with no index may match anywhere.
+            let mut left = index_filter(graph, types, left)?;
+            left.extend(index_filter(graph, types, right)?);
+            Some(left)
         }
-        _ => None,
     }
 }
+
 fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
     let has_label = |id: &NodeId| {
         graph.get_node(*id).is_some_and(|node| {
@@ -1532,10 +1547,13 @@ fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
                 .any(|label| label == &sel.type_name || sel.also.contains(label))
         })
     };
+    let types: Vec<&str> = std::iter::once(sel.type_name.as_str())
+        .chain(sel.also.iter().map(String::as_str))
+        .collect();
     let indexed = sel
         .condition
         .as_ref()
-        .and_then(|expr| spatial_filter(graph, expr));
+        .and_then(|expr| index_filter(graph, &types, expr));
     // Expand a geodesic circle until k qualifying points are inside. Every
     // point outside is farther than the kth match, so early stopping is exact.
     if let Some(order) = &sel.order {
@@ -1550,7 +1568,10 @@ fn candidates(graph: &Graph, sel: &Selection) -> Vec<NodeId> {
                 .into_iter()
                 .filter(has_label)
                 .filter(|id| indexed.as_ref().is_none_or(|set| set.contains(id)))
-                .filter(|id| node_matches(graph, *id, sel.condition.as_ref()))
+                .collect();
+            retain_matches(graph, &mut ids, sel.condition.as_ref());
+            let mut ids: Vec<_> = ids
+                .into_iter()
                 .filter(|id| node_distance(graph, *id, order).is_some_and(|d| d <= radius))
                 .collect();
             if radius >= maximum || sel.limit.is_some_and(|k| ids.len() >= k) {
