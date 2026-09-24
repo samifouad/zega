@@ -736,7 +736,7 @@ function drawGraph() {
     const ids = new Set(nodes.map((node) => node.id));
     renderGraph(graphEl, { nodes, rels: graph.rels.filter((rel) => ids.has(rel.from) && ids.has(rel.to)) }, highlights(lastValue), {
       onNode: openNodeMenu, onEdge: openEdgeMenu, onInspect: inspectNode,
-    });
+    }, view, types);
   } else if (activeView === 'table') {
     renderTable(graphEl, graph, types, inspectNode);
   } else if (activeView === 'map') {

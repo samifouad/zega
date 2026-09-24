@@ -230,3 +230,136 @@ fn display_diagnostic_caret_and_public_api() {
         ViewKind::Table
     );
 }
+
+#[test]
+fn node_display_serialization_and_defaults() {
+    let schema = parse_schema("type Log {} type Contract { scan: String<url> } type Player { photo?: String<url> } display { graph { Log(@shape: document) Contract(@shape: document, @image: &scan), Player(@shape: circle, @image: &photo, @size: 2) } table { Log(@size: 3) } }").unwrap();
+    assert_eq!(
+        serde_json::to_value(&schema.display).unwrap(),
+        serde_json::json!({
+            "views": [
+                {"kind":"graph","types":["Log","Contract","Player"],"nodes":{
+                    "Log":{"shape":"document","size":1,"image":null},
+                    "Contract":{"shape":"document","size":1,"image":"scan"},
+                    "Player":{"shape":"circle","size":2,"image":"photo"}}},
+                {"kind":"table","types":["Log"],"nodes":{"Log":{"shape":"circle","size":3,"image":null}}}
+            ],"default":"graph"
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<DisplayConfig>(serde_json::to_value(&schema.display).unwrap())
+            .unwrap(),
+        schema.display
+    );
+    assert_eq!(
+        parse_schema("type Log {} display { graph { Log } }")
+            .unwrap()
+            .display
+            .views[0]
+            .nodes
+            .len(),
+        0
+    );
+}
+
+fn attribute_error(attribute: &str, token: &str, message: &str, help: &str) {
+    let source = format!("type Log {{ scan: String photo: Int related -> Log }}\ndisplay {{ graph {{ Log({attribute}) }} }}");
+    let error = parse_schema(&source).unwrap_err();
+    assert_eq!(error.message, message, "{source}");
+    assert_eq!(error.help.as_deref(), Some(help));
+    assert_eq!(error.line, 2);
+    assert_eq!(error.end_line, 2);
+    let line = source.lines().nth(1).unwrap();
+    assert_eq!(
+        &line[(error.column - 1) as usize..(error.end_column - 1) as usize],
+        token
+    );
+}
+
+#[test]
+fn node_display_unknown_attribute_span() {
+    attribute_error(
+        "@colour: blue",
+        "@colour",
+        "unknown display attribute @colour",
+        "use `@shape`, `@image` or `@size`",
+    );
+}
+
+#[test]
+fn node_display_shape_errors() {
+    for value in ["square", "1", "\"document\"", "&scan", "true"] {
+        attribute_error(
+            &format!("@shape: {value}"),
+            value,
+            "@shape must be circle or document",
+            "write `@shape: circle` or `@shape: document`",
+        );
+    }
+}
+
+#[test]
+fn node_display_size_errors() {
+    for value in [
+        "0", "4", "-1", "1.5", "2.0", "large", "\"2\"", "&scan", "false",
+    ] {
+        attribute_error(
+            &format!("@size: {value}"),
+            value,
+            "@size must be 1, 2 or 3",
+            "write `@size: 1`, `@size: 2` or `@size: 3`",
+        );
+    }
+}
+
+#[test]
+fn node_display_image_requires_url_field() {
+    for field in ["scan", "photo", "missing", "related"] {
+        attribute_error(
+            &format!("@image: &{field}"),
+            &format!("&{field}"),
+            &format!("@image needs Log.{field} to be String<url>"),
+            &format!("declare `{field}: String<url>` on Log"),
+        );
+    }
+}
+
+#[test]
+fn node_display_image_reference_errors() {
+    for value in ["scan", "\"https://example.com/a.png\"", "2", "null"] {
+        attribute_error(
+            &format!("@image: {value}"),
+            value,
+            "@image needs a field reference",
+            "write `@image: &scan` and declare `scan: String<url>`",
+        );
+    }
+}
+
+#[test]
+fn node_display_duplicate_and_at_rule() {
+    for (name, value) in [("shape", "circle"), ("size", "2"), ("image", "&scan")] {
+        // Use valid URL fields so a duplicate image is the first error.
+        let source = format!("type Log {{ scan: String<url> }} display {{ graph {{ Log(@{name}: {value}, @{name}: {value}) }} }}");
+        let error = parse_schema(&source).unwrap_err();
+        assert_eq!(
+            error.message,
+            format!("duplicate display attribute @{name}")
+        );
+        assert_eq!(
+            &source[(error.column - 1) as usize..(error.end_column - 1) as usize],
+            format!("@{name}")
+        );
+        attribute_error(
+            &format!("{name}: {value}"),
+            name,
+            &format!("display attribute {name} needs @{name}"),
+            &format!("write `@{name}: …`; `@` names language attributes"),
+        );
+    }
+    let source = "type Log {} display { graph { Log Log(@size: 2) } }";
+    assert_eq!(
+        parse_schema(source).unwrap_err().message,
+        "duplicate display type Log"
+    );
+}

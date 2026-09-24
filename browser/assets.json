@@ -14,5 +14,6 @@
   "samples",
   "fonts",
   "pkg",
-  "vendor"
+  "vendor",
+  "node-display.js"
 ]

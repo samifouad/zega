@@ -166,3 +166,32 @@ test('native explorer formats both editor panes through the shared WASM export',
     }
   } finally { await server.stop(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test('native storage and WASM checker agree on URL documents and Space preview', async ({page, request}) => {
+  await mkdir('.tmp', {recursive:true,mode:0o700});
+  const directory=await mkdtemp(resolve('.tmp/cli-shapes-'));
+  const server=await start(directory);
+  const schema='type Note { name: String scan: String<url> } display { graph { Note(@shape: document, @image: &scan, @size: 2) } }';
+  try {
+    const inserted=await request.post(`${server.url}/zql`,{data:{schema,query:'mutation { Note(name: "Native document" && scan: "https://example.com/scan.png") { name scan } }'}});
+    expect(inserted.ok()).toBe(true);
+    const rejected=await request.post(`${server.url}/zql`,{data:{schema,query:'mutation { Note(name: "Rejected" && scan: "broken") }'}});
+    expect(rejected.ok()).toBe(false);
+    expect((await rejected.json()).error).toContain('must be String<url>');
+    await page.goto(server.url);
+    await expect(page.locator('#query .monaco-editor')).toBeVisible();
+    await page.evaluate((schema) => {
+      const editor=(pane) => window.monaco.editor.getEditors().find(e => e.getDomNode()?.closest(`#${pane}`));
+      editor('schema').setValue(schema);editor('query').setValue('{ Note { @id name scan } }');
+    },schema);
+    await page.locator('#btn-run').click();
+    const node=page.locator('g[data-shape="document"]');
+    await expect(node).toHaveCount(1);await expect(node).toHaveAttribute('data-size','2');
+    await expect(node.locator('.document-fold')).toHaveAttribute('d','M 9 -22 L 18 -13 H 9 Z');
+    await node.focus();await page.keyboard.press('Space');
+    const dialog=page.getByRole('dialog',{name:'Native document'});
+    await expect(dialog).toContainText('https://example.com/scan.png');
+    await page.keyboard.press('Escape');await expect(node).toBeFocused();
+    await page.reload();await expect(page.locator('g[data-shape="document"]')).toHaveCount(1);
+  } finally { await server.stop();await rm(directory,{recursive:true,force:true}); }
+});
