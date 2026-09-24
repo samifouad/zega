@@ -895,27 +895,56 @@ function relsAmong(rels, nodes) {
   return rels.filter((rel) => ids.has(rel.from) && ids.has(rel.to));
 }
 
+// The stored nodes a result object names: by its `@id`, or by every selected
+// property agreeing. An explicit `id` also distinguishes equal-valued nodes.
+function matchNodes(value, nodes, types) {
+  return nodes.filter((node) => {
+    if (value.id != null) return value.id === node.id;
+    const type = types.find((type) => node.labels.includes(type.name));
+    const selected = (type?.fields || []).filter((field) => field.kind === 'prop' && field.name in value);
+    return selected.length > 0 && selected.every((field) => JSON.stringify(node[field.name]) === JSON.stringify(value[field.name]));
+  });
+}
+
 // Projection values carry coordinates. Resolve their stored identity for the
-// shared inspector; an explicit `id` also distinguishes equal-valued nodes.
+// shared inspector.
 function mapResults(value, nodes, types, into = new Map()) {
   if (Array.isArray(value)) value.forEach((item) => mapResults(item, nodes, types, into));
   else if (value && typeof value === 'object') {
-    for (const node of nodes) {
+    for (const node of matchNodes(value, nodes, types)) {
       const type = types.find((type) => node.labels.includes(type.name));
-      const fields = type?.fields.filter((field) => field.kind === 'prop') || [];
-      const point = fields.find((field) => field.ty === 'Point' && value[field.name] != null);
+      const point = type.fields.find((field) => field.kind === 'prop' && field.ty === 'Point' && value[field.name] != null);
       const coordinates = point ? value[point.name] : value;
-      if (!Number.isFinite(coordinates.lat) || !Number.isFinite(coordinates.lon)) continue;
-      const matches = value.id != null ? value.id === node.id : fields
-        .filter((field) => field.name in value)
-        .every((field) => JSON.stringify(node[field.name]) === JSON.stringify(value[field.name]));
-      if (matches && (value.id != null || fields.some((field) => field.name in value))) {
-        into.set(node.id, { ...node, lat: coordinates.lat, lon: coordinates.lon });
-      }
+      if (Number.isFinite(coordinates.lat) && Number.isFinite(coordinates.lon)) into.set(node.id, { ...node, lat: coordinates.lat, lon: coordinates.lon });
     }
     Object.values(value).forEach((child) => mapResults(child, nodes, types, into));
   }
   return [...into.values()];
+}
+
+// The relationships a query's result follows (zega#83): an object that names
+// a stored node, then a relationship field under it whose objects name nodes
+// too. `index` is the stored relationships by type and ends. The globe draws
+// these in focus; null when the result follows none.
+function relResults(value, nodes, types, index, into = new Set()) {
+  if (Array.isArray(value)) value.forEach((item) => relResults(item, nodes, types, index, into));
+  else if (value && typeof value === 'object') {
+    for (const node of matchNodes(value, nodes, types)) {
+      const type = types.find((type) => node.labels.includes(type.name));
+      for (const field of type.fields.filter((field) => field.kind === 'edge' && value[field.field] != null)) {
+        for (const item of [value[field.field]].flat()) {
+          if (!item || typeof item !== 'object') continue;
+          for (const other of matchNodes(item, nodes, types)) {
+            const [from, to] = field.direction === 'out' ? [node.id, other.id] : [other.id, node.id];
+            const id = index.get(`${field.rel}\n${from}\n${to}`);
+            if (id != null) into.add(id);
+          }
+        }
+      }
+    }
+    Object.values(value).forEach((child) => relResults(child, nodes, types, index, into));
+  }
+  return into.size ? into : null;
 }
 
 function drawGraph() {
@@ -963,14 +992,17 @@ function drawGraph() {
     disposeView?.();
     disposeView = renderMap(graphEl, mapResults(lastValue, nodes, types), theme, inspectNode, credit);
   } else if (activeView === 'globe') {
-    // The globe draws the stored graph, not the query's result. While that
-    // graph, the camera, the theme and the credit are unchanged, a re-run
-    // leaves the globe as it is: mid-animation, and where the reader put it.
+    // The globe draws the stored graph, with the query's relationships in
+    // focus. While that graph, the camera, the theme and the credit are
+    // unchanged, a re-run refocuses the arcs and leaves the globe as it is:
+    // mid-animation, and where the reader put it.
+    const rels = relsAmong(graph.rels, nodes);
+    const focus = relResults(lastValue, nodes, types, new Map(rels.map((rel) => [`${rel.type}\n${rel.from}\n${rel.to}`, rel.id])));
     const key = [theme, JSON.stringify(view.globe), credit, raw].join('\n');
-    if (graphEl._map && key === globeKey) return;
+    if (graphEl._map && key === globeKey) { graphEl._globe?.focus(focus); return; }
     globeKey = key;
     disposeView?.();
-    disposeView = renderGlobe(graphEl, { ...globeData(nodes, types, relsAmong(graph.rels, nodes)), credit }, view.globe, theme, inspectNode, inspectRel);
+    disposeView = renderGlobe(graphEl, { ...globeData(nodes, types, rels), credit, focus }, view.globe, theme, inspectNode, inspectRel);
   } else if (activeView === 'vector2d' || activeView === 'vector3d') {
     disposeView?.();
     const analyze = async (selected, k, threshold) => {

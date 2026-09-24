@@ -2,7 +2,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { test, expect } from './offline.js';
 import { palettes } from '../theme.js';
 import { tileFixture } from './map-fixture.js';
-import { map, idle, hasColor } from './globe-helpers.js';
+import { map, idle, hasColor, patch } from './globe-helpers.js';
 
 // zega#83: the Flights sample, its example bar, and the #81 follow-ups.
 const SHOTS = '../.tmp/shots';
@@ -48,6 +48,23 @@ async function loadFlights(page, { routes }) {
   await page.evaluate(() => document.querySelector('#graph')._outlines);
   await idle(page);
 }
+// The whole planet, centred in the pane with a margin: the schema's zoom, or less when the pane is too small for it.
+async function expectFramed(page) {
+  await expect.poll(() => map(page, 'return map.getPadding().bottom')).toBeGreaterThan(20);
+  const planet = await arcs(page, 'return arcs.planetCenter()');
+  const radius = await arcs(page, 'return arcs.planetRadius()');
+  const pane = await page.locator('.maplibregl-canvas').evaluate((canvas) => ({ width: canvas.clientWidth, height: canvas.clientHeight }));
+  expect(Math.abs(planet.y - pane.height / 2), 'centred vertically').toBeLessThan(3);
+  expect(Math.abs(planet.x - pane.width / 2), 'centred horizontally').toBeLessThan(3);
+  const room = Math.min(pane.width, pane.height) / 2 - 14;
+  expect(radius, 'fits the pane').toBeLessThanOrEqual(room + 2);
+  const zoom = await map(page, 'return map.getZoom()');
+  expect(zoom).toBeLessThanOrEqual(1);
+  // Either the schema's zoom fits, or the view zoomed out just enough.
+  if (zoom < 1) expect(radius).toBeGreaterThan(room - 3);
+  return { zoom, radius, pane };
+}
+
 // The arc drawn for a route, by its ends' coordinates.
 async function arcIndex(page, data, origin, destination) {
   const at = (code) => { const a = data.airports.find((airport) => airport.code === code); return [Number(a.lon), Number(a.lat)]; };
@@ -70,8 +87,11 @@ test('the Flights sample loads onto a tilted globe that draws every route as an 
   const data = await sampleData();
   expect(data.routes.length).toBeGreaterThan(500);
   await loadFlights(page, data);
-  await expect(page.locator('.map-count')).toHaveText(`${data.airports.length} places · ${data.routes.length} relationships`);
-  expect(await map(page, 'return [map.getPitch(), map.getZoom()]')).toEqual([40, 1]);
+  const yycRoutes = data.routes.filter((r) => r.origin === 'YYC').length;
+  await expect(page.locator('.map-count')).toHaveText(`${data.airports.length} places · ${yycRoutes} of ${data.routes.length} relationships`);
+  expect(await map(page, 'return map.getPitch()')).toBe(40);
+  await expectFramed(page);
+
   await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('OpenFlights');
   await expect(page.locator('.maplibregl-ctrl-attrib a[href="https://openflights.org/data.php"]')).toHaveCount(1);
   // The route Calgary–Amsterdam is drawn in the accent, on the screen, and its ends sit on the two airports.
@@ -121,9 +141,13 @@ test('the example queries return the counts in the sample files, and the globe s
   const buttons = page.locator('#tour-queries button');
   const codesOf = (list) => list.map((row) => row.code).sort();
   const shot = async (n) => page.screenshot({ path: `${SHOTS}/flights-query-${n}-1440.png` });
-  // 1. Out of Calgary: every route stored from YYC.
+  const focused = () => arcs(page, 'return arcs.records.filter((record) => record.focus).length');
+  const focusText = (f) => `${data.airports.length} places · ${f ? `${f} of ` : ''}${data.routes.length} relationships`;
+  // 1. Out of Calgary: every route stored from YYC, in focus on the globe.
   await buttons.nth(0).click();
   await expect.poll(async () => (await output(page)).route?.length).toBe(data.routes.filter((r) => r.origin === 'YYC').length);
+  await expect.poll(focused).toBe(data.routes.filter((r) => r.origin === 'YYC').length);
+  await expect(page.locator('.map-count')).toHaveText(focusText(data.routes.filter((r) => r.origin === 'YYC').length));
   const yyc = await output(page);
   expect(yyc.name).toBe('Calgary International Airport');
   expect(codesOf(yyc.route)).toEqual(data.routes.filter((r) => r.origin === 'YYC').map((r) => r.destination).sort());
@@ -134,6 +158,7 @@ test('the example queries return the counts in the sample files, and the globe s
   await expect.poll(async () => (await output(page)).inbound?.length).toBe(data.routes.filter((r) => r.destination === 'AMS').length);
   const ams = await output(page);
   expect(codesOf(ams.inbound)).toEqual(data.routes.filter((r) => r.destination === 'AMS').map((r) => r.origin).sort());
+  await expect.poll(focused).toBe(data.routes.filter((r) => r.destination === 'AMS').length);
   for (const row of ams.inbound) {
     const airport = data.airports.find((a) => a.code === row.code);
     expect(row.country.name).toBe(data.countries.find((c) => c.iso === airport.country).name);
@@ -147,6 +172,7 @@ test('the example queries return the counts in the sample files, and the globe s
   expect(ca.name).toBe('Canada');
   expect(codesOf(ca.airports)).toEqual(codesOf(canada));
   for (const airport of ca.airports) expect(airport.route.length, airport.code).toBe(data.routes.filter((r) => r.origin === airport.code).length);
+  await expect.poll(focused).toBe(data.routes.filter((r) => canada.some((a) => a.code === r.origin)).length);
   await shot(3);
   // 4. The five airports nearest the Calgary Tower, nearest first, with the haversine distance.
   await buttons.nth(3).click();
@@ -155,10 +181,46 @@ test('the example queries return the counts in the sample files, and the globe s
   const five = await output(page);
   expect(five.map((row) => row.code)).toEqual(nearest.map((row) => row.code));
   five.forEach((row, i) => expect(row.distance).toBeCloseTo(nearest[i].distance, 0));
+  // No relationships in this result: every route draws alike again.
+  await expect.poll(focused).toBe(0);
+  await expect(page.locator('.map-count')).toHaveText(focusText(0));
   await shot(4);
   // The same globe, throughout: the queries changed the output pane, not the view.
   expect(await map(page, 'return map._zegaStamp')).toBe(created);
   expect(await count(page)).toBe(data.routes.length);
+});
+
+// The nearest per-channel distance of any pixel in the patch to the colour.
+async function nearest(page, x, y, color) {
+  const want = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16));
+  const pixels = await patch(page, x, y, 6);
+  return Math.min(Infinity, ...pixels.map((pixel) => Math.max(...pixel.map((channel, i) => Math.abs(channel - want[i])))));
+}
+
+test('a query lights up the routes it follows: focused arcs draw in the accent, the rest faint, until a query follows none', async ({ page }) => {
+  const data = await sampleData();
+  await loadFlights(page, data);
+  const accent = palettes.light.accent;
+  // Out of Calgary is in focus on load: Calgary–Amsterdam at full strength.
+  const lit = await arcIndex(page, data, 'YYC', 'AMS');
+  const seen = await visiblePoint(page, lit);
+  expect(seen).not.toBeNull();
+  expect(await nearest(page, seen.point.x, seen.point.y, accent)).toBeLessThanOrEqual(48);
+  // A South Atlantic route is context: faint, far from the accent, and its midpoint is on the screen.
+  const faint = await arcIndex(page, data, 'GRU', 'JNB').catch(() => arcIndex(page, data, 'JNB', 'GRU'));
+  expect(await arcs(page, 'return arcs.records[arg].focus', faint)).toBe(false);
+  const mid = await arcs(page, 'return arcs.screen(arg, 0.5)', faint);
+  expect(mid).not.toBeNull();
+  const faintDistance = await nearest(page, mid.x, mid.y, accent);
+  expect(faintDistance).toBeGreaterThan(80);
+  const focusedShot = await page.locator('.maplibregl-canvas').screenshot();
+  // Nearest to the Calgary Tower follows no relationship: the same route now draws at the network's strength.
+  await page.locator('#tour-queries button').nth(3).click();
+  await expect.poll(() => arcs(page, 'return arcs.focused')).toBe(false);
+  await idle(page);
+  expect(await nearest(page, mid.x, mid.y, accent)).toBeLessThan(faintDistance - 30);
+  expect((await page.locator('.maplibregl-canvas').screenshot()).equals(focusedShot)).toBe(false);
+  await page.screenshot({ path: `${SHOTS}/flights-focus-off-1440.png` });
 });
 
 test('shaders are freed with their programs: the live count does not grow across view switches', async ({ page }) => {
@@ -219,6 +281,8 @@ for (const width of [1440, 390]) test(`the Flights globe in light and dark at ${
       await idle(page);
     }
     await page.evaluate(() => window.scrollTo(0, 0));
+    const { zoom } = await expectFramed(page);
+    if (width === 390) expect(zoom, 'the narrow pane zooms out to fit the planet').toBeLessThan(0.9);
     const i = await arcIndex(page, data, 'YYC', 'AMS');
     expect(await visiblePoint(page, i), `${theme} ${width}`).not.toBeNull();
     await page.screenshot({ path: `${SHOTS}/flights-globe-${theme}-${width}.png` });

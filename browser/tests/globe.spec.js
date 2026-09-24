@@ -25,7 +25,13 @@ test('globe renders a sphere at the checked camera and highlights countries by I
   await expect(page.getByRole('tab')).toHaveText(['Globe', 'Table']);
   await expect(page.locator('.map-count')).toHaveText('3 countries · 2 places');
   expect(await globeness(page)).toBe(1);
-  expect(await map(page, 'const c = map.getCenter(); return [map.getZoom(), map.getPitch(), +c.lat.toFixed(4), +c.lng.toFixed(4)]')).toEqual([2, 20, 50, -60]);
+  expect(await map(page, 'const c = map.getCenter(); return [map.getPitch(), +c.lat.toFixed(4), +c.lng.toFixed(4)]')).toEqual([20, 50, -60]);
+  // Zoom 2 is a view of the planet (zega#83): the whole planet fits the pane with its margin, at the schema's zoom or the nearest below it.
+  await expect.poll(() => map(page, 'return map.getPadding().bottom')).toBeGreaterThan(0);
+  const framed = await map(page, 'const a = document.querySelector("#graph")._arcs; const c = map.getCanvas(); return { zoom: map.getZoom(), radius: a.planetRadius(), room: Math.min(c.clientWidth, c.clientHeight) / 2 - 14 }');
+  expect(framed.zoom).toBeLessThanOrEqual(2);
+  expect(framed.radius).toBeLessThanOrEqual(framed.room + 2);
+  if (framed.zoom < 2) expect(framed.radius).toBeGreaterThan(framed.room - 3);
   // The engine checked String<iso2>; the outlines carry the same codes.
   await expect.poll(() => highlightAt(page, ...CANADA)).toBe('CA');
   await expect.poll(() => highlightAt(page, ...USA)).toBe(null);
@@ -102,7 +108,8 @@ test('missing outlines keep places; a bad setting underlines its value', async (
   await page.route('**/data/countries-110m.geojson', (route) => route.fulfill({ status: 404 }));
   await globe(page);
   await expect(page.locator('.map-notice')).toHaveText('Country outlines unavailable. Your places are still shown.');
-  await expect.poll(() => map(page, 'return map.getLayer("zega-nodes") ? map.queryRenderedFeatures({ layers: ["zega-nodes"] }).length : -1')).toBeGreaterThan(0);
+  // The place's marker is drawn where the place is. (A viewport-wide query on the globe answers only transiently, so it is asked at the point.)
+  await expect.poll(() => map(page, 'return map.getLayer("zega-nodes") ? map.queryRenderedFeatures(map.project(arg), { layers: ["zega-nodes"] }).length : -1', [-114.07, 51.05])).toBeGreaterThan(0);
   await setEditor(page, 'schema', 'type Country { iso: String<iso2> }\ndisplay { globe(@zoom: 30) }');
   await expect.poll(() => page.evaluate(() => window.monaco.editor.getModelMarkers({ owner: 'zega' }).map(({ message, startLineNumber, startColumn, endColumn }) => ({ message, startLineNumber, startColumn, endColumn })))).toEqual([{
     message: '@zoom must be a number from 0 to 22\n\n1.5 shows the whole globe; the globe becomes the flat map near 12', startLineNumber: 2, startColumn: 24, endColumn: 26,

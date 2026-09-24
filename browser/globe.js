@@ -11,6 +11,8 @@ const protocol = new Protocol();
 maplibre.addProtocol('pmtiles', protocol.tile);
 export const COUNTRIES_URL = new URL('./data/countries-110m.geojson', import.meta.url).href;
 const BASEMAP_MINZOOM = 5;
+const PLANET_MARGIN = 14; // CSS px around the planet when the view fits it to the pane
+const PLANET_ZOOM = 3; // at or below this, a globe view is a view of the planet, and is fitted to the pane
 export const NO_WEBGL2 = 'WebGL2 unavailable. This browser cannot draw the globe.';
 const NATURAL_EARTH = '<a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener">Natural Earth</a>';
 
@@ -139,7 +141,7 @@ function globeStyle(theme, codes, places, outlines, basemap, credit) {
   };
 }
 
-export function renderGlobe(container, { countries, codes, places, rels = [], credit = '' }, camera, theme, onNode, onEdge) {
+export function renderGlobe(container, { countries, codes, places, rels = [], credit = '', focus = null }, camera, theme, onNode, onEdge) {
   const root = document.createElement('div');
   root.className = 'map-view globe-view';
   const canvas = document.createElement('div');
@@ -188,17 +190,61 @@ export function renderGlobe(container, { countries, codes, places, rels = [], cr
   const placeAt = new Map(places.map(({ node, lat, lon }) => [node.id, [lon, lat]]));
   let labels = new Map();
   const locate = (id) => placeAt.get(id) || labels.get(codes.get(id)) || null;
+  // The query's relationships (zega#83) draw in focus, last so they sit on
+  // top; the rest are context. With none in the result, all draw alike.
+  let focused = focus;
   function updateArcs() {
     const records = rels.flatMap((rel) => {
       const from = locate(rel.from), to = locate(rel.to);
-      return from && to ? [{ from, to, rel }] : [];
-    });
+      return from && to ? [{ from, to, rel, focus: Boolean(focused?.has(rel.id)) }] : [];
+    }).sort((a, b) => a.focus - b.focus);
     arcs.setArcs(records);
-    const n = countries.size, m = places.length, k = records.length;
+    const n = countries.size, m = places.length, k = records.length, f = records.filter((record) => record.focus).length;
     count.textContent = [[n, 'country', 'countries'], [m, 'place', 'places'], [k, 'relationship', 'relationships']]
-      .filter(([value]) => value).map(([value, one, many]) => `${value} ${value === 1 ? one : many}`).join(' · ') || 'nothing to draw';
+      .filter(([value]) => value).map(([value, one, many]) => `${f && many === 'relationships' ? `${f} of ` : ''}${value} ${value === 1 ? one : many}`).join(' · ') || 'nothing to draw';
   }
   updateArcs();
+  // The whole planet in the pane (zega#83), measured from the layer's last
+  // frame. A view at or below zoom 3 is a view of the planet: `@zoom` is
+  // then as far in as the view goes, and a pane too small for the planet
+  // at that zoom zooms out until it fits with a margin, and back in as the
+  // pane grows, never past the schema's zoom and never over a zoom the
+  // reader chose. Above zoom 3 the camera is a region's, exactly the
+  // schema's. A tilted globe hangs below the map's centre point, which
+  // MapLibre keeps at the pane's centre; padding below moves that point up
+  // by half of it, so the planet itself sits in the middle. On the flat map
+  // there is no planet to frame.
+  let fitted = camera.zoom, settling = false, pending = false;
+  const frame = () => {
+    pending = false;
+    if (!container._map) return;
+    const planet = arcs.planetCenter(), radius = arcs.planetRadius();
+    const pane = { width: canvas.clientWidth, height: canvas.clientHeight };
+    if (!planet || !radius || !pane.height) {
+      if (map.getPadding().bottom) map.setPadding({ top: 0, left: 0, right: 0, bottom: 0 });
+      return;
+    }
+    const room = Math.min(pane.width, pane.height) / 2 - PLANET_MARGIN;
+    const zoom = Math.min(camera.zoom, map.getZoom() + Math.log2(room / radius));
+    if (camera.zoom <= PLANET_ZOOM && map.getZoom() === fitted && Math.abs(zoom - fitted) > 0.005) {
+      // One step, then the padding for the new size; our own zoomend is not a reader's.
+      fitted = zoom;
+      settling = true;
+      map.setZoom(zoom);
+      settling = false;
+      centrePlanet();
+      return;
+    }
+    const bottom = Math.max(0, Math.round(2 * (planet.y - pane.height / 2)));
+    if (bottom !== map.getPadding().bottom) map.setPadding({ top: 0, left: 0, right: 0, bottom });
+  };
+  const centrePlanet = () => {
+    if (settling || pending) return;
+    pending = true;
+    map.once('render', frame);
+  };
+  centrePlanet();
+  for (const event of ['pitchend', 'zoomend']) map.on(event, centrePlanet);
   map.on('style.load', () => { if (!map.getLayer(arcs.id)) map.addLayer(arcs, 'zega-nodes'); });
 
   // Auto-spin: the preview's slow eastward turn, slowing as the map zooms in
@@ -280,11 +326,12 @@ export function renderGlobe(container, { countries, codes, places, rels = [], cr
       cursor();
     }, 80);
   });
-  const resize = new ResizeObserver(() => map.resize());
+  const resize = new ResizeObserver(() => { map.resize(); centrePlanet(); });
   resize.observe(canvas);
   container._map = map;
   container._arcs = arcs;
   container._outlines = loaded;
+  container._globe = { focus(ids) { focused = ids; updateArcs(); } };
   return () => {
     resize.disconnect();
     clearTimeout(hover);
@@ -292,5 +339,6 @@ export function renderGlobe(container, { countries, codes, places, rels = [], cr
     map.remove();
     container._map = null;
     container._arcs = null;
+    container._globe = null;
   };
 }
