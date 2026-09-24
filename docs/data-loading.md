@@ -75,7 +75,7 @@ values; use explicit ZQL `link` to connect to an existing unique node.
 | --- | --- | --- | --- | --- |
 | Native library, disk | Rust std::fs, process cwd | Rust reqwest::blocking | serde_json + json_rows | handwritten Rust parser |
 | Native library, memory | Same as disk | Same as disk | Same as disk | Same as disk |
-| zega-server | Not exposed through its old /cql API | Not exposed through /cql | Only HTTP request envelopes | No load API |
+| zega-server | Not exposed by the server API of that revision | Not exposed | Only HTTP request envelopes | No load API |
 | zega-wasm | No disk access; relative locations are browser URLs | Synchronous XHR via web-sys | Rust serde_json | handwritten Rust parser |
 | Explorer ZQL editor | Relative browser URLs via wasm | wasm XHR | Rust engine | Rust engine |
 | Explorer Import dialog | JS File.text/drop/clipboard | JS fetch | JS JSON.parse/jsonTable | JS parseCsv |

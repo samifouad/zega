@@ -50,8 +50,14 @@ mutation {
 
 ```zql
 mutation {
-  Player(name: "Alice" && salary: 12500000) {
-    playsFor -> Team(name: "Oilers")
+  Player(name: "Alice" && salary: 12500000)
+}
+```
+
+```zql
+mutation {
+  Player(name: "Alice") {
+    playsFor -> link Team(name: "Oilers")
   }
 }
 ```
@@ -66,10 +72,24 @@ query {
 { "bio": null, "name": "Alice" }
 ```
 
-A field without `?` is required. Today the engine does not yet reject a node
-created without one; it reads as `null` too
-([zegadb/zega#72](https://github.com/zegadb/zega/issues/72)). Required
-properties on a relationship are enforced; see
+A field without `?` is required. Creating a node without it, or with it set to
+`null`, is an error that names the field:
+
+```zql error
+mutation {
+  Team(name: "Flames" && city: "Calgary")
+}
+```
+
+```text
+execution error: error: Team requires founded
+  query:2:3
+    Team(name: "Flames" && city: "Calgary")
+    ^^^^
+  help: write `founded: …` when creating a Team, or declare it `founded?: Int`
+```
+
+Required properties on a relationship work the same way; see
 [relationships](relationships.md).
 
 ## Units

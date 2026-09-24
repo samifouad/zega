@@ -18,7 +18,7 @@ use crate::lang::{
     BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, Pred, Schema, Selection, Span,
     Statement,
 };
-use crate::parser::Value;
+use crate::value::Value;
 use crate::journal::{atomically, Journal};
 use serde_json::{json, Value as Json};
 
@@ -333,7 +333,10 @@ fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
         Statement::Load { template, .. } => (template.root.as_ref(), true),
     };
     if let Some(root) = root {
-        crate::lang::check(schema, root, mutation)?;
+        match statement {
+            Statement::Run(_) => crate::lang::check(schema, root, mutation)?,
+            Statement::Load { .. } => crate::lang::check_template(schema, root)?,
+        }
     }
     Ok(())
 }
@@ -700,7 +703,11 @@ fn read(
     context: &mut ReadContext<'_>,
 ) -> Result<Json, LangError> {
     let mut ids = candidates(graph, root, context.work)?;
-    retain_matches(graph, &mut ids, root.condition.as_ref(), context.work)?;
+    // Candidates are in ascending id order, which is also the result order,
+    // so without a ranking (`near`, `order by`) the first `limit` matches are
+    // the answer and the rest need not be tested (zegadb/zega#82).
+    let enough = root.limit.filter(|_| root.near.is_none() && root.order.is_none());
+    retain_first_matches(graph, &mut ids, root.condition.as_ref(), enough, context.work)?;
     order_limit(graph, root, &mut ids, |id| *id, context.work)?;
     if equality_lookup(root) {
         return match ids.len() {
@@ -1006,6 +1013,9 @@ fn insert_node(
     let mut props = HashMap::new();
     if let Some(expr) = &sel.condition {
         assign_props(expr, sel, schema, &mut props)?;
+    }
+    if let Some(error) = crate::lang::missing_fields(schema, sel, false).into_iter().next() {
+        return Err(error);
     }
     let labels: Vec<String> = std::iter::once(sel.type_name.clone())
         .chain(sel.also.iter().cloned())
@@ -1747,21 +1757,42 @@ fn retain_matches(
     condition: Option<&BoolExpr>,
     work: &mut Work,
 ) -> Result<(), LangError> {
+    retain_first_matches(graph, ids, condition, None, work)
+}
+
+/// Like `retain_matches`, but stop once `enough` rows match: the rows after
+/// that are neither tested nor kept, nor counted as examined.
+fn retain_first_matches(
+    graph: &Graph,
+    ids: &mut Vec<NodeId>,
+    condition: Option<&BoolExpr>,
+    enough: Option<usize>,
+    work: &mut Work,
+) -> Result<(), LangError> {
+    let enough = enough.unwrap_or(usize::MAX);
     if condition.is_none() {
+        ids.truncate(enough);
         return Ok(());
     }
-    graph.note_examined(ids.len());
+    let mut kept = 0;
+    let mut tested = 0;
     let mut stopped = Ok(());
-    ids.retain(|id| {
-        if stopped.is_err() {
-            return false;
+    for i in 0..ids.len() {
+        if kept == enough {
+            break;
         }
         if let Err(error) = work.step() {
             stopped = Err(error);
-            return false;
+            break;
         }
-        node_matches(graph, *id, condition)
-    });
+        tested += 1;
+        if node_matches(graph, ids[i], condition) {
+            ids[kept] = ids[i];
+            kept += 1;
+        }
+    }
+    graph.note_examined(tested);
+    ids.truncate(kept);
     stopped
 }
 
@@ -2404,7 +2435,7 @@ mod tests {
             .unwrap();
         zega.run_lang(
             SCHEMA,
-            r#"mutation { Book(title: "The Dispossessed") { title } }"#,
+            r#"mutation { Book(title: "The Dispossessed" && pages: 387) { title } }"#,
         )
         .unwrap();
         let graph = zega.graph_json().unwrap();
@@ -2540,6 +2571,90 @@ mod tests {
             .unwrap();
         assert_eq!(read["playsFor"]["name"], "Oilers");
         assert_eq!(read["playsFor"]["years"], 10);
+    }
+
+    #[test]
+    fn required_node_field_rejects_a_create_without_it() {
+        let schema = r#"
+            type Team {
+              name: String
+              founded: Int
+              city?: String
+              plays -> Team[]
+            }
+        "#;
+        let zega = Zega::in_memory().build().unwrap();
+        // The editor and the database report the same thing at the same place.
+        let query = r#"mutation { Team(name: "Flames") { name founded } }"#;
+        let report = crate::diagnose(schema, query);
+        assert_eq!(report.diagnostics.len(), 1, "{}", report.text);
+        let diag = &report.diagnostics[0];
+        assert_eq!(diag.message, "Team requires founded");
+        assert_eq!(
+            diag.help.as_deref(),
+            Some("write `founded: …` when creating a Team, or declare it `founded?: Int`")
+        );
+        assert_eq!((diag.line, diag.column, diag.underline_length), (1, 12, 4));
+        let missing = zega.run_lang(schema, query).unwrap_err().to_string();
+        assert!(missing.contains(&report.text), "{missing}\n---\n{}", report.text);
+        // A null is not a value for a required field.
+        let null = zega
+            .run_lang(schema, r#"mutation { Team(name: "Flames" && founded: null) { name } }"#)
+            .unwrap_err();
+        assert!(null.to_string().contains("Team requires founded"), "{null}");
+        assert!(null.to_string().contains("so it cannot be null"), "{null}");
+        // A condition that is not `field: value` is reported as that first.
+        let shape = zega
+            .run_lang(schema, r#"mutation { Team(founded > 1900) { name } }"#)
+            .unwrap_err();
+        assert!(shape.to_string().contains("creating a Team only accepts field: value"), "{shape}");
+        // A nested create is a create too.
+        let nested = zega
+            .run_lang(
+                schema,
+                r#"mutation { Team(name: "Flames" && founded: 1980) { plays -> Team(name: "Oilers") { name } } }"#,
+            )
+            .unwrap_err();
+        assert!(nested.to_string().contains("Team requires founded"), "{nested}");
+        assert!(zega.graph_json().unwrap()["nodes"].as_array().unwrap().is_empty());
+        // Optional fields may be left out, and `set` and `link` create nothing.
+        zega.run_lang(schema, r#"mutation { Team(name: "Flames" && founded: 1980) { name } }"#)
+            .unwrap();
+        zega.run_lang(schema, r#"mutation { Team(name: "Oilers" && founded: 1972) { name } }"#)
+            .unwrap();
+        zega.run_lang(schema, r#"mutation { Team(name: "Flames") set city: "Calgary" { name } }"#)
+            .unwrap();
+        zega.run_lang(
+            schema,
+            r#"mutation { Team(name: "Flames") { plays -> link Team(name: "Oilers") { name } } }"#,
+        )
+        .unwrap();
+        let read = zega
+            .run_lang(schema, r#"{ Team(name = "Flames") { founded city plays -> Team { founded } } }"#)
+            .unwrap();
+        assert_eq!(read["founded"], 1980);
+        assert_eq!(read["city"], "Calgary");
+        assert_eq!(read["plays"][0]["founded"], 1972);
+    }
+
+    #[test]
+    fn required_node_field_rejects_a_load_row_without_it() {
+        let source = r#"
+            schema { type Team { name: String founded: Int } }
+            mutation csv "teams.csv" { Team(name: $name && founded: $founded) { name } }
+        "#;
+        // The template names every field, so it checks clean before any row.
+        let template = crate::diagnose("type Team { name: String founded: Int }", r#"mutation csv "teams.csv" { Team(name: $name && founded: $founded) { name } }"#);
+        assert!(template.diagnostics.is_empty(), "{}", template.text);
+        let zega = Zega::in_memory().build().unwrap();
+        let sources = HashMap::from([(
+            "teams.csv".to_string(),
+            "name,founded\nFlames,1980\nOilers,\n".to_string(),
+        )]);
+        let error = zega.apply_zql_with_sources(source, &sources).unwrap_err();
+        assert!(error.to_string().contains("Team requires founded"), "{error}");
+        // The statement is all or nothing: the good row is not kept either.
+        assert!(zega.graph_json().unwrap()["nodes"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -2693,9 +2808,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
         let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
-        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#)
             .unwrap();
-        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#)
             .unwrap();
         let missing_author = zega.run_lang(
             SCHEMA,
@@ -2754,7 +2869,7 @@ mod tests {
             .filter(|node| node["title"] == "Twin")
             .collect();
         assert_eq!(books.len(), 2);
-        assert!(books.iter().all(|book| book["pages"].is_null()));
+        assert!(books.iter().all(|book| book["pages"] == 100));
         let before = zega.graph_json().unwrap();
         drop(zega);
         let reopened = Zega::open(path).wal_flush_every_write().build().unwrap();
@@ -2792,7 +2907,7 @@ mod tests {
             .to_string()
             .contains("no Book matched"));
         plain
-            .run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+            .run_lang(SCHEMA, r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#)
             .unwrap();
         assert_eq!(
             plain
@@ -2836,7 +2951,7 @@ mod tests {
         unique
             .run_lang(
                 UNIQUE_SCHEMA,
-                r#"mutation { Book(title: "Twin") { title } }"#,
+                r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#,
             )
             .unwrap();
         assert_eq!(

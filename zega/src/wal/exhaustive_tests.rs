@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 use crate::graph::Graph;
-use crate::parser::Value;
+use crate::value::Value;
 use super::{restore, snapshot, Operation, Wal, WalError};
 
 // ---------------------------------------------------------------------------

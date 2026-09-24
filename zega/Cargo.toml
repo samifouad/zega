@@ -18,18 +18,12 @@ http = ["dep:ureq"]
 csv = "1.3"
 url = "2.5"
 regex = "1"
-base64 = { workspace = true }
 bincode = { workspace = true }
 crc32fast = { workspace = true }
-getrandom = { workspace = true }
 # Software sin/cos/asin: the A* heuristic is bit-identical on native and wasm.
 libm = "0.2"
-hmac = { workspace = true }
-rsa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
-smallvec = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -44,7 +38,4 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
-base64 = { workspace = true }
-hmac = { workspace = true }
-sha2 = { workspace = true }
 serde_json = { workspace = true }
