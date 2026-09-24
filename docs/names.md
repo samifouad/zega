@@ -68,16 +68,17 @@ use the same text indexes. `findWith` does not conflict with another ZQL
 operator or function. These names are also available as user property names.
 
 Block and positional keywords retain their spelling: `schema`, `type`, `query`,
-`mutation`, `display`, `unique`, `index`, `graph`, `table`, `map`, `timeline`,
+`mutation`, `display`, `unique`, `index`, `graph`, `table`, `map`, `globe`, `timeline`,
 `vector2d`, `vector3d`, `range`, `text`, `set`, `link`, `from`, `order`, `by`,
 `limit`, `toward`, `path`, `json`, and `csv`. Enum/type/literal values such as
 `exact`, `Default`, `cosine`, `dot`, `l2`, `km`, `String`, `true`, and `null`
 likewise have no prefix. `$Name` remains an import column binding.
 
-The current display grammar has view/type lists and `: Default`, and no named
-view parameters. In particular, shape/size/image and globe zoom/tilt/center
-options are not implemented by this revision. No parameter API is introduced
-here; future language-owned parameter names take `@`.
+Display options are language names and take `@`: the per-type `@shape`,
+`@size` and `@image` ([APS 8](https://github.com/zegadb/aps/issues/8)) and the
+globe's `@zoom`, `@tilt` and `@center`
+([APS 9](https://github.com/zegadb/aps/issues/9)), whose value is a built-in
+`@point(...)`. See [schema display](../browser/docs/display.md).
 
 The removed spellings produce source-spanned errors naming the replacement.
 When `hops`, `id`, or `score` is declared as a user field, it reads that field;

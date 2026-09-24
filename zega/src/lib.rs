@@ -28,7 +28,7 @@ pub use crate::lang::{diagnose, fmt};
 pub use crate::validation::{Diagnostic, Pane, Report, Severity};
 
 pub use v2::{check_zql, parse_import, zql_load_locations, ZqlEntryPoint};
-pub use lang::{Direction as SchemaDirection, DisplayConfig, DisplayView, NodeDisplay, NodeShape, EdgeField, Field, LoadFormat, Schema, Span, TypeDef, ViewKind};
+pub use lang::{Direction as SchemaDirection, DisplayConfig, DisplayView, GlobeCamera, GlobeCenter, NodeDisplay, NodeShape, EdgeField, Field, LoadFormat, Schema, Span, TypeDef, ViewKind};
 
 #[derive(Error, Debug)]
 pub enum ZegaError {

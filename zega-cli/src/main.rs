@@ -178,6 +178,7 @@ async fn embedded(uri: Uri) -> Response {
         Some("css") => "text/css; charset=utf-8",
         Some("wasm") => "application/wasm",
         Some("json") => "application/json",
+        Some("geojson") => "application/geo+json",
         Some("ttf") => "font/ttf",
         _ => "text/plain; charset=utf-8",
     };
