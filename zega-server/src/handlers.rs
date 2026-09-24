@@ -42,6 +42,14 @@ async fn execute(
     .await
     {
         Ok(Ok(result)) => Json(json!({"ok": true, "result": result})).into_response(),
+        // Its own code, so a client can tell "this query is too slow" from
+        // "this query is wrong". A 4xx, like any other refused query: a 5xx
+        // or 408 invites an automatic retry of the same slow query.
+        Ok(Err(cause @ ZegaError::QueryTimeLimit { .. })) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": cause.to_string(), "code": "query_time_limit"})),
+        )
+            .into_response(),
         Ok(Err(cause)) => error(StatusCode::BAD_REQUEST, cause.to_string()),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "database worker failed"),
     }

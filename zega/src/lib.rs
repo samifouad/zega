@@ -38,6 +38,17 @@ pub enum ZegaError {
     Io(#[from] std::io::Error),
     #[error("execution error: {0}")]
     Execution(String),
+    /// A ZQL statement ran past the time limit set with
+    /// [`ZegaBuilder::query_time_limit`]. It stopped where it was; a
+    /// mutation's writes were rolled back.
+    #[error("query exceeded the {} limit", seconds(*limit))]
+    QueryTimeLimit { limit: std::time::Duration },
+}
+
+/// `2 s`, `1.5 s`, `0.05 s`: a limit as a person would write it.
+fn seconds(limit: std::time::Duration) -> String {
+    let text = format!("{:.3}", limit.as_secs_f64());
+    format!("{} s", text.trim_end_matches('0').trim_end_matches('.'))
 }
 
 pub type Result<T> = std::result::Result<T, ZegaError>;
@@ -49,6 +60,7 @@ pub struct Zega {
     path: PathBuf,
     in_memory: bool,
     traversal_work_budget: usize,
+    query_time_limit: Option<std::time::Duration>,
     allow_private_imports: bool,
 }
 
@@ -59,6 +71,7 @@ pub struct ZegaBuilder {
     #[cfg(not(target_arch = "wasm32"))]
     wal_flush_interval_ms: Option<u64>,
     traversal_work_budget: usize,
+    query_time_limit: Option<std::time::Duration>,
     allow_private_imports: bool,
 }
 
@@ -85,6 +98,16 @@ impl ZegaBuilder {
         self
     }
 
+    /// Stop any one ZQL statement (`run_lang`, or each statement `apply_zql`
+    /// runs) that is still working after `limit`, with
+    /// [`ZegaError::QueryTimeLimit`]; a mutation's writes are rolled back.
+    /// Off by default, so an embedded or in-browser database has no limit
+    /// unless its host sets one. `zega start` sets two seconds.
+    pub fn query_time_limit(mut self, limit: std::time::Duration) -> Self {
+        self.query_time_limit = Some(limit);
+        self
+    }
+
     /// Permit HTTP imports from private/loopback hosts. Off by default; only
     /// enable for trusted ZQL callers that may access this machine's network.
     pub fn allow_private_imports(mut self, allow: bool) -> Self {
@@ -106,6 +129,7 @@ impl Zega {
             #[cfg(not(target_arch = "wasm32"))]
             wal_flush_interval_ms: None,
             traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
+            query_time_limit: None,
             allow_private_imports: false,
         }
     }
@@ -118,6 +142,7 @@ impl Zega {
             #[cfg(not(target_arch = "wasm32"))]
             wal_flush_interval_ms: None,
             traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
+            query_time_limit: None,
             allow_private_imports: false,
         }
     }
@@ -174,6 +199,7 @@ impl Zega {
             path,
             in_memory: builder.in_memory,
             traversal_work_budget,
+            query_time_limit: builder.query_time_limit,
             allow_private_imports: builder.allow_private_imports,
         })
     }

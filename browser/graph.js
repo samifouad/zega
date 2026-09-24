@@ -212,7 +212,15 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     vp.appendChild(label);
     label.dataset.rel = String(rel.id);
     label.style.cursor = 'pointer';
-    edges.set(rel.id, { path, hit, label, rel, box: label.getBBox() });
+    const drawn = { path, hit, label, rel, box: label.getBBox(), crowded: false, hover: false };
+    // A label with no free slot is hidden; pointing at its edge shows it.
+    hit.addEventListener('pointerenter', () => { drawn.hover = true; showLabel(drawn); });
+    hit.addEventListener('pointerleave', () => { drawn.hover = false; showLabel(drawn); });
+    edges.set(rel.id, drawn);
+  }
+
+  function showLabel(drawn) {
+    drawn.label.style.visibility = drawn.crowded && !drawn.hover ? 'hidden' : '';
   }
 
   function drift(node) {
@@ -232,6 +240,10 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
     width: area.w / state.scale, height: area.h / state.scale,
   });
 
+  // Labels are placed in edge order, so the same graph always gets the same
+  // layout and an earlier edge keeps its slot. Each placed label becomes an
+  // obstacle for the ones after it. A label with no free slot left is the
+  // lowest priority there: it is hidden, and shown while its edge is pointed at.
   function placeLabel(drawn, pointAt, obstacles) {
     if (drawn.label.style.display === 'none') return;
     const { box, label } = drawn;
@@ -242,13 +254,21 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
       label.setAttribute('x', point.x);
       label.setAttribute('y', point.y + baseline);
     };
-    set(middle);
+    const settle = (point, crowded) => {
+      set(point);
+      drawn.crowded = crowded;
+      showLabel(drawn);
+      if (crowded) return;
+      // The text's painted halo, plus a pixel of air.
+      const taken = at(point);
+      obstacles.push({ x: taken.x - 2, y: taken.y - 2, width: taken.width + 4, height: taken.height + 4 });
+    };
     // Text metrics are cached at creation. Offscreen labels do no collision work.
-    if (!inView(at(middle))) return;
+    if (!inView(at(middle))) { set(middle); drawn.crowded = false; showLabel(drawn); return; }
     const candidates = [0.5, 0.35, 0.65, 0.25, 0.75].map(pointAt);
     const clear = (point) => !obstacles.some((obstacle) => intersects(at(point), obstacle));
     for (const point of candidates) {
-      if (clear(point)) { set(point); return; }
+      if (clear(point)) { settle(point, false); return; }
     }
     // Use the local tangent of this edge, including curves and self loops.
     // Bounded offsets keep the label close to its own edge in crowded graphs.
@@ -256,9 +276,10 @@ export function renderGraph(container, graph, activeArg = new Set(), actions = n
       for (const point of candidates) {
         const length = Math.hypot(point.dx, point.dy) || 1;
         const offset = { x: point.x - point.dy / length * distance, y: point.y + point.dx / length * distance };
-        if (clear(offset)) { set(offset); return; }
+        if (clear(offset)) { settle(offset, false); return; }
       }
     }
+    settle(middle, true);
   }
 
   function drawEdge(rel, positions, obstacles) {
