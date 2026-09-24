@@ -56,10 +56,28 @@ if args[0] == 's3api':
     bucket = args[args.index('--bucket') + 1]
     prefix = args[args.index('--prefix') + 1]
     target = pathlib.Path(os.environ['FIXTURE_STORE']) / bucket / prefix
-    if args[1] == 'list-objects-v2' and 'Contents[].Key' in args:
+    if args[1] == 'list-objects-v2' and '--max-keys' not in args:
+        # One API page per call, like S3/R2 itself: the caller must follow
+        # NextContinuationToken. Keys sort in UTF-8 order, as S3 returns them.
         keys = [p.relative_to(pathlib.Path(os.environ['FIXTURE_STORE']) / bucket).as_posix()
-                for p in sorted(target.rglob('*')) if p.is_file()] if target.exists() else []
-        print(json.dumps(keys))
+                for p in target.rglob('*') if p.is_file()] if target.exists() else []
+        keys.sort()
+        size = int(os.environ.get('FIXTURE_PAGE_SIZE', '1000'))
+        token = args[args.index('--continuation-token') + 1] if '--continuation-token' in args else None
+        start = 0
+        if token is not None:
+            assert token.startswith('after:'), token
+            start = sum(1 for key in keys if key <= token[len('after:'):])
+        page = keys[start:start + size]
+        response = {'KeyCount': len(page), 'IsTruncated': start + size < len(keys)}
+        if page:
+            response['Contents'] = [{'Key': key} for key in page]
+        if response['IsTruncated']:
+            response['NextContinuationToken'] = os.environ.get('FIXTURE_STUCK_TOKEN') or 'after:' + page[-1]
+        if 'Contents[].Key' in args:
+            print(json.dumps(response.get('Contents') and [item['Key'] for item in response['Contents']]))
+        else:
+            print(json.dumps(response))
     else:
         print('1' if target.exists() and any(target.rglob('*')) else '0')
     raise SystemExit(0)
@@ -245,6 +263,45 @@ class Promotion(Fixture):
         self.assertIn("checksum mismatch", result.stderr)
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.remote_tags(), "")
+
+    def test_latest_pointer_deletes_stale_keys_on_every_listing_page(self):
+        """A pointer prefix listed over three pages loses its stale keys on all of them (#37)."""
+        self.fixture_canary()
+        # Page size 3 over the 7 keys below gives pages of 3, 3 and 1, with a
+        # stale key on each: a-stale | y-stale | zz-stale.
+        stale = ["a-stale", "y-stale", "zz-stale"]
+        for bucket in channels.BUCKETS:
+            latest = self.store / bucket / "latest"
+            (latest / "sentinel").unlink()
+            for name in stale:
+                (latest / name).write_text("previous stable")
+        result = subprocess.run([sys.executable, str(SCRIPT), "promote", self.tag, "promotion"],
+                                cwd=self.repo, env={**self.env, "FIXTURE_PAGE_SIZE": "3"}, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        operations = [json.loads(line) for line in self.log.read_text().splitlines()]
+        for bucket in channels.BUCKETS:
+            latest = self.store / bucket / "latest"
+            self.assertEqual({p.name for p in latest.iterdir()}, {p.name for p in (self.store / bucket / self.tag).iterdir()})
+            deletes = [operation[2] for operation in operations if operation[:2] == ["s3", "rm"]
+                       and operation[2].startswith(f"s3://{bucket}/latest/")]
+            self.assertEqual(deletes, [f"s3://{bucket}/latest/{name}" for name in stale])
+            listings = [operation for operation in operations if operation[:2] == ["s3api", "list-objects-v2"]
+                        and f"{bucket}" in operation and "latest/" in operation]
+            self.assertEqual(len(listings), 3, "Expected one listing call per page")
+            tokens = [operation[operation.index("--continuation-token") + 1] if "--continuation-token" in operation else None
+                      for operation in listings]
+            self.assertEqual(tokens, [None, "after:latest/package.tgz", "after:latest/zega.wasm"])
+            self.assertEqual(json.loads((self.store / bucket / "latest.json").read_text())["tag"], "v1.2.3")
+
+    def test_listing_that_repeats_a_continuation_token_fails_instead_of_looping(self):
+        self.fixture_canary()
+        (self.store / "zega-releases" / "latest" / "second").write_text("previous stable")
+        env = {**self.env, "FIXTURE_PAGE_SIZE": "1", "FIXTURE_STUCK_TOKEN": "after:latest/"}
+        with patch.dict(os.environ, env):
+            with self.assertRaisesRegex(ValueError, r"invalid continuation token for zega-releases/latest/"):
+                channels.aws_list_keys("zega-releases", "latest")
+        listings = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(len(listings), 2, "A repeated token must stop the listing at once")
 
     def test_already_promoted_refused(self):
         self.fixture_canary()

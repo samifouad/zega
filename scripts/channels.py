@@ -174,19 +174,28 @@ def aws(*args):
 
 
 def aws_list_keys(bucket, prefix):
-    result = subprocess.run(
-        ["aws", "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", f"{prefix}/",
-         "--query", "Contents[].Key", "--output", "json", "--endpoint-url", os.environ["R2_ENDPOINT"]],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    )
-    if result.returncode:
-        raise RuntimeError(f"R2 list-objects-v2 failed for {bucket}/{prefix}/ (diagnostics withheld)")
-    keys = json.loads(result.stdout)
-    if keys is None:
-        return []
-    if not isinstance(keys, list) or any(not isinstance(key, str) for key in keys):
-        raise ValueError(f"R2 list-objects-v2 returned invalid keys for {bucket}/{prefix}/")
-    return keys
+    """Every key under prefix/. Pages are followed here, not left to CLI auto-pagination."""
+    keys, token, seen = [], None, set()
+    while True:
+        command = ["aws", "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", f"{prefix}/",
+                   "--no-paginate", "--output", "json", "--endpoint-url", os.environ["R2_ENDPOINT"]]
+        if token is not None:
+            command += ["--continuation-token", token]
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode:
+            raise RuntimeError(f"R2 list-objects-v2 failed for {bucket}/{prefix}/ (diagnostics withheld)")
+        page = json.loads(result.stdout)
+        contents = page.get("Contents", []) if isinstance(page, dict) else None
+        if not isinstance(contents, list) or any(not isinstance(item, dict) or not isinstance(item.get("Key"), str)
+                                                 for item in contents):
+            raise ValueError(f"R2 list-objects-v2 returned invalid keys for {bucket}/{prefix}/")
+        keys.extend(item["Key"] for item in contents)
+        if not page.get("IsTruncated"):
+            return keys
+        token = page.get("NextContinuationToken")
+        if not isinstance(token, str) or not token or token in seen:
+            raise ValueError(f"R2 list-objects-v2 returned an invalid continuation token for {bucket}/{prefix}/")
+        seen.add(token)
 
 
 def publish_pointer(directory, bucket, prefix):
