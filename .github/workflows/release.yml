@@ -157,7 +157,7 @@ jobs:
         if: needs.resolve.outputs.tag == '' && matrix.platform == 'linux-x64'
         with:
           repository: zegadb/testsuite
-          ref: d9684641b3a77f772f920c47bb40cc7d5b0e2995
+          ref: 206aec6c2dd9cbbc3552e4cfbf78b7b45043b96a
           path: .tmp/testsuite
           persist-credentials: false
       - name: Prove formatter AST equality and idempotence across the corpus and samples
