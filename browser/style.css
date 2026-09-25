@@ -745,3 +745,24 @@ pre.result-json {
   --paper-fold: #94a3b8;
   --paper-rule: #334155;
 }
+
+/* Phone width (zegadb/zega#92): the panes stack in one full-width column,
+   the view first, then query, output, schema and raw. The page scrolls
+   instead of squeezing five panes into one screen. Desktop is untouched. */
+.pane-toggle { display: none; }
+@media (max-width: 600px) {
+  body { height: auto; min-height: 100vh; }
+  #panes { flex: none; gap: 8px; padding-bottom: 8px; }
+  #panes > .band { display: contents; }
+  #panes > .split, #panes .band > .split { display: none; }
+  #panes .pane { flex: none; width: auto; min-width: 0; }
+  #panes .pane[data-pane="view"] { order: 1; height: min(70vh, 520px); }
+  #panes .pane[data-pane="query"] { order: 2; height: 260px; }
+  #panes .pane[data-pane="output"] { order: 3; height: 320px; }
+  #panes .pane[data-pane="schema"] { order: 4; height: 360px; }
+  #panes .pane[data-pane="raw"] { order: 5; height: 320px; }
+  .pane-toggle { display: inline-block; float: right; margin: -3px 0 -3px 8px; padding: 1px 8px; font-size: 11px; text-transform: none; letter-spacing: 0; }
+  #panes .pane.pane-collapsed { height: auto; }
+  #panes .pane.pane-collapsed > :not(h2) { display: none; }
+  #panes .pane.pane-collapsed h2 { border-bottom: 0; }
+}

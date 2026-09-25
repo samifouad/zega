@@ -389,7 +389,7 @@ impl Wal {
                         ),
                     });
                 }
-                let op = bincode::deserialize(&payload).map_err(|error| WalError::Corruption {
+                let op = decode_exact(&payload).map_err(|error| WalError::Corruption {
                     offset: entry_start,
                     reason: format!("invalid operation payload: {error}"),
                 })?;
@@ -400,6 +400,19 @@ impl Wal {
             Ok(ops)
         }
     }
+}
+
+/// Decode exactly one `T` from `bytes`, the way every file this module reads
+/// was written: bincode's fixint encoding (what `bincode::serialize` writes),
+/// nothing left over, and no length prefix allowed to claim more than `bytes`
+/// holds. WAL entries, legacy WAL entries and snapshots all decode here, so a
+/// frame that is not exactly one value is corruption wherever it is read.
+fn decode_exact<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, bincode::Error> {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .with_limit(bytes.len() as u64)
+        .deserialize(bytes)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -469,7 +482,7 @@ fn migrate_legacy_wal(path: &Path, file: File, file_len: u64) -> Result<(), WalE
         })?;
         let mut payload = vec![0u8; len];
         reader.read_exact(&mut payload)?;
-        bincode::deserialize::<Operation>(&payload).map_err(|error| WalError::Corruption {
+        decode_exact::<Operation>(&payload).map_err(|error| WalError::Corruption {
             offset,
             reason: format!("invalid legacy operation payload: {error}"),
         })?;
@@ -773,15 +786,10 @@ pub fn encode_snapshot(graph: &Graph) -> Result<Vec<u8>, WalError> {
 
 /// Restore the full graph state from [`encode_snapshot`] bytes.
 pub fn restore_bytes(graph: &mut Graph, bytes: &[u8]) -> Result<(), WalError> {
-    let snapshot: Snapshot = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .reject_trailing_bytes()
-        .with_limit(bytes.len() as u64)
-        .deserialize(bytes)
-        .map_err(|error| WalError::Corruption {
-            offset: 0,
-            reason: format!("invalid snapshot: {error}"),
-        })?;
+    let snapshot: Snapshot = decode_exact(bytes).map_err(|error| WalError::Corruption {
+        offset: 0,
+        reason: format!("invalid snapshot: {error}"),
+    })?;
     graph.set_state(snapshot.nodes, snapshot.relationships);
     Ok(())
 }
@@ -1349,6 +1357,73 @@ pub(crate) mod tests {
 
         let wal = Wal::new(&wal_path, false).unwrap();
         assert_eq!(wal.iter().unwrap().len(), 1);
+    }
+
+    /// zega#44: a frame whose CRC is right but whose payload is one
+    /// operation followed by more bytes was not written by any writer.
+    fn append_padded_entry(wal_path: &Path, op: &Operation) -> u64 {
+        let offset = std::fs::metadata(wal_path).unwrap().len();
+        let mut payload = bincode::serialize(op).unwrap();
+        payload.extend_from_slice(&[0xAB, 0xCD]);
+        let mut file = OpenOptions::new().append(true).open(wal_path).unwrap();
+        file.write_all(&(payload.len() as u64).to_le_bytes()).unwrap();
+        file.write_all(&crc32fast::hash(&payload).to_le_bytes()).unwrap();
+        file.write_all(&payload).unwrap();
+        offset
+    }
+
+    #[test]
+    fn an_entry_with_bytes_after_its_operation_is_corruption_at_its_offset() {
+        // In the middle of the log and as its last entry: the CRC is valid,
+        // so this is not a torn tail to drop but a frame to refuse.
+        for last in [false, true] {
+            let dir = tempdir().unwrap();
+            let wal_path = dir.path().join("wal.bin");
+            let wal = Wal::new(&wal_path, true).unwrap();
+            wal.append(&insert_node("first")).unwrap();
+            drop(wal);
+            let offset = append_padded_entry(&wal_path, &insert_node("padded"));
+            if !last {
+                let wal = Wal::new(&wal_path, true).unwrap();
+                wal.append(&insert_node("after")).unwrap();
+            }
+            let len = std::fs::metadata(&wal_path).unwrap().len();
+
+            let wal = Wal::new(&wal_path, false).unwrap();
+            match wal.iter() {
+                Err(WalError::Corruption { offset: at, reason }) => {
+                    assert_eq!(at, offset, "last={last}: {reason}");
+                    assert!(reason.contains("invalid operation payload"), "{reason}");
+                }
+                other => panic!("last={last}: expected corruption at {offset}, got {other:?}"),
+            }
+            // Refused, not repaired: the file is left for inspection.
+            assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), len, "last={last}");
+        }
+    }
+
+    #[test]
+    fn a_legacy_entry_with_bytes_after_its_operation_is_corruption_at_its_offset() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("wal.bin");
+        let mut legacy = File::create(&wal_path).unwrap();
+        let exact = bincode::serialize(&insert_node("exact")).unwrap();
+        legacy.write_all(&(exact.len() as u64).to_le_bytes()).unwrap();
+        legacy.write_all(&exact).unwrap();
+        let mut padded = bincode::serialize(&insert_node("padded")).unwrap();
+        padded.push(0xAB);
+        legacy.write_all(&(padded.len() as u64).to_le_bytes()).unwrap();
+        legacy.write_all(&padded).unwrap();
+        drop(legacy);
+
+        match Wal::new(&wal_path, true) {
+            Err(WalError::Corruption { offset, reason }) => {
+                assert_eq!(offset, 8 + exact.len() as u64, "{reason}");
+                assert!(reason.contains("invalid legacy operation payload"), "{reason}");
+            }
+            Err(other) => panic!("expected corruption, got {other:?}"),
+            Ok(_) => panic!("expected corruption, got a migrated WAL"),
+        }
     }
 
     #[test]
