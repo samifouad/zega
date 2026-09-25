@@ -1,0 +1,52 @@
+name: Cloud image (zega-g)
+
+# Build-only smoke check for the Fly Machines image Zega Cloud runs
+# (registry.fly.io/zega-g:latest, docs/cloud-image.md). Never pushes: there
+# is no registry credential in this job. Proves the Dockerfile still builds
+# `zega-cli` --locked --release whenever it, or the crates it packages,
+# change; pushing the built image is a manual step Ava runs (AGENTS.md
+# §0.1 — CIs here never publish).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/zega-g/**'
+      - 'zega/**'
+      - 'zega-server/**'
+      - 'zega-cli/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/docker-image.yml'
+  pull_request:
+    paths:
+      - 'docker/zega-g/**'
+      - 'zega/**'
+      - 'zega-server/**'
+      - 'zega-cli/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/docker-image.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: public-ci
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/zega-g/Dockerfile
+          platforms: linux/amd64
+          push: false
+          tags: zega-g:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
