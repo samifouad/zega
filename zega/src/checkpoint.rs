@@ -353,6 +353,14 @@ pub(crate) enum Step {
     ImportsRemoved,
 }
 
+#[cfg(test)]
+pub(crate) use test_hooks::crash_point;
+
+/// A step of a checkpoint: nothing outside tests ([`test_hooks`]).
+#[cfg(not(test))]
+#[inline(always)]
+pub(crate) fn crash_point(_step: Step) {}
+
 /// What the tests reach into a checkpoint with. None of it exists outside
 /// `cfg(test)`, the process abort included: the library never ends the
 /// process.
@@ -390,11 +398,3 @@ pub(crate) mod test_hooks {
         });
     }
 }
-
-#[cfg(test)]
-pub(crate) use test_hooks::crash_point;
-
-/// A step of a checkpoint: nothing outside tests ([`test_hooks`]).
-#[cfg(not(test))]
-#[inline(always)]
-pub(crate) fn crash_point(_step: Step) {}
