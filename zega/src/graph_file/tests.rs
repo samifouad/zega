@@ -252,6 +252,8 @@ fn a_label_twice_on_one_node_is_refused_on_both_sides() {
     assert!(error.to_string().contains("label \"A\" twice"), "{error}");
     let mut graph = Graph::new();
     graph.restore_node(1, vec!["A".into(), "B".into()], HashMap::new());
+    // B stays in use, so only the repeat can be what is refused.
+    graph.restore_node(2, vec!["B".into()], HashMap::new());
     let tampered = rewrite_section(&export(&graph), Section::Nodes, |payload| {
         // next id, node id, then 2 labels: A (0), B (1) becomes A, A.
         let mut out = payload.to_vec();
