@@ -373,14 +373,14 @@ mod tests {
     fn test_create_node_and_lookup() {
         let mut g = Graph::new();
         let mut props = HashMap::new();
-        props.insert("name".to_string(), Value::String("Alice".to_string()));
+        props.insert("name".to_string(), Value::from("Alice"));
         let id = g.create_node(vec!["Person".to_string()], props.clone());
         let node = g.get_node(id).unwrap();
         assert_eq!(node.labels, vec!["Person"]);
-        assert_eq!(node.props.get("name"), Some(&Value::String("Alice".to_string())));
+        assert_eq!(node.props.get("name"), Some(&Value::from("Alice")));
         let by_label = g.nodes_by_label("Person").unwrap();
         assert!(by_label.contains(&id));
-        let by_prop = g.nodes_by_property("name", &Value::String("Alice".to_string())).unwrap();
+        let by_prop = g.nodes_by_property("name", &Value::from("Alice")).unwrap();
         assert!(by_prop.contains(&id));
     }
 

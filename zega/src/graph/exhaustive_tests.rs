@@ -35,7 +35,7 @@ fn labels(ls: &[&str]) -> Vec<String> {
 }
 
 fn s(v: &str) -> Value {
-    Value::String(v.to_string())
+    Value::from(v)
 }
 
 /// Collect all node ids in the graph (order-independent).
@@ -413,7 +413,7 @@ fn prop_roundtrip_bool() {
 #[test]
 fn prop_roundtrip_list() {
     let mut g = Graph::new();
-    let list = Value::List(vec![Value::Int(1), s("two"), Value::Bool(true)]);
+    let list = Value::List(vec![Value::Int(1), s("two"), Value::Bool(true)].into());
     let id = g.create_node(vec![], props(&[("items", list.clone())]));
     assert_eq!(g.get_node(id).unwrap().props.get("items"), Some(&list));
 }
@@ -424,7 +424,7 @@ fn prop_roundtrip_map() {
     let mut inner = HashMap::new();
     inner.insert("a".to_string(), Value::Int(1));
     inner.insert("b".to_string(), s("x"));
-    let map = Value::Map(inner);
+    let map = Value::Map(Box::new(inner));
     let id = g.create_node(vec![], props(&[("meta", map.clone())]));
     assert_eq!(g.get_node(id).unwrap().props.get("meta"), Some(&map));
 }
@@ -1537,7 +1537,7 @@ fn nodes_by_property_int_and_float_are_distinct_keys() {
 #[test]
 fn nodes_by_property_list_value_roundtrips_as_key() {
     let mut g = Graph::new();
-    let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
+    let list = Value::List(vec![Value::Int(1), Value::Int(2)].into());
     let id = g.create_node(vec![], props(&[("tags", list.clone())]));
     assert!(g.nodes_by_property("tags", &list).unwrap().contains(&id));
 }
@@ -1547,8 +1547,8 @@ fn nodes_by_property_discriminates_same_length_different_lists() {
     // [1,2] and [3,4] hash to the same bucket (Hash uses len) but are NOT Eq,
     // so the property index must keep them as distinct keys.
     let mut g = Graph::new();
-    let l_a = Value::List(vec![Value::Int(1), Value::Int(2)]);
-    let l_b = Value::List(vec![Value::Int(3), Value::Int(4)]);
+    let l_a = Value::List(vec![Value::Int(1), Value::Int(2)].into());
+    let l_b = Value::List(vec![Value::Int(3), Value::Int(4)].into());
     assert_ne!(l_a, l_b);
     let a = g.create_node(vec![], props(&[("l", l_a.clone())]));
     let b = g.create_node(vec![], props(&[("l", l_b.clone())]));
@@ -1565,8 +1565,8 @@ fn nodes_by_property_discriminates_same_length_different_maps() {
     m_a.insert("k".to_string(), Value::Int(1));
     let mut m_b = HashMap::new();
     m_b.insert("k".to_string(), Value::Int(2));
-    let v_a = Value::Map(m_a);
-    let v_b = Value::Map(m_b);
+    let v_a = Value::Map(Box::new(m_a));
+    let v_b = Value::Map(Box::new(m_b));
     assert_ne!(v_a, v_b);
     let a = g.create_node(vec![], props(&[("m", v_a.clone())]));
     let b = g.create_node(vec![], props(&[("m", v_b.clone())]));
@@ -1579,8 +1579,8 @@ fn nodes_by_property_discriminates_same_length_different_maps() {
 fn nodes_by_property_empty_list_and_empty_map_are_distinct_keys() {
     // Both hash to len 0 and are different variants — must not collide.
     let mut g = Graph::new();
-    let empty_list = Value::List(vec![]);
-    let empty_map = Value::Map(HashMap::new());
+    let empty_list = Value::List(vec![].into());
+    let empty_map = Value::Map(Box::default());
     assert_ne!(empty_list, empty_map);
     let a = g.create_node(vec![], props(&[("e", empty_list.clone())]));
     let b = g.create_node(vec![], props(&[("e", empty_map.clone())]));
@@ -1659,14 +1659,14 @@ fn relationship_stores_rich_value_props() {
         b,
         props(&[
             ("weight", Value::from_f64(1.5)),
-            ("tags", Value::List(vec![s("x"), s("y")])),
+            ("tags", Value::List(vec![s("x"), s("y")].into())),
             ("flag", Value::Bool(true)),
             ("nada", Value::Null),
         ]),
     );
     let rel = g.get_relationship(rid).unwrap();
     assert_eq!(rel.props.get("weight").unwrap().to_f64(), Some(1.5));
-    assert_eq!(rel.props.get("tags"), Some(&Value::List(vec![s("x"), s("y")])));
+    assert_eq!(rel.props.get("tags"), Some(&Value::List(vec![s("x"), s("y")].into())));
     assert_eq!(rel.props.get("flag"), Some(&Value::Bool(true)));
     assert_eq!(rel.props.get("nada"), Some(&Value::Null));
 }

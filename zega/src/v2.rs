@@ -2096,7 +2096,7 @@ impl SortValue {
             Some(Value::Bool(b)) => SortValue::Bool(*b),
             Some(Value::Int(i)) => SortValue::Int(*i),
             Some(Value::Float(bits)) => SortValue::Float(f64::from_bits(*bits)),
-            Some(Value::String(text)) => SortValue::Text(text.clone()),
+            Some(Value::String(text)) => SortValue::Text(text.to_string()),
             // Null, and kinds the checker refuses to order (Point, Vector, lists).
             _ => SortValue::Missing,
         }
@@ -2313,7 +2313,7 @@ fn node_json(node: &Node) -> Json {
 
 fn value_to_json(value: &Value) -> Json {
     match value {
-        Value::String(value) => Json::String(value.clone()),
+        Value::String(value) => Json::String(value.to_string()),
         Value::Int(value) => json!(value),
         Value::Float(bits) => json!(f64::from_bits(*bits)),
         Value::Bool(value) => Json::Bool(*value),
@@ -2323,7 +2323,7 @@ fn value_to_json(value: &Value) -> Json {
         Value::Vector(v) => v.to_json(),
         Value::Map(values) => {
             let mut object = serde_json::Map::new();
-            for (key, value) in values {
+            for (key, value) in values.iter() {
                 object.insert(key.clone(), value_to_json(value));
             }
             Json::Object(object)
@@ -2339,14 +2339,14 @@ fn score_json(node: &Node, sel: &Selection) -> Json { sel.near.as_ref().map_or(J
 fn json_to_prop(schema: &Schema, sel: &Selection, field: &str, value: &Json) -> Result<Value, LangError> {
     if !value.is_null() {
         if let Ok(crate::lang::Field::Prop { ty, .. }) = schema.prop(&sel.type_name, field) {
-            if let Some(spec) = VectorSpec::parse(ty) { return spec.value(value).map(Value::Vector).map_err(|m| LangError::at(sel.type_span,m)); }
+            if let Some(spec) = VectorSpec::parse(ty) { return spec.value(value).map(|v| Value::Vector(Box::new(v))).map_err(|m| LangError::at(sel.type_span,m)); }
         }
     }
     json_to_value(value)
 }
 fn json_to_value(value: &Json) -> Result<Value, LangError> {
     match value {
-        Json::String(value) => Ok(Value::String(value.clone())),
+        Json::String(value) => Ok(Value::from(value.clone())),
         Json::Number(value) => {
             if let Some(value) = value.as_i64() {
                 Ok(Value::Int(value))
@@ -2361,7 +2361,7 @@ fn json_to_value(value: &Json) -> Result<Value, LangError> {
         Json::Object(_) => Point::from_json(value)
             .map(Value::Point)
             .map_err(LangError::bare),
-        Json::Array(_) => Vector::from_json(value, Metric::Cosine).map(Value::Vector).map_err(LangError::bare),
+        Json::Array(_) => Vector::from_json(value, Metric::Cosine).map(|v| Value::Vector(Box::new(v))).map_err(LangError::bare),
     }
 }
 
@@ -2917,7 +2917,7 @@ mod tests {
                 let id = graph.create_node(
                     vec!["Person".into()],
                     HashMap::from([
-                        ("name".into(), Value::String(name.clone())),
+                        ("name".into(), Value::from(name.clone())),
                         ("age".into(), Value::Int(age)),
                     ]),
                 );

@@ -77,7 +77,7 @@ impl Zega {
             });
             if let Some(field) = field {
                 if let Some(Value::Vector(v)) = node.props.get(field) {
-                    nodes.push((id, field.clone(), v.clone()));
+                    nodes.push((id, field.clone(), (**v).clone()));
                 }
             }
         }

@@ -201,7 +201,7 @@ fn all_operation_variants_roundtrip() {
     let wal = Wal::new(&path, true).unwrap();
 
     let mut props = HashMap::new();
-    props.insert("name".to_string(), Value::String("Alice".to_string()));
+    props.insert("name".to_string(), Value::from("Alice"));
     props.insert("age".to_string(), Value::Int(30));
 
     let ops = vec![
@@ -843,7 +843,7 @@ fn large_single_entry_roundtrips() {
     let wal = Wal::new(&path, true).unwrap();
 
     let big = "x".repeat(1_000_000); // ~1 MiB string property
-    let op = update_property("big", Value::String(big.clone()));
+    let op = update_property("big", Value::from(big.clone()));
     wal.append(&op).unwrap();
     drop(wal);
 
@@ -919,14 +919,14 @@ fn unicode_and_control_characters_roundtrip() {
     let wal = Wal::new(&path, true).unwrap();
 
     let weird = "héllo 世界 🚀 \u{0}\u{1}\u{7f} \t\n quote\" backslash\\";
-    let op = update_property(weird, Value::String(weird.to_string()));
+    let op = update_property(weird, Value::from(weird));
     wal.append(&op).unwrap();
     drop(wal);
 
     let recovered = Wal::new(&path, false).unwrap().iter().unwrap();
     match &recovered[0] {
         Operation::UpdateNode { props, .. } => {
-            assert_eq!(props.get(weird), Some(&Value::String(weird.to_string())));
+            assert_eq!(props.get(weird), Some(&Value::from(weird)));
         }
         other => panic!("expected InsertNode, got {other:?}"),
     }
@@ -939,13 +939,13 @@ fn empty_string_and_empty_collections_roundtrip() {
     let wal = Wal::new(&path, true).unwrap();
 
     let ops = vec![
-        update_property("", Value::String(String::new())),
+        update_property("", Value::from("")),
         Operation::InsertNode {
             id: 0,
             labels: vec![],
             props: HashMap::new(),
         },
-        update_property("list", Value::List(vec![])),
+        update_property("list", Value::List(vec![].into())),
     ];
     for op in &ops {
         wal.append(op).unwrap();
@@ -956,7 +956,7 @@ fn empty_string_and_empty_collections_roundtrip() {
     assert_eq!(recovered.len(), 3);
     match &recovered[0] {
         Operation::UpdateNode { props, .. } => {
-            assert_eq!(props.get(""), Some(&Value::String(String::new())));
+            assert_eq!(props.get(""), Some(&Value::from("")));
         }
         other => panic!("expected empty-string UpdateNode, got {other:?}"),
     }
@@ -1017,10 +1017,10 @@ fn nested_and_float_values_roundtrip() {
     inner.insert("flt".to_string(), Value::from_f64(std::f64::consts::PI));
     inner.insert("nan".to_string(), Value::from_f64(f64::NAN));
     inner.insert("inf".to_string(), Value::from_f64(f64::INFINITY));
-    let nested = Value::Map(inner);
+    let nested = Value::Map(Box::new(inner));
     let op = update_property(
         "nested",
-        Value::List(vec![nested.clone(), Value::Bool(true), Value::Null]),
+        Value::List(vec![nested.clone(), Value::Bool(true), Value::Null].into()),
     );
     wal.append(&op).unwrap();
     drop(wal);
@@ -1061,7 +1061,7 @@ fn snapshot_restore_roundtrips_graph() {
 
     let mut graph = Graph::new();
     let mut props = HashMap::new();
-    props.insert("name".to_string(), Value::String("Alice".to_string()));
+    props.insert("name".to_string(), Value::from("Alice"));
     let nid = graph.create_node(vec!["Person".to_string()], props);
     let a = graph.create_node(vec!["A".to_string()], HashMap::new());
     let b = graph.create_node(vec!["B".to_string()], HashMap::new());
@@ -1335,7 +1335,7 @@ fn update_node_fields_survive_roundtrip() {
     let wal = Wal::new(&path, true).unwrap();
 
     let mut props = HashMap::new();
-    props.insert("status".to_string(), Value::String("active".to_string()));
+    props.insert("status".to_string(), Value::from("active"));
     props.insert("rank".to_string(), Value::Int(-5));
     wal.append(&Operation::UpdateNode {
         id: 42,
@@ -1350,7 +1350,7 @@ fn update_node_fields_survive_roundtrip() {
         Operation::UpdateNode { id, props: p } => {
             assert_eq!(*id, 42);
             assert_eq!(p.len(), 2);
-            assert_eq!(p.get("status"), Some(&Value::String("active".to_string())));
+            assert_eq!(p.get("status"), Some(&Value::from("active")));
             assert_eq!(p.get("rank"), Some(&Value::Int(-5)));
         }
         other => panic!("expected UpdateNode, got {other:?}"),
@@ -1841,10 +1841,10 @@ fn snapshot_with_unicode_and_extreme_values_roundtrips() {
 
     let mut g = Graph::new();
     let mut props = HashMap::new();
-    props.insert("名前".to_string(), Value::String("🚀\u{0}\t".to_string()));
+    props.insert("名前".to_string(), Value::from("🚀\u{0}\t"));
     props.insert("min".to_string(), Value::Int(i64::MIN));
     props.insert("max".to_string(), Value::Int(i64::MAX));
-    props.insert("空".to_string(), Value::List(vec![Value::Null, Value::Bool(false)]));
+    props.insert("空".to_string(), Value::List(vec![Value::Null, Value::Bool(false)].into()));
     let id = g.create_node(vec!["Ünïcödé".to_string()], props);
 
     snapshot(&g, &snap).unwrap();
@@ -1856,7 +1856,7 @@ fn snapshot_with_unicode_and_extreme_values_roundtrips() {
     assert_eq!(node.props.get("max"), Some(&Value::Int(i64::MAX)));
     assert_eq!(
         node.props.get("空").cloned(),
-        Some(Value::List(vec![Value::Null, Value::Bool(false)]))
+        Some(Value::List(vec![Value::Null, Value::Bool(false)].into()))
     );
 }
 

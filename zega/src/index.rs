@@ -96,7 +96,7 @@ fn key(value: &Value) -> Option<Key> {
     match value {
         Value::Int(value) => number(*value as f64).map(Key::Num),
         Value::Float(bits) => number(f64::from_bits(*bits)).map(Key::Num),
-        Value::String(value) => Some(Key::Str(value.clone())),
+        Value::String(value) => Some(Key::Str(value.to_string())),
         _ => None,
     }
 }

@@ -831,7 +831,7 @@ pub(crate) mod tests {
         let wal_path = dir.path().join("wal.bin");
         let wal = Wal::new(&wal_path, true).unwrap();
         let mut props = HashMap::new();
-        props.insert("name".to_string(), Value::String("Alice".to_string()));
+        props.insert("name".to_string(), Value::from("Alice"));
         wal.append(&Operation::InsertNode {
             id: 1,
             labels: vec!["Person".to_string()],
@@ -1513,7 +1513,7 @@ pub(crate) mod tests {
         let snap_path = dir.path().join("snapshot.bin");
         let mut graph = Graph::new();
         let mut props = HashMap::new();
-        props.insert("name".to_string(), Value::String("Alice".to_string()));
+        props.insert("name".to_string(), Value::from("Alice"));
         graph.create_node(vec!["Person".to_string()], props);
 
         snapshot(&graph, &snap_path).unwrap();
