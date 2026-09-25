@@ -26,8 +26,10 @@ index {
 - `range` speeds `=`, `>`, `<`, `>=` and `<=`, and several of them on one field
   (`salary > 100 && salary < 200` is one ordered scan). It applies to `Int`,
   `Float` and `String` fields.
-- `text` speeds `findWith`, `startsWith` and `endsWith`. It applies to
-  `String` fields. A range index does not help these.
+- `text` speeds `findExact`, `startsExact` and `endsExact`. It applies to
+  `String` fields. A range index does not help these, and neither does it help
+  `findLike`, `startsLike` or `endsLike`: those fold case and accents, and the
+  index stores raw bytes, so they always scan.
 - Each field in the braces gets its own index. One field may have both kinds.
 - A `unique` field already has a range index. Naming it under `range` is an
   error rather than a second index.
@@ -47,7 +49,7 @@ error: text index needs a String field; Player.salary is Int
   schema:6:17
     text Player { salary }
                   ^^^^^^
-  help: `text` speeds findWith, startsWith and endsWith on a String
+  help: `text` speeds findExact, startsExact and endsExact on a String (not the `…Like` forms)
 ```
 
 Also errors: an unknown type or field, a relationship, `range` on a `Bool`,
@@ -67,10 +69,10 @@ an index drops it.
   strings are kept apart, as a comparison between them never matches.
 - `text` is a trigram index. Each value is padded with a start and an end
   marker, so the trigrams of a needle, of start+needle and of needle+end answer
-  `findWith`, `startsWith` and `endsWith` from one structure that is updated
-  in place on every write. A needle too short for a trigram (under three
-  characters for `findWith`, under two for the others) is answered from every
-  row with a string in that field.
+  `findExact`, `startsExact` and `endsExact` from one structure that is
+  updated in place on every write. A needle too short for a trigram (under
+  three characters for `findExact`, under two for the others) is answered from
+  every row with a string in that field.
 
 An index returns candidates: every row that can match, and sometimes a few
 that cannot (`>` is read as `>=`). The same filter that a scan uses then

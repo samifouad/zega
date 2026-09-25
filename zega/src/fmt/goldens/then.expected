@@ -11,7 +11,7 @@ display {
 }
 
 then {
-  (findWith { "a" in { name bio } } || findWithout { "b" }) &&
+  (findExact { "a" in { name bio } } || findWithout { "b" }) &&
   common { Person { country name } Other { x } }
 }
 
@@ -24,11 +24,11 @@ display {
 }
 
 then {
-  startsWith { "A" in { name } } && endsWith { "z" } || regex { "[a-z]+" }
+  startsExact { "A" in { name } } && endsExact { "z" } || regex { "[a-z]+" }
 }
 
 then {
-  findWith {
+  findExact {
     "x" in {
       name
       bio
@@ -47,4 +47,8 @@ then {
 
 then {
   similar { &v >= 0.95 } && near { &at <= 1 mi }
+}
+
+then {
+  findLike { "a" in { name } } && startsLike { "b" } || endsLike { "c" }
 }

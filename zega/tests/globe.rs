@@ -10,14 +10,14 @@ fn iso2_writes_updates_queries_and_indexes() {
     db.run_lang(SCHEMA, r#"mutation { Country(name: "Canada" && iso: "CA" && former: null) }"#).unwrap();
     db.run_lang(SCHEMA, r#"mutation { Country(name: "Japan" && iso: "JP") }"#).unwrap();
     assert_eq!(
-        db.run_lang(SCHEMA, r#"query { Country(iso startsWith "C") { name iso former } }"#).unwrap(),
+        db.run_lang(SCHEMA, r#"query { Country(iso startsExact "C") { name iso former } }"#).unwrap(),
         json!([{"name":"Canada","iso":"CA","former":null}])
     );
     db.run_lang(SCHEMA, r#"mutation { Country(name: "Japan") set former: "JP" { former } }"#).unwrap();
     let source = r#"schema { type Country { iso: String<iso2> } }
         index { text Country { iso } range Country { iso } }
         mutation { Country(iso: "GB") }
-        query { Country(iso findWith "B") { iso } }"#;
+        query { Country(iso findExact "B") { iso } }"#;
     assert_eq!(Zega::in_memory().build().unwrap().apply_zql(source).unwrap(), json!([{"iso":"GB"}]));
 }
 

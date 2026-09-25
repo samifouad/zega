@@ -121,9 +121,9 @@ fn condition(rng: &mut Rng, depth: u32) -> String {
         1 => format!("rating {cmp} {}", number(rng)),
         2 => format!("name {cmp} {}", json!(name(rng))),
         3 => format!("salary {cmp} {}", json!(name(rng))),
-        4 => format!("name findWith {}", json!(name(rng))),
-        5 => format!("name startsWith {}", json!(name(rng))),
-        _ => format!("name endsWith {}", json!(name(rng))),
+        4 => format!("name findExact {}", json!(name(rng))),
+        5 => format!("name startsExact {}", json!(name(rng))),
+        _ => format!("name endsExact {}", json!(name(rng))),
     }
 }
 
@@ -233,16 +233,16 @@ fn text_index_answers_contains_starts_and_ends_with() {
         run(&b, &without, &insert).unwrap();
     }
     let cases: &[(&str, u64, usize)] = &[
-        ("name findWith \"McDavid\"", 100, 100),
-        ("name startsWith \"Connor\"", 200, 200),
-        ("name endsWith \"599\"", 1, 1),
-        ("name findWith \"Hyman 01\"", 1, 1),
-        // `endsWith "1"` is too short for a trigram; the Leon trigrams narrow it.
-        ("name startsWith \"Leon\" && name endsWith \"1\"", 100, 20),
-        ("name findWith \"nobody\"", 0, 0),
-        ("name findWith \"Brown\" || name endsWith \"000\"", 101, 101),
+        ("name findExact \"McDavid\"", 100, 100),
+        ("name startsExact \"Connor\"", 200, 200),
+        ("name endsExact \"599\"", 1, 1),
+        ("name findExact \"Hyman 01\"", 1, 1),
+        // `endsExact "1"` is too short for a trigram; the Leon trigrams narrow it.
+        ("name startsExact \"Leon\" && name endsExact \"1\"", 100, 20),
+        ("name findExact \"nobody\"", 0, 0),
+        ("name findExact \"Brown\" || name endsExact \"000\"", 101, 101),
         // Too short for a trigram: every Player with a name is a candidate.
-        ("name findWith \"99\"", 600, 6),
+        ("name findExact \"99\"", 600, 6),
     ];
     for (condition, rows, count) in cases {
         let query = format!("{{ Player({condition}) {{ n }} }}");
@@ -299,7 +299,7 @@ fn indexes_survive_restart_writes_and_snapshots() {
         db.apply_zql(&document).unwrap();
     }
     let top = "{ Player(salary >= 295) { n } }";
-    let named = "{ Player(name endsWith \" 42\") { n } }";
+    let named = "{ Player(name endsExact \" 42\") { n } }";
     {
         let db = open();
         let (rows, result) = measure(&db, &with, top);

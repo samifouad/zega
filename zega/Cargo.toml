@@ -25,6 +25,9 @@ libm = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# `…Like` text matching (zegadb/zega#98): NFD decomposition to drop combining
+# marks before case-folding. Pure Rust, no_std-friendly, wasm32-safe.
+unicode-normalization = "0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ureq = { version = "~3.4.2", optional = true, default-features = false, features = ["rustls"] }

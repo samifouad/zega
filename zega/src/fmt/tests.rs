@@ -69,9 +69,12 @@ fn ast(source: &str) -> Result<Parsed> {
                 | Pred::Eq(_, _, s)
                 | Pred::Ne(_, _, s)
                 | Pred::Cmp(_, _, _, s)
-                | Pred::Contains(_, _, s)
-                | Pred::StartsWith(_, _, s)
-                | Pred::EndsWith(_, _, s) => span(s),
+                | Pred::FindExact(_, _, s)
+                | Pred::StartsExact(_, _, s)
+                | Pred::EndsExact(_, _, s)
+                | Pred::FindLike(_, _, s)
+                | Pred::StartsLike(_, _, s)
+                | Pred::EndsLike(_, _, s) => span(s),
             },
         }
     }
@@ -405,8 +408,8 @@ fn r1_selections() {
 }
 #[test]
 fn r2_top_level_blocks() {
-    let source = "schema{type A{x:Int}}unique{A{x}}index{}mutation{A(x:1)}query{A{x}}display{skip}then{findWith{\"a\"}}display{skip}";
-    let expected = "schema {\n  type A { x: Int }\n}\n\nunique {\n  A { x }\n}\n\nindex {\n}\n\nmutation {\n  A(x: 1)\n}\n\nquery {\n  A { x }\n}\n\ndisplay {\n  skip\n}\n\nthen {\n  findWith { \"a\" }\n}\n\ndisplay {\n  skip\n}\n";
+    let source = "schema{type A{x:Int}}unique{A{x}}index{}mutation{A(x:1)}query{A{x}}display{skip}then{findExact{\"a\"}}display{skip}";
+    let expected = "schema {\n  type A { x: Int }\n}\n\nunique {\n  A { x }\n}\n\nindex {\n}\n\nmutation {\n  A(x: 1)\n}\n\nquery {\n  A { x }\n}\n\ndisplay {\n  skip\n}\n\nthen {\n  findExact { \"a\" }\n}\n\ndisplay {\n  skip\n}\n";
     assert_eq!(format_zql(source).unwrap(), expected);
     invariant(source, "R2");
 }
@@ -492,13 +495,13 @@ fn then_chain_width() {
     for op in ["&&", "||"] {
         for width in [80, 81] {
             let value = "x".repeat(
-                width - "  findWith { \"\" } && startsWith { \"b\" } && endsWith { \"c\" }".len(),
+                width - "  findExact { \"\" } && startsExact { \"b\" } && endsExact { \"c\" }".len(),
             );
-            let source = format!("query{{A{{name}}}}then{{findWith{{\"{value}\"}}{op}startsWith{{\"b\"}}{op}endsWith{{\"c\"}}}}");
+            let source = format!("query{{A{{name}}}}then{{findExact{{\"{value}\"}}{op}startsExact{{\"b\"}}{op}endsExact{{\"c\"}}}}");
             let condition = if width == 80 {
-                format!("  findWith {{ \"{value}\" }} {op} startsWith {{ \"b\" }} {op} endsWith {{ \"c\" }}")
+                format!("  findExact {{ \"{value}\" }} {op} startsExact {{ \"b\" }} {op} endsExact {{ \"c\" }}")
             } else {
-                format!("  findWith {{ \"{value}\" }} {op}\n  startsWith {{ \"b\" }} {op}\n  endsWith {{ \"c\" }}")
+                format!("  findExact {{ \"{value}\" }} {op}\n  startsExact {{ \"b\" }} {op}\n  endsExact {{ \"c\" }}")
             };
             assert_eq!(
                 format_zql(&source).unwrap(),

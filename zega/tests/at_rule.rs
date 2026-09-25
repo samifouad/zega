@@ -42,17 +42,32 @@ fn old_spellings_name_the_replacement_and_mark_the_source() {
         (
             r#"query { Stop(name STARTS WITH "A") }"#,
             "STARTS WITH",
-            "startsWith",
+            "startsExact",
         ),
         (
             r#"query { Stop(name ENDS WITH "A") }"#,
             "ENDS WITH",
-            "endsWith",
+            "endsExact",
         ),
         (
             r#"query { Stop(name CONTAINS "A") }"#,
             "CONTAINS",
+            "findExact",
+        ),
+        (
+            r#"query { Stop(name findWith "A") }"#,
             "findWith",
+            "findExact",
+        ),
+        (
+            r#"query { Stop(name startsWith "A") }"#,
+            "startsWith",
+            "startsExact",
+        ),
+        (
+            r#"query { Stop(name endsWith "A") }"#,
+            "endsWith",
+            "endsExact",
         ),
     ] {
         let report = zega::diagnose(schema, query);
@@ -75,10 +90,10 @@ fn old_spellings_name_the_replacement_and_mark_the_source() {
 #[test]
 fn user_names_and_builtin_values_can_be_projected_together() {
     let db = Zega::in_memory().build().unwrap();
-    let schema = "type Sample { id: Int score: Int hops: Int cost: Int shape: String point: Int vector: Int distance: Int similarity: Int within_box: Int near: Int findWith: Int startsWith: Int endsWith: Int query: Int graph: Int embedding: Vector<2> }";
-    db.run_lang(schema, "mutation { Sample(id: 99 && score: 42 && hops: 7 && cost: 8 && shape: \"circle\" && point: 1 && vector: 2 && distance: 3 && similarity: 4 && within_box: 5 && near: 6 && findWith: 7 && startsWith: 8 && endsWith: 9 && query: 10 && graph: 11 && embedding: @vector[1,0]) }").unwrap();
-    let fields = "id score hops cost shape point vector distance similarity within_box near findWith startsWith endsWith query graph node: @id depth: @hops";
-    let expected = json!({"id":99,"score":42,"hops":7,"cost":8,"shape":"circle","point":1,"vector":2,"distance":3,"similarity":4,"within_box":5,"near":6,"findWith":7,"startsWith":8,"endsWith":9,"query":10,"graph":11,"node":1,"depth":0});
+    let schema = "type Sample { id: Int score: Int hops: Int cost: Int shape: String point: Int vector: Int distance: Int similarity: Int within_box: Int near: Int findExact: Int startsExact: Int endsExact: Int findLike: Int startsLike: Int endsLike: Int query: Int graph: Int embedding: Vector<2> }";
+    db.run_lang(schema, "mutation { Sample(id: 99 && score: 42 && hops: 7 && cost: 8 && shape: \"circle\" && point: 1 && vector: 2 && distance: 3 && similarity: 4 && within_box: 5 && near: 6 && findExact: 7 && startsExact: 8 && endsExact: 9 && findLike: 10 && startsLike: 11 && endsLike: 12 && query: 13 && graph: 14 && embedding: @vector[1,0]) }").unwrap();
+    let fields = "id score hops cost shape point vector distance similarity within_box near findExact startsExact endsExact findLike startsLike endsLike query graph node: @id depth: @hops";
+    let expected = json!({"id":99,"score":42,"hops":7,"cost":8,"shape":"circle","point":1,"vector":2,"distance":3,"similarity":4,"within_box":5,"near":6,"findExact":7,"startsExact":8,"endsExact":9,"findLike":10,"startsLike":11,"endsLike":12,"query":13,"graph":14,"node":1,"depth":0});
     assert_eq!(
         db.run_lang(
             schema,

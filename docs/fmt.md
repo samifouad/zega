@@ -151,7 +151,7 @@ operand of the `&&` chain gets its own line with the operator at the end, and
 are kept, so `(position = "C" || position = "LW")` stays one operand.
 
 ```zql before
-query{Player((position="C"||position="LW")&&salary>=5000000&&salary<12000000&&name startsWith "A"){name position salary}}
+query{Player((position="C"||position="LW")&&salary>=5000000&&salary<12000000&&name startsExact "A"){name position salary}}
 ```
 
 ```zql after
@@ -160,7 +160,7 @@ query {
     (position = "C" || position = "LW") &&
     salary >= 5000000 &&
     salary < 12000000 &&
-    name startsWith "A"
+    name startsExact "A"
   ) {
     name
     position
