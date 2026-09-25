@@ -219,7 +219,7 @@ export function renderGlobe(container, { countries, codes, places, rels = [], cr
   // by half of it, so the planet itself sits in the middle. On the flat map
   // there is no planet to frame.
   //
-  // The camera belongs to the reader once they touch it (zega#100): this
+  // The camera belongs to the reader once they touch it (zega#101): this
   // fit, and the padding that keeps the planet centred, run only up to that
   // point — on first load, and while a resize keeps it converging (a pane
   // too small still needs its zoom pulled in). `userMoved` flips true on the
@@ -260,7 +260,7 @@ export function renderGlobe(container, { countries, codes, places, rels = [], cr
   centrePlanet();
   // zoomend/pitchend are not a resize: they fire for the reader's own scroll,
   // pinch and drag too, and re-fitting on them is what snapped the camera
-  // back under them (zega#100). Only a real layout change (below) still
+  // back under them (zega#101). Only a real layout change (below) still
   // drives the fit, and only before the reader has taken the camera.
   for (const event of ['dragstart', 'zoomstart', 'pitchstart', 'rotatestart']) {
     map.on(event, (event) => { if (event.originalEvent) userMoved = true; });
