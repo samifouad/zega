@@ -567,12 +567,17 @@ impl Wal {
 /// nothing left over, and no length prefix allowed to claim more than `bytes`
 /// holds. WAL entries, legacy WAL entries and snapshots all decode here, so a
 /// frame that is not exactly one value is corruption wherever it is read.
+#[cfg(not(target_arch = "wasm32"))]
 fn decode_exact<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, bincode::Error> {
+    exact(bytes).deserialize(bytes)
+}
+
+/// The options [`decode_exact`] and [`decode_snapshot`] read with.
+fn exact(bytes: &[u8]) -> impl Options {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .reject_trailing_bytes()
         .with_limit(bytes.len() as u64)
-        .deserialize(bytes)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1118,11 +1123,7 @@ enum SnapshotFormat {
 fn decode_snapshot(bytes: &[u8], format: SnapshotFormat) -> Result<Graph, bincode::Error> {
     let mut graph = Graph::new();
     graph.defer_vectors();
-    bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .reject_trailing_bytes()
-        .with_limit(bytes.len() as u64)
-        .deserialize_seed(SnapshotSeed { graph: &mut graph, format }, bytes)?;
+    exact(bytes).deserialize_seed(SnapshotSeed { graph: &mut graph, format }, bytes)?;
     graph.index_deferred_vectors();
     Ok(graph)
 }
