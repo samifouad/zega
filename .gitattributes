@@ -12,3 +12,6 @@ browser/repl.js text eol=lf
 browser/pkg/** -text
 browser/wasm-source.json -text
 *.wasm binary
+
+# .graph files are byte-exact (docs/graph-format.md); golden-v1.graph above all.
+*.graph binary
