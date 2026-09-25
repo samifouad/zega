@@ -21,7 +21,7 @@ use std::ops::Bound;
 
 use serde_json::Value as Json;
 
-use crate::graph::{Node, NodeId};
+use crate::graph::{NodeId, NodeView};
 use crate::value::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -288,10 +288,6 @@ pub(crate) struct DeclaredIndexes {
     text: HashMap<Slot, TextIndex>,
 }
 
-fn has_label(labels: &[String], wanted: &str) -> bool {
-    labels.iter().any(|label| label == wanted)
-}
-
 impl DeclaredIndexes {
     fn is_empty(&self) -> bool {
         self.range.is_empty() && self.text.is_empty()
@@ -317,59 +313,61 @@ impl DeclaredIndexes {
     }
 
     /// Build `spec` from `nodes`, the nodes that carry its type.
-    pub fn build<'a>(&mut self, spec: &IndexSpec, nodes: impl Iterator<Item = &'a Node>) {
+    pub fn build<N: NodeView>(&mut self, spec: &IndexSpec, nodes: impl Iterator<Item = N>) {
         let slot = (spec.type_name.clone(), spec.field.clone());
         match spec.kind {
             IndexKind::Range => {
                 let tree = self.range.entry(slot).or_default();
                 for node in nodes {
-                    if let Some(key) = node.props.get(&spec.field).and_then(key) {
-                        tree.entry(key).or_default().insert(node.id);
+                    if let Some(key) = node.prop(&spec.field).and_then(key) {
+                        tree.entry(key).or_default().insert(node.id());
                     }
                 }
             }
             IndexKind::Text => {
                 let index = self.text.entry(slot).or_default();
                 for node in nodes {
-                    if let Some(Value::String(text)) = node.props.get(&spec.field) {
-                        index.insert(node.id, text);
+                    if let Some(Value::String(text)) = node.prop(&spec.field) {
+                        index.insert(node.id(), text);
                     }
                 }
             }
         }
     }
 
-    pub fn insert(&mut self, id: NodeId, labels: &[String], props: &HashMap<String, Value>) {
+    pub fn insert(&mut self, node: &impl NodeView) {
         if self.is_empty() {
             return;
         }
+        let id = node.id();
         for ((ty, field), tree) in &mut self.range {
-            if !has_label(labels, ty) {
+            if !node.has_label(ty) {
                 continue;
             }
-            if let Some(key) = props.get(field).and_then(key) {
+            if let Some(key) = node.prop(field).and_then(key) {
                 tree.entry(key).or_default().insert(id);
             }
         }
         for ((ty, field), index) in &mut self.text {
-            if !has_label(labels, ty) {
+            if !node.has_label(ty) {
                 continue;
             }
-            if let Some(Value::String(text)) = props.get(field) {
+            if let Some(Value::String(text)) = node.prop(field) {
                 index.insert(id, text);
             }
         }
     }
 
-    pub fn remove(&mut self, id: NodeId, labels: &[String], props: &HashMap<String, Value>) {
+    pub fn remove(&mut self, node: &impl NodeView) {
         if self.is_empty() {
             return;
         }
+        let id = node.id();
         for ((ty, field), tree) in &mut self.range {
-            if !has_label(labels, ty) {
+            if !node.has_label(ty) {
                 continue;
             }
-            if let Some(key) = props.get(field).and_then(key) {
+            if let Some(key) = node.prop(field).and_then(key) {
                 if let Some(ids) = tree.get_mut(&key) {
                     ids.remove(&id);
                     if ids.is_empty() {
@@ -379,10 +377,10 @@ impl DeclaredIndexes {
             }
         }
         for ((ty, field), index) in &mut self.text {
-            if !has_label(labels, ty) {
+            if !node.has_label(ty) {
                 continue;
             }
-            if let Some(Value::String(text)) = props.get(field) {
+            if let Some(Value::String(text)) = node.prop(field) {
                 index.remove(id, text);
             }
         }
@@ -440,6 +438,7 @@ impl DeclaredIndexes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::Node;
     use serde_json::json;
 
     fn node(id: NodeId, field: &str, value: Value) -> Node {
@@ -459,7 +458,7 @@ mod tests {
             node(3, "x", Value::from_f64(f64::NAN)),
         ];
         let mut indexes = DeclaredIndexes::default();
-        indexes.build(&spec, nodes.iter());
+        indexes.build(&spec, nodes.into_iter());
         let at_zero = indexes
             .range_candidates(&["T"], "x", &Interval::at_least(&json!(0)).unwrap())
             .unwrap();

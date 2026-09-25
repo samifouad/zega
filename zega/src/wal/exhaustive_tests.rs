@@ -1077,10 +1077,10 @@ fn snapshot_restore_roundtrips_graph() {
     assert_eq!(g2.all_nodes().len(), 3);
     assert_eq!(g2.all_relationships().len(), 1);
     assert_eq!(
-        g2.get_node(nid).map(|n| n.labels.clone()),
+        g2.get_node(nid).map(|n| n.to_node().labels),
         Some(vec!["Person".to_string()])
     );
-    assert_eq!(g2.get_relationship(rid).map(|r| r.kind.clone()), Some("KNOWS".to_string()));
+    assert_eq!(g2.get_relationship(rid).map(|r| r.kind), Some("KNOWS"));
 }
 
 #[test]
@@ -1178,7 +1178,7 @@ fn snapshot_preserves_node_properties() {
 
     let mut g2 = Graph::new();
     restore(&mut g2, &snap).unwrap();
-    let node = g2.get_node(id).unwrap();
+    let node = g2.get_node(id).unwrap().to_node();
     assert_eq!(node.props.get("active"), Some(&Value::Bool(true)));
     assert_eq!(node.props.get("score").and_then(Value::to_f64), Some(9.5));
 }
@@ -1850,7 +1850,7 @@ fn snapshot_with_unicode_and_extreme_values_roundtrips() {
     snapshot(&g, &snap).unwrap();
     let mut gr = Graph::new();
     restore(&mut gr, &snap).unwrap();
-    let node = gr.get_node(id).unwrap();
+    let node = gr.get_node(id).unwrap().to_node();
     assert_eq!(node.labels, vec!["Ünïcödé".to_string()]);
     assert_eq!(node.props.get("min"), Some(&Value::Int(i64::MIN)));
     assert_eq!(node.props.get("max"), Some(&Value::Int(i64::MAX)));
@@ -1919,7 +1919,7 @@ fn replaying_recovered_ops_reconstructs_expected_state() {
     }
 
     // Node 1 survives with its UPDATED property; node 2 (and its rel) is gone.
-    let n1 = graph.get_node(1).expect("node 1 must survive replay");
+    let n1 = graph.get_node(1).expect("node 1 must survive replay").to_node();
     assert_eq!(n1.props.get("v"), Some(&Value::Int(99)), "update must win over insert");
     assert!(graph.get_node(2).is_none(), "deleted node must not be resurrected");
     assert!(

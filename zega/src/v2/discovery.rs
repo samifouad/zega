@@ -86,11 +86,11 @@ fn stage(
         .filter_map(|id| graph.get_node(*id))
         .map(|node| {
             let props: serde_json::Map<String, Json> = node
-                .props
-                .iter()
-                .map(|(key, value)| (key.clone(), value_to_json(value)))
+                .props()
+                .map(|(key, value)| (key.to_string(), value_to_json(value)))
                 .collect();
-            json!({"id": node.id, "labels": node.labels, "props": props})
+            let labels: Vec<&str> = node.labels().collect();
+            json!({"id": node.id, "labels": labels, "props": props})
         })
         .collect();
     let edges: Vec<_> = rels
@@ -185,11 +185,11 @@ fn primitive_matches(
                         None => input.iter().copied().collect(),
                     };
                     for id in candidates {
-                        let Some(node) = graph.get_node(id).filter(|n| n.labels.contains(&ty.name))
+                        let Some(node) = graph.get_node(id).filter(|n| n.has_label(&ty.name))
                         else {
                             continue;
                         };
-                        let Some(Value::String(value)) = node.props.get(name) else {
+                        let Some(Value::String(value)) = node.prop(name) else {
                             continue;
                         };
                         work.charge(1)?;
@@ -226,15 +226,14 @@ fn primitive_matches(
                     continue;
                 };
                 for (ty, fields, _) in types {
-                    if !node.labels.contains(ty) {
+                    if !node.has_label(ty) {
                         continue;
                     }
                     work.charge(fields.len())?;
                     let values: Option<Vec<Json>> = fields
                         .iter()
                         .map(|(field, _)| {
-                            node.props
-                                .get(field)
+                            node.prop(field)
                                 .filter(|v| !matches!(v, Value::Null))
                                 .map(canonical_value)
                         })
@@ -278,7 +277,7 @@ fn primitive_matches(
         } => {
             for id in input {
                 let Some(Value::Vector(vector)) =
-                    graph.get_node(*id).and_then(|n| n.props.get(field))
+                    graph.get_node(*id).and_then(|n| n.prop(field))
                 else {
                     continue;
                 };
@@ -300,7 +299,7 @@ fn primitive_matches(
                         continue;
                     }
                     if let Some(Value::Vector(v)) =
-                        graph.get_node(*other).and_then(|n| n.props.get(field))
+                        graph.get_node(*other).and_then(|n| n.prop(field))
                     {
                         if v.metric == vector.metric {
                             if let Some(score) = vector.score(v) {
@@ -327,7 +326,7 @@ fn primitive_matches(
             ..
         } => {
             for id in input {
-                let Some(point) = graph.get_node(*id).and_then(|n| point_prop(n, field)) else {
+                let Some(point) = graph.get_node(*id).and_then(|n| point_prop(&n, field)) else {
                     continue;
                 };
                 // Bounding boxes are conservative; exact portable haversine
@@ -337,7 +336,7 @@ fn primitive_matches(
                         continue;
                     }
                     work.charge(1)?;
-                    let Some(target) = graph.get_node(other).and_then(|n| point_prop(n, field))
+                    let Some(target) = graph.get_node(other).and_then(|n| point_prop(&n, field))
                     else {
                         continue;
                     };

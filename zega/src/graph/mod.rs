@@ -3,9 +3,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::index::{DeclaredIndexes, IndexKind, IndexSpec, Interval, TextPattern};
 use crate::value::Value;
 
+mod names;
+
+use names::{Names, Shape, ShapeId, Shapes, Sym};
+
 pub type NodeId = u64;
 pub type RelId = u64;
 
+/// A node as it is written down: in the WAL, a snapshot, a rollback journal.
+/// The graph itself stores the compact [`NodeRef`] form.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     pub id: NodeId,
@@ -13,6 +19,7 @@ pub struct Node {
     pub props: HashMap<String, Value>,
 }
 
+/// A relationship as it is written down; see [`Node`].
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Relationship {
     pub id: RelId,
@@ -22,11 +29,219 @@ pub struct Relationship {
     pub props: HashMap<String, Value>,
 }
 
+/// What the query executor reads from a node, whether it is stored in the
+/// graph ([`NodeRef`]) or a copy taken before a write ([`Node`]).
+pub trait NodeView {
+    fn id(&self) -> NodeId;
+    fn prop(&self, key: &str) -> Option<&Value>;
+    fn has_label(&self, label: &str) -> bool;
+    /// The first label written, which ZQL treats as the node's type.
+    fn first_label(&self) -> Option<&str>;
+}
+
+impl<T: NodeView + ?Sized> NodeView for &T {
+    fn id(&self) -> NodeId {
+        (**self).id()
+    }
+    fn prop(&self, key: &str) -> Option<&Value> {
+        (**self).prop(key)
+    }
+    fn has_label(&self, label: &str) -> bool {
+        (**self).has_label(label)
+    }
+    fn first_label(&self) -> Option<&str> {
+        (**self).first_label()
+    }
+}
+
+impl NodeView for Node {
+    fn id(&self) -> NodeId {
+        self.id
+    }
+    fn prop(&self, key: &str) -> Option<&Value> {
+        self.props.get(key)
+    }
+    fn has_label(&self, label: &str) -> bool {
+        self.labels.iter().any(|has| has == label)
+    }
+    fn first_label(&self) -> Option<&str> {
+        self.labels.first().map(String::as_str)
+    }
+}
+
+/// A stored node: its shape (labels and property keys) and its property
+/// values in the shape's key order.
+struct NodeRecord {
+    shape: ShapeId,
+    values: Box<[Value]>,
+}
+
+struct RelRecord {
+    kind: Sym,
+    /// Property keys only; a relationship's shape has no labels.
+    shape: ShapeId,
+    from: NodeId,
+    to: NodeId,
+    values: Box<[Value]>,
+}
+
+/// A node in the graph, borrowed.
+#[derive(Clone, Copy)]
+pub struct NodeRef<'g> {
+    pub id: NodeId,
+    names: &'g Names,
+    shape: &'g Shape,
+    values: &'g [Value],
+}
+
+/// A relationship in the graph, borrowed.
+#[derive(Clone, Copy)]
+pub struct RelRef<'g> {
+    pub id: RelId,
+    pub kind: &'g str,
+    pub from: NodeId,
+    pub to: NodeId,
+    names: &'g Names,
+    keys: &'g [Sym],
+    values: &'g [Value],
+}
+
+/// The value of `key` among `keys` (ascending by symbol) and `values`.
+/// A handful of keys is scanned by name, which is cheaper than hashing
+/// `key`; more are found by symbol.
+fn lookup<'g>(names: &Names, keys: &[Sym], values: &'g [Value], key: &str) -> Option<&'g Value> {
+    const SCAN: usize = 8;
+    let at = if keys.len() <= SCAN {
+        keys.iter().position(|sym| names.name(*sym) == key)?
+    } else {
+        keys.binary_search(&names.get(key)?).ok()?
+    };
+    Some(&values[at])
+}
+
+impl<'g> NodeRef<'g> {
+    pub fn labels(&self) -> impl Iterator<Item = &'g str> + 'g {
+        let names = self.names;
+        self.shape.labels.iter().map(move |sym| names.name(*sym))
+    }
+
+    pub fn prop(&self, key: &str) -> Option<&'g Value> {
+        lookup(self.names, &self.shape.keys, self.values, key)
+    }
+
+    pub fn props(&self) -> impl Iterator<Item = (&'g str, &'g Value)> + 'g {
+        let names = self.names;
+        self.shape
+            .keys
+            .iter()
+            .map(move |sym| names.name(*sym))
+            .zip(self.values.iter())
+    }
+
+    pub fn has_label(&self, label: &str) -> bool {
+        self.labels().any(|has| has == label)
+    }
+
+    pub fn first_label(&self) -> Option<&'g str> {
+        self.labels().next()
+    }
+
+    /// The node as it is written down.
+    pub fn to_node(&self) -> Node {
+        Node {
+            id: self.id,
+            labels: self.labels().map(str::to_string).collect(),
+            props: self.props().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+        }
+    }
+}
+
+impl NodeView for NodeRef<'_> {
+    fn id(&self) -> NodeId {
+        self.id
+    }
+    fn prop(&self, key: &str) -> Option<&Value> {
+        NodeRef::prop(self, key)
+    }
+    fn has_label(&self, label: &str) -> bool {
+        NodeRef::has_label(self, label)
+    }
+    fn first_label(&self) -> Option<&str> {
+        NodeRef::first_label(self)
+    }
+}
+
+impl<'g> RelRef<'g> {
+    pub fn prop(&self, key: &str) -> Option<&'g Value> {
+        lookup(self.names, self.keys, self.values, key)
+    }
+
+    pub fn props(&self) -> impl Iterator<Item = (&'g str, &'g Value)> + 'g {
+        let names = self.names;
+        self.keys
+            .iter()
+            .map(move |sym| names.name(*sym))
+            .zip(self.values.iter())
+    }
+
+    /// The relationship as it is written down.
+    pub fn to_relationship(&self) -> Relationship {
+        Relationship {
+            id: self.id,
+            kind: self.kind.to_string(),
+            from: self.from,
+            to: self.to,
+            props: self.props().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+        }
+    }
+}
+
+fn node_ref<'g>(names: &'g Names, shapes: &'g Shapes, id: NodeId, node: &'g NodeRecord) -> NodeRef<'g> {
+    NodeRef {
+        id,
+        names,
+        shape: shapes.get(node.shape),
+        values: &node.values,
+    }
+}
+
+fn rel_ref<'g>(names: &'g Names, shapes: &'g Shapes, id: RelId, rel: &'g RelRecord) -> RelRef<'g> {
+    RelRef {
+        id,
+        kind: names.name(rel.kind),
+        from: rel.from,
+        to: rel.to,
+        names,
+        keys: &shapes.get(rel.shape).keys,
+        values: &rel.values,
+    }
+}
+
+/// Intern `labels` and `props` into a shape and the values in its key order.
+fn intern(
+    names: &mut Names,
+    shapes: &mut Shapes,
+    labels: &[String],
+    props: impl IntoIterator<Item = (String, Value)>,
+) -> (ShapeId, Box<[Value]>) {
+    let labels: Box<[Sym]> = labels.iter().map(|label| names.intern(label)).collect();
+    let mut pairs: Vec<(Sym, Value)> = props
+        .into_iter()
+        .map(|(key, value)| (names.intern(&key), value))
+        .collect();
+    pairs.sort_unstable_by_key(|(sym, _)| *sym);
+    let keys = pairs.iter().map(|(sym, _)| *sym).collect();
+    let values = pairs.into_iter().map(|(_, value)| value).collect();
+    (shapes.intern(Shape { labels, keys }), values)
+}
+
 pub struct Graph {
-    nodes: HashMap<NodeId, Node>,
-    relationships: HashMap<RelId, Relationship>,
-    label_index: HashMap<String, HashSet<NodeId>>,
-    property_index: HashMap<(String, Value), HashSet<NodeId>>,
+    names: Names,
+    shapes: Shapes,
+    nodes: HashMap<NodeId, NodeRecord>,
+    relationships: HashMap<RelId, RelRecord>,
+    label_index: HashMap<Sym, HashSet<NodeId>>,
+    property_index: HashMap<(Sym, Value), HashSet<NodeId>>,
     spatial_index: crate::location::SpatialIndex,
     vector_index: crate::vector::VectorIndex,
     /// `index { }` declarations of the schema last run against this graph.
@@ -50,6 +265,8 @@ impl Default for Graph {
 impl Graph {
     pub fn new() -> Self {
         Graph {
+            names: Names::default(),
+            shapes: Shapes::default(),
             nodes: HashMap::new(),
             relationships: HashMap::new(),
             label_index: HashMap::new(),
@@ -87,12 +304,13 @@ impl Graph {
             if self.declared.contains(spec) {
                 continue;
             }
-            let nodes = self
-                .label_index
+            let (names, shapes, all) = (&self.names, &self.shapes, &self.nodes);
+            let nodes = names
                 .get(&spec.type_name)
+                .and_then(|label| self.label_index.get(&label))
                 .into_iter()
                 .flatten()
-                .filter_map(|id| self.nodes.get(id));
+                .filter_map(|id| all.get(id).map(|node| node_ref(names, shapes, *id, node)));
             self.declared.build(spec, nodes);
         }
     }
@@ -166,75 +384,88 @@ impl Graph {
     }
 
     pub fn restore_node(&mut self, id: NodeId, labels: Vec<String>, props: HashMap<String, Value>) {
-        let node = Node {
-            id,
-            labels: labels.clone(),
-            props: props.clone(),
-        };
-        if let Some(previous) = self.nodes.insert(id, node) {
-            self.remove_node_indexes(&previous);
+        let (shape, values) = intern(&mut self.names, &mut self.shapes, &labels, props);
+        if let Some(previous) = self.nodes.insert(id, NodeRecord { shape, values }) {
+            self.remove_node_indexes(id, &previous);
         }
-        for lbl in &labels {
-            self.label_index
-                .entry(lbl.clone())
-                .or_default()
-                .insert(id);
+        for label in self.shapes.get(shape).labels.iter() {
+            self.label_index.entry(*label).or_default().insert(id);
         }
-        for (k, v) in &props {
-            if let Value::Point(point) = v {
-                self.spatial_index.insert(k, *point, id);
-            }
-            if let Value::Vector(v) = v { self.vector_index.insert(k, v, id); }
-            self.property_index
-                .entry((k.clone(), v.clone()))
-                .or_default()
-                .insert(id);
-        }
-        self.declared.insert(id, &labels, &props);
+        self.add_prop_indexes(id);
         self.next_node_id.fetch_max(id + 1, Ordering::SeqCst);
     }
 
-    pub fn update_node(&mut self, id: NodeId, props: HashMap<String, Value>) {
-        if let Some(node) = self.nodes.get_mut(&id) {
-            self.declared.remove(id, &node.labels, &node.props);
-            for (k, v) in &node.props {
-                if let Value::Point(point) = v {
-                    self.spatial_index.remove(k, *point, id);
-                }
-                if let Value::Vector(v) = v { self.vector_index.remove(k, v, id); }
-                if let Some(set) = self.property_index.get_mut(&(k.clone(), v.clone())) {
-                    set.remove(&id);
-                }
+    /// Index every property of stored node `id`, and add it to the declared
+    /// indexes. Labels are indexed by the caller.
+    fn add_prop_indexes(&mut self, id: NodeId) {
+        let Some(record) = self.nodes.get(&id) else {
+            return;
+        };
+        let node = node_ref(&self.names, &self.shapes, id, record);
+        for (&key, value) in node.shape.keys.iter().zip(node.values) {
+            let name = self.names.name(key);
+            if let Value::Point(point) = value {
+                self.spatial_index.insert(name, *point, id);
             }
-            node.props.extend(props);
-            for (k, v) in &node.props {
-                if let Value::Point(point) = v {
-                    self.spatial_index.insert(k, *point, id);
-                }
-                if let Value::Vector(v) = v { self.vector_index.insert(k, v, id); }
-                self.property_index
-                    .entry((k.clone(), v.clone()))
-                    .or_default()
-                    .insert(id);
+            if let Value::Vector(v) = value {
+                self.vector_index.insert(name, v, id);
             }
-            self.declared.insert(id, &node.labels, &node.props);
+            self.property_index
+                .entry((key, value.clone()))
+                .or_default()
+                .insert(id);
+        }
+        self.declared.insert(&node);
+    }
+
+    /// Take stored node `id` (whose record is `record`) out of every property
+    /// index and the declared indexes. Labels are left to the caller.
+    fn remove_prop_indexes(&mut self, id: NodeId, record: &NodeRecord) {
+        let node = node_ref(&self.names, &self.shapes, id, record);
+        self.declared.remove(&node);
+        for (&key, value) in node.shape.keys.iter().zip(node.values) {
+            let name = self.names.name(key);
+            if let Value::Point(point) = value {
+                self.spatial_index.remove(name, *point, id);
+            }
+            if let Value::Vector(v) = value {
+                self.vector_index.remove(name, v, id);
+            }
+            if let Some(set) = self.property_index.get_mut(&(key, value.clone())) {
+                set.remove(&id);
+            }
         }
     }
 
-    fn remove_node_indexes(&mut self, node: &Node) {
-        self.declared.remove(node.id, &node.labels, &node.props);
-        for lbl in &node.labels {
-            if let Some(set) = self.label_index.get_mut(lbl) {
-                set.remove(&node.id);
-            }
+    pub fn update_node(&mut self, id: NodeId, props: HashMap<String, Value>) {
+        let Some(previous) = self.nodes.remove(&id) else {
+            return;
+        };
+        self.remove_prop_indexes(id, &previous);
+        let shape = self.shapes.get(previous.shape).clone();
+        let mut merged: HashMap<Sym, Value> = shape
+            .keys
+            .iter()
+            .copied()
+            .zip(Vec::from(previous.values))
+            .collect();
+        for (key, value) in props {
+            merged.insert(self.names.intern(&key), value);
         }
-        for (k, v) in &node.props {
-            if let Value::Point(point) = v {
-                self.spatial_index.remove(k, *point, node.id);
-            }
-            if let Value::Vector(v) = v { self.vector_index.remove(k, v, node.id); }
-            if let Some(set) = self.property_index.get_mut(&(k.clone(), v.clone())) {
-                set.remove(&node.id);
+        let mut pairs: Vec<(Sym, Value)> = merged.into_iter().collect();
+        pairs.sort_unstable_by_key(|(sym, _)| *sym);
+        let keys = pairs.iter().map(|(sym, _)| *sym).collect();
+        let values = pairs.into_iter().map(|(_, value)| value).collect();
+        let shape = self.shapes.intern(Shape { labels: shape.labels, keys });
+        self.nodes.insert(id, NodeRecord { shape, values });
+        self.add_prop_indexes(id);
+    }
+
+    fn remove_node_indexes(&mut self, id: NodeId, node: &NodeRecord) {
+        self.remove_prop_indexes(id, node);
+        for label in self.shapes.get(node.shape).labels.iter() {
+            if let Some(set) = self.label_index.get_mut(label) {
+                set.remove(&id);
             }
         }
     }
@@ -256,7 +487,7 @@ impl Graph {
 
     pub fn delete_node(&mut self, id: NodeId) {
         if let Some(node) = self.nodes.remove(&id) {
-            self.remove_node_indexes(&node);
+            self.remove_node_indexes(id, &node);
             // Remove connected relationships
             let out_rels: Vec<RelId> = self.outgoing.remove(&id).unwrap_or_default().into_iter().collect();
             let in_rels: Vec<RelId> = self.incoming.remove(&id).unwrap_or_default().into_iter().collect();
@@ -289,58 +520,67 @@ impl Graph {
         to: NodeId,
         props: HashMap<String, Value>,
     ) {
-        let rel = Relationship {
-            id,
-            kind,
+        let (shape, values) = intern(&mut self.names, &mut self.shapes, &[], props);
+        let rel = RelRecord {
+            kind: self.names.intern(&kind),
+            shape,
             from,
             to,
-            props,
+            values,
         };
         if let Some(previous) = self.relationships.insert(id, rel) {
-            self.remove_relationship_indexes(&previous);
+            self.remove_relationship_indexes(id, &previous);
         }
         self.outgoing.entry(from).or_default().insert(id);
         self.incoming.entry(to).or_default().insert(id);
         self.next_rel_id.fetch_max(id + 1, Ordering::SeqCst);
     }
 
-    fn remove_relationship_indexes(&mut self, rel: &Relationship) {
+    fn remove_relationship_indexes(&mut self, id: RelId, rel: &RelRecord) {
         if let Some(set) = self.outgoing.get_mut(&rel.from) {
-            set.remove(&rel.id);
+            set.remove(&id);
         }
         if let Some(set) = self.incoming.get_mut(&rel.to) {
-            set.remove(&rel.id);
+            set.remove(&id);
         }
     }
 
     pub fn delete_relationship(&mut self, id: RelId) {
         if let Some(rel) = self.relationships.remove(&id) {
-            self.remove_relationship_indexes(&rel);
+            self.remove_relationship_indexes(id, &rel);
         }
     }
 
-    pub fn get_node(&self, id: NodeId) -> Option<&Node> {
-        self.nodes.get(&id)
+    pub fn get_node(&self, id: NodeId) -> Option<NodeRef<'_>> {
+        let node = self.nodes.get(&id)?;
+        Some(node_ref(&self.names, &self.shapes, id, node))
     }
 
-    pub fn get_relationship(&self, id: RelId) -> Option<&Relationship> {
-        self.relationships.get(&id)
+    pub fn get_relationship(&self, id: RelId) -> Option<RelRef<'_>> {
+        let rel = self.relationships.get(&id)?;
+        Some(rel_ref(&self.names, &self.shapes, id, rel))
     }
 
     pub fn nodes_by_label(&self, label: &str) -> Option<&HashSet<NodeId>> {
-        self.label_index.get(label)
+        self.label_index.get(&self.names.get(label)?)
     }
 
     pub fn nodes_by_property(&self, key: &str, value: &Value) -> Option<&HashSet<NodeId>> {
-        self.property_index.get(&(key.to_string(), value.clone()))
+        self.property_index.get(&(self.names.get(key)?, value.clone()))
     }
 
-    pub fn all_nodes(&self) -> &HashMap<NodeId, Node> {
-        &self.nodes
+    /// Every node, in no particular order.
+    pub fn nodes(&self) -> impl ExactSizeIterator<Item = NodeRef<'_>> {
+        self.nodes
+            .iter()
+            .map(|(id, node)| node_ref(&self.names, &self.shapes, *id, node))
     }
 
-    pub fn all_relationships(&self) -> &HashMap<RelId, Relationship> {
-        &self.relationships
+    /// Every relationship, in no particular order.
+    pub fn relationships(&self) -> impl ExactSizeIterator<Item = RelRef<'_>> {
+        self.relationships
+            .iter()
+            .map(|(id, rel)| rel_ref(&self.names, &self.shapes, *id, rel))
     }
 
     pub fn outgoing_rels(&self, node_id: NodeId) -> Option<&HashSet<RelId>> {
@@ -363,6 +603,20 @@ impl Graph {
             self.restore_relationship(id, rel.kind, rel.from, rel.to, rel.props);
         }
     }
+
+    /// Every node as it is written down, by id.
+    #[cfg(test)]
+    pub fn all_nodes(&self) -> HashMap<NodeId, Node> {
+        self.nodes().map(|node| (node.id, node.to_node())).collect()
+    }
+
+    /// Every relationship as it is written down, by id.
+    #[cfg(test)]
+    pub fn all_relationships(&self) -> HashMap<RelId, Relationship> {
+        self.relationships()
+            .map(|rel| (rel.id, rel.to_relationship()))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -376,8 +630,8 @@ mod tests {
         props.insert("name".to_string(), Value::from("Alice"));
         let id = g.create_node(vec!["Person".to_string()], props.clone());
         let node = g.get_node(id).unwrap();
-        assert_eq!(node.labels, vec!["Person"]);
-        assert_eq!(node.props.get("name"), Some(&Value::from("Alice")));
+        assert_eq!(node.labels().collect::<Vec<_>>(), vec!["Person"]);
+        assert_eq!(node.prop("name"), Some(&Value::from("Alice")));
         let by_label = g.nodes_by_label("Person").unwrap();
         assert!(by_label.contains(&id));
         let by_prop = g.nodes_by_property("name", &Value::from("Alice")).unwrap();
@@ -394,6 +648,53 @@ mod tests {
         assert_eq!(rel.kind, "KNOWS");
         assert_eq!(rel.from, a);
         assert_eq!(rel.to, b);
+    }
+
+    #[test]
+    fn nodes_of_one_type_share_their_names_and_shape() {
+        let mut g = Graph::new();
+        for n in 0..100 {
+            g.create_node(
+                vec!["Person".into()],
+                HashMap::from([
+                    ("name".to_string(), Value::from(format!("p{n}"))),
+                    ("age".to_string(), Value::Int(n)),
+                ]),
+            );
+        }
+        assert_eq!(g.names.len(), 3);
+        assert_eq!(g.shapes.len(), 1);
+        let node = g.get_node(50).unwrap();
+        assert_eq!(node.prop("age"), Some(&Value::Int(49)));
+        assert_eq!(node.prop("name"), Some(&Value::from("p49")));
+        assert_eq!(node.prop("missing"), None);
+    }
+
+    #[test]
+    fn update_moves_a_node_to_the_shape_of_its_new_keys() {
+        let mut g = Graph::new();
+        let id = g.create_node(vec!["T".into()], HashMap::from([("a".to_string(), Value::Int(1))]));
+        g.update_node(id, HashMap::from([("b".to_string(), Value::Int(2)), ("a".to_string(), Value::Int(3))]));
+        let node = g.get_node(id).unwrap();
+        assert_eq!(node.prop("a"), Some(&Value::Int(3)));
+        assert_eq!(node.prop("b"), Some(&Value::Int(2)));
+        assert_eq!(node.labels().collect::<Vec<_>>(), vec!["T"]);
+        assert!(g.nodes_by_property("a", &Value::Int(1)).is_none_or(HashSet::is_empty));
+        assert!(g.nodes_by_property("a", &Value::Int(3)).unwrap().contains(&id));
+    }
+
+    #[test]
+    fn many_keys_are_found_by_symbol() {
+        let mut g = Graph::new();
+        let props: HashMap<String, Value> =
+            (0..40).map(|k| (format!("k{k}"), Value::Int(k))).collect();
+        let id = g.create_node(vec!["Wide".into()], props.clone());
+        let node = g.get_node(id).unwrap();
+        for (key, value) in &props {
+            assert_eq!(node.prop(key), Some(value), "{key}");
+        }
+        assert_eq!(node.prop("k40"), None);
+        assert_eq!(node.to_node().props, props);
     }
 }
 

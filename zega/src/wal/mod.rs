@@ -775,13 +775,38 @@ pub fn restore(graph: &mut Graph, path: &Path) -> Result<bool, WalError> {
 /// Serialize the full graph state to bytes (platform-independent; the
 /// basis for the file-based snapshot and for wasm export/import).
 pub fn encode_snapshot(graph: &Graph) -> Result<Vec<u8>, WalError> {
-    let snapshot = Snapshot {
-        nodes: graph.all_nodes().clone(),
-        relationships: graph.all_relationships().clone(),
+    let snapshot = SnapshotRef {
+        nodes: StoredNodes(graph),
+        relationships: StoredRelationships(graph),
     };
     let mut bytes = Vec::new();
     serialize_into(&mut bytes, &snapshot)?;
     Ok(bytes)
+}
+
+/// [`Snapshot`], written straight from the graph: each node and
+/// relationship is expanded to its written-down form one at a time, so a
+/// snapshot never holds a second copy of the whole graph.
+#[derive(Serialize)]
+struct SnapshotRef<'g> {
+    nodes: StoredNodes<'g>,
+    relationships: StoredRelationships<'g>,
+}
+
+struct StoredNodes<'g>(&'g Graph);
+
+impl Serialize for StoredNodes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.0.nodes().map(|node| (node.id, node.to_node())))
+    }
+}
+
+struct StoredRelationships<'g>(&'g Graph);
+
+impl Serialize for StoredRelationships<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.0.relationships().map(|rel| (rel.id, rel.to_relationship())))
+    }
 }
 
 /// Restore the full graph state from [`encode_snapshot`] bytes.

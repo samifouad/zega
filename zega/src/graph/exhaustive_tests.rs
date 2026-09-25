@@ -115,7 +115,7 @@ fn create_node_stores_labels_and_props() {
     let mut g = Graph::new();
     let p = props(&[("name", s("Alice")), ("age", Value::Int(30))]);
     let id = g.create_node(labels(&["Person", "Admin"]), p.clone());
-    let node = g.get_node(id).expect("node must exist");
+    let node = g.get_node(id).expect("node must exist").to_node();
     assert_eq!(node.id, id);
     assert_eq!(node.labels, vec!["Person".to_string(), "Admin".to_string()]);
     assert_eq!(node.props.get("name"), Some(&s("Alice")));
@@ -127,7 +127,7 @@ fn create_node_stores_labels_and_props() {
 fn create_node_with_no_labels_or_props() {
     let mut g = Graph::new();
     let id = g.create_node(vec![], HashMap::new());
-    let node = g.get_node(id).unwrap();
+    let node = g.get_node(id).unwrap().to_node();
     assert!(node.labels.is_empty());
     assert!(node.props.is_empty());
 }
@@ -196,7 +196,7 @@ fn update_node_merges_new_props() {
     let mut g = Graph::new();
     let id = g.create_node(vec![], props(&[("a", Value::Int(1))]));
     g.update_node(id, props(&[("b", Value::Int(2))]));
-    let node = g.get_node(id).unwrap();
+    let node = g.get_node(id).unwrap().to_node();
     assert_eq!(node.props.get("a"), Some(&Value::Int(1)));
     assert_eq!(node.props.get("b"), Some(&Value::Int(2)));
     assert_eq!(node.props.len(), 2);
@@ -207,7 +207,7 @@ fn update_node_overwrites_existing_prop() {
     let mut g = Graph::new();
     let id = g.create_node(vec![], props(&[("name", s("old"))]));
     g.update_node(id, props(&[("name", s("new"))]));
-    let node = g.get_node(id).unwrap();
+    let node = g.get_node(id).unwrap().to_node();
     assert_eq!(node.props.get("name"), Some(&s("new")));
 }
 
@@ -236,7 +236,7 @@ fn update_node_with_empty_props_keeps_existing() {
     let mut g = Graph::new();
     let id = g.create_node(vec![], props(&[("k", Value::Int(7))]));
     g.update_node(id, HashMap::new());
-    let node = g.get_node(id).unwrap();
+    let node = g.get_node(id).unwrap().to_node();
     assert_eq!(node.props.get("k"), Some(&Value::Int(7)));
 }
 
@@ -245,7 +245,7 @@ fn update_node_does_not_change_labels() {
     let mut g = Graph::new();
     let id = g.create_node(labels(&["Person"]), HashMap::new());
     g.update_node(id, props(&[("x", Value::Int(1))]));
-    let node = g.get_node(id).unwrap();
+    let node = g.get_node(id).unwrap().to_node();
     assert_eq!(node.labels, vec!["Person".to_string()]);
     assert!(g.nodes_by_label("Person").unwrap().contains(&id));
 }
@@ -359,7 +359,7 @@ fn node_with_multiple_props_indexed_under_each() {
 fn prop_roundtrip_string() {
     let mut g = Graph::new();
     let id = g.create_node(vec![], props(&[("k", s("hello"))]));
-    assert_eq!(g.get_node(id).unwrap().props.get("k"), Some(&s("hello")));
+    assert_eq!(g.get_node(id).unwrap().to_node().props.get("k"), Some(&s("hello")));
 }
 
 #[test]
@@ -367,7 +367,7 @@ fn prop_roundtrip_int_including_extremes() {
     let mut g = Graph::new();
     for v in [0i64, 1, -1, i64::MAX, i64::MIN] {
         let id = g.create_node(vec![], props(&[("n", Value::Int(v))]));
-        assert_eq!(g.get_node(id).unwrap().props.get("n"), Some(&Value::Int(v)));
+        assert_eq!(g.get_node(id).unwrap().to_node().props.get("n"), Some(&Value::Int(v)));
         assert!(g.nodes_by_property("n", &Value::Int(v)).unwrap().contains(&id));
     }
 }
@@ -377,7 +377,7 @@ fn prop_roundtrip_float_via_bits() {
     let mut g = Graph::new();
     let v = Value::from_f64(std::f64::consts::PI);
     let id = g.create_node(vec![], props(&[("pi", v.clone())]));
-    let got = g.get_node(id).unwrap().props.get("pi").cloned().unwrap();
+    let got = g.get_node(id).unwrap().to_node().props.get("pi").cloned().unwrap();
     assert_eq!(got, v);
     assert_eq!(got.to_f64(), Some(std::f64::consts::PI));
 }
@@ -393,7 +393,7 @@ fn prop_roundtrip_float_special_values() {
         vec![],
         props(&[("nan", nan.clone()), ("inf", inf.clone()), ("ninf", neg_inf.clone())]),
     );
-    let node = g.get_node(id).unwrap();
+    let node = g.get_node(id).unwrap().to_node();
     assert_eq!(node.props.get("nan"), Some(&nan));
     assert_eq!(node.props.get("inf"), Some(&inf));
     assert_eq!(node.props.get("ninf"), Some(&neg_inf));
@@ -405,7 +405,7 @@ fn prop_roundtrip_float_special_values() {
 fn prop_roundtrip_bool() {
     let mut g = Graph::new();
     let id = g.create_node(vec![], props(&[("t", Value::Bool(true)), ("f", Value::Bool(false))]));
-    let node = g.get_node(id).unwrap();
+    let node = g.get_node(id).unwrap().to_node();
     assert_eq!(node.props.get("t"), Some(&Value::Bool(true)));
     assert_eq!(node.props.get("f"), Some(&Value::Bool(false)));
 }
@@ -415,7 +415,7 @@ fn prop_roundtrip_list() {
     let mut g = Graph::new();
     let list = Value::List(vec![Value::Int(1), s("two"), Value::Bool(true)].into());
     let id = g.create_node(vec![], props(&[("items", list.clone())]));
-    assert_eq!(g.get_node(id).unwrap().props.get("items"), Some(&list));
+    assert_eq!(g.get_node(id).unwrap().to_node().props.get("items"), Some(&list));
 }
 
 #[test]
@@ -426,14 +426,14 @@ fn prop_roundtrip_map() {
     inner.insert("b".to_string(), s("x"));
     let map = Value::Map(Box::new(inner));
     let id = g.create_node(vec![], props(&[("meta", map.clone())]));
-    assert_eq!(g.get_node(id).unwrap().props.get("meta"), Some(&map));
+    assert_eq!(g.get_node(id).unwrap().to_node().props.get("meta"), Some(&map));
 }
 
 #[test]
 fn prop_roundtrip_null() {
     let mut g = Graph::new();
     let id = g.create_node(vec![], props(&[("maybe", Value::Null)]));
-    assert_eq!(g.get_node(id).unwrap().props.get("maybe"), Some(&Value::Null));
+    assert_eq!(g.get_node(id).unwrap().to_node().props.get("maybe"), Some(&Value::Null));
     assert!(g.nodes_by_property("maybe", &Value::Null).unwrap().contains(&id));
 }
 
@@ -444,7 +444,7 @@ fn prop_roundtrip_unicode_and_empty_string() {
         vec![],
         props(&[("emoji", s("héllo 🌍 日本語")), ("empty", s(""))]),
     );
-    let node = g.get_node(id).unwrap();
+    let node = g.get_node(id).unwrap().to_node();
     assert_eq!(node.props.get("emoji"), Some(&s("héllo 🌍 日本語")));
     assert_eq!(node.props.get("empty"), Some(&s("")));
 }
@@ -490,7 +490,7 @@ fn create_relationship_stores_fields_and_props() {
         b,
         props(&[("since", Value::Int(2020))]),
     );
-    let rel = g.get_relationship(rid).unwrap();
+    let rel = g.get_relationship(rid).unwrap().to_relationship();
     assert_eq!(rel.id, rid);
     assert_eq!(rel.kind, "LIKES");
     assert_eq!(rel.from, a);
@@ -547,7 +547,7 @@ fn relationship_to_nonexistent_node_still_recorded() {
     // The store does not validate endpoint existence — it just indexes ids.
     let mut g = Graph::new();
     let rid = g.create_relationship("DANGLE".to_string(), 100, 200, HashMap::new());
-    let rel = g.get_relationship(rid).unwrap();
+    let rel = g.get_relationship(rid).unwrap().to_relationship();
     assert_eq!(rel.from, 100);
     assert_eq!(rel.to, 200);
     assert!(g.outgoing_rels(100).unwrap().contains(&rid));
@@ -677,7 +677,7 @@ fn delete_node_with_parallel_rels_removes_all() {
 fn restore_node_sets_explicit_id() {
     let mut g = Graph::new();
     g.restore_node(42, labels(&["Restored"]), props(&[("k", Value::Int(9))]));
-    let node = g.get_node(42).unwrap();
+    let node = g.get_node(42).unwrap().to_node();
     assert_eq!(node.id, 42);
     assert!(g.nodes_by_label("Restored").unwrap().contains(&42));
     assert!(g.nodes_by_property("k", &Value::Int(9)).unwrap().contains(&42));
@@ -706,7 +706,7 @@ fn restore_node_lower_id_does_not_rewind_counter() {
 fn restore_relationship_sets_explicit_id_and_adjacency() {
     let mut g = Graph::new();
     g.restore_relationship(77, "REL".to_string(), 1, 2, props(&[("w", Value::Int(5))]));
-    let rel = g.get_relationship(77).unwrap();
+    let rel = g.get_relationship(77).unwrap().to_relationship();
     assert_eq!(rel.id, 77);
     assert_eq!(rel.kind, "REL");
     assert_eq!(rel.from, 1);
@@ -728,7 +728,7 @@ fn restore_node_overwrites_existing_id() {
     let mut g = Graph::new();
     g.restore_node(5, labels(&["First"]), props(&[("v", Value::Int(1))]));
     g.restore_node(5, labels(&["Second"]), props(&[("v", Value::Int(2))]));
-    let node = g.get_node(5).unwrap();
+    let node = g.get_node(5).unwrap().to_node();
     assert_eq!(node.labels, vec!["Second".to_string()]);
     assert_eq!(node.props.get("v"), Some(&Value::Int(2)));
     // New value indexed.
@@ -1135,12 +1135,12 @@ fn pattern_match_undirected_uses_both_adjacency_sets() {
     let mut neighbors: HashSet<NodeId> = HashSet::new();
     if let Some(out) = g.outgoing_rels(a) {
         for rid in out {
-            neighbors.insert(g.get_relationship(*rid).unwrap().to);
+            neighbors.insert(g.get_relationship(*rid).unwrap().to_relationship().to);
         }
     }
     if let Some(inc) = g.incoming_rels(a) {
         for rid in inc {
-            neighbors.insert(g.get_relationship(*rid).unwrap().from);
+            neighbors.insert(g.get_relationship(*rid).unwrap().to_relationship().from);
         }
     }
     assert_eq!(neighbors, [b, c].into_iter().collect());
@@ -1363,7 +1363,7 @@ fn update_node_same_value_is_stable_remove_then_readd() {
     let mut g = Graph::new();
     let id = g.create_node(vec![], props(&[("k", Value::Int(7))]));
     g.update_node(id, props(&[("k", Value::Int(7))]));
-    let node = g.get_node(id).unwrap();
+    let node = g.get_node(id).unwrap().to_node();
     assert_eq!(node.props.get("k"), Some(&Value::Int(7)));
     assert!(g.nodes_by_property("k", &Value::Int(7)).unwrap().contains(&id));
 }
@@ -1376,7 +1376,7 @@ fn update_node_overwrite_keeps_untouched_props_indexed() {
     let mut g = Graph::new();
     let id = g.create_node(vec![], props(&[("a", Value::Int(1)), ("b", s("keep"))]));
     g.update_node(id, props(&[("a", Value::Int(2))]));
-    let node = g.get_node(id).unwrap();
+    let node = g.get_node(id).unwrap().to_node();
     assert_eq!(node.props.get("a"), Some(&Value::Int(2)));
     assert_eq!(node.props.get("b"), Some(&s("keep")));
     // Untouched prop still indexed; old value of a dropped.
@@ -1406,7 +1406,7 @@ fn restore_node_overwrite_removes_stale_label_index_entry() {
     g.restore_node(6, labels(&["First"]), HashMap::new());
     g.restore_node(5, labels(&["First"]), HashMap::new());
     g.restore_node(5, labels(&["Second"]), HashMap::new());
-    assert_eq!(g.get_node(5).unwrap().labels, vec!["Second".to_string()]);
+    assert_eq!(g.get_node(5).unwrap().to_node().labels, vec!["Second".to_string()]);
     assert!(g.nodes_by_label("Second").unwrap().contains(&5));
     assert!(
         !g.nodes_by_label("First").unwrap().contains(&5),
@@ -1421,7 +1421,7 @@ fn restore_node_overwrite_removes_stale_property_index_entry() {
     g.restore_node(6, vec![], props(&[("v", Value::Int(1))]));
     g.restore_node(5, vec![], props(&[("v", Value::Int(1))]));
     g.restore_node(5, vec![], props(&[("v", Value::Int(2))]));
-    assert_eq!(g.get_node(5).unwrap().props.get("v"), Some(&Value::Int(2)));
+    assert_eq!(g.get_node(5).unwrap().to_node().props.get("v"), Some(&Value::Int(2)));
     assert!(g.nodes_by_property("v", &Value::Int(2)).unwrap().contains(&5));
     assert!(
         !g.nodes_by_property("v", &Value::Int(1)).unwrap().contains(&5),
@@ -1436,7 +1436,7 @@ fn restore_relationship_overwrite_removes_stale_adjacency() {
     g.restore_relationship(8, "R".to_string(), 1, 2, HashMap::new());
     g.restore_relationship(7, "R".to_string(), 1, 2, HashMap::new());
     g.restore_relationship(7, "R".to_string(), 3, 4, HashMap::new());
-    let rel = g.get_relationship(7).unwrap();
+    let rel = g.get_relationship(7).unwrap().to_relationship();
     assert_eq!((rel.from, rel.to), (3, 4));
     assert!(g.outgoing_rels(3).unwrap().contains(&7));
     assert!(g.incoming_rels(4).unwrap().contains(&7));
@@ -1639,8 +1639,8 @@ fn relationship_empty_and_unicode_kind() {
     let b = g.create_node(vec![], HashMap::new());
     let r_empty = g.create_relationship("".to_string(), a, b, HashMap::new());
     let r_uni = g.create_relationship("関係".to_string(), a, b, HashMap::new());
-    assert_eq!(g.get_relationship(r_empty).unwrap().kind, "");
-    assert_eq!(g.get_relationship(r_uni).unwrap().kind, "関係");
+    assert_eq!(g.get_relationship(r_empty).unwrap().to_relationship().kind, "");
+    assert_eq!(g.get_relationship(r_uni).unwrap().to_relationship().kind, "関係");
     // Kind is part of the match filter, not the index — both still adjacency-linked.
     assert!(g.outgoing_rels(a).unwrap().contains(&r_empty));
     assert_eq!(match_out_by_kind(&g, a, ""), [b].into_iter().collect());
@@ -1664,7 +1664,7 @@ fn relationship_stores_rich_value_props() {
             ("nada", Value::Null),
         ]),
     );
-    let rel = g.get_relationship(rid).unwrap();
+    let rel = g.get_relationship(rid).unwrap().to_relationship();
     assert_eq!(rel.props.get("weight").unwrap().to_f64(), Some(1.5));
     assert_eq!(rel.props.get("tags"), Some(&Value::List(vec![s("x"), s("y")].into())));
     assert_eq!(rel.props.get("flag"), Some(&Value::Bool(true)));
@@ -1903,8 +1903,8 @@ fn set_state_from_serde_roundtripped_snapshot() {
     let b = g.create_node(labels(&["Person"]), HashMap::new());
     let r = g.create_relationship("KNOWS".to_string(), a, b, HashMap::new());
 
-    let nodes_json = serde_json::to_string(g.all_nodes()).expect("ser nodes");
-    let rels_json = serde_json::to_string(g.all_relationships()).expect("ser rels");
+    let nodes_json = serde_json::to_string(&g.all_nodes()).expect("ser nodes");
+    let rels_json = serde_json::to_string(&g.all_relationships()).expect("ser rels");
     let nodes: HashMap<NodeId, Node> = serde_json::from_str(&nodes_json).expect("de nodes");
     let rels: HashMap<RelId, Relationship> = serde_json::from_str(&rels_json).expect("de rels");
 

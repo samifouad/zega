@@ -66,7 +66,7 @@ impl Zega {
                 continue;
             };
             let Some(ty) = schema.types.iter().find(|ty| {
-                node.labels.contains(&ty.name)
+                node.has_label(&ty.name)
                     && view.types.as_ref().is_none_or(|ts| ts.contains(&ty.name))
             }) else {
                 continue;
@@ -76,7 +76,7 @@ impl Zega {
                 _ => None,
             });
             if let Some(field) = field {
-                if let Some(Value::Vector(v)) = node.props.get(field) {
+                if let Some(Value::Vector(v)) = node.prop(field) {
                     nodes.push((id, field.clone(), (**v).clone()));
                 }
             }
