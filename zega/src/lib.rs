@@ -17,6 +17,7 @@ mod index;
 mod journal;
 mod lang;
 mod path;
+mod text_fold;
 mod v2;
 mod validation;
 mod value;

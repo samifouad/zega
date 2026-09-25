@@ -93,7 +93,7 @@ function registerLanguages(monaco) {
         [/\/\/.*$/, 'comment'],
         [/"([^"\\]|\\.)*"/, 'string'],
         [/\b(query|mutation|link|set|true|false|null|order|by|limit|exact|toward)\b/, 'keyword'],
-        [/\b(findWith|startsWith|endsWith)\b/, 'keyword'],
+        [/\b(findExact|startsExact|endsExact|findLike|startsLike|endsLike)\b/, 'keyword'],
         [/@[A-Za-z_][\w]*/, 'predefined'],
         [/->|<-|>=|<=|<>|!=|&&|\|\|/, 'operator'],
         [/[<>]/, 'operator'],
@@ -118,7 +118,7 @@ function registerLanguages(monaco) {
       const range = { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber,
         startColumn: word.startColumn - (hasAt ? 1 : 0), endColumn: word.endColumn };
       const names = ['@hops', '@cost', '@id', '@score', '@point', '@vector', '@distance', '@similarity', '@within_box', '@near'];
-      if (!hasAt) names.push('findWith', 'startsWith', 'endsWith');
+      if (!hasAt) names.push('findExact', 'startsExact', 'endsExact', 'findLike', 'startsLike', 'endsLike');
       return { suggestions: names.map((name) => ({ label: name, insertText: name, range,
         kind: monaco.languages.CompletionItemKind.Keyword })) };
     },

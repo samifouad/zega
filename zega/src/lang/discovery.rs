@@ -20,10 +20,14 @@ pub enum DiscoveryExpr {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextOp {
-    FindWith,
+    FindExact,
     FindWithout,
-    StartsWith,
-    EndsWith,
+    StartsExact,
+    EndsExact,
+    /// Case- and accent-insensitive (zegadb/zega#98): see [`crate::text_fold`].
+    FindLike,
+    StartsLike,
+    EndsLike,
     Regex,
 }
 
@@ -65,10 +69,13 @@ pub enum Primitive {
 }
 
 const PRIMITIVES: &[&str] = &[
-    "findWith",
+    "findExact",
     "findWithout",
-    "startsWith",
-    "endsWith",
+    "startsExact",
+    "endsExact",
+    "findLike",
+    "startsLike",
+    "endsLike",
     "regex",
     "common",
     "similar",
@@ -89,12 +96,12 @@ impl Parser<'_> {
     pub(super) fn reject_discovery_block(&self) -> Result<()> {
         if PRIMITIVES.iter().any(|name| self.starts_call(name, "{")) {
             return Err(self.err("discovery sub-blocks are only allowed inside then")
-                .with_help("write `query { ... } then { findWith { \"text\" } }`; a filter uses `field findWith \"text\"`"));
+                .with_help("write `query { ... } then { findExact { \"text\" } }`; a filter uses `field findExact \"text\"`"));
         }
         Ok(())
     }
 
-    // A type can still be called `findWith`. Only a literal in its field list
+    // A type can still be called `findExact`. Only a literal in its field list
     // identifies an accidentally placed text primitive, without reserving names.
     pub(super) fn reject_discovery_literal(&self) -> Result<()> {
         for name in PRIMITIVES {
@@ -178,9 +185,21 @@ impl Parser<'_> {
     #[inline(never)]
     fn discovery_primitive(&mut self) -> Result<DiscoveryExpr> {
         let (name, span) = self.ident()?;
+        // zegadb/zega#98: same rename as the infix filter operators, only
+        // caught here too because a discovery sub-block has its own name set.
+        for (old, exact, like) in [
+            ("findWith", "findExact", "findLike"),
+            ("startsWith", "startsExact", "startsLike"),
+            ("endsWith", "endsExact", "endsLike"),
+        ] {
+            if name == old {
+                return Err(Error::at(span, format!("`{old}` was renamed `{exact}`"))
+                    .with_help(format!("use `{exact}` for byte-exact matching, or `{like}` to ignore case and accents")));
+            }
+        }
         if !PRIMITIVES.contains(&name.as_str()) || !self.eat("{") {
-            return Err(Error::at(span, "then requires discovery sub-blocks, such as `findWith { \"text\" }`")
-                .with_help("infix filters need a field and belong in query, e.g. `Player(name findWith \"text\")`"));
+            return Err(Error::at(span, "then requires discovery sub-blocks, such as `findExact { \"text\" }`")
+                .with_help("infix filters need a field and belong in query, e.g. `Player(name findExact \"text\")`"));
         }
         let primitive = match name.as_str() {
             "common" => {
@@ -250,10 +269,13 @@ impl Parser<'_> {
                     Vec::new()
                 };
                 let op = match name.as_str() {
-                    "findWith" => TextOp::FindWith,
+                    "findExact" => TextOp::FindExact,
                     "findWithout" => TextOp::FindWithout,
-                    "startsWith" => TextOp::StartsWith,
-                    "endsWith" => TextOp::EndsWith,
+                    "startsExact" => TextOp::StartsExact,
+                    "endsExact" => TextOp::EndsExact,
+                    "findLike" => TextOp::FindLike,
+                    "startsLike" => TextOp::StartsLike,
+                    "endsLike" => TextOp::EndsLike,
                     _ => TextOp::Regex,
                 };
                 let pattern = if op == TextOp::Regex {
@@ -450,14 +472,14 @@ mod tests {
     #[test]
     fn precedence_and_parentheses_match_filters() {
         let q = parse_query(
-            r#"query { A } then { findWith { "a" } || startsWith { "b" } && endsWith { "c" } }"#,
+            r#"query { A } then { findExact { "a" } || startsExact { "b" } && endsExact { "c" } }"#,
         )
         .unwrap();
         assert!(
             matches!(&q.then[0].condition, DiscoveryExpr::Or(terms) if matches!(terms.as_slice(), [_, DiscoveryExpr::And(..)]))
         );
         let q = parse_query(
-            r#"query { A } then { (findWith { "a" } || startsWith { "b" }) && endsWith { "c" } }"#,
+            r#"query { A } then { (findExact { "a" } || startsExact { "b" }) && endsExact { "c" } }"#,
         )
         .unwrap();
         assert!(
@@ -469,10 +491,13 @@ mod tests {
     fn every_primitive_parses_and_checks() {
         let schema = parse_schema("type A { name: String vector: Vector<2> at: Point }").unwrap();
         for atom in [
-            r#"findWith { "a" in { name } }"#,
+            r#"findExact { "a" in { name } }"#,
             r#"findWithout { "a" }"#,
-            r#"startsWith { "a" }"#,
-            r#"endsWith { "a" }"#,
+            r#"startsExact { "a" }"#,
+            r#"endsExact { "a" }"#,
+            r#"findLike { "a" in { name } }"#,
+            r#"startsLike { "a" }"#,
+            r#"endsLike { "a" }"#,
             r#"regex { "^a+$" }"#,
             "common { A { name } }",
             "similar { &vector > 0.9 }",
@@ -485,11 +510,22 @@ mod tests {
 
     #[test]
     fn infix_names_and_type_names_are_not_reserved() {
-        for op in ["findWith", "startsWith", "endsWith"] {
+        for op in [
+            "findExact",
+            "startsExact",
+            "endsExact",
+            "findLike",
+            "startsLike",
+            "endsLike",
+        ] {
             let query =
                 parse_query(&format!("query {{ {op}(name {op} \"x\") {{ name }} }}")).unwrap();
             assert_eq!(query.root.unwrap().type_name, op);
         }
+        // The retired name is still a fine type name; it just no longer works
+        // as an operator (zegadb/zega#98).
+        let query = parse_query(r#"query { findWith(name findExact "x") { name } }"#).unwrap();
+        assert_eq!(query.root.unwrap().type_name, "findWith");
     }
 
     #[test]
@@ -518,7 +554,7 @@ mod tests {
 
     #[test]
     fn stages_and_skip_bind_to_the_immediate_stage() {
-        let query = parse_query(r#"query { A } display { skip } then { findWith { "a" } } then { findWithout { "b" } } display { skip }"#).unwrap();
+        let query = parse_query(r#"query { A } display { skip } then { findExact { "a" } } then { findWithout { "b" } } display { skip }"#).unwrap();
         assert!(query.skip);
         assert!(!query.then[0].skip);
         assert!(query.then[1].skip);
@@ -526,13 +562,13 @@ mod tests {
             "then {}",
             "mutation { A } then {}",
             "display { skip } query { A }",
-            r#"findWith { "a" }"#,
-            r#"query { A(findWith { "a" }) }"#,
-            r#"query { findWith { "a" } }"#,
+            r#"findExact { "a" }"#,
+            r#"query { A(findExact { "a" }) }"#,
+            r#"query { findExact { "a" } }"#,
             "query { common { A { name } } }",
-            r#"query { A { findWith { "a" } } }"#,
-            r#"query { A } then { findWith "a" }"#,
-            r#"query { A } then { findWith { "a" } findWith { "b" } }"#,
+            r#"query { A { findExact { "a" } } }"#,
+            r#"query { A } then { findExact "a" }"#,
+            r#"query { A } then { findExact { "a" } findExact { "b" } }"#,
         ] {
             assert!(parse_statement(source).is_err(), "{source}");
         }

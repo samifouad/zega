@@ -43,13 +43,13 @@ fn edges(result: &Json, stage: usize) -> &[Json] {
 fn text_primitives_scoping_unicode_empty_and_infix() {
     let db = db();
     for (expr, expected) in [
-        (r#"findWith { "Oilers" }"#, vec![1, 2, 3]),
-        (r#"findWith { "Oilers" in { name } }"#, vec![1, 2]),
+        (r#"findExact { "Oilers" }"#, vec![1, 2, 3]),
+        (r#"findExact { "Oilers" in { name } }"#, vec![1, 2]),
         (r#"findWithout { "Oilers" }"#, vec![4, 5]),
-        (r#"startsWith { "Oil" }"#, vec![2, 3]),
-        (r#"endsWith { "Oilers" }"#, vec![1, 2]),
+        (r#"startsExact { "Oil" }"#, vec![2, 3]),
+        (r#"endsExact { "Oilers" }"#, vec![1, 2]),
         (r#"regex { "^(Bob|Carol)$" in { name } }"#, vec![3, 4]),
-        (r#"findWith { "" }"#, vec![1, 2, 3, 4, 5]),
+        (r#"findExact { "" }"#, vec![1, 2, 3, 4, 5]),
         (r#"findWithout { "" }"#, vec![]),
     ] {
         assert_eq!(ids(&run(&db, expr), 1), expected, "{expr}");
@@ -58,9 +58,9 @@ fn text_primitives_scoping_unicode_empty_and_infix() {
         .unwrap();
     assert_eq!(ids(&run(&db, r#"regex { "\\p{Han}" }"#), 1), vec![6]);
     for (op, expected) in [
-        ("findWith", vec![json!({"name":"Alice Oilers"})]),
-        ("startsWith", vec![]),
-        ("endsWith", vec![json!({"name":"Alice Oilers"})]),
+        ("findExact", vec![json!({"name":"Alice Oilers"})]),
+        ("startsExact", vec![]),
+        ("endsExact", vec![json!({"name":"Alice Oilers"})]),
     ] {
         assert_eq!(
             db.run_lang(
@@ -78,7 +78,7 @@ fn intersection_union_precedence_and_edge_pruning() {
     let db = db();
     let result = run(
         &db,
-        r#"common { Player { country } Team { country } } && findWith { "Oilers" in { name } }"#,
+        r#"common { Player { country } Team { country } } && findExact { "Oilers" in { name } }"#,
     );
     assert_eq!(ids(&result, 1), vec![1, 2]);
     assert_eq!(
@@ -89,12 +89,12 @@ fn intersection_union_precedence_and_edge_pruning() {
     );
     let result = run(
         &db,
-        r#"findWith { "Carol" } || findWith { "Bob" } && findWith { "captain" }"#,
+        r#"findExact { "Carol" } || findExact { "Bob" } && findExact { "captain" }"#,
     );
     assert_eq!(ids(&result, 1), vec![4]);
     let result = run(
         &db,
-        r#"(findWith { "Carol" } || findWith { "Bob" }) && findWithout { "captain" }"#,
+        r#"(findExact { "Carol" } || findExact { "Bob" }) && findWithout { "captain" }"#,
     );
     assert_eq!(ids(&result, 1), vec![3, 4]);
     let result = run(&db, "common { Player { country } Team { country } } || common { Player { country } Team { country } }");
@@ -109,8 +109,8 @@ fn stages_chain_only_previous_nodes_and_skip_never_serializes_them() {
         .run_lang(
             SCHEMA,
             r#"query { Player { name playsFor -> Team { name } } } display { skip }
-        then { findWith { "Oilers" in { name } } } display { skip }
-        then { findWith { "Bob" } || findWith { "Alice" } }"#,
+        then { findExact { "Oilers" in { name } } } display { skip }
+        then { findExact { "Bob" } || findExact { "Alice" } }"#,
         )
         .unwrap();
     assert_eq!(result["stages"].as_array().unwrap().len(), 1);
@@ -123,14 +123,14 @@ fn stages_chain_only_previous_nodes_and_skip_never_serializes_them() {
             .unwrap(),
         Json::Null
     );
-    let result = db.run_lang(SCHEMA,r#"query { Player { name } } display { skip } then { findWith { "x" } } display { skip }"#).unwrap();
+    let result = db.run_lang(SCHEMA,r#"query { Player { name } } display { skip } then { findExact { "x" } } display { skip }"#).unwrap();
     assert_eq!(result, json!({"stages":[]}));
 }
 
 #[test]
 fn query_projection_without_ids_tracks_nested_members_and_actual_edges() {
     let db = db();
-    let result = run(&db, r#"findWith { "Oilers" }"#);
+    let result = run(&db, r#"findExact { "Oilers" }"#);
     assert_eq!(ids(&result, 0), vec![1, 2, 3, 4, 5]);
     assert_eq!(
         result["stages"][0]["edges"],
@@ -158,7 +158,7 @@ fn single_query_shape_and_empty_results_remain_compatible() {
     let result = db
         .run_lang(
             SCHEMA,
-            r#"query { Player(name: "nobody") { name } } then { findWith { "Oilers" } }"#,
+            r#"query { Player(name: "nobody") { name } } then { findExact { "Oilers" } }"#,
         )
         .unwrap();
     assert!(ids(&result, 0).is_empty());
@@ -249,7 +249,7 @@ fn near_units_distances_zero_and_previous_scope() {
 fn errors_are_checked_even_if_the_query_returns_no_nodes() {
     let db = db();
     for (expr, message) in [
-        (r#"findWith { "x" in { age } }"#, "must be String"),
+        (r#"findExact { "x" in { age } }"#, "must be String"),
         (r#"regex { "x" in { missing } }"#, "no field missing"),
         ("similar { &name > 0.9 }", "must be Vector"),
         ("near { &country < 1 km }", "must be Point"),
@@ -264,7 +264,7 @@ fn errors_are_checked_even_if_the_query_returns_no_nodes() {
             "common { Player { country name } Team { country } }",
             "same number and types",
         ),
-        (r#"findWith { "x" in {} }"#, "scope is empty"),
+        (r#"findExact { "x" in {} }"#, "scope is empty"),
         (r#"regex { "(?=a)" }"#, "lookaround and backreferences"),
     ] {
         let query = format!(
@@ -282,7 +282,7 @@ fn wrong_cross_type_fields_and_vector_shapes_are_errors() {
     for (schema, expr, message) in [
         (
             "schema { type A { name: String } type B { name: Int } }",
-            r#"findWith { "a" in { name } }"#,
+            r#"findExact { "a" in { name } }"#,
             "must be String",
         ),
         (
@@ -323,7 +323,7 @@ fn text_index_accelerates_without_changing_any_operator() {
         )
         .unwrap();
     }
-    for op in ["findWith", "findWithout", "startsWith", "endsWith"] {
+    for op in ["findExact", "findWithout", "startsExact", "endsExact"] {
         let query = format!("query {{ A }} then {{ {op} {{ \"needle\" }} }}");
         let before = db.rows_examined().unwrap();
         let scan = db.run_lang(plain, &query).unwrap();
@@ -360,7 +360,7 @@ fn path_nodes_are_members_but_search_frontier_nodes_are_not() {
     db.run_lang(schema, r#"mutation { Stop(name:"dead") }"#)
         .unwrap();
     db.connect_schema(schema, 1, "road", 4).unwrap();
-    let result=db.run_lang(schema,r#"query { Stop(name:"A") { road *path -> Stop(name:"C") { name } } } then { findWith { "" } }"#).unwrap();
+    let result=db.run_lang(schema,r#"query { Stop(name:"A") { road *path -> Stop(name:"C") { name } } } then { findExact { "" } }"#).unwrap();
     assert_eq!(ids(&result, 0), vec![1, 2, 3]);
     assert_eq!(ids(&result, 1), vec![1, 2, 3]);
     assert_eq!(result["stages"][0]["edges"].as_array().unwrap().len(), 2);
@@ -447,7 +447,7 @@ fn and_keeps_evidence_from_both_operands_but_chaining_recomputes_it() {
     let result = db
         .run_lang(
             SCHEMA,
-            r#"query { Player } then { similar { &embedding > 0.9 } } then { findWith { "" } }"#,
+            r#"query { Player } then { similar { &embedding > 0.9 } } then { findExact { "" } }"#,
         )
         .unwrap();
     assert_eq!(ids(&result, 2), vec![1, 3]);
@@ -471,7 +471,7 @@ fn stage_envelope_protects_identity_from_user_fields_and_obeys_limit() {
     let result = db
         .run_lang(
             schema,
-            r#"query { T limit 1 { id } } then { findWith { "user" } }"#,
+            r#"query { T limit 1 { id } } then { findExact { "user" } }"#,
         )
         .unwrap();
     assert_eq!(ids(&result, 0), vec![1]);

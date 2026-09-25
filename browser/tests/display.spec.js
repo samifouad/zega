@@ -69,7 +69,7 @@ test('Calgary map draws query markers, attribution, theme, and the shared inspec
   await page.locator('#btn-theme').click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect.poll(() => page.evaluate(() => document.querySelector('#graph')._map?.queryRenderedFeatures({ layers: ['zega-nodes'] }).length || 0)).toBe(30);
-  await setEditor(page, 'query', '{ Place(kind findWith "cafe") { @id name kind at } }');
+  await setEditor(page, 'query', '{ Place(kind findExact "cafe") { @id name kind at } }');
   await expect(page.locator('.map-count')).toHaveText('4 places');
   await page.reload();
   await expect(page.locator('.map-count')).toHaveText('4 places');

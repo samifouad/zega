@@ -7,11 +7,13 @@
 //!
 //! - `range` is an ordered map from value to nodes, per (type, field).
 //! - `text` is a trigram index per (type, field). The text is padded with a
-//!   start and an end marker, so one structure answers `findWith`,
-//!   `startsWith` and `endsWith`: a match has every trigram of the needle
-//!   (`findWith`), of start+needle (`startsWith`) or of needle+end
-//!   (`endsWith`). A needle too short to form a trigram falls back to every
-//!   node with a string in that field.
+//!   start and an end marker, so one structure answers the byte-exact
+//!   `findExact`, `startsExact` and `endsExact`: a match has every trigram of
+//!   the needle (`findExact`), of start+needle (`startsExact`) or of
+//!   needle+end (`endsExact`). A needle too short to form a trigram falls
+//!   back to every node with a string in that field. It stores raw bytes, so
+//!   it cannot serve the case/accent-folding `…Like` operators
+//!   (zegadb/zega#98); those always fall back to a full scan.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};

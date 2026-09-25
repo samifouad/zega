@@ -15,11 +15,11 @@ display {
 }
 
 then {
-  common { Player { country } Team { country } } && findWith { "Oilers" }
+  common { Player { country } Team { country } } && findExact { "Oilers" }
 }
 
 then {
-  startsWith { "A" in { name } } || regex { "ers$" }
+  startsExact { "A" in { name } } || regex { "ers$" }
 }
 ```
 
@@ -42,20 +42,27 @@ reachable in that query's selections, conservatively across later stages.
 `then` without a query, after a mutation, or a discovery sub-block in a filter
 is an error. The existing shorthand read `{ Player { name } }` can also start
 a pipeline. The text operators still work infix in filters:
-`Player(name findWith "Oilers")`. Inside `then`, write
-`findWith { "Oilers" }`; a bare infix operator has no implicit field.
+`Player(name findExact "Oilers")`. Inside `then`, write
+`findExact { "Oilers" }`; a bare infix operator has no implicit field.
 Language blocks are bare, following [APS 6](https://github.com/zegadb/aps/issues/6).
 Named scopes use declaration-style field lists; `similar` and `near` use `&field`.
-Types and fields named `findWith`, `startsWith`, etc. remain usable.
+Types and fields named `findExact`, `startsExact`, etc. remain usable, and so
+does the retired `findWith`/`startsWith`/`endsWith` spelling.
 
 ## Text
 
-`findWith`, `findWithout`, `startsWith`, `endsWith`, and `regex` accept one
-string and an optional `in { name bio }` field scope. Matching is case-sensitive
-Unicode text, without normalization. Positive operations match if **any** eligible
-String field matches. `findWithout` is the complement inside the input set:
-a node with no present String fields also matches it. Null/missing fields do
-not match a positive operation. Empty text follows Rust string semantics.
+`findExact`, `startsExact`, `endsExact`, `findWithout`, and `regex` accept one
+string and an optional `in { name bio }` field scope. Matching is byte-exact,
+case-sensitive Unicode text, without normalization — the same as `=`.
+`findLike`, `startsLike` and `endsLike` accept the same shape but fold case and
+accents first (zegadb/zega#98): each side is NFD-normalized, its combining
+marks are dropped, and both are then case-folded, so `findLike { "cafe" }`
+matches a field holding `"Café"`. They take plain text, never a SQL wildcard:
+`%` and `_` match only themselves. Positive operations match if **any**
+eligible String field matches. `findWithout` is the complement inside the
+input set: a node with no present String fields also matches it, and it is
+always byte-exact (there is no `findWithoutLike`). Null/missing fields do not
+match a positive operation. Empty text follows Rust string semantics.
 
 A scoped field must exist on at least one input type; every input type that
 declares it must declare it as String. Types without it contribute no match.
@@ -63,8 +70,10 @@ Unscoped operations inspect only String properties, never relationships or
 stringified numbers. An unscoped query whose result types have no String fields
 is rejected.
 
-Text indexes accelerate substring, prefix and suffix candidates, including
-matching candidates removed by `findWithout`; exact matching verifies them.
+Text indexes accelerate substring, prefix and suffix candidates for the
+`…Exact` operators, including matching candidates removed by `findWithout`;
+exact matching verifies them. The `…Like` operators fold case and accents, so
+the byte-exact index cannot serve them: they always scan the eligible fields.
 Scopes containing unindexed fields safely scan those fields. Needles shorter
 than a trigram retain the existing index behavior. Regex uses the Rust `regex`
 crate, compiled once per atom when parsing a query; execution reuses the compiled

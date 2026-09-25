@@ -72,7 +72,7 @@ fn creates(depth: usize) -> String {
 /// A `then` stage with `depth` parentheses around one discovery sub-block.
 fn discovery(depth: usize) -> String {
     format!(
-        "query {{ Item {{ key }} }} then {{ {}findWith {{ \"s\" }}{} }}",
+        "query {{ Item {{ key }} }} then {{ {}findExact {{ \"s\" }}{} }}",
         "(".repeat(depth),
         ")".repeat(depth)
     )
@@ -84,7 +84,7 @@ fn chain(op: &str, terms: usize) -> String {
 }
 
 fn discovery_chain(terms: usize) -> String {
-    let tests = vec!["findWith { \"s\" }"; terms];
+    let tests = vec!["findExact { \"s\" }"; terms];
     format!("query {{ Item {{ key }} }} then {{ {} }}", tests.join(" || "))
 }
 

@@ -1902,15 +1902,19 @@ fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSe
         BoolExpr::Test(Pred::Distance(distance, Cmp::Lt | Cmp::Lte, metres)) => Some(
             graph.spatial_candidates(&distance.field, Bounds::radius(distance.origin, *metres)),
         ),
-        BoolExpr::Test(Pred::Contains(field, needle, _)) => {
+        BoolExpr::Test(Pred::FindExact(field, needle, _)) => {
             graph.text_candidates(types, field, TextPattern::Contains(needle))
         }
-        BoolExpr::Test(Pred::StartsWith(field, needle, _)) => {
+        BoolExpr::Test(Pred::StartsExact(field, needle, _)) => {
             graph.text_candidates(types, field, TextPattern::StartsWith(needle))
         }
-        BoolExpr::Test(Pred::EndsWith(field, needle, _)) => {
+        BoolExpr::Test(Pred::EndsExact(field, needle, _)) => {
             graph.text_candidates(types, field, TextPattern::EndsWith(needle))
         }
+        // `…Like` folds case and accents; the text index stores raw bytes, so
+        // it cannot serve these without a second, folded index (zegadb/zega#98
+        // left that for later). They always fall through to a full scan below.
+        BoolExpr::Test(Pred::FindLike(..) | Pred::StartsLike(..) | Pred::EndsLike(..)) => None,
         BoolExpr::Test(pred) => {
             let (field, interval) = range_interval(pred)?;
             graph.range_candidates(types, field, &interval)
@@ -2229,15 +2233,24 @@ fn pred_matches(graph: &Graph, id: NodeId, pred: &Pred) -> bool {
         Pred::Eq(field, value, _) => prop_json(node, field) == *value,
         Pred::Ne(field, value, _) => prop_json(node, field) != *value,
         Pred::Cmp(field, op, value, _) => cmp_json(&prop_json(node, field), *op, value),
-        Pred::Contains(field, needle, _) => prop_json(node, field)
+        Pred::FindExact(field, needle, _) => prop_json(node, field)
             .as_str()
             .is_some_and(|text| text.contains(needle)),
-        Pred::StartsWith(field, needle, _) => prop_json(node, field)
+        Pred::StartsExact(field, needle, _) => prop_json(node, field)
             .as_str()
             .is_some_and(|text| text.starts_with(needle)),
-        Pred::EndsWith(field, needle, _) => prop_json(node, field)
+        Pred::EndsExact(field, needle, _) => prop_json(node, field)
             .as_str()
             .is_some_and(|text| text.ends_with(needle)),
+        Pred::FindLike(field, needle, _) => prop_json(node, field)
+            .as_str()
+            .is_some_and(|text| crate::text_fold::contains(text, needle)),
+        Pred::StartsLike(field, needle, _) => prop_json(node, field)
+            .as_str()
+            .is_some_and(|text| crate::text_fold::starts_with(text, needle)),
+        Pred::EndsLike(field, needle, _) => prop_json(node, field)
+            .as_str()
+            .is_some_and(|text| crate::text_fold::ends_with(text, needle)),
     }
 }
 

@@ -87,7 +87,7 @@ fn stopping_early_returns_the_same_rows_as_testing_everything() {
         ("n >= 2990", 50),
         ("city = \"nowhere\"", 3),
         ("city = \"c3\"", 0),
-        ("city startsWith \"c1\" && n > 100", 25),
+        ("city startsExact \"c1\" && n > 100", 25),
     ] {
         let (_, limited) = measure(
             &db,

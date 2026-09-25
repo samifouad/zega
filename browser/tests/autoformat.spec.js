@@ -134,11 +134,11 @@ test('a mutation is formatted but not auto-run; the note shows; Run runs it; rem
   await ready(page);
   const note = page.locator('#autorun-note');
   await expect(note).toBeHidden();
-  await place(page, 'query', 'mutation{Player(name: "Test Skater" && position: "C"){name}}');
+  await place(page, 'query', 'mutation{Player(name: "Test Skater" && position: "C" && face: "test.png" && salary: 1){name}}');
   await expect(note).toBeVisible();
   await expect(note).toHaveText('auto-run paused: mutation');
   await page.waitForTimeout(800);
-  expect(await text(page, 'query')).toBe('mutation {\n  Player(name: "Test Skater" && position: "C") { name }\n}\n');
+  expect(await text(page, 'query')).toBe('mutation {\n  Player(name: "Test Skater" && position: "C" && face: "test.png" && salary: 1) {\n    name\n  }\n}\n');
   await expect(page.locator('#raw-count')).toContainText('50 nodes');
   await page.locator('#btn-run').click();
   await expect(page.locator('#raw-count')).toContainText('51 nodes');
@@ -150,7 +150,7 @@ test('a mutation is formatted but not auto-run; the note shows; Run runs it; rem
 
 test('Cmd/Ctrl+Enter runs a mutation too', async ({ page }) => {
   await ready(page);
-  await place(page, 'query', 'mutation { Player(name: "Chord Skater" && position: "D") { name } }');
+  await place(page, 'query', 'mutation { Player(name: "Chord Skater" && position: "D" && face: "chord.png" && salary: 1) { name } }');
   await page.keyboard.press('ControlOrMeta+Enter');
   await expect(page.locator('#raw-count')).toContainText('51 nodes');
 });
