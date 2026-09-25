@@ -22,6 +22,7 @@ use std::ops::Bound;
 use serde_json::Value as Json;
 
 use crate::graph::{NodeId, NodeView};
+use crate::idset::IdSet;
 use crate::value::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -227,7 +228,7 @@ fn padded(text: &str) -> Vec<char> {
 
 #[derive(Clone, Debug, Default)]
 struct TextIndex {
-    grams: HashMap<Gram, HashSet<NodeId>>,
+    grams: HashMap<Gram, IdSet>,
     /// Every node with a string in this field: the answer for a short needle.
     all: HashSet<NodeId>,
 }
@@ -244,7 +245,7 @@ impl TextIndex {
         self.all.remove(&id);
         for gram in grams(&padded(text)) {
             if let Some(ids) = self.grams.get_mut(&gram) {
-                ids.remove(&id);
+                ids.remove(id);
                 if ids.is_empty() {
                     self.grams.remove(&gram);
                 }
@@ -284,7 +285,7 @@ type Slot = (String, String);
 /// The indexes the current schema declares, kept in step with every write.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DeclaredIndexes {
-    range: HashMap<Slot, BTreeMap<Key, HashSet<NodeId>>>,
+    range: HashMap<Slot, BTreeMap<Key, IdSet>>,
     text: HashMap<Slot, TextIndex>,
 }
 
@@ -369,7 +370,7 @@ impl DeclaredIndexes {
             }
             if let Some(key) = node.prop(field).and_then(key) {
                 if let Some(ids) = tree.get_mut(&key) {
-                    ids.remove(&id);
+                    ids.remove(id);
                     if ids.is_empty() {
                         tree.remove(&key);
                     }
@@ -402,7 +403,7 @@ impl DeclaredIndexes {
         if let Some(bounds) = interval.bounds() {
             for tree in trees {
                 for ids in tree.range(bounds.clone()).map(|(_, ids)| ids) {
-                    out.extend(ids);
+                    out.extend(ids.iter());
                 }
             }
         }

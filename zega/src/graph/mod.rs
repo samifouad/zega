@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasher, BuildHasherDefault, Hasher, RandomState};
 use std::sync::atomic::{AtomicU64, Ordering};
+use crate::idset::IdSet;
 use crate::index::{DeclaredIndexes, IndexKind, IndexSpec, Interval, TextPattern};
 use crate::value::Value;
 
@@ -235,13 +237,39 @@ fn intern(
     (shapes.intern(Shape { labels, keys }), values)
 }
 
+/// A hasher for keys that are already hashes: the property index is keyed
+/// by a keyed hash of (property key, value), so hashing it again is waste.
+#[derive(Default)]
+struct PreHashed(u64);
+
+impl Hasher for PreHashed {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 << 8) | u64::from(*byte);
+        }
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
 pub struct Graph {
     names: Names,
     shapes: Shapes,
     nodes: HashMap<NodeId, NodeRecord>,
     relationships: HashMap<RelId, RelRecord>,
-    label_index: HashMap<Sym, HashSet<NodeId>>,
-    property_index: HashMap<(Sym, Value), HashSet<NodeId>>,
+    label_index: HashMap<Sym, IdSet>,
+    /// Nodes by a hash of (property key, value), for `unique` checks and
+    /// lookups. It stores no key or value: [`Graph::nodes_by_property`]
+    /// checks each candidate's stored value, so a collision costs a
+    /// comparison, never a wrong answer.
+    property_index: HashMap<u64, IdSet, BuildHasherDefault<PreHashed>>,
+    /// Keys the property-index hash, per graph, so no one can choose values
+    /// that collide.
+    property_hasher: RandomState,
     spatial_index: crate::location::SpatialIndex,
     vector_index: crate::vector::VectorIndex,
     /// `index { }` declarations of the schema last run against this graph.
@@ -270,7 +298,8 @@ impl Graph {
             nodes: HashMap::new(),
             relationships: HashMap::new(),
             label_index: HashMap::new(),
-            property_index: HashMap::new(),
+            property_index: HashMap::default(),
+            property_hasher: RandomState::new(),
             spatial_index: Default::default(),
             vector_index: Default::default(),
             declared: Default::default(),
@@ -309,7 +338,7 @@ impl Graph {
                 .get(&spec.type_name)
                 .and_then(|label| self.label_index.get(&label))
                 .into_iter()
-                .flatten()
+                .flat_map(IdSet::iter)
                 .filter_map(|id| all.get(id).map(|node| node_ref(names, shapes, *id, node)));
             self.declared.build(spec, nodes);
         }
@@ -410,10 +439,8 @@ impl Graph {
             if let Value::Vector(v) = value {
                 self.vector_index.insert(name, v, id);
             }
-            self.property_index
-                .entry((key, value.clone()))
-                .or_default()
-                .insert(id);
+            let hash = self.property_hasher.hash_one((key, value));
+            self.property_index.entry(hash).or_default().insert(id);
         }
         self.declared.insert(&node);
     }
@@ -431,8 +458,12 @@ impl Graph {
             if let Value::Vector(v) = value {
                 self.vector_index.remove(name, v, id);
             }
-            if let Some(set) = self.property_index.get_mut(&(key, value.clone())) {
-                set.remove(&id);
+            let hash = self.property_hasher.hash_one((key, value));
+            if let Some(set) = self.property_index.get_mut(&hash) {
+                set.remove(id);
+                if set.is_empty() {
+                    self.property_index.remove(&hash);
+                }
             }
         }
     }
@@ -465,7 +496,7 @@ impl Graph {
         self.remove_prop_indexes(id, node);
         for label in self.shapes.get(node.shape).labels.iter() {
             if let Some(set) = self.label_index.get_mut(label) {
-                set.remove(&id);
+                set.remove(id);
             }
         }
     }
@@ -561,12 +592,26 @@ impl Graph {
         Some(rel_ref(&self.names, &self.shapes, id, rel))
     }
 
-    pub fn nodes_by_label(&self, label: &str) -> Option<&HashSet<NodeId>> {
+    pub fn nodes_by_label(&self, label: &str) -> Option<&IdSet> {
         self.label_index.get(&self.names.get(label)?)
     }
 
-    pub fn nodes_by_property(&self, key: &str, value: &Value) -> Option<&HashSet<NodeId>> {
-        self.property_index.get(&(self.names.get(key)?, value.clone()))
+    /// The nodes whose `key` is `value`, ascending by id.
+    pub fn nodes_by_property(&self, key: &str, value: &Value) -> Vec<NodeId> {
+        let Some(sym) = self.names.get(key) else {
+            return Vec::new();
+        };
+        let hash = self.property_hasher.hash_one((sym, value));
+        let Some(set) = self.property_index.get(&hash) else {
+            return Vec::new();
+        };
+        let mut ids: Vec<NodeId> = set
+            .iter()
+            .copied()
+            .filter(|id| self.get_node(*id).and_then(|node| node.prop(key)) == Some(value))
+            .collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Every node, in no particular order.
@@ -634,8 +679,8 @@ mod tests {
         assert_eq!(node.prop("name"), Some(&Value::from("Alice")));
         let by_label = g.nodes_by_label("Person").unwrap();
         assert!(by_label.contains(&id));
-        let by_prop = g.nodes_by_property("name", &Value::from("Alice")).unwrap();
-        assert!(by_prop.contains(&id));
+        let by_prop = g.nodes_by_property("name", &Value::from("Alice"));
+        assert_eq!(by_prop, vec![id]);
     }
 
     #[test]
@@ -679,8 +724,26 @@ mod tests {
         assert_eq!(node.prop("a"), Some(&Value::Int(3)));
         assert_eq!(node.prop("b"), Some(&Value::Int(2)));
         assert_eq!(node.labels().collect::<Vec<_>>(), vec!["T"]);
-        assert!(g.nodes_by_property("a", &Value::Int(1)).is_none_or(HashSet::is_empty));
-        assert!(g.nodes_by_property("a", &Value::Int(3)).unwrap().contains(&id));
+        assert!(g.nodes_by_property("a", &Value::Int(1)).is_empty());
+        assert_eq!(g.nodes_by_property("a", &Value::Int(3)), vec![id]);
+    }
+
+    /// A map hashes by its length, so these two share a property-index
+    /// bucket: the lookup must check the stored value, not trust the hash.
+    #[test]
+    fn a_property_lookup_checks_values_that_share_a_hash() {
+        let mut g = Graph::new();
+        let map = |k: &str| Value::Map(Box::new(HashMap::from([(k.to_string(), Value::Int(1))])));
+        let a = g.create_node(vec!["T".into()], HashMap::from([("m".to_string(), map("a"))]));
+        let b = g.create_node(vec!["T".into()], HashMap::from([("m".to_string(), map("b"))]));
+        assert_eq!(g.nodes_by_property("m", &map("a")), vec![a]);
+        assert_eq!(g.nodes_by_property("m", &map("b")), vec![b]);
+        assert!(g.nodes_by_property("m", &map("c")).is_empty());
+        assert!(g.nodes_by_property("other", &map("a")).is_empty());
+        // Int 1 and Float 1.0 are different values.
+        let int = g.create_node(vec!["T".into()], HashMap::from([("n".to_string(), Value::Int(1))]));
+        assert_eq!(g.nodes_by_property("n", &Value::Int(1)), vec![int]);
+        assert!(g.nodes_by_property("n", &Value::from_f64(1.0)).is_empty());
     }
 
     #[test]

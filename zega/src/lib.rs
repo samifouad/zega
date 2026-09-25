@@ -13,6 +13,7 @@ use crate::wal::Operation;
 use crate::wal::Wal;
 
 mod graph;
+mod idset;
 mod index;
 mod journal;
 mod lang;

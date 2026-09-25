@@ -1033,7 +1033,6 @@ fn unique_candidates(
             let mut ids: Vec<_> = graph
                 .nodes_by_property(field, &value)
                 .into_iter()
-                .flat_map(|ids| ids.iter().copied())
                 .filter(|id| {
                     graph
                         .get_node(*id)
@@ -1109,9 +1108,7 @@ fn find_duplicate(
             if matches!(value, Value::Null) {
                 continue;
             }
-            let Some(ids) = graph.nodes_by_property(field, value) else {
-                continue;
-            };
+            let ids = graph.nodes_by_property(field, value);
             let taken = ids.iter().any(|id| {
                 if except == Some(*id) {
                     return false;
