@@ -653,6 +653,30 @@ fn run(args: &[String]) {
         let timings: Vec<Json> = queries(&zega, shape, node_count).iter().map(Timing::json).collect();
         out["queries"] = Json::Array(timings);
     }
+    if let Some(mode) = args.windows(2).find(|w| w[0] == "--churn").map(|w| w[1].as_str()) {
+        if shape != Shape::Fly5 || !rels {
+            eprintln!("--churn is wired for fly5 with --rels");
+            std::process::exit(2);
+        }
+        let random = match mode {
+            "window" => false,
+            "random" => true,
+            _ => usage(),
+        };
+        let started = Instant::now();
+        let (live_nodes, live_rels) = churn(&zega, &edges_of(n), n, random);
+        let churned = live() - base;
+        out["churn"] = json!({
+            "mode": mode,
+            "ops": n,
+            "ms": started.elapsed().as_secs_f64() * 1e3,
+            "nodes": live_nodes,
+            "rels": live_rels,
+            "heap_bytes": churned,
+            "bytes_per_node": churned as f64 / live_nodes as f64,
+            "rss_per_node": rss().saturating_sub(base_rss) as f64 / live_nodes as f64,
+        });
+    }
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
     writeln!(lock, "{out}").unwrap();
@@ -727,6 +751,84 @@ fn reopen() {
     );
 }
 
+/// The fly5 `next` links the generator made for `n` nodes, as (from n, to n).
+fn edges_of(n: u64) -> Vec<(u64, u64)> {
+    let (_, edges) = generate(Shape::Fly5, n, true);
+    edges.iter().map(|rel| (rel.from - 1, rel.to - 1)).collect()
+}
+
+/// Review M1 of #100: `n` delete-and-create turns through ZQL, the way a
+/// long-running graph churns. Each turn deletes one Item with its links
+/// (`window`: the oldest; `random`: any live one) and creates a new Item
+/// with three `next` links to live Items. Ids only climb, so a window
+/// leaves every old id behind, and random deletes leave holes everywhere.
+/// Returns the live node and relationship counts.
+fn churn(zega: &Zega, edges: &[(u64, u64)], n: u64, random: bool) -> (u64, u64) {
+    let schema = Shape::Fly5.schema();
+    let mut out: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut inc: HashMap<u64, Vec<u64>> = HashMap::new();
+    for &(from, to) in edges {
+        out.entry(from).or_default().push(to);
+        inc.entry(to).or_default().push(from);
+    }
+    let mut live: Vec<u64> = (0..n).collect();
+    let mut oldest = 0usize;
+    let mut rng = Rng(0xc4u64 ^ n);
+    let unlink = |node: u64, out: &mut HashMap<u64, Vec<u64>>, inc: &mut HashMap<u64, Vec<u64>>| {
+        for to in out.remove(&node).unwrap_or_default() {
+            if let Some(list) = inc.get_mut(&to) {
+                if let Some(at) = list.iter().position(|&f| f == node) {
+                    list.swap_remove(at);
+                }
+            }
+        }
+        for from in inc.remove(&node).unwrap_or_default() {
+            if let Some(list) = out.get_mut(&from) {
+                list.retain(|&t| t != node);
+            }
+        }
+    };
+    for turn in 0..n {
+        let victim = if random {
+            let at = rng.below(live.len() as u64) as usize;
+            live.swap_remove(at)
+        } else {
+            let victim = live[oldest];
+            oldest += 1;
+            victim
+        };
+        zega.run_lang(schema, &format!("mutation {{ delete Item(n = {victim}) {{ @detach }} }}"))
+            .expect("churn delete");
+        unlink(victim, &mut out, &mut inc);
+        let fresh = n + turn;
+        let (lat, lon) = (rng.unit() * 170.0 - 85.0, rng.unit() * 358.0 - 179.0);
+        zega.run_lang(
+            schema,
+            &format!(
+                "mutation {{ Item(n: {fresh} && name: \"item-{fresh}\" && city: \"c{}\" && score: {} && at: @point({lat}, {lon})) {{ n }} }}",
+                fresh % 500,
+                fresh % 1000
+            ),
+        )
+        .expect("churn create");
+        live.push(fresh);
+        for _ in 0..3 {
+            let to = if random {
+                live[rng.below(live.len() as u64) as usize]
+            } else {
+                live[oldest + rng.below((live.len() - oldest) as u64) as usize]
+            };
+            zega.run_lang(schema, &format!("mutation {{ Item(n: {fresh}) {{ next -> link Item(n: {to}) {{ n }} }} }}"))
+                .expect("churn link");
+            out.entry(fresh).or_default().push(to);
+            inc.entry(to).or_default().push(fresh);
+        }
+    }
+    let nodes = (live.len() - oldest) as u64;
+    let rels = out.values().map(|v| v.len() as u64).sum();
+    (nodes, rels)
+}
+
 // ---------------------------------------------------------------- table
 
 /// Markdown tables from one or more result files: memory per shape and size
@@ -745,7 +847,7 @@ fn table(files: &[String]) {
         println!("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
         let key = |r: &Json| (r["shape"].as_str().unwrap().to_string(), r["via"].as_str().unwrap().to_string(), r["n"].as_u64().unwrap());
         let mut done = Vec::new();
-        for r in rows.iter().filter(|r| r["rels"].as_u64() > Some(0) && r["via"] != "file") {
+        for r in rows.iter().filter(|r| r["rels"].as_u64() > Some(0) && r["via"] != "file" && r.get("churn").is_none()) {
             let k = key(r);
             if done.contains(&k) {
                 continue;
@@ -777,6 +879,26 @@ fn table(files: &[String]) {
             );
         }
         println!();
+        let churned: Vec<&Json> = rows.iter().filter(|r| r.get("churn").is_some()).collect();
+        if !churned.is_empty() {
+            println!("| shape | nodes | churn | turns | heap B/node before | after | RSS B/node after | live rels |");
+            println!("|---|---:|---|---:|---:|---:|---:|---:|");
+            for r in churned {
+                let c = &r["churn"];
+                println!(
+                    "| {} | {} | {} | {} | {:.0} | {:.0} | {:.0} | {} |",
+                    r["shape"].as_str().unwrap(),
+                    r["nodes"],
+                    c["mode"].as_str().unwrap(),
+                    c["ops"],
+                    r["bytes_per_node"].as_f64().unwrap(),
+                    c["bytes_per_node"].as_f64().unwrap(),
+                    c["rss_per_node"].as_f64().unwrap(),
+                    c["rels"],
+                );
+            }
+            println!();
+        }
         let restarts: Vec<&Json> = rows.iter().filter(|r| r["via"] == "file").collect();
         if !restarts.is_empty() {
             println!("| shape | nodes | rels | restart: heap B/node | RSS B/node | peak RSS B/node | open ms |");
@@ -820,7 +942,7 @@ fn table(files: &[String]) {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: zega-mem run <fly5|flights|cities|mixed> <nodes> [--rels] [--queries] [--via snapshot|zql|file]\n       zega-mem table <results.jsonl>..."
+        "usage: zega-mem run <fly5|flights|cities|mixed> <nodes> [--rels] [--queries] [--via snapshot|zql|file] [--churn window|random]\n       zega-mem table <results.jsonl>..."
     );
     std::process::exit(2)
 }

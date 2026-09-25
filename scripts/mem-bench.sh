@@ -34,4 +34,10 @@ for n in 100000 1000000; do
     "$bin" run "$shape" "$n" --rels --via file >> "$out"
   done
 done
+# Churn (review M1): one full turnover of delete-and-create through ZQL.
+"$bin" run fly5 100000 --rels --churn window >> "$out"
+"$bin" run fly5 100000 --rels --churn random >> "$out"
+if [ "${CHURN_1M:-1}" = 1 ]; then
+  "$bin" run fly5 1000000 --rels --churn window >> "$out"
+fi
 echo "wrote $out" >&2
