@@ -25,7 +25,7 @@ impl Model {
     }
     fn restore_node(&mut self, id: NodeId, labels: Vec<String>, props: HashMap<String, Value>) {
         self.nodes.insert(id, Node { id, labels, props });
-        self.next_node = self.next_node.max(id + 1);
+        self.next_node = self.next_node.max(id.saturating_add(1));
     }
     fn update_node(&mut self, id: NodeId, props: HashMap<String, Value>) {
         if let Some(n) = self.nodes.get_mut(&id) {
@@ -39,7 +39,7 @@ impl Model {
     }
     fn restore_rel(&mut self, id: RelId, kind: String, from: NodeId, to: NodeId, props: HashMap<String, Value>) {
         self.rels.insert(id, Relationship { id, kind, from, to, props });
-        self.next_rel = self.next_rel.max(id + 1);
+        self.next_rel = self.next_rel.max(id.saturating_add(1));
     }
 }
 
@@ -101,17 +101,20 @@ fn labels(rng: &mut Rng) -> Vec<String> {
 }
 
 fn node_id(rng: &mut Rng, m: &Model) -> NodeId {
-    match rng.below(20) {
+    match rng.below(21) {
         0 => (1u64 << 40) + rng.below(3),
         1 => 5_000 + rng.below(5_000), // past the dense allowance while small
-        2 => m.next_node + rng.below(3),
+        2 => m.next_node.saturating_add(rng.below(3)),
+        // The last chunk, whose end is u64::MAX (review H1 of #114).
+        3 => u64::MAX - rng.below(3),
         _ => rng.below(m.next_node.min(3_000) + 2),
     }
 }
 
 fn rel_id(rng: &mut Rng, m: &Model) -> RelId {
-    match rng.below(15) {
+    match rng.below(16) {
         0 => (1u64 << 45) + rng.below(2),
+        2 => u64::MAX - rng.below(2),
         1 => 3_000 + rng.below(4_000),
         _ => rng.below(m.next_rel.min(3_000) + 2),
     }
