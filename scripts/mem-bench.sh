@@ -5,7 +5,8 @@
 #
 # Runs every shape at 100k and 1M nodes, once without relationships (bytes
 # per node) and once with ~3 per node (bytes per relationship, total bytes
-# per node, query timings), plus the Fly benchmark's ZQL CSV import at 100k.
+# per node, query timings), the Fly benchmark's ZQL CSV import at 100k, and
+# a restart (a snapshot opened by a fresh process) for RSS.
 # One process per line of output. Summarise with `zega-mem table <out.jsonl>`.
 # QUERIES=0 skips the query timings (memory only).
 set -euo pipefail
@@ -27,4 +28,10 @@ for n in 100000 1000000; do
 done
 "$bin" run fly5 100000 --via zql >> "$out"
 "$bin" run fly5 100000 --rels --via zql >> "$out"
+# A restart: the snapshot opened by a fresh process, so its RSS is the graph's.
+for n in 100000 1000000; do
+  for shape in fly5 mixed; do
+    "$bin" run "$shape" "$n" --rels --via file >> "$out"
+  done
+done
 echo "wrote $out" >&2

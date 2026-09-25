@@ -198,6 +198,16 @@ impl Shape {
         }
     }
 
+    /// A lookup whose schema declares the shape's `unique` indexes.
+    fn probe(self) -> &'static str {
+        match self {
+            Shape::Fly5 => "{ Item(n: 0) { n } }",
+            Shape::Flights => "{ Airport(code: \"A000000\") { code } }",
+            Shape::Cities => "{ City(name: \"City 0\") { name } }",
+            Shape::Mixed => "{ Thing(id: 0) { id } }",
+        }
+    }
+
     fn schema(self) -> &'static str {
         match self {
             Shape::Fly5 => {
@@ -576,6 +586,9 @@ fn run(args: &[String]) {
     let rels = args.iter().any(|a| a == "--rels");
     let with_queries = args.iter().any(|a| a == "--queries");
     let via_zql = args.windows(2).any(|w| w[0] == "--via" && w[1] == "zql");
+    if args.windows(2).any(|w| w[0] == "--via" && w[1] == "file") {
+        return run_file(shape, n, rels);
+    }
     if via_zql && shape != Shape::Fly5 {
         eprintln!("--via zql is only wired for fly5");
         std::process::exit(2);
@@ -613,13 +626,7 @@ fn run(args: &[String]) {
 
     // The first statement with the schema declares its unique indexes.
     let started = Instant::now();
-    let probe = match shape {
-        Shape::Fly5 => "{ Item(n: 0) { n } }",
-        Shape::Flights => "{ Airport(code: \"A000000\") { code } }",
-        Shape::Cities => "{ City(name: \"City 0\") { name } }",
-        Shape::Mixed => "{ Thing(id: 0) { id } }",
-    };
-    zega.run_lang(shape.schema(), probe).expect("probe");
+    zega.run_lang(shape.schema(), shape.probe()).expect("probe");
     let index_ms = started.elapsed().as_secs_f64() * 1e3;
     let settled = live();
     let settled_rss = rss();
@@ -651,6 +658,59 @@ fn run(args: &[String]) {
     writeln!(lock, "{out}").unwrap();
 }
 
+/// `--via file`: write the graph as a snapshot file, then open it in a
+/// fresh child process, the way a restart does, so the RSS the child reports
+/// holds nothing of the generator: its RSS after opening and its peak RSS,
+/// each above the child's own empty-process RSS.
+fn run_file(shape: Shape, n: u64, rels: bool) {
+    let dir = std::env::temp_dir().join(format!("zega-mem-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let (nodes, edges) = generate(shape, n, rels);
+    let (node_count, rel_count) = (nodes.len() as u64, edges.len() as u64);
+    std::fs::write(dir.join("snapshot.bin"), snapshot(&nodes, &edges)).expect("write snapshot");
+    drop((nodes, edges));
+    let child = std::process::Command::new(std::env::current_exe().expect("own path"))
+        .args(["reopen", shape.name(), dir.to_str().expect("utf-8 temp dir")])
+        .output()
+        .expect("child runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(child.status.success(), "reopen failed: {}", String::from_utf8_lossy(&child.stderr));
+    let mut out: Json = serde_json::from_slice(&child.stdout).expect("child json");
+    let per_node = |key: &str, out: &Json| out[key].as_f64().unwrap() / node_count as f64;
+    out["n"] = json!(n);
+    out["nodes"] = json!(node_count);
+    out["rels"] = json!(rel_count);
+    out["bytes_per_node"] = json!(per_node("heap_bytes", &out));
+    out["rss_per_node"] = json!(per_node("rss_bytes", &out));
+    out["peak_rss_per_node"] = json!(per_node("peak_rss_over_base", &out));
+    println!("{out}");
+}
+
+/// The child of `--via file`: open the data directory and report.
+fn reopen(args: &[String]) {
+    let shape = Shape::parse(args.first().map(String::as_str).unwrap_or_else(|| usage()));
+    let dir = args.get(1).unwrap_or_else(|| usage());
+    let base = live();
+    let base_rss = rss();
+    let started = Instant::now();
+    let zega = Zega::open(dir).build().expect("open");
+    let load_ms = started.elapsed().as_secs_f64() * 1e3;
+    zega.run_lang(shape.schema(), shape.probe()).expect("probe");
+    let after = rss();
+    println!(
+        "{}",
+        json!({
+            "shape": shape.name(),
+            "via": "file",
+            "heap_bytes": live() - base,
+            "load_peak_bytes": peak() - base,
+            "rss_bytes": after.saturating_sub(base_rss),
+            "peak_rss_over_base": peak_rss().saturating_sub(base_rss),
+            "load_ms": load_ms,
+        })
+    );
+}
+
 // ---------------------------------------------------------------- table
 
 /// Markdown tables from one or more result files: memory per shape and size
@@ -669,7 +729,7 @@ fn table(files: &[String]) {
         println!("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
         let key = |r: &Json| (r["shape"].as_str().unwrap().to_string(), r["via"].as_str().unwrap().to_string(), r["n"].as_u64().unwrap());
         let mut done = Vec::new();
-        for r in rows.iter().filter(|r| r["rels"].as_u64() > Some(0)) {
+        for r in rows.iter().filter(|r| r["rels"].as_u64() > Some(0) && r["via"] != "file") {
             let k = key(r);
             if done.contains(&k) {
                 continue;
@@ -701,6 +761,24 @@ fn table(files: &[String]) {
             );
         }
         println!();
+        let restarts: Vec<&Json> = rows.iter().filter(|r| r["via"] == "file").collect();
+        if !restarts.is_empty() {
+            println!("| shape | nodes | rels | restart: heap B/node | RSS B/node | peak RSS B/node | open ms |");
+            println!("|---|---:|---:|---:|---:|---:|---:|");
+            for r in restarts {
+                println!(
+                    "| {} | {} | {} | {:.0} | {:.0} | {:.0} | {:.0} |",
+                    r["shape"].as_str().unwrap(),
+                    r["nodes"],
+                    r["rels"],
+                    r["bytes_per_node"].as_f64().unwrap(),
+                    r["rss_per_node"].as_f64().unwrap(),
+                    r["peak_rss_per_node"].as_f64().unwrap(),
+                    r["load_ms"].as_f64().unwrap(),
+                );
+            }
+            println!();
+        }
         let timed: Vec<&Json> = rows.iter().filter(|r| r.get("queries").is_some()).collect();
         if !timed.is_empty() {
             println!("| shape | nodes | query | runs | p50 µs | p99 µs | mean µs |");
@@ -726,7 +804,7 @@ fn table(files: &[String]) {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: zega-mem run <fly5|flights|cities|mixed> <nodes> [--rels] [--queries] [--via snapshot|zql]\n       zega-mem table <results.jsonl>..."
+        "usage: zega-mem run <fly5|flights|cities|mixed> <nodes> [--rels] [--queries] [--via snapshot|zql|file]\n       zega-mem table <results.jsonl>..."
     );
     std::process::exit(2)
 }
@@ -736,6 +814,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]),
         Some("table") => table(&args[1..]),
+        Some("reopen") => reopen(&args[1..]),
         _ => usage(),
     }
 }
