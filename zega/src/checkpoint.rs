@@ -7,13 +7,14 @@
 //! minimal snapshot-then-truncate now"). It uses the machinery `.graph`
 //! imports already have, and adds no file or WAL entry of its own:
 //!
-//! 1. Under the graph lock, note where the WAL ends and write the graph to a
-//!    staging file in `graphs/`, in one pass (`graph_file::write_unfinished`).
+//! 1. Under the graph lock, note where the WAL ends and encode the graph as a
+//!    `.graph` file in one pass (`graph_file::write_unfinished`), into memory
+//!    up to [`MEMORY_CAP`] and into its staging file in `graphs/` beyond it.
 //!    Since every write appends to the WAL (and waits for it to be durable)
 //!    under that same lock, the file holds exactly the log up to that byte.
 //!    Everything that takes the lock waits for this step: writes, and reads
 //!    too, since the graph has one lock. The pause grows with the graph.
-//! 2. Without the lock: read the file back for its digests, add its last
+//! 2. Without the lock: write what is in memory to the staging file, read it back for its digests, add its last
 //!    section, sync it and rename it to `graphs/<sha256>.graph`, then sync
 //!    the directory. Reads and writes carry on.
 //! 3. [`Wal::rotate`]: write a new log holding one `ReplaceGraph` entry naming
@@ -48,6 +49,13 @@ use crate::{Result, ZegaError};
 /// otherwise: `zega start --snapshot-every-mb` (default 16).
 pub const DEFAULT_SNAPSHOT_EVERY_BYTES: u64 = 16 << 20;
 
+/// The most of a checkpoint's `.graph` file held in memory while the graph
+/// lock is held. Encoding into memory keeps the lock for the encoding alone
+/// (about half the pause of writing the file under it); past this size the
+/// rest goes straight to the staging file, so the extra memory stays bounded
+/// whatever the graph (Pro graphs are capped at 64 MiB).
+pub const MEMORY_CAP: u64 = 256 << 20;
+
 /// How often the checkpoint thread looks at the WAL's length.
 const POLL: Duration = Duration::from_millis(100);
 
@@ -63,6 +71,9 @@ pub struct Checkpoint {
     pub wal_bytes_after: u64,
     /// How long writes waited: the graph lock was held this long.
     pub paused: Duration,
+    /// Whether the file outgrew [`MEMORY_CAP`] and was written to disk under
+    /// the lock from there on.
+    pub spilled: bool,
 }
 
 /// What a checkpoint needs of a database, shared with its checkpoint thread.
@@ -134,9 +145,19 @@ impl Store {
                 .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
             let started = std::time::Instant::now();
             let from = self.wal.end()?;
-            let unfinished = crate::graph_file::write_unfinished(&graph, crate::CREATED_BY, &mut file)?;
-            (from, unfinished, started.elapsed())
+            let mut out = Spill {
+                memory: Some(std::io::Cursor::new(Vec::new())),
+                file: &mut file,
+                cap: memory_cap(),
+            };
+            let unfinished = crate::graph_file::write_unfinished(&graph, crate::CREATED_BY, &mut out)?;
+            let paused = started.elapsed();
+            drop(graph);
+            let spilled = out.memory.is_none();
+            out.spill()?;
+            (from, (unfinished, spilled), paused)
         };
+        let (unfinished, spilled) = unfinished;
         crash_point(Step::GraphPartial);
         let (summary, sha256) = crate::graph_file::finish(&mut file, &unfinished)?;
         let bytes = summary.bytes;
@@ -167,6 +188,7 @@ impl Store {
             wal_bytes_before: from,
             wal_bytes_after,
             paused,
+            spilled,
         })
     }
 
@@ -181,6 +203,69 @@ impl Store {
         let grown = end.saturating_sub(self.counts.wal_after.load(Ordering::Relaxed));
         Ok((end, grown >= threshold, threshold))
     }
+}
+
+/// A seekable file that stays in memory until it would pass `cap` bytes,
+/// then moves to `file` and continues there.
+struct Spill<'a> {
+    memory: Option<std::io::Cursor<Vec<u8>>>,
+    file: &'a mut std::fs::File,
+    cap: u64,
+}
+
+impl Spill<'_> {
+    /// Move what is in memory to the file, at the same position.
+    fn spill(&mut self) -> std::io::Result<()> {
+        use std::io::{Seek, Write};
+        if let Some(memory) = self.memory.take() {
+            self.file.write_all(memory.get_ref())?;
+            self.file.seek(std::io::SeekFrom::Start(memory.position()))?;
+        }
+        Ok(())
+    }
+}
+
+impl std::io::Write for Spill<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some(memory) = &mut self.memory {
+            let end = (memory.position() + buf.len() as u64).max(memory.get_ref().len() as u64);
+            if end <= self.cap {
+                return memory.write(buf);
+            }
+            self.spill()?;
+        }
+        self.file.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match &mut self.memory {
+            Some(_) => Ok(()),
+            None => self.file.flush(),
+        }
+    }
+}
+
+impl std::io::Seek for Spill<'_> {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        match &mut self.memory {
+            Some(memory) => memory.seek(to),
+            None => self.file.seek(to),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's [`MEMORY_CAP`] for checkpoints taken on this thread.
+    pub(crate) static MEMORY_CAP_FOR_TEST: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+fn memory_cap() -> u64 {
+    #[cfg(test)]
+    if let Some(cap) = MEMORY_CAP_FOR_TEST.with(|cap| cap.get()) {
+        return cap;
+    }
+    MEMORY_CAP
 }
 
 /// A thread that checkpoints once the WAL is due ([`Store::due`]). Dropping

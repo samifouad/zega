@@ -295,9 +295,11 @@ impl Zega {
     /// Checkpoint a disk database: write the graph as a `.graph` file in
     /// `graphs/` and start the WAL over from it, so a restart reads that file
     /// and replays only what came after. The graph lock is held while the
-    /// graph is written out (one pass, about 15 ms per MB of `.graph` file on
-    /// an iMac), so reads and writes both wait that long; the sync and the
-    /// WAL rotation run without it. A no-op in memory. A disk
+    /// graph is encoded (one pass, into memory up to 256 MiB of `.graph`
+    /// file), so reads and writes both wait that long: under 0.1 s for
+    /// 100,000 nodes, about 1 s for 1,000,000 on an iMac. Writing the file,
+    /// syncing it and rotating the WAL run without the lock. A no-op in
+    /// memory. A disk
     /// database also does this on its own ([`ZegaBuilder::snapshot_every`]).
     pub fn snapshot(&self) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]

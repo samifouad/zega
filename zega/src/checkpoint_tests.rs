@@ -775,3 +775,26 @@ fn checkpoints_taken_and_failed_are_counted() {
     assert!(zega.checkpoint().is_err());
     assert_eq!(zega.checkpoint_counts(), crate::CheckpointCounts { taken: 1, failed: 1 });
 }
+
+/// Past the memory cap, the rest of the file goes to disk under the lock:
+/// the same bytes, the same recovery.
+#[test]
+fn a_checkpoint_past_the_memory_cap_spills_to_its_file() {
+    for cap in [None, Some(256), Some(0)] {
+        let dir = tempfile::tempdir().unwrap();
+        let zega = open(dir.path());
+        writes_a(&zega);
+        writes_b(&zega);
+        let mut exported = Vec::new();
+        zega.export(&mut exported).unwrap();
+        crate::checkpoint::MEMORY_CAP_FOR_TEST.with(|c| c.set(cap));
+        let checkpoint = zega.checkpoint().unwrap().unwrap();
+        crate::checkpoint::MEMORY_CAP_FOR_TEST.with(|c| c.set(None));
+        assert!(exported.len() > 512, "{} bytes", exported.len());
+        assert_eq!(checkpoint.spilled, cap.is_some(), "cap {cap:?}");
+        let written = std::fs::read(dir.path().join(&checkpoint.file)).unwrap();
+        assert!(written == exported, "cap {cap:?}: the checkpoint file differs from the export");
+        drop(zega);
+        assert_eq!(state(&open(dir.path())), reference(&[writes_a, writes_b]), "cap {cap:?}");
+    }
+}
