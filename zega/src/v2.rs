@@ -286,6 +286,7 @@ impl Zega {
             declared.uniques,
             declared.indexes,
         ));
+        graph.sync_uniques(declared.uniques);
         let mut work = Work::new(self.traversal_work_budget, self.query_time_limit);
         // A read logs nothing. A mutation or load is one statement: every row
         // and nested selection is applied, or (on a validation error, a
@@ -1030,17 +1031,7 @@ fn unique_candidates(
         {
             if value.is_array() { return None; }
             let value = json_to_value(value).ok()?;
-            let mut ids: Vec<_> = graph
-                .nodes_by_property(field, &value)
-                .into_iter()
-                .filter(|id| {
-                    graph
-                        .get_node(*id)
-                        .is_some_and(|node| node.has_label(ty))
-                })
-                .collect();
-            ids.sort_unstable();
-            return Some(ids);
+            return Some(graph.unique_matches(ty, field, &value));
         }
     }
     None
@@ -1108,15 +1099,10 @@ fn find_duplicate(
             if matches!(value, Value::Null) {
                 continue;
             }
-            let ids = graph.nodes_by_property(field, value);
-            let taken = ids.iter().any(|id| {
-                if except == Some(*id) {
-                    return false;
-                }
-                graph
-                    .get_node(*id)
-                    .is_some_and(|node| node.has_label(label))
-            });
+            let taken = graph
+                .unique_matches(label, field, value)
+                .iter()
+                .any(|id| except != Some(*id));
             if taken {
                 return Some((ty.clone(), field.clone()));
             }
