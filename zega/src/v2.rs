@@ -706,7 +706,7 @@ fn read(
     // Candidates are in ascending id order, which is also the result order,
     // so without a ranking (`near`, `order by`) the first `limit` matches are
     // the answer and the rest need not be tested (zegadb/zega#82).
-    let enough = root.limit.filter(|_| root.near.is_none() && root.order.is_none());
+    let enough = root.limit.filter(|_| root.near.is_none() && root.order.is_empty());
     retain_first_matches(graph, &mut ids, root.condition.as_ref(), enough, context.work)?;
     order_limit(graph, root, &mut ids, |id| *id, context.work)?;
     if equality_lookup(root) {

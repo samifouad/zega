@@ -67,6 +67,28 @@ fn order_by_several_keys_then_limit_after_the_filter() {
 }
 
 #[test]
+fn order_by_salary_desc_limit_returns_the_true_top_not_the_first_matches() {
+    // Creation (and id) order deliberately disagrees with salary order: the
+    // first two rows created are mid-table, so a scan that stops at `limit`
+    // rows before sorting would return them instead of the real top two
+    // (zegadb/zega#82 must not shortcut zegadb/zega#73's `order by`).
+    let db = Zega::in_memory().build().unwrap();
+    for (name, salary) in [("Low", 10), ("Mid", 50), ("Top", 90), ("Under", 20), ("Second", 80)] {
+        db.run_lang(SCHEMA, &format!(r#"mutation {{ Player(name: "{name}" && salary: {salary}) {{ name }} }}"#)).unwrap();
+    }
+    // A condition (always true here) routes through the same row-by-row scan
+    // `limit` alone short-circuits (zegadb/zega#82), so `rows_examined` can
+    // show whether `order by` disabled that shortcut.
+    let before = db.rows_examined().unwrap();
+    let top_two = read(&db, "{ Player(salary > 0) order by salary desc limit 2 { name } }");
+    // The true top two by salary, not "Low", "Mid" (the first two created).
+    assert_eq!(names(&top_two), ["Top", "Second"]);
+    // Ranking a field (unlike the id-order shortcut for an unordered limit)
+    // has to read every row before it can sort and cut, so nothing is skipped.
+    assert_eq!(db.rows_examined().unwrap() - before, 5);
+}
+
+#[test]
 fn order_by_works_on_a_walk_target() {
     let db = roster();
     db.run_lang(SCHEMA, r#"mutation { Team(name: "Oilers") { name } }"#).unwrap();

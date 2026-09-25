@@ -3020,9 +3020,12 @@ pub fn diagnose(schema_src: &str, query_src: &str) -> Report {
 }
 
 /// Whether a mutation selection creates its node. `set` and `link` find one
-/// existing row instead, and so does the node a `link` walk lands on.
+/// existing row instead, and so does the node a `link` walk lands on; a
+/// `delete` never creates one either, and required fields do not apply to
+/// the rows it removes.
 pub fn creates(sel: &Selection, linked: bool) -> bool {
     !linked
+        && sel.delete.is_none()
         && sel.sets.is_empty()
         && !sel
             .items
