@@ -18,6 +18,7 @@ mod checkpoint;
 mod checkpoint_tests;
 mod graph;
 pub mod graph_file;
+mod idset;
 mod index;
 mod journal;
 mod lang;
@@ -340,7 +341,7 @@ impl Zega {
     /// Whether the graph holds no node and no relationship.
     pub fn is_empty(&self) -> Result<bool> {
         let graph = self.lock_graph()?;
-        Ok(graph.all_nodes().is_empty() && graph.all_relationships().is_empty())
+        Ok(graph.is_empty())
     }
 
     /// Stream the whole graph to `out` as a `.graph` file

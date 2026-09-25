@@ -19,7 +19,7 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 
 use sha2::{Digest, Sha256};
 
-use crate::graph::{Graph, Node, NodeId, Relationship};
+use crate::graph::{Graph, NodeId, NodeRef, RelRef};
 use crate::index::{IndexKind, IndexSpec};
 use crate::location::Point;
 use crate::value::Value;
@@ -285,13 +285,13 @@ struct Names<'g> {
 impl<'g> Names<'g> {
     fn collect(graph: &'g Graph) -> Result<Self, Error> {
         let mut set: BTreeSet<&'g str> = BTreeSet::new();
-        for node in graph.all_nodes().values() {
-            set.extend(node.labels.iter().map(String::as_str));
-            set.extend(node.props.keys().map(String::as_str));
+        for node in graph.nodes() {
+            set.extend(node.labels());
+            set.extend(node.props().map(|(key, _)| key));
         }
-        for rel in graph.all_relationships().values() {
-            set.insert(rel.kind.as_str());
-            set.extend(rel.props.keys().map(String::as_str));
+        for rel in graph.relationships() {
+            set.insert(rel.kind);
+            set.extend(rel.props().map(|(key, _)| key));
         }
         let sorted: Vec<&str> = set.into_iter().collect();
         if u32::try_from(sorted.len()).is_err() {
@@ -306,21 +306,6 @@ impl<'g> Names<'g> {
     }
 }
 
-/// The values of `map` in ascending id order, without sorting a copy of the
-/// ids when they are dense (the usual case): walk `0..=max` and look each up.
-fn ascending<T>(map: &HashMap<u64, T>) -> Box<dyn Iterator<Item = &T> + '_> {
-    let Some(&max) = map.keys().max() else {
-        return Box::new(std::iter::empty());
-    };
-    let dense = max <= (map.len() as u64).saturating_mul(2).saturating_add(1024);
-    if dense {
-        Box::new((0..=max).filter_map(move |id| map.get(&id)))
-    } else {
-        let mut ids: Vec<u64> = map.keys().copied().collect();
-        ids.sort_unstable();
-        Box::new(ids.into_iter().map(move |id| &map[&id]))
-    }
-}
 
 fn put_value(sink: &mut dyn Sink, value: &Value, depth: usize) -> Result<(), Error> {
     match value {
@@ -386,13 +371,13 @@ fn nested(depth: usize) -> Result<(), Error> {
     Ok(())
 }
 
-fn put_props(
+fn put_props<'a>(
     sink: &mut dyn Sink,
     names: &Names<'_>,
-    props: &HashMap<String, Value>,
+    props: impl Iterator<Item = (&'a str, &'a Value)>,
 ) -> Result<(), Error> {
-    put_len(sink, props.len(), "a property map")?;
-    let mut entries: Vec<(&String, &Value)> = props.iter().collect();
+    let mut entries: Vec<(&str, &Value)> = props.collect();
+    put_len(sink, entries.len(), "a property map")?;
     entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
     for (key, value) in entries {
         put_u32(sink, names.id(key))?;
@@ -401,26 +386,27 @@ fn put_props(
     Ok(())
 }
 
-fn put_node(sink: &mut dyn Sink, names: &Names<'_>, node: &Node) -> Result<(), Error> {
-    if let Some(label) = duplicate_label(&node.labels) {
+fn put_node(sink: &mut dyn Sink, names: &Names<'_>, node: NodeRef<'_>) -> Result<(), Error> {
+    let labels: Vec<&str> = node.labels().collect();
+    if let Some(label) = duplicate_label(&labels) {
         return Err(Error::Unexportable(format!(
             "node {} has the label {label:?} twice",
             node.id
         )));
     }
     put_u64(sink, node.id)?;
-    put_len(sink, node.labels.len(), "a label list")?;
-    for label in &node.labels {
+    put_len(sink, labels.len(), "a label list")?;
+    for label in labels {
         put_u32(sink, names.id(label))?;
     }
-    put_props(sink, names, &node.props)
+    put_props(sink, names, node.props())
 }
 
 fn put_relationship(
     sink: &mut dyn Sink,
     graph: &Graph,
     names: &Names<'_>,
-    rel: &Relationship,
+    rel: RelRef<'_>,
 ) -> Result<(), Error> {
     for end in [rel.from, rel.to] {
         if graph.get_node(end).is_none() {
@@ -431,19 +417,23 @@ fn put_relationship(
         }
     }
     put_u64(sink, rel.id)?;
-    put_u32(sink, names.id(&rel.kind))?;
+    put_u32(sink, names.id(rel.kind))?;
     put_u64(sink, rel.from)?;
     put_u64(sink, rel.to)?;
-    put_props(sink, names, &rel.props)
+    put_props(sink, names, rel.props())
 }
 
 /// The first label that appears twice in `labels`.
-fn duplicate_label(labels: &[String]) -> Option<&String> {
+fn duplicate_label<T: AsRef<str>>(labels: &[T]) -> Option<&T> {
     if labels.len() <= 8 {
-        return labels.iter().enumerate().find(|(i, l)| labels[..*i].contains(l)).map(|(_, l)| l);
+        return labels
+            .iter()
+            .enumerate()
+            .find(|(i, l)| labels[..*i].iter().any(|seen| seen.as_ref() == l.as_ref()))
+            .map(|(_, l)| l);
     }
     let mut seen = std::collections::HashSet::new();
-    labels.iter().find(|label| !seen.insert(label.as_str()))
+    labels.iter().find(|&label| !seen.insert(label.as_ref()))
 }
 
 /// `unique` `(type, field)` pairs and index declarations.
@@ -526,8 +516,8 @@ fn encode_sections(
     let mut meta = carried.meta.clone();
     meta.extend(options.meta.iter().map(|(k, v)| (k.clone(), v.clone())));
     let (next_node, next_rel) = graph.next_ids();
-    let node_count = graph.all_nodes().len() as u64;
-    let rel_count = graph.all_relationships().len() as u64;
+    let node_count = graph.node_count() as u64;
+    let rel_count = graph.relationship_count() as u64;
 
     emit(Section::Manifest, &|sink| {
         put_str(sink, created_by)?;
@@ -570,14 +560,14 @@ fn encode_sections(
     })?;
     emit(Section::Nodes, &|sink| {
         put_u64(sink, next_node)?;
-        for node in ascending(graph.all_nodes()) {
+        for node in graph.nodes() {
             put_node(sink, &names, node)?;
         }
         Ok(())
     })?;
     emit(Section::Relationships, &|sink| {
         put_u64(sink, next_rel)?;
-        for rel in ascending(graph.all_relationships()) {
+        for rel in graph.relationships() {
             put_relationship(sink, graph, &names, rel)?;
         }
         Ok(())
@@ -1052,7 +1042,7 @@ fn read_list<R: Read>(s: &mut SectionIn<'_, R>, depth: usize) -> Result<Value, E
     for _ in 0..count {
         items.push(read_value(s, depth + 1)?);
     }
-    Ok(Value::List(items))
+    Ok(Value::List(items.into()))
 }
 
 #[inline(never)]
@@ -1069,7 +1059,7 @@ fn read_map<R: Read>(s: &mut SectionIn<'_, R>, depth: usize) -> Result<Value, Er
         last = Some(key.clone());
         map.insert(key, value);
     }
-    Ok(Value::Map(map))
+    Ok(Value::Map(Box::new(map)))
 }
 
 #[inline(never)]
@@ -1080,7 +1070,7 @@ fn read_scalar<R: Read>(s: &mut SectionIn<'_, R>, code: u8) -> Result<Value, Err
         tag::TRUE => Value::Bool(true),
         tag::INT => Value::Int(s.u64()? as i64),
         tag::FLOAT => Value::Float(s.u64()?),
-        tag::STRING => Value::String(s.string()?),
+        tag::STRING => Value::String(s.string()?.into()),
         tag::POINT => {
             let (lat, lon) = (s.u64()?, s.u64()?);
             let point = Point::new(f64::from_bits(lat), f64::from_bits(lon))
@@ -1102,7 +1092,7 @@ fn read_scalar<R: Read>(s: &mut SectionIn<'_, R>, code: u8) -> Result<Value, Err
             for _ in 0..dimensions {
                 bits.push(s.u32()?);
             }
-            Value::Vector(Vector::from_bits(bits, metric).map_err(|reason| s.invalid(reason))?)
+            Value::Vector(Box::new(Vector::from_bits(bits, metric).map_err(|reason| s.invalid(reason))?))
         }
         other => return Err(s.invalid(format!("unknown value tag {other:#04x}"))),
     })

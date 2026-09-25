@@ -36,7 +36,7 @@ fn props(entries: Vec<(&str, Value)>) -> HashMap<String, Value> {
 }
 
 fn vector(values: &[f32], metric: Metric) -> Value {
-    Value::Vector(Vector::new(values, metric).unwrap())
+    Value::Vector(Box::new(Vector::new(values, metric).unwrap()))
 }
 
 /// Every `Value` variant, the float edge cases, unicode names, an empty
@@ -62,16 +62,16 @@ fn golden_graph() -> Graph {
                     Value::Int(403),
                     Value::Bool(true),
                     Value::Null,
-                    Value::List(vec![]),
-                ]),
+                    Value::List(Box::default()),
+                ].into()),
             ),
             (
                 "extra",
-                Value::Map(props(vec![
+                Value::Map(Box::new(props(vec![
                     ("k", Value::Int(1)),
-                    ("nested", Value::List(vec![Value::Map(HashMap::new())])),
+                    ("nested", Value::List(vec![Value::Map(Box::default())].into())),
                     ("ünï", "Zürich ✈".into()),
-                ])),
+                ]))),
             ),
             ("näme", "東京".into()),
         ]),
@@ -369,7 +369,7 @@ fn value() -> impl Strategy<Value = Value> {
             Just(Value::Float(f64::NAN.to_bits())),
             Just(Value::from_f64(f64::NEG_INFINITY)),
         ],
-        ".{0,12}".prop_map(Value::String),
+        ".{0,12}".prop_map(Value::from),
         (-90.0f64..=90.0, -180.0f64..=180.0)
             .prop_map(|(lat, lon)| Value::Point(Point::new(lat, lon).unwrap())),
         (
@@ -380,8 +380,8 @@ fn value() -> impl Strategy<Value = Value> {
     ];
     leaf.prop_recursive(3, 24, 4, |inner| {
         prop_oneof![
-            prop::collection::vec(inner.clone(), 0..4).prop_map(Value::List),
-            prop::collection::hash_map(".{0,6}", inner, 0..4).prop_map(Value::Map),
+            prop::collection::vec(inner.clone(), 0..4).prop_map(|items| Value::List(items.into())),
+            prop::collection::hash_map(".{0,6}", inner, 0..4).prop_map(|map| Value::Map(Box::new(map))),
         ]
     })
 }

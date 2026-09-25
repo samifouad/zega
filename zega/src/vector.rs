@@ -697,6 +697,21 @@ pub(crate) struct VectorIndex {
     fields: HashMap<(String, usize, Metric), Hnsw>,
 }
 impl VectorIndex {
+    /// Each index's node ids in the order they were inserted, which with
+    /// the ids fixes the whole HNSW graph.
+    #[cfg(test)]
+    pub fn insertion_order(&self) -> Vec<(String, Vec<NodeId>)> {
+        let mut out: Vec<_> = self
+            .fields
+            .iter()
+            .map(|((field, dims, metric), index)| {
+                (format!("{field}/{dims}/{metric:?}"), index.entries.iter().map(|e| e.id).collect())
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
     pub fn insert(&mut self, field: &str, v: &Vector, id: NodeId) {
         self.fields
             .entry((field.into(), v.dimensions(), v.metric))
