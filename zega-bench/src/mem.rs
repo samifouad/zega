@@ -98,27 +98,58 @@ fn peak() -> i64 {
     PEAK.load(Ordering::Relaxed)
 }
 
-fn rss() -> u64 {
+/// This process's RSS now, in bytes (`ps`, which reports KiB). None where
+/// there is no `ps` to ask (Windows): RSS is the secondary number; heap is
+/// measured everywhere.
+#[cfg(unix)]
+fn rss() -> Option<u64> {
     let out = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &std::process::id().to_string()])
         .output()
-        .expect("ps runs");
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse::<u64>()
-        .unwrap_or(0)
-        * 1024
+        .ok()?;
+    let kib = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok()?;
+    Some(kib * 1024)
 }
 
-fn peak_rss() -> u64 {
+#[cfg(not(unix))]
+fn rss() -> Option<u64> {
+    None
+}
+
+/// Peak RSS over the process so far (`getrusage`; `ru_maxrss` is bytes on
+/// macOS and KiB elsewhere). None off unix.
+#[cfg(unix)]
+fn peak_rss() -> Option<u64> {
     // SAFETY: getrusage writes into the zeroed struct we own.
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
-    if cfg!(target_os = "macos") {
-        usage.ru_maxrss as u64
-    } else {
-        usage.ru_maxrss as u64 * 1024
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+        return None;
     }
+    let max = usage.ru_maxrss as u64;
+    Some(if cfg!(target_os = "macos") { max } else { max * 1024 })
+}
+
+#[cfg(not(unix))]
+fn peak_rss() -> Option<u64> {
+    None
+}
+
+/// `after - before` as JSON, or null when either is unknown.
+fn over(after: Option<u64>, before: Option<u64>) -> Json {
+    match (after, before) {
+        (Some(after), Some(before)) => json!(after.saturating_sub(before)),
+        _ => Json::Null,
+    }
+}
+
+/// `bytes / count`, or null.
+fn per(bytes: &Json, count: u64) -> Json {
+    bytes.as_f64().map_or(Json::Null, |bytes| json!(bytes / count as f64))
+}
+
+/// A number for a table cell: "n/a" where it was not measured.
+fn cell(value: &Json) -> String {
+    value.as_f64().map_or_else(|| "n/a".to_string(), |v| format!("{v:.0}"))
 }
 
 // ---------------------------------------------------------------- data
@@ -586,9 +617,6 @@ fn run(args: &[String]) {
     let rels = args.iter().any(|a| a == "--rels");
     let with_queries = args.iter().any(|a| a == "--queries");
     let via_zql = args.windows(2).any(|w| w[0] == "--via" && w[1] == "zql");
-    if args.windows(2).any(|w| w[0] == "--via" && w[1] == "file") {
-        return run_file(shape, n, rels);
-    }
     if via_zql && shape != Shape::Fly5 {
         eprintln!("--via zql is only wired for fly5");
         std::process::exit(2);
@@ -642,9 +670,9 @@ fn run(args: &[String]) {
         "heap_before_indexes": after_load - base,
         "bytes_per_node": graph_bytes as f64 / node_count as f64,
         "load_peak_bytes": load_peak,
-        "rss_bytes": settled_rss.saturating_sub(base_rss),
+        "rss_bytes": over(settled_rss, base_rss),
         "peak_rss_bytes": peak_rss(),
-        "rss_per_node": settled_rss.saturating_sub(base_rss) as f64 / node_count as f64,
+        "rss_per_node": per(&over(settled_rss, base_rss), node_count),
         "load_ms": load_ms,
         "index_ms": index_ms,
         "allocs": ALLOCS.load(Ordering::Relaxed),
@@ -658,70 +686,60 @@ fn run(args: &[String]) {
     writeln!(lock, "{out}").unwrap();
 }
 
-/// `--via file`: write the graph as a snapshot file, then open it in a
-/// fresh child process, the way a restart does, so the RSS the child reports
-/// holds nothing of the generator: its RSS after opening and its peak RSS,
-/// each above the child's own empty-process RSS.
-fn run_file(shape: Shape, n: u64, rels: bool) {
-    let dir = std::env::temp_dir().join(format!("zega-mem-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+/// `zega-mem snapshot <shape> <nodes> [--rels] <dir>`: write the graph as a
+/// data directory holding only `snapshot.bin`, with its counts in
+/// `counts.json`, for `reopen` to open in a fresh process. Two commands
+/// (`scripts/mem-bench.sh` runs both) instead of one spawning the other, so
+/// the RSS `reopen` reports holds nothing of the generator.
+fn write_snapshot(args: &[String]) {
+    let shape = Shape::parse(args.first().map(String::as_str).unwrap_or_else(|| usage()));
+    let n: u64 = args.get(1).and_then(|s| s.replace('_', "").parse().ok()).unwrap_or_else(|| usage());
+    let rels = args.iter().any(|a| a == "--rels");
+    let dir = match args.last() {
+        Some(dir) if args.len() > 2 && dir != "--rels" => std::path::PathBuf::from(dir),
+        _ => usage(),
+    };
+    std::fs::create_dir_all(&dir).expect("data dir");
     let (nodes, edges) = generate(shape, n, rels);
-    let (node_count, rel_count) = (nodes.len() as u64, edges.len() as u64);
+    let counts = json!({ "n": n, "nodes": nodes.len(), "rels": edges.len() });
     std::fs::write(dir.join("snapshot.bin"), snapshot(&nodes, &edges)).expect("write snapshot");
-    drop((nodes, edges));
-    // The child is this binary with one literal argument; what it opens
-    // arrives on its stdin, so no argument is built from data.
-    let mut child = std::process::Command::new(std::env::current_exe().expect("own path"))
-        .arg("reopen")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("child runs");
-    {
-        use std::io::Write as _;
-        let mut stdin = child.stdin.take().expect("child stdin");
-        writeln!(stdin, "{}\n{}", shape.name(), dir.to_str().expect("utf-8 temp dir")).expect("child stdin");
-    }
-    let child = child.wait_with_output().expect("child finishes");
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(child.status.success(), "reopen failed: {}", String::from_utf8_lossy(&child.stderr));
-    let mut out: Json = serde_json::from_slice(&child.stdout).expect("child json");
-    let per_node = |key: &str, out: &Json| out[key].as_f64().unwrap() / node_count as f64;
-    out["n"] = json!(n);
-    out["nodes"] = json!(node_count);
-    out["rels"] = json!(rel_count);
-    out["bytes_per_node"] = json!(per_node("heap_bytes", &out));
-    out["rss_per_node"] = json!(per_node("rss_bytes", &out));
-    out["peak_rss_per_node"] = json!(per_node("peak_rss_over_base", &out));
-    println!("{out}");
+    std::fs::write(dir.join("counts.json"), counts.to_string()).expect("write counts");
 }
 
-/// The child of `--via file`: read the shape and the data directory from
-/// stdin, one per line, open the directory and report.
-fn reopen() {
-    let mut input = String::new();
-    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).expect("stdin");
-    let mut lines = input.lines();
-    let shape = Shape::parse(lines.next().unwrap_or_else(|| usage()));
-    let dir = lines.next().unwrap_or_else(|| usage()).to_string();
-    drop(input);
+/// `zega-mem reopen <shape> <dir>`: open a data directory `snapshot` wrote,
+/// the way a restart does, and report heap and RSS per node.
+fn reopen(args: &[String]) {
+    let shape = Shape::parse(args.first().map(String::as_str).unwrap_or_else(|| usage()));
+    let dir = args.get(1).unwrap_or_else(|| usage());
+    let counts: Json = serde_json::from_str(
+        &std::fs::read_to_string(std::path::Path::new(dir).join("counts.json")).expect("counts.json"),
+    )
+    .expect("counts json");
+    let nodes = counts["nodes"].as_u64().expect("node count");
     let base = live();
     let base_rss = rss();
     let started = Instant::now();
-    let zega = Zega::open(&dir).build().expect("open");
+    let zega = Zega::open(dir).build().expect("open");
     let load_ms = started.elapsed().as_secs_f64() * 1e3;
     zega.run_lang(shape.schema(), shape.probe()).expect("probe");
-    let after = rss();
+    let heap = live() - base;
+    let rss_bytes = over(rss(), base_rss);
+    let peak_rss_bytes = over(peak_rss(), base_rss);
     println!(
         "{}",
         json!({
             "shape": shape.name(),
             "via": "file",
-            "heap_bytes": live() - base,
+            "n": counts["n"],
+            "nodes": nodes,
+            "rels": counts["rels"],
+            "heap_bytes": heap,
+            "bytes_per_node": heap as f64 / nodes as f64,
             "load_peak_bytes": peak() - base,
-            "rss_bytes": after.saturating_sub(base_rss),
-            "peak_rss_over_base": peak_rss().saturating_sub(base_rss),
+            "rss_per_node": per(&rss_bytes, nodes),
+            "peak_rss_per_node": per(&peak_rss_bytes, nodes),
+            "rss_bytes": rss_bytes,
+            "peak_rss_over_base": peak_rss_bytes,
             "load_ms": load_ms,
         })
     );
@@ -771,7 +789,7 @@ fn table(files: &[String]) {
                 per_node,
                 per_rel,
                 with / nodes,
-                r["rss_per_node"].as_f64().unwrap(),
+                cell(&r["rss_per_node"]),
                 r["load_peak_bytes"].as_f64().unwrap() / nodes,
                 r["load_ms"].as_f64().unwrap(),
             );
@@ -788,8 +806,8 @@ fn table(files: &[String]) {
                     r["nodes"],
                     r["rels"],
                     r["bytes_per_node"].as_f64().unwrap(),
-                    r["rss_per_node"].as_f64().unwrap(),
-                    r["peak_rss_per_node"].as_f64().unwrap(),
+                    cell(&r["rss_per_node"]),
+                    cell(&r["peak_rss_per_node"]),
                     r["load_ms"].as_f64().unwrap(),
                 );
             }
@@ -820,7 +838,7 @@ fn table(files: &[String]) {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: zega-mem run <fly5|flights|cities|mixed> <nodes> [--rels] [--queries] [--via snapshot|zql|file]\n       zega-mem table <results.jsonl>..."
+        "usage: zega-mem run <fly5|flights|cities|mixed> <nodes> [--rels] [--queries] [--via snapshot|zql]\n       zega-mem snapshot <shape> <nodes> [--rels] <dir>\n       zega-mem reopen <shape> <dir>\n       zega-mem table <results.jsonl>..."
     );
     std::process::exit(2)
 }
@@ -830,7 +848,8 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]),
         Some("table") => table(&args[1..]),
-        Some("reopen") => reopen(),
+        Some("snapshot") => write_snapshot(&args[1..]),
+        Some("reopen") => reopen(&args[1..]),
         _ => usage(),
     }
 }

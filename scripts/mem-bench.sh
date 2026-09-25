@@ -31,7 +31,11 @@ done
 # A restart: the snapshot opened by a fresh process, so its RSS is the graph's.
 for n in 100000 1000000; do
   for shape in fly5 mixed; do
-    "$bin" run "$shape" "$n" --rels --via file >> "$out"
+    dir="${TMPDIR:-$root/.tmp}/zega-mem-restart"
+    rm -rf "$dir"
+    "$bin" snapshot "$shape" "$n" --rels "$dir"
+    "$bin" reopen "$shape" "$dir" >> "$out"
+    rm -rf "$dir"
   done
 done
 echo "wrote $out" >&2
