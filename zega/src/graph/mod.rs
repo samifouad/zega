@@ -5,8 +5,10 @@ use crate::idset::IdSet;
 use crate::index::{DeclaredIndexes, IndexKind, IndexSpec, Interval, TextPattern};
 use crate::value::Value;
 
+mod idmap;
 mod names;
 
+use idmap::IdMap;
 use names::{Names, Shape, ShapeId, Shapes, Sym};
 
 pub type NodeId = u64;
@@ -264,28 +266,11 @@ struct Adjacency {
     inc: IdSet,
 }
 
-/// The entries of `map` in ascending id order, without sorting a copy of
-/// the ids when they are dense (the usual case): walk `0..=max` and look
-/// each up.
-fn ascending<T>(map: &HashMap<u64, T>) -> Box<dyn Iterator<Item = (u64, &T)> + '_> {
-    let Some(&max) = map.keys().max() else {
-        return Box::new(std::iter::empty());
-    };
-    let dense = max <= (map.len() as u64).saturating_mul(2).saturating_add(1024);
-    if dense {
-        Box::new((0..=max).filter_map(move |id| Some((id, map.get(&id)?))))
-    } else {
-        let mut ids: Vec<u64> = map.keys().copied().collect();
-        ids.sort_unstable();
-        Box::new(ids.into_iter().map(move |id| (id, &map[&id])))
-    }
-}
-
 pub struct Graph {
     names: Names,
     shapes: Shapes,
-    nodes: HashMap<NodeId, NodeRecord>,
-    relationships: HashMap<RelId, RelRecord>,
+    nodes: IdMap<NodeRecord>,
+    relationships: IdMap<RelRecord>,
     label_index: HashMap<Sym, IdSet>,
     /// Nodes by a hash of (property key, value), for `unique` checks and
     /// lookups. It stores no key or value: [`Graph::nodes_by_property`]
@@ -300,7 +285,7 @@ pub struct Graph {
     /// `index { }` declarations of the schema last run against this graph.
     declared: DeclaredIndexes,
     /// Each node's relationships, both directions in one entry.
-    adjacency: HashMap<NodeId, Adjacency>,
+    adjacency: IdMap<Adjacency>,
     next_node_id: AtomicU64,
     next_rel_id: AtomicU64,
     /// Rows a ZQL filter has been tested on. Indexes lower it.
@@ -322,15 +307,15 @@ impl Graph {
         Graph {
             names: Names::default(),
             shapes: Shapes::default(),
-            nodes: HashMap::new(),
-            relationships: HashMap::new(),
+            nodes: IdMap::default(),
+            relationships: IdMap::default(),
             label_index: HashMap::new(),
             property_index: HashMap::default(),
             property_hasher: RandomState::new(),
             spatial_index: Default::default(),
             vector_index: Default::default(),
             declared: Default::default(),
-            adjacency: HashMap::new(),
+            adjacency: IdMap::default(),
             next_node_id: AtomicU64::new(1),
             next_rel_id: AtomicU64::new(1),
             examined: AtomicU64::new(0),
@@ -374,7 +359,7 @@ impl Graph {
                 .and_then(|label| self.label_index.get(&label))
                 .into_iter()
                 .flat_map(IdSet::iter)
-                .filter_map(|id| all.get(id).map(|node| node_ref(names, shapes, *id, node)));
+                .filter_map(|id| all.get(*id).map(|node| node_ref(names, shapes, *id, node)));
             self.declared.build(spec, nodes);
         }
     }
@@ -479,7 +464,7 @@ impl Graph {
     /// Index every property of stored node `id`, and add it to the declared
     /// indexes. Labels are indexed by the caller.
     fn add_prop_indexes(&mut self, id: NodeId) {
-        let Some(record) = self.nodes.get(&id) else {
+        let Some(record) = self.nodes.get(id) else {
             return;
         };
         let node = node_ref(&self.names, &self.shapes, id, record);
@@ -521,7 +506,7 @@ impl Graph {
     }
 
     pub fn update_node(&mut self, id: NodeId, props: HashMap<String, Value>) {
-        let Some(previous) = self.nodes.remove(&id) else {
+        let Some(previous) = self.nodes.remove(id) else {
             return;
         };
         self.remove_prop_indexes(id, &previous);
@@ -557,7 +542,7 @@ impl Graph {
     /// DETACH DELETE to remove a node's relationships before the node itself.
     pub fn node_relationship_ids(&self, id: NodeId) -> Vec<RelId> {
         let mut ids: Vec<RelId> = Vec::new();
-        if let Some(adjacency) = self.adjacency.get(&id) {
+        if let Some(adjacency) = self.adjacency.get(id) {
             ids.extend(adjacency.out.iter().copied());
             ids.extend(adjacency.inc.iter().copied());
         }
@@ -567,10 +552,10 @@ impl Graph {
     }
 
     pub fn delete_node(&mut self, id: NodeId) {
-        if let Some(node) = self.nodes.remove(&id) {
+        if let Some(node) = self.nodes.remove(id) {
             self.remove_node_indexes(id, &node);
             // Remove connected relationships
-            let adjacency = self.adjacency.remove(&id).unwrap_or_default();
+            let adjacency = self.adjacency.remove(id).unwrap_or_default();
             for rid in adjacency.out.iter().chain(adjacency.inc.iter()) {
                 self.delete_relationship(*rid);
             }
@@ -608,14 +593,14 @@ impl Graph {
         if let Some(previous) = self.relationships.insert(id, rel) {
             self.remove_relationship_indexes(id, &previous);
         }
-        self.adjacency.entry(from).or_default().out.insert(id);
-        self.adjacency.entry(to).or_default().inc.insert(id);
+        self.adjacency.get_or_default(from).out.insert(id);
+        self.adjacency.get_or_default(to).inc.insert(id);
         self.next_rel_id.fetch_max(id + 1, Ordering::SeqCst);
     }
 
     fn remove_relationship_indexes(&mut self, id: RelId, rel: &RelRecord) {
         for (node, outgoing) in [(rel.from, true), (rel.to, false)] {
-            let Some(adjacency) = self.adjacency.get_mut(&node) else {
+            let Some(adjacency) = self.adjacency.get_mut(node) else {
                 continue;
             };
             if outgoing {
@@ -624,24 +609,24 @@ impl Graph {
                 adjacency.inc.remove(id);
             }
             if adjacency.out.is_empty() && adjacency.inc.is_empty() {
-                self.adjacency.remove(&node);
+                self.adjacency.remove(node);
             }
         }
     }
 
     pub fn delete_relationship(&mut self, id: RelId) {
-        if let Some(rel) = self.relationships.remove(&id) {
+        if let Some(rel) = self.relationships.remove(id) {
             self.remove_relationship_indexes(id, &rel);
         }
     }
 
     pub fn get_node(&self, id: NodeId) -> Option<NodeRef<'_>> {
-        let node = self.nodes.get(&id)?;
+        let node = self.nodes.get(id)?;
         Some(node_ref(&self.names, &self.shapes, id, node))
     }
 
     pub fn get_relationship(&self, id: RelId) -> Option<RelRef<'_>> {
-        let rel = self.relationships.get(&id)?;
+        let rel = self.relationships.get(id)?;
         Some(rel_ref(&self.names, &self.shapes, id, rel))
     }
 
@@ -672,38 +657,36 @@ impl Graph {
         self.nodes.is_empty() && self.relationships.is_empty()
     }
 
-    /// Every node, in no particular order.
-    pub fn nodes(&self) -> impl ExactSizeIterator<Item = NodeRef<'_>> {
-        self.nodes
-            .iter()
-            .map(|(id, node)| node_ref(&self.names, &self.shapes, *id, node))
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn relationship_count(&self) -> usize {
+        self.relationships.len()
     }
 
     /// Every node, ascending by id.
-    pub fn nodes_ascending(&self) -> impl Iterator<Item = NodeRef<'_>> {
-        ascending(&self.nodes).map(|(id, node)| node_ref(&self.names, &self.shapes, id, node))
+    pub fn nodes(&self) -> impl Iterator<Item = NodeRef<'_>> {
+        self.nodes
+            .iter()
+            .map(|(id, node)| node_ref(&self.names, &self.shapes, id, node))
     }
 
     /// Every relationship, ascending by id.
-    pub fn relationships_ascending(&self) -> impl Iterator<Item = RelRef<'_>> {
-        ascending(&self.relationships).map(|(id, rel)| rel_ref(&self.names, &self.shapes, id, rel))
-    }
-
-    /// Every relationship, in no particular order.
-    pub fn relationships(&self) -> impl ExactSizeIterator<Item = RelRef<'_>> {
+    pub fn relationships(&self) -> impl Iterator<Item = RelRef<'_>> {
         self.relationships
             .iter()
-            .map(|(id, rel)| rel_ref(&self.names, &self.shapes, *id, rel))
+            .map(|(id, rel)| rel_ref(&self.names, &self.shapes, id, rel))
     }
 
     /// The relationships leaving `node_id`; None when there are none.
     pub fn outgoing_rels(&self, node_id: NodeId) -> Option<&IdSet> {
-        Some(&self.adjacency.get(&node_id)?.out).filter(|rels| !rels.is_empty())
+        Some(&self.adjacency.get(node_id)?.out).filter(|rels| !rels.is_empty())
     }
 
     /// The relationships entering `node_id`; None when there are none.
     pub fn incoming_rels(&self, node_id: NodeId) -> Option<&IdSet> {
-        Some(&self.adjacency.get(&node_id)?.inc).filter(|rels| !rels.is_empty())
+        Some(&self.adjacency.get(node_id)?.inc).filter(|rels| !rels.is_empty())
     }
 
     pub fn set_state(

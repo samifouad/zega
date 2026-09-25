@@ -836,7 +836,12 @@ struct StoredNodes<'g>(&'g Graph);
 
 impl Serialize for StoredNodes<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_map(self.0.nodes().map(|node| (node.id, node.to_node())))
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.node_count()))?;
+        for node in self.0.nodes() {
+            map.serialize_entry(&node.id, &node.to_node())?;
+        }
+        map.end()
     }
 }
 
@@ -844,7 +849,12 @@ struct StoredRelationships<'g>(&'g Graph);
 
 impl Serialize for StoredRelationships<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_map(self.0.relationships().map(|rel| (rel.id, rel.to_relationship())))
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.relationship_count()))?;
+        for rel in self.0.relationships() {
+            map.serialize_entry(&rel.id, &rel.to_relationship())?;
+        }
+        map.end()
     }
 }
 

@@ -478,8 +478,8 @@ pub(crate) fn write<W: Write>(
     let mut meta = carried.meta.clone();
     meta.extend(options.meta.iter().map(|(k, v)| (k.clone(), v.clone())));
     let (next_node, next_rel) = graph.next_ids();
-    let node_count = graph.nodes().len() as u64;
-    let rel_count = graph.relationships().len() as u64;
+    let node_count = graph.node_count() as u64;
+    let rel_count = graph.relationship_count() as u64;
 
     let mut out = Out {
         inner: BufWriter::with_capacity(BUFFER, out),
@@ -530,14 +530,14 @@ pub(crate) fn write<W: Write>(
     })?;
     section(&mut out, Section::Nodes, &|sink| {
         put_u64(sink, next_node)?;
-        for node in graph.nodes_ascending() {
+        for node in graph.nodes() {
             put_node(sink, &names, node)?;
         }
         Ok(())
     })?;
     section(&mut out, Section::Relationships, &|sink| {
         put_u64(sink, next_rel)?;
-        for rel in graph.relationships_ascending() {
+        for rel in graph.relationships() {
             put_relationship(sink, graph, &names, rel)?;
         }
         Ok(())
