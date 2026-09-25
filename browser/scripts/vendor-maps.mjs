@@ -14,5 +14,5 @@ for (const [source, files] of Object.entries(copies)) {
 }
 await mkdir('vendor/pmtiles', { recursive: true });
 const pmtiles = await readFile('node_modules/pmtiles/dist/pmtiles.js', 'utf8');
-await writeFile('vendor/pmtiles/index.js', pmtiles.replace(/^\/\/# sourceMappingURL=.*$/gm, '') + '\nexport const Protocol = pmtiles.Protocol;\n');
+await writeFile('vendor/pmtiles/index.js', pmtiles.replace(/^\/\/# sourceMappingURL=.*$/gm, '') + '\nexport const Protocol = pmtiles.Protocol;\nexport const PMTiles = pmtiles.PMTiles;\n');
 // NPM distributions omit some licenses; source licenses are pinned in vendor/README.md.

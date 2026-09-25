@@ -1,0 +1,19 @@
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; background: var(--ground); color: var(--ink); font: 13px/1.4 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--rule); }
+.brand { font-weight: 700; color: var(--ink); text-decoration: none; }
+.dim { color: var(--soft); }
+.spacer { flex: 1; }
+button, select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 5px; padding: 3px 8px; }
+button.primary { background: var(--accent); color: var(--panel); border-color: var(--accent); }
+main { flex: 1; display: flex; min-height: 0; }
+#stage { flex: 1; position: relative; min-width: 0; }
+aside { width: 320px; overflow: auto; padding: 10px 14px; background: var(--panel); border-left: 1px solid var(--rule); }
+aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--soft); margin: 12px 0 6px; }
+pre { margin: 0; white-space: pre-wrap; font: 11.5px/1.4 ui-monospace, Menlo, monospace; }
+#errors { margin-top: 12px; padding: 8px; border: 1px solid var(--accent); border-radius: 5px; }
+#history { margin: 0; padding-left: 22px; }
+#history button { width: 100%; text-align: left; margin: 2px 0; }
+#history .current button { border-color: var(--accent); font-weight: 600; }
+@media (max-width: 760px) { main { flex-direction: column; } #stage { min-height: 60vh; } aside { width: auto; border-left: 0; border-top: 1px solid var(--rule); } }

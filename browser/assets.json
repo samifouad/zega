@@ -8,6 +8,7 @@
   "graph.js",
   "csv.js",
   "vector.js",
+  "components",
   "map.js",
   "globe.js",
   "arcs.js",
