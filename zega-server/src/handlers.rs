@@ -370,8 +370,11 @@ pub async fn import_graph(State(state): State<AppState>, headers: HeaderMap, bod
         Ok(Err(cause)) => return error(StatusCode::INTERNAL_SERVER_ERROR, cause.to_string()),
         Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "database worker failed"),
     };
-    let (mut file, staged, mut memory) = match staging {
-        Some((file, path)) => (Some(tokio::fs::File::from_std(file)), Some(Staged(path)), None),
+    // `staged` is bound first so it is dropped last: on an early return the
+    // file handle is closed before the guard deletes the file (Windows
+    // refuses to delete an open file).
+    let (staged, mut file, mut memory) = match staging {
+        Some((file, path)) => (Some(Staged(path)), Some(tokio::fs::File::from_std(file)), None),
         None => (None, None, Some(Vec::new())),
     };
     let mut body = body.into_data_stream();

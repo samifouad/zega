@@ -195,10 +195,14 @@ fn export(
         let written = std::fs::File::create(&partial).map_err(Into::into).and_then(|mut out| {
             let summary = db.export_with(&mut out, &options)?;
             out.sync_all()?;
+            // Closed before the rename: Windows refuses to rename an open file.
+            drop(out);
             std::fs::rename(&partial, file)?;
             sync_parent(file)?;
             Ok::<_, Box<dyn std::error::Error>>(summary)
         });
+        // The handle is closed by now (it lived in the closure), and a
+        // failed delete never replaces the export's own error.
         if written.is_err() {
             let _ = std::fs::remove_file(&partial);
         }

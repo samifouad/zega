@@ -210,7 +210,9 @@ impl Zega {
                 Operation::ReplaceGraph { file } => Some(file.as_str()),
                 _ => None,
             });
-            remove_stale_imports(&path, keep)?;
+            // Best effort: garbage that can't be deleted now is retried at
+            // the next open, and never stops this one.
+            let _ = remove_stale_imports(&path, keep);
         }
 
         Ok(Zega {
@@ -314,10 +316,14 @@ impl Zega {
             copy: std::io::BufWriter::new(file),
             hash: sha2::Sha256::new(),
         };
-        let decoded = graph_file::read(&mut tee).map_err(ZegaError::from);
-        let result = decoded.and_then(|(graph, summary)| {
-            let file = tee.copy.into_inner().map_err(|error| error.into_error())?;
-            self.commit_import(file, &staging, &tee.hash.finalize(), graph)?;
+        let decoded = graph_file::read(&mut tee);
+        // Every handle on the staging file is closed before it is renamed or
+        // deleted (Windows refuses both on an open file), and a failed
+        // cleanup never replaces the error that made it necessary.
+        let Tee { copy, hash, .. } = tee;
+        let result = decoded.map_err(ZegaError::from).and_then(|(graph, summary)| {
+            let file = copy.into_inner().map_err(|error| error.into_error())?;
+            self.commit_import(file, &staging, &hash.finalize(), graph)?;
             Ok(summary)
         });
         if result.is_err() {
@@ -353,14 +359,20 @@ impl Zega {
             if self.in_memory {
                 return self.import(file);
             }
-            let mut hashing = Hashing {
-                input: file.try_clone()?,
-                hash: sha2::Sha256::new(),
+            let (graph, summary, digest) = {
+                let mut hashing = Hashing {
+                    input: file.try_clone()?,
+                    hash: sha2::Sha256::new(),
+                };
+                let (graph, summary) = graph_file::read(&mut hashing)?;
+                (graph, summary, hashing.hash.finalize())
+                // The reading handle closes here, before the rename.
             };
-            let (graph, summary) = graph_file::read(&mut hashing)?;
-            self.commit_import(file, staging, &hashing.hash.finalize(), graph)?;
+            self.commit_import(file, staging, &digest, graph)?;
             Ok(summary)
         })();
+        // Every handle is closed by now; the file is gone if it was
+        // committed, and a failed delete never hides `result`.
         let _ = std::fs::remove_file(staging);
         result
     }
@@ -383,7 +395,7 @@ impl Zega {
         if !dir.exists() {
             std::fs::create_dir_all(&dir)?;
             // The new directory entry is durable before anything in it is.
-            std::fs::File::open(&self.path)?.sync_all()?;
+            sync_dir(&self.path)?;
         }
         let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = dir.join(format!(".{purpose}-{}-{sequence}.tmp", std::process::id()));
@@ -415,8 +427,12 @@ impl Zega {
         self.wal.mark_imports()?;
         self.install(graph, Some(Operation::ReplaceGraph { file: name.clone() }))?;
         // Replay starts at this import, so no earlier imported file is read
-        // again. Staging files may belong to requests in flight: kept.
-        remove_imported_except(&self.path, &name)
+        // again. Staging files may belong to requests in flight: kept. The
+        // import is committed: a file that can't be deleted now (held open
+        // by another process on Windows) is only garbage, removed at the
+        // next open, and must not turn a committed import into an error.
+        let _ = remove_imported_except(&self.path, &name);
+        Ok(())
     }
 
     /// Swap in an imported graph once `entry` (if any) is durable in the WAL.
@@ -538,6 +554,19 @@ fn read_imported_graph(data: &std::path::Path, file: &str) -> Result<Graph> {
     })?;
     let (graph, _) = crate::graph_file::read(opened)?;
     Ok(graph)
+}
+
+/// Make a new entry in `dir` durable. Windows can't open a directory as a
+/// file (`File::open` fails with "Access is denied"); NTFS journals the
+/// directory change itself, which is what `persist_replacement` relies on
+/// there too.
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(windows)]
+    let _ = dir;
+    Ok(())
 }
 
 /// Delete what no replay will read: imported files other than `keep` (the
