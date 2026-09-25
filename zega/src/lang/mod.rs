@@ -305,6 +305,54 @@ pub struct OrderKey {
 pub enum OrderBy {
     Field(String),
     Distance(Distance),
+    /// `order by @count(route) desc`.
+    Count(Count),
+}
+
+/// `country -> Country(iso = "CA")` inside a condition: the node has at least
+/// one relationship `country` whose far end is a `Country` meeting the
+/// target's condition (zegadb/zega#86).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Related {
+    pub field: String,
+    /// The relationship's name.
+    pub span: Span,
+    pub direction: Direction,
+    /// The far end: its type or `(A | B)` union and an optional condition.
+    /// Never items, `order by`, `limit` or `set`; the parser reads none.
+    pub target: Box<Selection>,
+}
+
+/// `@count(route)`, or `@count(route -> Airport(…))` to count only the
+/// relationships whose far end matches.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Count {
+    pub field: String,
+    /// The whole `@count(…)`.
+    pub span: Span,
+    pub to: Option<(Direction, Box<Selection>)>,
+}
+
+/// How `@count(…)` is compared with its whole number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CountCmp {
+    Eq,
+    Ne,
+    Cmp(Cmp),
+}
+
+impl CountCmp {
+    /// Whether a relationship count `n` passes against `value`.
+    pub fn holds(self, n: u64, value: u64) -> bool {
+        match self {
+            CountCmp::Eq => n == value,
+            CountCmp::Ne => n != value,
+            CountCmp::Cmp(Cmp::Gt) => n > value,
+            CountCmp::Cmp(Cmp::Gte) => n >= value,
+            CountCmp::Cmp(Cmp::Lt) => n < value,
+            CountCmp::Cmp(Cmp::Lte) => n <= value,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -324,6 +372,8 @@ pub enum Item {
     Score(String, Span),
     Similarity(String, Similarity),
     Distance(String, Distance),
+    /// `routes: @count(route)`: how many relationships the node has.
+    Count(String, Count),
     Prop(String, Span),
     Hops(String),
     Id(String),
@@ -438,6 +488,10 @@ pub enum Pred {
     FindLike(String, String, Span),
     StartsLike(String, String, Span),
     EndsLike(String, String, Span),
+    /// `country -> Country(iso = "CA")`: some related node matches.
+    Related(Related),
+    /// `@count(route) > 20`.
+    Count(Count, CountCmp, u64),
 }
 
 /// A condition, read like the test in an `if`.
@@ -498,6 +552,8 @@ impl Pred {
             Pred::Similarity(sim, ..) => &sim.field,
             Pred::Distance(distance, ..) => &distance.field,
             Pred::Box(field, ..) => field,
+            Pred::Related(related) => &related.field,
+            Pred::Count(count, ..) => &count.field,
             Pred::Eq(field, _, _)
             | Pred::Ne(field, _, _)
             | Pred::Cmp(field, _, _, _)
@@ -515,6 +571,8 @@ impl Pred {
             Pred::Similarity(sim, ..) => sim.span,
             Pred::Distance(distance, ..) => distance.span,
             Pred::Box(_, _, span) => *span,
+            Pred::Related(related) => related.span,
+            Pred::Count(count, ..) => count.span,
             Pred::Eq(_, _, span)
             | Pred::Ne(_, _, span)
             | Pred::Cmp(_, _, _, span)
@@ -1517,6 +1575,7 @@ impl<'a> Parser<'a> {
                 .with_help("write `@detach` on its own line in the delete")),
             "score" => Ok(Item::Score(alias, span)),
             "distance" => { self.i = start; Ok(Item::Distance(alias, self.distance()?)) }
+            "count" => { self.i = start; Ok(Item::Count(alias, self.count()?)) }
             "similarity" => { self.i = start; Ok(Item::Similarity(alias, self.similarity()?)) }
             _ => Err(self.err_at(span, format!("unknown built-in @{name}"))),
         }
@@ -1913,6 +1972,8 @@ impl<'a> Parser<'a> {
             let start = self.i;
             let by = if self.starts_call("distance", "(") {
                 OrderBy::Distance(self.distance()?)
+            } else if self.starts_call("count", "(") {
+                OrderBy::Count(self.count()?)
             } else {
                 OrderBy::Field(self.ident()?.0)
             };
@@ -1979,7 +2040,7 @@ impl<'a> Parser<'a> {
             }
             return Ok(ItemHead::Done(Item::EdgeProp(name, span)));
         }
-        for name in ["similarity", "distance"] {
+        for name in ["similarity", "distance", "count"] {
             if self.starts_call(name, "(") {
                 return self.builtin_item(None).map(ItemHead::Done);
             }
@@ -2197,8 +2258,41 @@ impl<'a> Parser<'a> {
         Ok(BoolExpr::Test(self.parse_pred()?))
     }
 
+    /// One test. A walk (`rel -> Type(…)`) and `@count(…)` recurse into a
+    /// target's condition, so they are read here; every other test is read by
+    /// [`Self::plain_pred`], out of line, to keep this frame small on the
+    /// recursive path (zegadb/zega#48).
     fn parse_pred(&mut self) -> Result<Pred> {
         self.skip();
+        if self.starts_call("count", "(") {
+            let count = self.count()?;
+            let (op, value) = self.count_comparison(&count)?;
+            return Ok(Pred::Count(count, op, value));
+        }
+        if let Some((field, span)) = self.related_head() {
+            return Ok(Pred::Related(self.related(field, span)?));
+        }
+        self.plain_pred()
+    }
+
+    /// `name ->` or `name <-Type`: the relationship's name, read, when a walk
+    /// starts here.
+    #[inline(never)]
+    fn related_head(&mut self) -> Option<(String, Span)> {
+        if !self.looking_at_ident() {
+            return None;
+        }
+        let mut lookahead = self.fork();
+        let (field, span) = lookahead.ident().ok()?;
+        if !lookahead.starts_related_arrow() {
+            return None;
+        }
+        self.i = lookahead.i;
+        Some((field, span))
+    }
+
+    #[inline(never)]
+    fn plain_pred(&mut self) -> Result<Pred> {
         self.reject_discovery_block()?;
         if self.starts_call("similarity", "(") {
             let sim = self.similarity()?;
@@ -2260,10 +2354,26 @@ impl<'a> Parser<'a> {
             field = "@id".into();
         }
         self.skip();
+        if self.src[self.i..].starts_with('.')
+            && self.src[self.i + 1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        {
+            self.i += 1;
+            let (inner, _) = self.ident()?;
+            return Err(self
+                .err_at(
+                    self.span_bytes(start, self.i),
+                    "a related node's field is reached through its relationship",
+                )
+                .with_help(format!(
+                    "write `{field} -> Type({inner} = …)`, with the type `{field}` reaches"
+                )));
+        }
         if self.eat(":") || self.eat("=") {
+            self.reject_related_value(&field)?;
             return Ok(Pred::Eq(field, self.parse_value()?, span));
         }
         if self.eat("!=") || self.eat("<>") {
+            self.reject_related_value(&field)?;
             return Ok(Pred::Ne(field, self.parse_value()?, span));
         }
         if self.src[self.i..].starts_with('!') {
@@ -2330,6 +2440,191 @@ impl<'a> Parser<'a> {
             .with_help(
             "use `=`, `!=`, `>`, `<`, `>=`, `<=`, `<>`, `findExact`, `findLike`, `startsExact`, `startsLike`, `endsExact`, or `endsLike`",
         ))
+    }
+
+    /// `->`, or a `<-` that no number follows: an arrow into a related node.
+    /// `x <-5` is still `x < -5`.
+    fn starts_related_arrow(&self) -> bool {
+        let mut lookahead = self.fork();
+        if lookahead.eat("->") {
+            return true;
+        }
+        if !lookahead.eat("<-") {
+            return false;
+        }
+        lookahead.skip();
+        !lookahead.src[lookahead.i..].starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '.')
+    }
+
+    /// `country -> Country(iso = "CA")` in a condition, from the arrow on.
+    #[inline(never)]
+    fn related(&mut self, field: String, span: Span) -> Result<Related> {
+        self.skip();
+        let start = self.i;
+        let direction = if self.eat("->") {
+            Direction::Out
+        } else {
+            self.expect("<-")?;
+            Direction::In
+        };
+        let target = self.related_target(start, &field)?;
+        Ok(Related {
+            field,
+            span,
+            direction,
+            target: Box::new(target),
+        })
+    }
+
+    /// The far end of a walk in a condition: a type or `(A | B)`, then an
+    /// optional condition. One nesting level, so a walk inside a walk's
+    /// condition counts toward [`MAX_NESTING`].
+    fn related_target(&mut self, start: usize, field: &str) -> Result<Selection> {
+        self.nested(start, |p| {
+            p.skip();
+            if !p.looking_at_ident() && !p.src[p.i..].starts_with('(') {
+                return Err(p
+                    .err(format!("expected the type `{field}` reaches"))
+                    .with_help(format!("write `{field} -> Type(field = value)`")));
+            }
+            let mut also = Vec::new();
+            let mut also_spans = Vec::new();
+            let (type_name, type_span) = if p.eat("(") {
+                let first = p.ident()?;
+                while p.eat("|") {
+                    let (name, span) = p.ident()?;
+                    also.push(name);
+                    also_spans.push(span);
+                }
+                p.expect(")")?;
+                first
+            } else {
+                p.ident()?
+            };
+            let condition = if p.eat("(") {
+                p.skip();
+                if p.eat(")") {
+                    None
+                } else {
+                    let expr = p.parse_or()?;
+                    p.expect(")")?;
+                    Some(expr)
+                }
+            } else {
+                None
+            };
+            p.skip();
+            if p.src[p.i..].starts_with('{') {
+                return Err(p
+                    .err("a walk in a condition only tests the related node")
+                    .with_help(format!(
+                        "select its fields after the parentheses: `{{ {field} -> {type_name} {{ … }} }}`"
+                    )));
+            }
+            Ok(Selection {
+                type_name,
+                type_span,
+                also,
+                also_spans,
+                condition,
+                sets: Vec::new(),
+                near: None,
+                order: Vec::new(),
+                limit: None,
+                items: Vec::new(),
+                delete: None,
+            })
+        })
+    }
+
+    /// `country: Country(iso: "CA")`: a type where a value goes. A related
+    /// node is tested with an arrow.
+    fn reject_related_value(&self, field: &str) -> Result<()> {
+        let mut lookahead = self.fork();
+        lookahead.skip();
+        let start = lookahead.i;
+        if !lookahead.looking_at_ident() || lookahead.columns {
+            return Ok(());
+        }
+        let Ok((name, _)) = lookahead.ident() else {
+            return Ok(());
+        };
+        // A built-in written without its `@` gets its own error from the value.
+        let builtin = matches!(name.as_str(), "point" | "vector" | "distance" | "similarity" | "within_box" | "near" | "count");
+        if builtin || matches!(name.as_str(), "true" | "false" | "null") || !lookahead.eat("(") {
+            return Ok(());
+        }
+        Err(self
+            .err_at(
+                self.span_bytes(start, start + name.len()),
+                "a related node is tested with an arrow",
+            )
+            .with_help(format!("write `{field} -> {name}(…)`")))
+    }
+
+    /// `@count(route)` or `@count(route -> Airport(…))`.
+    fn count(&mut self) -> Result<Count> {
+        self.skip();
+        let start = self.i;
+        self.expect_builtin("count")?;
+        self.expect("(")?;
+        let (field, _) = self.ident()?;
+        let to = if self.starts_related_arrow() {
+            self.skip();
+            let arrow = self.i;
+            let direction = if self.eat("->") {
+                Direction::Out
+            } else {
+                self.expect("<-")?;
+                Direction::In
+            };
+            Some((direction, Box::new(self.related_target(arrow, &field)?)))
+        } else {
+            None
+        };
+        if !self.eat(")") {
+            return Err(self
+                .err("expected )")
+                .with_help(format!(
+                    "`@count({field})` is the number; compare after it: `@count({field}) > 20`"
+                )));
+        }
+        Ok(Count {
+            field,
+            span: self.span_bytes(start, self.i),
+            to,
+        })
+    }
+
+    /// `= 3`, `> 20`: a count is compared with a whole number.
+    fn count_comparison(&mut self, count: &Count) -> Result<(CountCmp, u64)> {
+        let op = if self.eat(":") || self.eat("=") {
+            CountCmp::Eq
+        } else if self.eat("!=") || self.eat("<>") {
+            CountCmp::Ne
+        } else if self.eat(">=") {
+            CountCmp::Cmp(Cmp::Gte)
+        } else if self.eat("<=") {
+            CountCmp::Cmp(Cmp::Lte)
+        } else if self.eat(">") {
+            CountCmp::Cmp(Cmp::Gt)
+        } else if self.eat("<") {
+            CountCmp::Cmp(Cmp::Lt)
+        } else {
+            return Err(self
+                .err("@count needs a comparison")
+                .with_help(format!("write `@count({}) > 20`", count.field)));
+        };
+        self.skip();
+        let start = self.i;
+        let value = self.number_token()?;
+        let value = value.as_u64().ok_or_else(|| {
+            self.err_at(
+                self.span_bytes(start, self.i),
+                "a count is compared with a whole number, 0 or more",
+            )
+        })?;
+        Ok((op, value))
     }
 
     fn looking_at_ident(&self) -> bool {
@@ -2710,6 +3005,24 @@ fn bind_pred(pred: &Pred, row: &std::collections::HashMap<String, Json>) -> Resu
         Pred::Cmp(field, op, value, span) => {
             Ok(bind_json(value, row)?.map(|value| Pred::Cmp(field.clone(), *op, value, *span)))
         }
+        // A target whose condition empties drops the whole walk, the way an
+        // empty cell drops its own term.
+        Pred::Related(related) => Ok(bind_selection(&related.target, row)?.map(|target| {
+            Pred::Related(Related {
+                target: Box::new(target),
+                ..related.clone()
+            })
+        })),
+        Pred::Count(count, op, value) => {
+            let to = match &count.to {
+                None => None,
+                Some((direction, target)) => match bind_selection(target, row)? {
+                    Some(target) => Some((*direction, Box::new(target))),
+                    None => return Ok(None),
+                },
+            };
+            Ok(Some(Pred::Count(Count { to, ..count.clone() }, *op, *value)))
+        }
         other => Ok(Some(other.clone())),
     }
 }
@@ -2784,6 +3097,10 @@ fn collect_expr_refs(expr: &BoolExpr, out: &mut Vec<(String, Span)>) {
                 Pred::Eq(_, value, span)
                 | Pred::Ne(_, value, span)
                 | Pred::Cmp(_, _, value, span) => (value, *span),
+                Pred::Related(Related { target, .. })
+                | Pred::Count(Count { to: Some((_, target)), .. }, ..) => {
+                    return collect_refs(target, out);
+                }
                 _ => return,
             };
             if let Some(name) = column_name(value) {
@@ -3211,26 +3528,7 @@ impl Check<'_> {
                 );
             }
         }
-        if let Some(expr) = &sel.condition {
-            for pred in expr.tests() {
-                if pred.field() != "@id" {
-                    self.ensure_prop(sel, pred.field(), pred.span());
-                }
-                match pred {
-                    Pred::Similarity(sim, ..) => self.ensure_vector(sel, sim),
-                    Pred::Distance(distance, ..) => {
-                        self.ensure_point(sel, &distance.field, distance.span)
-                    }
-                    Pred::Box(field, _, span) => self.ensure_point(sel, field, *span),
-                    Pred::Eq(field, value, span)
-                    | Pred::Ne(field, value, span)
-                    | Pred::Cmp(field, _, value, span) => {
-                        self.check_point_value(sel, field, value, *span)
-                    }
-                    _ => {}
-                }
-            }
-        }
+        self.condition(sel);
         if let Some(near) = &sel.near {
             self.ensure_vector(sel, &near.similarity);
             if !sel.order.is_empty() { self.push(sel.type_span, "near already orders by similarity", None); }
@@ -3239,6 +3537,7 @@ impl Check<'_> {
             match &key.by {
                 OrderBy::Distance(distance) => self.ensure_point(sel, &distance.field, distance.span),
                 OrderBy::Field(field) => self.ensure_orderable(sel, field, key.span),
+                OrderBy::Count(count) => self.count(sel, count),
             }
         }
         if sel.delete.is_some() {
@@ -3270,6 +3569,17 @@ impl Check<'_> {
                 Item::Prop(name, span) => self.ensure_prop(sel, name, *span),
                 Item::Distance(_, distance) => {
                     self.ensure_point(sel, &distance.field, distance.span)
+                }
+                Item::Count(_, count) => {
+                    if self.mutation {
+                        self.push(
+                            count.span,
+                            "@count is read by a query, not a mutation",
+                            Some("select it in a `query { }` after the write".into()),
+                        );
+                    } else {
+                        self.count(sel, count);
+                    }
                 }
                 Item::Hops(_) | Item::Id(_) => {}
                 Item::Detach(span) => {
@@ -3330,6 +3640,147 @@ impl Check<'_> {
                 self.push(sel.type_span, error.message, error.help);
             }
         }
+    }
+
+    /// The tests in `sel`'s parentheses, and the conditions of any walks in
+    /// them, each against the type it is written on.
+    fn condition(&mut self, sel: &Selection) {
+        let Some(expr) = &sel.condition else {
+            return;
+        };
+        for pred in expr.tests() {
+            match pred {
+                Pred::Related(related) => {
+                    self.related(sel, &related.field, related.span, related.direction, &related.target);
+                    continue;
+                }
+                Pred::Count(count, ..) => {
+                    self.count(sel, count);
+                    continue;
+                }
+                _ => {}
+            }
+            if pred.field() != "@id" && !self.relationship_in_filter(sel, pred) {
+                self.ensure_prop(sel, pred.field(), pred.span());
+            }
+            match pred {
+                Pred::Similarity(sim, ..) => self.ensure_vector(sel, sim),
+                Pred::Distance(distance, ..) => {
+                    self.ensure_point(sel, &distance.field, distance.span)
+                }
+                Pred::Box(field, _, span) => self.ensure_point(sel, field, *span),
+                Pred::Eq(field, value, span)
+                | Pred::Ne(field, value, span)
+                | Pred::Cmp(field, _, value, span) => {
+                    self.check_point_value(sel, field, value, *span)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `rel -> Target(condition)` in a condition, or in `@count(…)`: the
+    /// relationship, its direction and target are checked the way a walk's
+    /// are, then the target's own condition against the target's type.
+    fn related(&mut self, sel: &Selection, field: &str, span: Span, direction: Direction, target: &Selection) {
+        let before = self.out.len();
+        self.walk(sel, field, span, direction, target);
+        // An unknown relationship or target says so once; its condition
+        // would only repeat it.
+        if self.out.len() == before {
+            self.condition(target);
+        }
+    }
+
+    /// `@count(rel)` or `@count(rel -> Target(…))`: `rel` is a relationship.
+    fn count(&mut self, sel: &Selection, count: &Count) {
+        if let Some((direction, target)) = &count.to {
+            self.related(sel, &count.field, count.span, *direction, target);
+            return;
+        }
+        let types = selection_types(sel);
+        if types.iter().any(|ty| find_edge(self.schema, ty, &count.field).is_some()) {
+            return;
+        }
+        if let Some(ty) = types.iter().find(|ty| self.schema.prop(ty, &count.field).is_ok()) {
+            self.push(
+                count.span,
+                format!("@count counts a relationship; {ty}.{} is a field", count.field),
+                Some(format!("filter the field itself, e.g. `{} = …`", count.field)),
+            );
+            return;
+        }
+        self.push(
+            count.span,
+            format!("{} has no relationship {}", sel.type_name, count.field),
+            Some(field_help(self.schema, &types, &count.field)),
+        );
+    }
+
+    /// `Airport(country = "CA")` or `Airport(route > 20)`: a relationship
+    /// tested as if it were a field. Teach the walk or the count, and report
+    /// true so the caller does not add a second, vaguer error.
+    fn relationship_in_filter(&mut self, sel: &Selection, pred: &Pred) -> bool {
+        let name = pred.field();
+        let types = selection_types(sel);
+        if types.iter().any(|ty| self.schema.prop(ty, name).is_ok()) {
+            return false;
+        }
+        let Some((direction, targets)) = types.iter().find_map(|ty| {
+            find_edge(self.schema, ty, name)
+                .and_then(Field::as_edge)
+                .map(|(_, _, direction, targets, _)| (direction, targets))
+        }) else {
+            return false;
+        };
+        let (op, value) = match pred {
+            Pred::Eq(_, value, _) => ("=", value),
+            Pred::Ne(_, value, _) => ("!=", value),
+            Pred::Cmp(_, cmp, value, _) => (cmp_symbol(*cmp), value),
+            _ => {
+                self.push(
+                    pred.span(),
+                    format!("{name} is a relationship"),
+                    Some(format!(
+                        "test a field of the related node: `{name} {} {}(field …)`",
+                        arrow(direction),
+                        targets.first().map_or("Type", String::as_str)
+                    )),
+                );
+                return true;
+            }
+        };
+        let shown = serde_json::to_string(value).unwrap_or_default();
+        let help = if value.is_u64() {
+            format!("count it: `@count({name}) {op} {shown}`")
+        } else {
+            let target = targets.first().map_or("Type", String::as_str);
+            let fields: Vec<(&str, &str)> = self
+                .schema
+                .get(target)
+                .map(|def| {
+                    def.fields
+                        .iter()
+                        .filter_map(|field| match field {
+                            Field::Prop { name, ty, .. } => Some((name.as_str(), ty.as_str())),
+                            Field::Edge { .. } => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let example = fields
+                .iter()
+                .find(|(_, ty)| json_matches(ty, value))
+                .or(fields.first())
+                .map_or("field", |(name, _)| *name);
+            let listed = fields.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ");
+            format!(
+                "filter by a field of the related node: `{name} {} {target}({example} {op} {shown})`; {target} has {listed}",
+                arrow(direction)
+            )
+        };
+        self.push(pred.span(), format!("{name} is a relationship"), Some(help));
+        true
     }
 
     fn edge_field(
@@ -3694,6 +4145,7 @@ impl Check<'_> {
                 Item::Score(_, span) => Some((*span, "a delete returns only `@id` and fields")),
                 Item::Similarity(_, sim) => Some((sim.span, "a delete returns only `@id` and fields")),
                 Item::Distance(_, distance) => Some((distance.span, "a delete returns only `@id` and fields")),
+                Item::Count(_, count) => Some((count.span, "a delete returns only `@id` and fields")),
                 Item::Hops(_) => Some((sel.type_span, "a delete returns only `@id` and fields")),
             };
             if let Some((span, message)) = refused {
@@ -3792,6 +4244,15 @@ fn find_edge<'a>(schema: &'a Schema, type_name: &str, field: &str) -> Option<&'a
     ty.fields
         .iter()
         .find(|candidate| matches!(candidate, Field::Edge { field: name, .. } if name == field))
+}
+
+fn cmp_symbol(cmp: Cmp) -> &'static str {
+    match cmp {
+        Cmp::Gt => ">",
+        Cmp::Lt => "<",
+        Cmp::Gte => ">=",
+        Cmp::Lte => "<=",
+    }
 }
 
 fn arrow(direction: Direction) -> &'static str {

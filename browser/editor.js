@@ -117,7 +117,7 @@ function registerLanguages(monaco) {
       const hasAt = before.endsWith('@');
       const range = { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber,
         startColumn: word.startColumn - (hasAt ? 1 : 0), endColumn: word.endColumn };
-      const names = ['@hops', '@cost', '@id', '@score', '@point', '@vector', '@distance', '@similarity', '@within_box', '@near'];
+      const names = ['@hops', '@cost', '@id', '@score', '@point', '@vector', '@distance', '@similarity', '@within_box', '@near', '@count'];
       if (!hasAt) names.push('findExact', 'startsExact', 'endsExact', 'findLike', 'startsLike', 'endsLike');
       return { suggestions: names.map((name) => ({ label: name, insertText: name, range,
         kind: monaco.languages.CompletionItemKind.Keyword })) };

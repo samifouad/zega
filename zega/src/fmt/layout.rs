@@ -167,9 +167,14 @@ pub(super) fn tokens(source: &str) -> Vec<Token<'_>> {
                     break;
                 }
             }
-        } else if ["->", "<-", "..", "&&", "||", "!=", "<=", ">=", "<>"]
+        } else if ["->", "..", "&&", "||", "!=", "<=", ">=", "<>"]
             .iter()
             .any(|s| rest.starts_with(s))
+            || rest.strip_prefix("<-").is_some_and(|after| {
+                // `x <-5` is `x < -5`, the way the parser reads it; `<-` is an
+                // arrow before anything but a number.
+                !skip_trivia(after).starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '.')
+            })
         {
             i += 2;
         } else {
@@ -187,6 +192,17 @@ pub(super) fn tokens(source: &str) -> Vec<Token<'_>> {
         });
     }
     out
+}
+
+/// `text` after any whitespace and `//` comments.
+fn skip_trivia(mut text: &str) -> &str {
+    loop {
+        text = text.trim_start();
+        match text.strip_prefix("//") {
+            Some(comment) => text = comment.find('\n').map_or("", |end| &comment[end..]),
+            None => return text,
+        }
+    }
 }
 
 pub(super) fn join(items: Vec<Doc>, separator: Doc) -> Doc {

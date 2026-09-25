@@ -639,6 +639,7 @@ impl<'a> Printer<'a> {
             match by {
                 OrderBy::Field(_) => {}
                 OrderBy::Distance(distance) => distance_form(distance),
+                OrderBy::Count(count) => count_form(count),
             }
         }
         let mut p = self.parser();
@@ -718,6 +719,10 @@ impl<'a> Printer<'a> {
                 distance_form(distance);
                 Ok(Node::leaf(self.until(end, false)))
             }
+            Item::Count(_, count) => {
+                count_form(count);
+                Ok(Node::leaf(self.until(end, false)))
+            }
             Item::Score(_, _)
             | Item::Prop(_, _)
             | Item::Hops(_)
@@ -769,6 +774,24 @@ fn condition_forms(expr: &BoolExpr) {
             Pred::Cmp(_, cmp, _, _) => {
                 cmp_text(*cmp);
             }
+            Pred::Related(Related {
+                field: _,
+                span: _,
+                direction,
+                target,
+            }) => {
+                direction_text(*direction);
+                target_forms(target);
+            }
+            Pred::Count(count, op, _) => {
+                count_form(count);
+                match op {
+                    CountCmp::Eq | CountCmp::Ne => {}
+                    CountCmp::Cmp(cmp) => {
+                        cmp_text(*cmp);
+                    }
+                }
+            }
             Pred::Box(_, _, _)
             | Pred::Eq(_, _, _)
             | Pred::Ne(_, _, _)
@@ -779,6 +802,25 @@ fn condition_forms(expr: &BoolExpr) {
             | Pred::StartsLike(_, _, _)
             | Pred::EndsLike(_, _, _) => {}
         },
+    }
+}
+/// A walk's far end inside a condition: a type and its own condition.
+/// The whole test is one source fragment, laid out by its tokens.
+fn target_forms(target: &Selection) {
+    if let Some(condition) = &target.condition {
+        condition_forms(condition);
+    }
+}
+fn count_form(
+    Count {
+        field: _,
+        span: _,
+        to,
+    }: &Count,
+) {
+    if let Some((direction, target)) = to {
+        direction_text(*direction);
+        target_forms(target);
     }
 }
 fn similarity_form(

@@ -1,0 +1,7 @@
+schema{type Country{name:String iso:String airports:BASE<-Airport[]}
+type Airport{code:String country:BASE->Country route:ROUTE->Airport[] inbound:ROUTE<-Airport[]}}
+query{Airport(country->Country(iso="CA")){code route->Airport(country->Country(iso="JP")){code}}}
+query{Airport(country->Country(iso="CA")&&route->Airport(country->Country(iso="JP"))&&@count(inbound)>=1){code}}
+query{Airport(@count(route)>20)order by @count(route) desc{code routes:@count(route)}}
+query{Country(airports<-Airport(@count(route->Airport(country->Country))!=0)){name @count(airports)}}
+query{Airport(country->Country||x<-5){code}}

@@ -75,7 +75,18 @@ fn ast(source: &str) -> Result<Parsed> {
                 | Pred::FindLike(_, _, s)
                 | Pred::StartsLike(_, _, s)
                 | Pred::EndsLike(_, _, s) => span(s),
+                Pred::Related(related) => {
+                    span(&mut related.span);
+                    selection(&mut related.target);
+                }
+                Pred::Count(count, _, _) => count_spans(count),
             },
+        }
+    }
+    fn count_spans(count: &mut Count) {
+        span(&mut count.span);
+        if let Some((_, target)) = &mut count.to {
+            selection(target);
         }
     }
     fn selection(sel: &mut Selection) {
@@ -94,8 +105,10 @@ fn ast(source: &str) -> Result<Parsed> {
         }
         for key in &mut sel.order {
             span(&mut key.span);
-            if let OrderBy::Distance(distance) = &mut key.by {
-                span(&mut distance.span);
+            match &mut key.by {
+                OrderBy::Distance(distance) => span(&mut distance.span),
+                OrderBy::Count(count) => count_spans(count),
+                OrderBy::Field(_) => {}
             }
         }
         if let Some(s) = &mut sel.delete {
@@ -110,6 +123,7 @@ fn ast(source: &str) -> Result<Parsed> {
                 | Item::EdgeSet(_, _, s) => span(s),
                 Item::Similarity(_, sim) => span(&mut sim.span),
                 Item::Distance(_, distance) => span(&mut distance.span),
+                Item::Count(_, count) => count_spans(count),
                 Item::Hops(_) | Item::Id(_) => {}
                 Item::Walk {
                     span: s,
@@ -287,7 +301,7 @@ fn syntax_goldens() {
         invariant(&source, &path.display().to_string());
         count += 1;
     }
-    assert_eq!(count, 24);
+    assert_eq!(count, 25);
 }
 
 /// CRLF input (a Windows editor, or a checkout with core.autocrlf) formats to
@@ -310,7 +324,7 @@ fn crlf_input_emits_lf() {
         invariant(&source, &path.display().to_string());
         count += 1;
     }
-    assert_eq!(count, 24);
+    assert_eq!(count, 25);
     let literal = "query { A(name = \"one\r\ntwo\") { name } }";
     let output = format_zql(literal).unwrap();
     assert!(output.contains("\"one\r\ntwo\""), "{output:?}");
