@@ -5,11 +5,11 @@
 import init, { ZegaWasm } from '../pkg/zega_wasm.js';
 import { applyTheme } from '../theme.js';
 import { createCanvas } from './canvas.js';
-import { COMPONENTS } from './registry.js';
+import { component } from './registry.js';
 import { localStorageStore } from './storage.js';
 
 const $ = (selector) => document.querySelector(selector);
-const contract = COMPONENTS['path-on-map'].contract;
+const contract = component('path-on-map').contract;
 let theme = new URLSearchParams(location.search).get('theme') === 'dark' ? 'dark' : 'light';
 applyTheme(theme);
 $('#theme').textContent = theme === 'dark' ? 'light' : 'dark';
@@ -17,7 +17,7 @@ $('#theme').textContent = theme === 'dark' ? 'light' : 'dark';
 // The sample: schema, data and the example query, through the real engine.
 await init();
 const db = new ZegaWasm();
-const sampleUrl = new URL(`../${contract.example.sample}`, import.meta.url);
+const sampleUrl = new URL(`../${contract.examples.sample}`, import.meta.url);
 const zql = await (await fetch(sampleUrl)).text();
 const sources = {};
 for (const location of JSON.parse(db.load_locations(zql, true))) {
@@ -25,19 +25,23 @@ for (const location of JSON.parse(db.load_locations(zql, true))) {
 }
 db.apply_with_sources(zql, JSON.stringify(sources));
 const query = (text) => JSON.parse(db.run(zql, text));
-const result = query(contract.example.zql);
-$('#zql').textContent = contract.example.zql;
+const result = query(contract.examples.zql);
+$('#zql').textContent = contract.examples.zql;
+const EXAMPLE = contract.examples.valid[0].spec;
 
 const historyLimit = Number(new URLSearchParams(location.search).get('history')) || 100;
-const canvas = createCanvas($('#stage'), { theme, historyLimit, store: localStorageStore('zega.components.demo') });
+const notes = [];
+const report = (error) => { notes.push(error.message); console.warn(error.message); };
+const canvas = createCanvas($('#stage'), { theme, historyLimit, store: localStorageStore('zega.components.demo', { onError: report }), onError: report });
 canvas.on(() => show());
 
 function specFromControls() {
   const value = $('#value').value;
   return {
+    format: 1,
     component: 'path-on-map',
     version: '1',
-    binding: { path: 'points[].at', ...(value ? { value } : {}), label: 'name' },
+    binding: { rows: 'points', path: 'at', ...(value ? { value } : {}), label: 'name' },
     options: { colorScale: $('#colorScale').value, view: $('#view').value, bearing: -30, showBuildings: $('#showBuildings').checked },
   };
 }
@@ -49,7 +53,8 @@ function showHistory() {
     const button = document.createElement('button');
     const o = entry.spec.options;
     const edit = entry.meta.edit ? Object.entries(entry.meta.edit).map(([k, v]) => `${k.split('.').at(-1)} = ${JSON.stringify(v)}`).join(', ') : null;
-    button.textContent = `#${entry.id} ${edit || `${entry.spec.binding.value ? entry.spec.binding.value.split('.').at(-1) : 'no value'} · ${o.colorScale} · ${o.view}`}${entry.parent ? ` ← #${entry.parent}` : ''}`;
+    const parent = entry.parent ? canvas.history.find((e) => e.id === entry.parent) : null;
+    button.textContent = `#${entry.n} ${edit || `${entry.spec.binding.value || 'no value'} · ${o.colorScale} · ${o.view}`}${parent ? ` ← #${parent.n}` : ''}`;
     button.onclick = () => canvas.restore(i);
     item.append(button);
     return item;
@@ -63,7 +68,7 @@ function show() {
 async function load(spec) {
   $('#errors').hidden = true;
   try {
-    await canvas.load(spec, result, { zql: contract.example.zql });
+    await canvas.load(spec, result, { zql: contract.examples.zql });
   } catch (error) {
     $('#errors').textContent = error.message;
     $('#errors').hidden = false;
@@ -71,7 +76,7 @@ async function load(spec) {
 }
 $('#load').onclick = () => load(specFromControls());
 $('#undo').onclick = () => canvas.undo();
-$('#clear').onclick = async () => { await canvas.clearHistory(); await load(contract.example.spec); };
+$('#clear').onclick = async () => { await canvas.clearHistory(); await load(EXAMPLE); };
 $('#theme').onclick = async () => {
   theme = theme === 'dark' ? 'light' : 'dark';
   applyTheme(theme);
@@ -81,8 +86,11 @@ $('#theme').onclick = async () => {
 
 // The notebook carries over reloads: reopen on its last entry, or start with the example.
 await canvas.ready;
-if (canvas.history.length) await canvas.restore(canvas.history.length - 1);
-else await load(contract.example.spec);
+let reopened = false;
+if (canvas.history.length) {
+  try { await canvas.restore(canvas.history.length - 1); reopened = true; } catch (error) { report(error); }
+}
+if (!reopened) await load(EXAMPLE);
 // For tests and the console.
-window.zegaComponents = { canvas, result, query, contract, load, specFromControls };
+window.zegaComponents = { canvas, result, query, contract, load, specFromControls, notes, EXAMPLE };
 document.documentElement.dataset.ready = 'true';

@@ -30,7 +30,7 @@ try {
   const cdp = await page.context().newCDPSession(page);
   await swaps(page, 200); // warm
   const before = await collectedHeap(cdp);
-  const times = await swaps(page, 200);
+  const { times } = await swaps(page, 200);
   const after = await collectedHeap(cdp);
   const { median, p95, max } = summary(times);
   console.log(`renderer: ${await renderer(page)}`);

@@ -20,25 +20,30 @@ export const renderer = (page) => inPage(page, `
   const ext = gl.getExtension('WEBGL_debug_renderer_info');
   return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);`);
 
-export const SPEED_3D = { component: 'path-on-map', version: '1', binding: { path: 'points[].at', value: 'points[].speed', label: 'name' }, options: { view: '3d', bearing: -30 } };
-export const DIST_2D = { component: 'path-on-map', version: '1', binding: { path: 'points[].at', value: 'points[].dist' }, options: { view: '2d', lineWidth: 9, colorScale: 'diverging' } };
-export const SOLID_2D = { component: 'path-on-map', version: '1', binding: { path: 'points[].at' }, options: { view: '2d', colorScale: 'solid', lineWidth: 8, showBuildings: false } };
+const spec = (binding, options) => ({ format: 1, component: 'path-on-map', version: '1', binding: { rows: 'points', path: 'at', ...binding }, options });
+export const SPEED_3D = spec({ value: 'speed', label: 'name' }, { view: '3d', bearing: -30, showBuildings: true });
+export const DIST_2D = spec({ value: 'dist' }, { view: '2d', lineWidth: 9, colorScale: 'diverging' });
+export const SOLID_2D = spec({}, { view: '2d', colorScale: 'solid', lineWidth: 8, showBuildings: false });
 
 /**
  * `n` swaps, alternating a new load (the gallery: each page loads its
  * component) with a restore (the notebook: back to an entry), over three
- * specs. Returns each swap's time: load/restore called to a frame drawn with
- * the new path.
+ * specs, which between them turn the buildings on and off. Returns each
+ * swap's time (load/restore called to a frame drawn with the new path) and
+ * the buildings states the swaps showed.
  */
 export const swaps = (page, n) => page.evaluate(async ({ n, specs }) => {
   const { canvas, result } = window.zegaComponents;
   const times = [];
+  const surface = await canvas.surface();
+  const buildings = new Set();
   for (let i = 0; i < n; i++) {
     if (i % 2 === 0) await canvas.load(specs[(i / 2) % specs.length], result);
     else await canvas.restore((i * 7) % canvas.history.length);
     times.push(canvas.stats().lastSwapMs);
+    buildings.add(surface.buildingsShown());
   }
-  return times;
+  return { times, buildings: [...buildings].sort() };
 }, { n, specs: [SPEED_3D, DIST_2D, SOLID_2D] });
 
 export function summary(times) {

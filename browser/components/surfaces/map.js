@@ -9,39 +9,31 @@
 import * as maplibre from '../../vendor/maplibre-gl/maplibre-gl.mjs';
 import { PMTiles, Protocol } from '../../vendor/pmtiles/index.js';
 import { layers } from '../../vendor/basemaps/index.js';
-import { ATTRIBUTION, BASEMAP, TILE_ORIGIN, basemapFlavor } from '../../map-style.js';
+import { ATTRIBUTION, TILE_ORIGIN, basemapFlavor } from '../../map-style.js';
 import { palettes } from '../../theme.js';
+import { ARCHIVES, pickArchive } from './archives.js';
 
-// Street-map archives. `cities` is the explorer's shared archive on the tile
-// host. The others are small same-origin extracts for places it does not
-// cover, read whole (so any static server works: no HTTP range support needed).
-export const ARCHIVES = {
-  cities: { url: BASEMAP },
-  // browser/scripts/circuit-sample.mjs: z13-15 over the Circuit de Monaco, 660 KB.
-  monaco: { url: new URL('../../data/monaco.pmtiles', import.meta.url).href, bounds: [7.405, 43.723, 7.440, 43.748], local: true },
-};
+export { ARCHIVES, pickArchive };
 const PITCH_3D = 60;
 const BUILDINGS = 'surface-buildings-3d';
+const BUILDINGS_OPACITY = 0.88;
+const RENDER_TIMEOUT = 5000;
 
 const protocol = new Protocol();
 maplibre.addProtocol('pmtiles', protocol.tile);
 const localLoads = new Map();
 function loadLocal(url) {
   if (!localLoads.has(url)) {
-    localLoads.set(url, fetch(url).then(async (response) => {
+    const load = fetch(url).then(async (response) => {
       if (!response.ok) throw new Error(`Cannot read ${url}: HTTP ${response.status}`);
       const bytes = await response.arrayBuffer();
       protocol.add(new PMTiles({ getKey: () => url, getBytes: async (offset, length) => ({ data: bytes.slice(offset, offset + length) }) }));
-    }));
+    });
+    // A failed read is not cached: the next swap tries again.
+    load.catch(() => localLoads.delete(url));
+    localLoads.set(url, load);
   }
   return localLoads.get(url);
-}
-
-const contains = ([w, s, e, n], [bw, bs, be, bn]) => bw >= w && be <= e && bs >= s && bn <= n;
-/** The archive for `basemap` ("auto" picks a local extract covering `bounds`, else cities). */
-export function pickArchive(basemap, bounds) {
-  if (basemap !== 'auto') return basemap;
-  return Object.entries(ARCHIVES).find(([, a]) => a.bounds && bounds && contains(a.bounds, bounds))?.[0] || 'cities';
 }
 
 function baseStyle(theme, archive) {
@@ -58,7 +50,7 @@ function baseStyle(theme, archive) {
           'fill-extrusion-color': c.rule,
           'fill-extrusion-height': ['coalesce', ['get', 'height'], 9],
           'fill-extrusion-base': ['coalesce', ['get', 'min_height'], 0],
-          'fill-extrusion-opacity': 0.88,
+          'fill-extrusion-opacity': BUILDINGS_OPACITY,
         } },
     ],
   };
@@ -90,20 +82,28 @@ export async function createSurface(host) {
     kind: 'map',
     map,
     overlay,
-    /** Make the base style `theme` over the archive for `basemap`; a no-op when it already is. */
+    /**
+     * Make the base style `theme` over the archive for `basemap`. Resolves
+     * true when it changed the style (which drops every component layer), or
+     * false when it already was.
+     */
     async prepare({ theme, basemap = 'auto', bounds = null }) {
       const archive = pickArchive(basemap, bounds);
       const key = `${theme}|${archive}`;
-      if (key === styleKey) return archive;
+      if (key === styleKey) return false;
       surface.clear();
       if (ARCHIVES[archive].local) await loadLocal(ARCHIVES[archive].url);
       const loaded = new Promise((resolve) => map.once('style.load', resolve));
+      styleKey = null;
       map.setStyle(baseStyle(theme, archive), { diff: false });
       await loaded;
       styleKey = key;
-      return archive;
+      return true;
     },
-    showBuildings(visible) { map.setLayoutProperty(BUILDINGS, 'visibility', visible ? 'visible' : 'none'); },
+    // Opacity, not visibility: hiding a layer drops its buckets, and showing
+    // it again re-tiles every building (p95 190 ms per swap, against 36 ms).
+    showBuildings(visible) { map.setPaintProperty(BUILDINGS, 'fill-extrusion-opacity', visible ? BUILDINGS_OPACITY : 0); },
+    buildingsShown: () => map.getPaintProperty(BUILDINGS, 'fill-extrusion-opacity') > 0,
     /**
      * Frame `points` ([lon, lat] list) at `bearing`: fitted to the points
      * themselves in the rotated screen frame, so a rotated view is not framed
@@ -124,7 +124,7 @@ export async function createSurface(host) {
       const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
       const center = new maplibre.MercatorCoordinate(cx * cos - cy * sin, cx * sin + cy * cos).toLngLat();
       const scale = Math.min((box.width - 2 * pad) / ((x1 - x0) || 1e-9), (box.height - 2 * pad) / ((y1 - y0) || 1e-9)) / 512;
-      const zoom = Math.min(17, Math.log2(scale)) - (pitch ? 0.3 : 0);
+      const zoom = Math.max(0, Math.min(17, Math.log2(scale)) - (pitch ? 0.3 : 0));
       map.jumpTo({ center, zoom, bearing, pitch });
     },
     addSource(id, source) { map.addSource(id, source); sources.add(id); },
@@ -138,16 +138,28 @@ export async function createSurface(host) {
       overlay.replaceChildren();
     },
     owned: () => ({ layers: ids.size, sources: sources.size }),
-    /** Resolves after a frame drawn once every component source is parsed and tiled. */
-    async rendered() {
-      const ready = () => [...sources].every((id) => map.isSourceLoaded(id));
-      if (!ready()) {
-        await new Promise((resolve) => {
-          const check = () => { if (ready()) { map.off('sourcedata', check); resolve(); } };
-          map.on('sourcedata', check);
-        });
-      }
-      await new Promise((resolve) => { map.once('render', resolve); map.triggerRepaint(); });
+    /**
+     * Resolves after a frame drawn once every component source is parsed and
+     * tiled. Rejects on an error from one of those sources, or when no such
+     * frame comes within 5 s.
+     */
+    rendered() {
+      return new Promise((resolve, reject) => {
+        const ready = () => [...sources].every((id) => map.getSource(id) && map.isSourceLoaded(id));
+        const done = (error) => {
+          clearTimeout(timer);
+          map.off('sourcedata', check);
+          map.off('error', failed);
+          map.off('render', drawn);
+          if (error) reject(error); else resolve();
+        };
+        const drawn = () => { if (ready()) done(); };
+        const check = () => { if (ready()) { map.off('sourcedata', check); map.once('render', drawn); map.triggerRepaint(); } };
+        const failed = (event) => { if (event.sourceId && sources.has(event.sourceId)) done(event.error || new Error(`source ${event.sourceId} failed`)); };
+        const timer = setTimeout(() => done(new Error(`the map did not draw within ${RENDER_TIMEOUT / 1000} s`)), RENDER_TIMEOUT);
+        map.on('error', failed);
+        if (ready()) { map.on('render', drawn); map.triggerRepaint(); } else map.on('sourcedata', check);
+      });
     },
     /** Resolves when tiles are loaded and the camera is still. */
     idle: () => new Promise((resolve) => (map.loaded() && !map.isMoving() && map.areTilesLoaded() ? resolve() : map.once('idle', resolve))),

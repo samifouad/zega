@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zega.dev/schemas/v1/view-spec.schema.json",
+  "title": "zega view spec, format 1 (APS 21)",
+  "description": "One graph component bound to one ZQL result: which component, where its rows (and groups) are, the field each role reads, and the surface parameters and display options. Checked against the component's contract and the actual result before anything renders.",
+  "type": "object",
+  "required": ["format", "component", "version", "binding"],
+  "additionalProperties": false,
+  "properties": {
+    "format": { "const": 1, "description": "The view-spec format major. Specs without it are format 0 (the first draft) and are migrated." },
+    "component": { "type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$", "description": "The component id, e.g. \"path-on-map\"." },
+    "version": { "type": "string", "maxLength": 16, "pattern": "^[0-9]{1,4}(\\.[0-9]{1,4}){0,2}$", "description": "The component version the spec was written for, e.g. \"1\" or \"1.0.0\". Its major must equal the component's." },
+    "binding": {
+      "type": "object",
+      "description": "`groups`: where the groups are, from the result (optional). `rows`: where the rows are, from each group (or the result). Every other key is a role: a field of each row, group or result, as the contract says. `.` is the value itself.",
+      "properties": {
+        "groups": { "$ref": "#/$defs/fieldPath" },
+        "rows": { "$ref": "#/$defs/fieldPath" }
+      },
+      "additionalProperties": { "$ref": "#/$defs/fieldPath" }
+    },
+    "surface": { "type": "object", "description": "Surface parameters, checked against the contract's `surfaceParams`. Omitted ones take their defaults." },
+    "options": { "type": "object", "description": "Display options, checked against the contract's `options`. Omitted ones take their defaults." }
+  },
+  "$defs": {
+    "fieldPath": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(\\.|[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*){0,31})$",
+      "description": "A field (`name`), a nested field (`at.lat`, at most 32 steps), or `.` for the value itself."
+    }
+  }
+}

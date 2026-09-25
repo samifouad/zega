@@ -1,47 +1,57 @@
 {
-  "$schema": "../contract.schema.json",
+  "$schema": "../schemas/v1/contract.schema.json",
+  "format": 1,
   "id": "path-on-map",
   "version": "1.0.0",
   "title": "Path on map",
   "category": "Geo",
-  "description": "An ordered path (a race lap, a route, a track) drawn on the street map with 3D buildings, coloured by an optional value per point, with a start/finish marker.",
+  "description": "Ordered paths (a race lap, a route, a track) on the street map with 3D buildings, coloured by an optional value per point, each with a start marker and label.",
   "surface": "map",
   "mark": "path",
+  "data": {
+    "groups": "optional",
+    "minRows": 2,
+    "description": "Each row is one point of a path, in path order: select it with `order by`. Ungrouped, the rows are one path; grouped, each group's rows are one path."
+  },
   "roles": {
     "path": {
-      "type": "lonlat[]",
+      "per": "row",
+      "type": "Point",
       "required": true,
-      "ordered": true,
-      "unit": "degrees (WGS84)",
-      "minItems": 2,
-      "description": "The path's points, in order. A list of ZQL Point values or [lon, lat] pairs. The first point is the start/finish."
+      "description": "The row's position. The first row of each path is its start."
     },
     "value": {
-      "type": "f64[]",
+      "per": "row",
+      "type": "Float",
       "required": false,
-      "sameLengthAs": "path",
-      "unit": "any (e.g. km/h, m)",
-      "description": "One number per point (speed, distance, sector…). Each segment takes the colour of its start point's value."
+      "description": "A number per point (speed, distance, sector…). Each segment takes its start point's colour."
     },
     "label": {
-      "type": "string",
+      "per": "group",
+      "type": "String",
       "required": false,
-      "description": "A name shown at the start/finish marker."
+      "description": "The path's name, shown at its start."
     }
   },
   "surfaceParams": {
     "bounds": {
       "type": ["array", "null"],
-      "items": { "type": "number" },
+      "prefixItems": [
+        { "type": "number", "minimum": -180, "maximum": 180 },
+        { "type": "number", "minimum": -85.0511, "maximum": 85.0511 },
+        { "type": "number", "minimum": -180, "maximum": 180 },
+        { "type": "number", "minimum": -85.0511, "maximum": 85.0511 }
+      ],
       "minItems": 4,
       "maxItems": 4,
+      "format": "lonlat-bounds",
       "default": null,
-      "description": "[west, south, east, north] to frame; null frames the path."
+      "description": "[west, south, east, north] to frame; null frames the paths."
     },
     "basemap": {
       "enum": ["auto", "cities", "monaco"],
       "default": "auto",
-      "description": "Which street-map archive to draw under the path. auto picks the one that covers it."
+      "description": "Which street-map archive to draw under the paths. auto picks the one that covers them."
     }
   },
   "options": {
@@ -49,6 +59,12 @@
       "enum": ["sequential", "diverging", "solid"],
       "default": "sequential",
       "description": "sequential: one hue, light to dark with the value. diverging: two hues around the value's midpoint. solid: the accent colour, value ignored."
+    },
+    "valueUnit": {
+      "type": ["string", "null"],
+      "enum": ["ft", "m", "deg", "pct", "fraction", "km/h", "yd", "s", null],
+      "default": null,
+      "description": "The value's unit, for the legend."
     },
     "lineWidth": {
       "type": "number",
@@ -75,14 +91,35 @@
       "description": "Extrude buildings to their OSM heights."
     }
   },
-  "example": {
+  "examples": {
     "sample": "samples/monaco.zql",
     "zql": "query {\n  Circuit(name: \"Circuit de Monaco\") {\n    name\n    points <- TrackPoint order by seq { at speed dist }\n  }\n}",
-    "spec": {
-      "component": "path-on-map",
-      "version": "1",
-      "binding": { "path": "points[].at", "value": "points[].speed", "label": "name" },
-      "options": { "colorScale": "sequential", "view": "3d", "bearing": -30 }
-    }
+    "valid": [
+      {
+        "title": "Speed around the lap, in 3D",
+        "spec": { "format": 1, "component": "path-on-map", "version": "1", "binding": { "rows": "points", "path": "at", "value": "speed", "label": "name" }, "options": { "valueUnit": "km/h", "bearing": -30 } }
+      },
+      {
+        "title": "Distance along the lap, from above",
+        "spec": { "format": 1, "component": "path-on-map", "version": "1", "binding": { "rows": "points", "path": "at", "value": "dist" }, "options": { "view": "2d", "colorScale": "diverging", "valueUnit": "m", "lineWidth": 8 } }
+      },
+      {
+        "title": "The line alone, no buildings",
+        "spec": { "format": 1, "component": "path-on-map", "version": "1", "binding": { "rows": "points", "path": "at", "label": "name" }, "options": { "view": "2d", "colorScale": "solid", "showBuildings": false } }
+      }
+    ],
+    "invalid": [
+      {
+        "title": "A misspelt row field",
+        "spec": { "format": 1, "component": "path-on-map", "version": "1", "binding": { "rows": "points", "path": "at", "value": "sped" } },
+        "error": {
+          "code": "unresolved",
+          "at": "binding.value",
+          "message": "`sped` is not in each row of `points`",
+          "help": "did you mean `speed`?",
+          "fix": [{ "op": "replace", "path": "/binding/value", "value": "speed" }]
+        }
+      }
+    ]
   }
 }

@@ -1,14 +1,24 @@
 // A small JSON Schema (2020-12) interpreter: the subset the graph-component
-// files use. One interpreter checks the view-spec shape
-// (view-spec.schema.json), a contract's shape (contract.schema.json), and a
-// spec's surface parameters and options against the contract's own
-// descriptors, so the published schemas and the runtime cannot disagree.
+// files use. One interpreter checks the view-spec shape, a contract's shape,
+// and a spec's surface parameters and options against the contract's own
+// setting descriptors, so the published schemas and the runtime cannot
+// disagree about what a schema means.
 //
-// Supported: type (string or list), enum, const, minimum, maximum, minLength,
-// pattern, items, minItems, maxItems, properties, required,
-// additionalProperties (false or a schema), $ref to "#/$defs/…", oneOf.
-// Every other keyword (title, description, default, unit, …) is annotation.
+// Assertion keywords it interprets (SETTING_KEYWORDS is the subset a
+// contract's settings may use; contract.schema.json closes `setting` to it):
+//   type, enum, const, minimum, maximum, minLength, maxLength, pattern,
+//   items, prefixItems, minItems, maxItems, format ("lonlat-bounds"),
+//   and for the files' own schemas also properties, required,
+//   additionalProperties, $ref ("#/$defs/…"), oneOf.
+// Annotation keywords (title, description, default, $schema, $id) are ignored.
+//
+// Keys are only ever looked up as own properties (Object.hasOwn), so a key
+// named `constructor`, `toString` or `__proto__` is unknown, never inherited.
 
+export const SETTING_KEYWORDS = ['default', 'description', 'type', 'enum', 'const', 'minimum', 'maximum', 'minLength', 'maxLength',
+  'pattern', 'items', 'prefixItems', 'minItems', 'maxItems', 'format'];
+
+const own = (object, key) => object !== null && typeof object === 'object' && Object.hasOwn(object, key);
 const typeOf = (value) => value === null ? 'null' : Array.isArray(value) ? 'array'
   : Number.isInteger(value) ? 'integer' : typeof value;
 const matchesType = (value, type) => type === typeOf(value) || (type === 'number' && typeof value === 'number' && Number.isFinite(value));
@@ -21,8 +31,9 @@ export const describe = (value) => {
 };
 const list = (values) => values.map((v) => JSON.stringify(v)).join(', ');
 
-// Edit distance, for "did you mean".
+// Edit distance, for "did you mean". Words over 64 characters are not compared.
 export function closest(word, candidates) {
+  if (typeof word !== 'string' || word.length > 64) return null;
   let best = null, score = Infinity;
   for (const candidate of candidates) {
     const a = word.toLowerCase(), b = candidate.toLowerCase();
@@ -41,62 +52,85 @@ export function closest(word, candidates) {
   return score <= Math.max(2, Math.floor(word.length / 3)) ? best : null;
 }
 
+const pointer = (where) => where.replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean).map((p) => `/${p.replace(/~/g, '~0').replace(/\//g, '~1')}`).join('');
+/** The JSON Pointer of a dotted `at` (options.lineWidth → /options/lineWidth). */
+export const toPointer = pointer;
+
 /**
- * Check `value` against `schema`. Returns a list of `{ code, at, message, help }`
+ * Check `value` against `schema`. Returns a list of `{ code, at, message, help, fix? }`
  * problems (empty when it conforms). `at` is a dotted path from `where`.
  */
-export function check(value, schema, where = '', root = schema) {
+export function check(value, schema, where = '', root = schema, depth = 0) {
   const errors = [];
-  const push = (code, message, help = '') => errors.push({ code, at: where || '(root)', message, help });
-  if (schema.$ref) {
-    const target = schema.$ref.replace(/^#\//, '').split('/').reduce((node, key) => node?.[key], root);
+  const at = where || '(root)';
+  const push = (code, message, help = '', fix) => errors.push({ code, at, message, help, ...(fix ? { fix } : {}) });
+  if (depth > 64) { push('depth', 'is nested too deeply'); return errors; }
+  if (own(schema, '$ref')) {
+    const target = schema.$ref.replace(/^#\//, '').split('/').reduce((node, key) => (own(node, key) ? node[key] : undefined), root);
     if (!target) throw new Error(`Unresolved $ref ${schema.$ref}`);
-    return check(value, target, where, root);
+    return check(value, target, where, root, depth + 1);
   }
-  if (schema.oneOf) {
-    const passing = schema.oneOf.filter((option) => check(value, option, where, root).length === 0);
+  if (own(schema, 'oneOf')) {
+    const passing = schema.oneOf.filter((option) => check(value, option, where, root, depth + 1).length === 0);
     if (passing.length !== 1) push('shape', `${describe(value)} matches ${passing.length ? 'more than one' : 'none'} of the allowed forms`, schema.description || '');
     return errors;
   }
-  if (schema.type) {
+  if (typeof value === 'number' && !Number.isFinite(value)) { push('type', `${value} is not a finite number`); return errors; }
+  if (own(schema, 'type')) {
     const types = [schema.type].flat();
     if (!types.some((type) => matchesType(value, type))) {
       push('type', `expected ${types.join(' or ')}, got ${typeOf(value) === 'integer' ? 'number' : typeOf(value)} ${describe(value)}`,
-        schema.description || '');
+        schema.description || '', own(schema, 'default') && where ? [{ op: 'replace', path: pointer(where), value: schema.default }] : undefined);
       return errors;
     }
   }
-  if ('const' in schema && value !== schema.const) push('const', `must be ${JSON.stringify(schema.const)}, got ${describe(value)}`);
-  if (schema.enum && !schema.enum.includes(value)) {
+  if (own(schema, 'const') && value !== schema.const) push('const', `must be ${JSON.stringify(schema.const)}, got ${describe(value)}`, '', where ? [{ op: 'replace', path: pointer(where), value: schema.const }] : undefined);
+  if (own(schema, 'enum') && !schema.enum.includes(value)) {
     const guess = typeof value === 'string' ? closest(value, schema.enum.filter((v) => typeof v === 'string')) : null;
-    push('enum', `${describe(value)} is not one of ${list(schema.enum)}`, guess ? `did you mean ${JSON.stringify(guess)}?` : `use one of ${list(schema.enum)}`);
+    const to = guess ?? (own(schema, 'default') ? schema.default : undefined);
+    push('enum', `${describe(value)} is not one of ${list(schema.enum)}`, guess ? `did you mean ${JSON.stringify(guess)}?` : `use one of ${list(schema.enum)}`,
+      to !== undefined && where ? [{ op: 'replace', path: pointer(where), value: to }] : undefined);
   }
   if (typeof value === 'number') {
-    if (schema.minimum !== undefined && value < schema.minimum) push('range', `${value} is below the minimum ${schema.minimum}`, `use a value in [${schema.minimum}, ${schema.maximum ?? '∞'}]`);
-    if (schema.maximum !== undefined && value > schema.maximum) push('range', `${value} is above the maximum ${schema.maximum}`, `use a value in [${schema.minimum ?? '-∞'}, ${schema.maximum}]`);
+    const lo = own(schema, 'minimum') ? schema.minimum : undefined, hi = own(schema, 'maximum') ? schema.maximum : undefined;
+    const fix = (to) => (where ? [{ op: 'replace', path: pointer(where), value: to }] : undefined);
+    if (lo !== undefined && value < lo) push('range', `${value} is below the minimum ${lo}`, `use a value in [${lo}, ${hi ?? '∞'}]`, fix(lo));
+    if (hi !== undefined && value > hi) push('range', `${value} is above the maximum ${hi}`, `use a value in [${lo ?? '-∞'}, ${hi}]`, fix(hi));
   }
   if (typeof value === 'string') {
-    if (schema.minLength !== undefined && value.length < schema.minLength) push('length', `must be at least ${schema.minLength} characters`);
-    if (schema.pattern && !new RegExp(schema.pattern, 'u').test(value)) push('pattern', `${describe(value)} is not well formed`, schema.description || `it must match ${schema.pattern}`);
+    if (own(schema, 'maxLength') && value.length > schema.maxLength) { push('length', `is longer than ${schema.maxLength} characters`); return errors; }
+    if (own(schema, 'minLength') && value.length < schema.minLength) push('length', `must be at least ${schema.minLength} characters`);
+    if (own(schema, 'pattern') && !new RegExp(schema.pattern, 'u').test(value)) push('pattern', `${describe(value)} is not well formed`, schema.description || `it must match ${schema.pattern}`);
   }
   if (Array.isArray(value)) {
-    if (schema.minItems !== undefined && value.length < schema.minItems) push('length', `needs at least ${schema.minItems} items, got ${value.length}`);
-    if (schema.maxItems !== undefined && value.length > schema.maxItems) push('length', `takes at most ${schema.maxItems} items, got ${value.length}`);
-    if (schema.items) value.forEach((item, i) => errors.push(...check(item, schema.items, `${where}[${i}]`, root)));
+    if (own(schema, 'minItems') && value.length < schema.minItems) push('length', `needs at least ${schema.minItems} items, got ${value.length}`);
+    if (own(schema, 'maxItems') && value.length > schema.maxItems) push('length', `takes at most ${schema.maxItems} items, got ${value.length}`);
+    const prefix = own(schema, 'prefixItems') ? schema.prefixItems : [];
+    value.forEach((item, i) => {
+      const itemSchema = i < prefix.length ? prefix[i] : own(schema, 'items') ? schema.items : null;
+      if (itemSchema) errors.push(...check(item, itemSchema, `${where}[${i}]`, root, depth + 1));
+    });
+    if (own(schema, 'format') && schema.format === 'lonlat-bounds' && !errors.length && value.length === 4) {
+      const [w, s, e, n] = value;
+      if (!(w < e)) push('bounds', `west (${w}) must be less than east (${e})`, 'bounds are [west, south, east, north]');
+      if (!(s < n)) push('bounds', `south (${s}) must be less than north (${n})`, 'bounds are [west, south, east, north]');
+    }
   }
   if (typeOf(value) === 'object') {
-    for (const key of schema.required || []) {
-      if (!(key in value)) push('required', `\`${key}\` is required`, schema.properties?.[key]?.description || '');
+    const properties = own(schema, 'properties') ? schema.properties : {};
+    for (const key of own(schema, 'required') ? schema.required : []) {
+      if (!own(value, key)) push('required', `\`${key}\` is required`, own(properties, key) ? properties[key].description || '' : '');
     }
-    const known = Object.keys(schema.properties || {});
-    for (const [key, item] of Object.entries(value)) {
-      const at = where ? `${where}.${key}` : key;
-      if (schema.properties && key in schema.properties) errors.push(...check(item, schema.properties[key], at, root));
-      else if (schema.additionalProperties === false) {
+    const known = Object.keys(properties);
+    for (const key of Object.keys(value)) {
+      const path = where ? `${where}.${key}` : key;
+      if (own(properties, key)) errors.push(...check(value[key], properties[key], path, root, depth + 1));
+      else if (own(schema, 'additionalProperties') && schema.additionalProperties === false) {
         const guess = closest(key, known);
-        errors.push({ code: 'unknown', at, message: `\`${key}\` is not a known field here`,
-          help: guess ? `did you mean \`${guess}\`?` : known.length ? `known fields: ${known.map((k) => `\`${k}\``).join(', ')}` : 'remove it' });
-      } else if (typeof schema.additionalProperties === 'object') errors.push(...check(item, schema.additionalProperties, at, root));
+        errors.push({ code: 'unknown', at: path, message: `\`${key}\` is not a known field here`,
+          help: guess ? `did you mean \`${guess}\`?` : known.length ? `known fields: ${known.map((k) => `\`${k}\``).join(', ')}` : 'remove it',
+          fix: guess ? [{ op: 'move', from: pointer(path), path: pointer(where ? `${where}.${guess}` : guess) }] : [{ op: 'remove', path: pointer(path) }] });
+      } else if (own(schema, 'additionalProperties') && typeof schema.additionalProperties === 'object') errors.push(...check(value[key], schema.additionalProperties, path, root, depth + 1));
     }
   }
   return errors;
