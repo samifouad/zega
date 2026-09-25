@@ -11,6 +11,10 @@ tokio = { version = "1", features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 bincode = { workspace = true }
+
+# getrusage for peak RSS; there is no Windows equivalent wired, so zega-mem
+# reports RSS as n/a there.
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [[bin]]
