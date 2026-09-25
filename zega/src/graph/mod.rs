@@ -151,7 +151,7 @@ impl<'g> NodeRef<'g> {
     }
 
     /// The node as it is written down.
-    pub fn to_node(&self) -> Node {
+    pub fn to_node(self) -> Node {
         Node {
             id: self.id,
             labels: self.labels().map(str::to_string).collect(),
@@ -189,7 +189,7 @@ impl<'g> RelRef<'g> {
     }
 
     /// The relationship as it is written down.
-    pub fn to_relationship(&self) -> Relationship {
+    pub fn to_relationship(self) -> Relationship {
         Relationship {
             id: self.id,
             kind: self.kind.to_string(),

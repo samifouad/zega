@@ -19,6 +19,7 @@ pub(crate) enum IdSet {
     Empty,
     One(u64),
     Few(Vec<u64>),
+    #[allow(clippy::box_collection)] // boxed to keep IdSet at 24 bytes; most sets never get here
     Many(Box<HashSet<u64>>),
 }
 
@@ -128,12 +129,12 @@ mod tests {
         let mut ids = IdSet::default();
         let mut model = HashSet::new();
         let mut state = 0x5eed_u64;
-        for step in 0..20_000 {
+        for step in 0..20_000u64 {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             // Grow for a while, then mostly shrink, so every size is visited.
             let id = (state >> 33) % 64;
-            let grow = (step / 2000) % 2 == 0;
-            let insert = (state >> 20) % 4 != 0;
+            let grow = (step / 2000).is_multiple_of(2);
+            let insert = !(state >> 20).is_multiple_of(4);
             if insert == grow {
                 assert_eq!(ids.insert(id), model.insert(id), "insert {id} at {step}");
             } else {

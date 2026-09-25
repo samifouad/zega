@@ -1452,7 +1452,7 @@ fn project(
     Ok(Json::Object(object))
 }
 
-fn node_type<'a>(node: impl NodeView, sel: &'a Selection) -> Result<&'a str, LangError> {
+fn node_type(node: impl NodeView, sel: &Selection) -> Result<&str, LangError> {
     if node.has_label(&sel.type_name) {
         return Ok(sel.type_name.as_str());
     }
@@ -2018,7 +2018,7 @@ fn point_prop(node: impl NodeView, field: &str) -> Option<Point> {
     }
 }
 fn node_distance(graph: &Graph, id: NodeId, distance: &crate::lang::Distance) -> Option<f64> {
-    Some(point_prop(&graph.get_node(id)?, &distance.field)?.distance(distance.origin))
+    Some(point_prop(graph.get_node(id)?, &distance.field)?.distance(distance.origin))
 }
 fn order_limit<T>(
     graph: &Graph,

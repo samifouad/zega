@@ -326,7 +326,7 @@ fn primitive_matches(
             ..
         } => {
             for id in input {
-                let Some(point) = graph.get_node(*id).and_then(|n| point_prop(&n, field)) else {
+                let Some(point) = graph.get_node(*id).and_then(|n| point_prop(n, field)) else {
                     continue;
                 };
                 // Bounding boxes are conservative; exact portable haversine
@@ -336,7 +336,7 @@ fn primitive_matches(
                         continue;
                     }
                     work.charge(1)?;
-                    let Some(target) = graph.get_node(other).and_then(|n| point_prop(&n, field))
+                    let Some(target) = graph.get_node(other).and_then(|n| point_prop(n, field))
                     else {
                         continue;
                     };
