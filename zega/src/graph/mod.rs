@@ -294,6 +294,9 @@ pub struct Graph {
     expanded: AtomicU64,
     /// Schema text, declarations and metadata from the last `.graph` import.
     carried: crate::graph_file::Carried,
+    /// While a snapshot streams in (in any id order), vectors wait here and
+    /// are indexed afterwards in id order, as a restore always has.
+    deferred_vectors: bool,
 }
 
 impl Default for Graph {
@@ -321,6 +324,30 @@ impl Graph {
             examined: AtomicU64::new(0),
             expanded: AtomicU64::new(0),
             carried: Default::default(),
+            deferred_vectors: false,
+        }
+    }
+
+    /// Hold vectors out of the vector index until
+    /// [`Graph::index_deferred_vectors`]. The HNSW graph depends on insertion
+    /// order, and a restore inserts in ascending id order, whatever order
+    /// the nodes arrive in.
+    pub(crate) fn defer_vectors(&mut self) {
+        self.deferred_vectors = true;
+    }
+
+    /// Index every stored vector, ascending by node id.
+    pub(crate) fn index_deferred_vectors(&mut self) {
+        if !std::mem::take(&mut self.deferred_vectors) {
+            return;
+        }
+        for (id, record) in self.nodes.iter() {
+            let node = node_ref(&self.names, &self.shapes, id, record);
+            for (key, value) in node.props() {
+                if let Value::Vector(v) = value {
+                    self.vector_index.insert(key, v, id);
+                }
+            }
         }
     }
 
@@ -474,7 +501,9 @@ impl Graph {
                 self.spatial_index.insert(name, *point, id);
             }
             if let Value::Vector(v) = value {
-                self.vector_index.insert(name, v, id);
+                if !self.deferred_vectors {
+                    self.vector_index.insert(name, v, id);
+                }
             }
             let hash = self.property_hasher.hash_one((key, value));
             self.property_index.entry(hash).or_default().insert(id);
@@ -689,6 +718,8 @@ impl Graph {
         Some(&self.adjacency.get(node_id)?.inc).filter(|rels| !rels.is_empty())
     }
 
+    /// Replace the whole graph with these records, restored in id order.
+    #[cfg(test)]
     pub fn set_state(
         &mut self,
         nodes: HashMap<NodeId, Node>,
@@ -706,6 +737,11 @@ impl Graph {
         for (id, rel) in rels {
             self.restore_relationship(id, rel.kind, rel.from, rel.to, rel.props);
         }
+    }
+
+    #[cfg(test)]
+    pub fn vector_insertion_order(&self) -> Vec<(String, Vec<NodeId>)> {
+        self.vector_index.insertion_order()
     }
 
     /// Every node as it is written down, by id.

@@ -860,56 +860,145 @@ impl Serialize for StoredRelationships<'_> {
 
 /// Restore the full graph state from [`encode_snapshot`] bytes, or from a
 /// snapshot written before snapshots carried `.graph` import state.
+///
+/// Each node and relationship goes into a new graph as it is decoded
+/// (zegadb/zega#100), so a restore holds the graph once, not the graph plus a
+/// decoded copy of every record: a restart's peak memory is what the graph
+/// needs. `graph` is replaced only when the whole snapshot decodes.
 pub fn restore_bytes(graph: &mut Graph, bytes: &[u8]) -> Result<(), WalError> {
-    let (nodes, relationships, next_ids, carried) = match decode_exact::<Snapshot>(bytes) {
-        Ok(snapshot) => (
-            snapshot.nodes,
-            snapshot.relationships,
-            Some(snapshot.next_ids),
-            snapshot.carried,
-        ),
-        Err(_) => {
-            let legacy: LegacySnapshot = decode_exact(bytes).map_err(|error| WalError::Corruption {
+    let restored = match decode_snapshot(bytes, SnapshotFormat::Current) {
+        Ok(restored) => restored,
+        Err(_) => decode_snapshot(bytes, SnapshotFormat::Legacy).map_err(|error| {
+            WalError::Corruption {
                 offset: 0,
                 reason: format!("invalid snapshot: {error}"),
-            })?;
-            (legacy.nodes, legacy.relationships, None, Default::default())
-        }
+            }
+        })?,
     };
-    graph.set_state(nodes, relationships, carried);
-    if let Some(next_ids) = next_ids {
-        graph.reset_next_ids(next_ids);
-    }
+    *graph = restored;
     Ok(())
 }
 
-/// A snapshot: the graph, its id counters, and what its last `.graph`
-/// import carried. The new fields come last, so a snapshot from before
-/// them is exactly a [`LegacySnapshot`] (and never decodes as this: its
-/// bytes end too soon).
-#[derive(Deserialize)]
-struct Snapshot {
-    nodes: HashMap<NodeId, Node>,
-    relationships: HashMap<RelId, Relationship>,
-    next_ids: (NodeId, RelId),
-    carried: crate::graph_file::Carried,
+/// A snapshot is the graph, its id counters, and what its last `.graph`
+/// import carried. The new fields come last, so a snapshot from before them
+/// (`Legacy`) is the first two alone, and never decodes as `Current`: its
+/// bytes end too soon.
+#[derive(Clone, Copy, PartialEq)]
+enum SnapshotFormat {
+    Current,
+    Legacy,
 }
 
-/// [`Snapshot`], written straight from the graph: each node and
-/// relationship is expanded to its written-down form one at a time, so a
-/// snapshot never holds a second copy of the whole graph.
+/// Decode `bytes` the way [`decode_exact`] decodes any file (fixint, nothing
+/// left over, no length beyond the input) straight into a new graph.
+fn decode_snapshot(bytes: &[u8], format: SnapshotFormat) -> Result<Graph, bincode::Error> {
+    let mut graph = Graph::new();
+    graph.defer_vectors();
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .with_limit(bytes.len() as u64)
+        .deserialize_seed(SnapshotSeed { graph: &mut graph, format }, bytes)?;
+    graph.index_deferred_vectors();
+    Ok(graph)
+}
+
+struct SnapshotSeed<'g> {
+    graph: &'g mut Graph,
+    format: SnapshotFormat,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for SnapshotSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        let fields = match self.format {
+            SnapshotFormat::Current => 4,
+            SnapshotFormat::Legacy => 2,
+        };
+        deserializer.deserialize_tuple(fields, self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for SnapshotSeed<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a snapshot")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        use serde::de::Error;
+        let missing = |what: &str| A::Error::custom(format!("snapshot ends before its {what}"));
+        seq.next_element_seed(Records { graph: &mut *self.graph, kind: RecordKind::Nodes })?
+            .ok_or_else(|| missing("nodes"))?;
+        seq.next_element_seed(Records { graph: &mut *self.graph, kind: RecordKind::Relationships })?
+            .ok_or_else(|| missing("relationships"))?;
+        if self.format == SnapshotFormat::Current {
+            let next_ids: (NodeId, RelId) = seq.next_element()?.ok_or_else(|| missing("id counters"))?;
+            let carried: crate::graph_file::Carried =
+                seq.next_element()?.ok_or_else(|| missing("import state"))?;
+            self.graph.set_carried(carried);
+            self.graph.reset_next_ids(next_ids);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RecordKind {
+    Nodes,
+    Relationships,
+}
+
+/// One of a snapshot's two maps, each record restored as it is read.
+struct Records<'g> {
+    graph: &'g mut Graph,
+    kind: RecordKind,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for Records<'_> {
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for Records<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a map of records by id")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        match self.kind {
+            RecordKind::Nodes => {
+                while let Some((id, node)) = map.next_entry::<NodeId, Node>()? {
+                    self.graph.restore_node(id, node.labels, node.props);
+                }
+            }
+            RecordKind::Relationships => {
+                while let Some((id, rel)) = map.next_entry::<RelId, Relationship>()? {
+                    self.graph
+                        .restore_relationship(id, rel.kind, rel.from, rel.to, rel.props);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// [`SnapshotFormat::Current`], written straight from the graph: each node
+/// and relationship is expanded to its written-down form one at a time, so
+/// a snapshot never holds a second copy of the whole graph.
 #[derive(Serialize)]
 struct SnapshotRef<'a> {
     nodes: StoredNodes<'a>,
     relationships: StoredRelationships<'a>,
     next_ids: (NodeId, RelId),
     carried: &'a crate::graph_file::Carried,
-}
-
-#[derive(Deserialize)]
-struct LegacySnapshot {
-    nodes: HashMap<NodeId, Node>,
-    relationships: HashMap<RelId, Relationship>,
 }
 
 #[cfg(test)]
@@ -1617,6 +1706,42 @@ pub(crate) mod tests {
                 recovered.len()
             );
         }
+    }
+
+    /// A snapshot written by an engine that kept nodes in a HashMap lists
+    /// them in any order. The restore still builds each vector index in
+    /// ascending id order, as restoring through sorted records always did,
+    /// so the HNSW graph (which depends on insertion order) is the same.
+    #[test]
+    fn a_snapshot_in_any_order_builds_vector_indexes_in_id_order() {
+        let vector = |i: u64| {
+            let values = [(i % 7) as f32 - 3.0, (i % 5) as f32 + 0.5, (i % 3) as f32 - 1.0];
+            Value::Vector(Box::new(crate::vector::Vector::new(&values, crate::vector::Metric::Cosine).unwrap()))
+        };
+        let records: Vec<(NodeId, Node)> = (1..=200)
+            .map(|id| {
+                let props = HashMap::from([("emb".to_string(), vector(id)), ("n".to_string(), Value::Int(id as i64))]);
+                (id, Node { id, labels: vec!["V".into()], props })
+            })
+            .collect();
+        // The legacy layout, written out by hand with the nodes descending.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(records.len() as u64).to_le_bytes());
+        for (id, node) in records.iter().rev() {
+            serialize_into(&mut bytes, id).unwrap();
+            serialize_into(&mut bytes, node).unwrap();
+        }
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+
+        let mut restored = Graph::new();
+        restore_bytes(&mut restored, &bytes).unwrap();
+        let mut sorted = Graph::new();
+        sorted.set_state(records.into_iter().collect(), HashMap::new(), Default::default());
+
+        let order = restored.vector_insertion_order();
+        assert_eq!(order, sorted.vector_insertion_order());
+        assert_eq!(order[0].1, (1..=200).collect::<Vec<NodeId>>());
+        assert_eq!(restored.all_nodes(), sorted.all_nodes());
     }
 
     #[test]
