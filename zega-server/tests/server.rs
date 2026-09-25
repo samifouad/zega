@@ -11,6 +11,8 @@ struct TestServer {
     base_url: String,
     _data: TempDir,
     task: JoinHandle<()>,
+    /// The server's database, behind the same gate its requests take.
+    zega: std::sync::Arc<std::sync::Mutex<Zega>>,
 }
 impl Drop for TestServer {
     fn drop(&mut self) {
@@ -33,6 +35,7 @@ async fn start_server_full(max_import_bytes: u64, idle: std::time::Duration, slo
     let state = AppState::new(zega, Some(TOKEN))
         .with_import_limits(max_import_bytes, idle)
         .with_transfer_slots(slots);
+    let zega = state.zega.clone();
     let task = tokio::spawn(async move {
         server::serve(listener, state).await.unwrap();
     });
@@ -40,6 +43,7 @@ async fn start_server_full(max_import_bytes: u64, idle: std::time::Duration, slo
         base_url: format!("http://{address}"),
         _data: data,
         task,
+        zega,
     }
 }
 fn post(client: &Client, server: &TestServer) -> reqwest::RequestBuilder {
@@ -370,15 +374,16 @@ async fn start_limited_server() -> TestServer {
         .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let state = AppState::new(zega, Some(TOKEN));
+    let zega = state.zega.clone();
     let task = tokio::spawn(async move {
-        server::serve(listener, AppState::new(zega, Some(TOKEN)))
-            .await
-            .unwrap();
+        server::serve(listener, state).await.unwrap();
     });
     TestServer {
         base_url: format!("http://{address}"),
         _data: data,
         task,
+        zega,
     }
 }
 
@@ -797,6 +802,12 @@ async fn transfers_leave_no_staging_files() {
     assert!(names[0].ends_with(".graph") && !names[0].starts_with('.'), "{names:?}");
 }
 
+/// The staging files of `GET /graph` downloads, and nothing else in `graphs/`
+/// (an upload's staging file, a checkpoint's file in flight).
+fn export_staging_files(server: &TestServer) -> Vec<String> {
+    staging_files(server).into_iter().filter(|name| name.starts_with(".export-")).collect()
+}
+
 fn staging_files(server: &TestServer) -> Vec<String> {
     match std::fs::read_dir(server._data.path().join("graphs")) {
         Ok(entries) => entries
@@ -844,10 +855,10 @@ async fn a_stalled_download_is_dropped_and_its_staging_file_deleted() {
     let mut head = [0u8; 12];
     reader.read_exact(&mut head).await.unwrap();
     assert_eq!(&head, b"HTTP/1.1 200");
-    assert_eq!(staging_files(&server).len(), 1, "the export is staged while it is sent");
+    assert_eq!(export_staging_files(&server).len(), 1, "the export is staged while it is sent");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !staging_files(&server).is_empty() {
-        assert!(std::time::Instant::now() < deadline, "the stalled download kept {:?}", staging_files(&server));
+    while !export_staging_files(&server).is_empty() {
+        assert!(std::time::Instant::now() < deadline, "the stalled download kept {:?}", export_staging_files(&server));
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     drop(reader);
@@ -903,4 +914,51 @@ async fn an_oversized_content_length_is_refused_up_front() {
     assert_eq!(&head, b"HTTP/1.1 413");
     assert!(staging_files(&server).is_empty());
     assert_eq!(zega_server::DEFAULT_MAX_IMPORT_BYTES, 64 * 1024 * 1024);
+}
+
+/// zega#112 CI: a checkpoint taken while a download is stalled. The export's
+/// staging file and the checkpoint's file sit in `graphs/` together; neither
+/// is deleted or counted as the other, the checkpoint succeeds, and the
+/// download, once read, is the whole graph.
+#[tokio::test]
+async fn a_checkpoint_while_a_download_is_stalled_leaves_both_whole() {
+    use tokio::io::AsyncReadExt;
+    let server = start_server_with(zega_server::DEFAULT_MAX_IMPORT_BYTES, std::time::Duration::from_secs(60)).await;
+    let client = Client::new();
+    big_graph(&client, &server).await;
+    let mut reader = stalled(
+        &server,
+        format!("GET /graph HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"),
+        b"",
+    )
+    .await;
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut byte = [0u8; 1];
+        reader.read_exact(&mut byte).await.unwrap();
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8(head).unwrap();
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    let length: usize = head
+        .lines()
+        .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length: ").map(|n| n.trim().parse().unwrap()))
+        .expect("a staged download has a length");
+    let staged = export_staging_files(&server);
+    assert_eq!(staged.len(), 1, "the export is staged while it is sent");
+
+    let zega = server.zega.clone();
+    let checkpoint = tokio::task::spawn_blocking(move || zega.lock().unwrap().checkpoint())
+        .await
+        .unwrap()
+        .expect("a checkpoint beside a staged export failed")
+        .unwrap();
+    assert!(server._data.path().join(&checkpoint.file).exists());
+    assert_eq!(export_staging_files(&server), staged, "the checkpoint touched the staged export");
+
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).await.unwrap();
+    let copy = Zega::in_memory().build().unwrap();
+    let summary = copy.import(&body[..]).expect("the download is not a whole .graph file");
+    assert_eq!(summary.nodes, 40);
 }

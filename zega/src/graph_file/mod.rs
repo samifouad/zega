@@ -466,6 +466,44 @@ pub(crate) fn write<W: Write>(
     created_by: &str,
     out: W,
 ) -> Result<ExportSummary, Error> {
+    let mut out = Out {
+        inner: BufWriter::with_capacity(BUFFER, out),
+        bytes: 0,
+        content: None,
+    };
+    out.raw(&MAGIC)?;
+    out.raw(&FORMAT_VERSION.to_le_bytes())?;
+    let (node_count, rel_count) = encode_sections(graph, options, created_by, &mut |kind, encode| {
+        section(&mut out, kind, encode)?;
+        if kind == Section::Manifest {
+            out.content = Some(Sha256::new());
+        }
+        Ok(())
+    })?;
+    let digest: [u8; 32] = out
+        .content
+        .take()
+        .map(|content| content.finalize().into())
+        .unwrap_or_default();
+    section(&mut out, Section::Done, &|sink| Ok(sink.put(&digest)?))?;
+    out.inner.flush()?;
+    Ok(ExportSummary {
+        nodes: node_count,
+        relationships: rel_count,
+        bytes: out.bytes,
+        content_sha256: hex(&digest),
+    })
+}
+
+/// Hand each section before `done` to `emit`, in order, as the encoder that
+/// writes its payload. Both writers go through here, so they write the same
+/// bytes. Returns the node and relationship counts.
+fn encode_sections(
+    graph: &Graph,
+    options: &ExportOptions,
+    created_by: &str,
+    emit: &mut dyn FnMut(Section, &Encoder<'_>) -> Result<(), Error>,
+) -> Result<(u64, u64), Error> {
     let names = Names::collect(graph)?;
     let carried = graph.carried();
     let (schema, uniques, indexes) = match &options.schema {
@@ -481,14 +519,7 @@ pub(crate) fn write<W: Write>(
     let node_count = graph.node_count() as u64;
     let rel_count = graph.relationship_count() as u64;
 
-    let mut out = Out {
-        inner: BufWriter::with_capacity(BUFFER, out),
-        bytes: 0,
-        content: None,
-    };
-    out.raw(&MAGIC)?;
-    out.raw(&FORMAT_VERSION.to_le_bytes())?;
-    section(&mut out, Section::Manifest, &|sink| {
+    emit(Section::Manifest, &|sink| {
         put_str(sink, created_by)?;
         put_u64(sink, node_count)?;
         put_u64(sink, rel_count)?;
@@ -499,15 +530,14 @@ pub(crate) fn write<W: Write>(
         }
         Ok(())
     })?;
-    out.content = Some(Sha256::new());
-    section(&mut out, Section::Names, &|sink| {
+    emit(Section::Names, &|sink| {
         put_len(sink, names.sorted.len(), "the name dictionary")?;
         for name in &names.sorted {
             put_str(sink, name)?;
         }
         Ok(())
     })?;
-    section(&mut out, Section::Schema, &|sink| {
+    emit(Section::Schema, &|sink| {
         match schema {
             Some(source) => {
                 put_u8(sink, 1)?;
@@ -528,33 +558,140 @@ pub(crate) fn write<W: Write>(
         }
         Ok(())
     })?;
-    section(&mut out, Section::Nodes, &|sink| {
+    emit(Section::Nodes, &|sink| {
         put_u64(sink, next_node)?;
         for node in graph.nodes() {
             put_node(sink, &names, node)?;
         }
         Ok(())
     })?;
-    section(&mut out, Section::Relationships, &|sink| {
+    emit(Section::Relationships, &|sink| {
         put_u64(sink, next_rel)?;
         for rel in graph.relationships() {
             put_relationship(sink, graph, &names, rel)?;
         }
         Ok(())
     })?;
-    let digest: [u8; 32] = out
-        .content
-        .take()
-        .map(|content| content.finalize().into())
-        .unwrap_or_default();
-    section(&mut out, Section::Done, &|sink| Ok(sink.put(&digest)?))?;
-    out.inner.flush()?;
-    Ok(ExportSummary {
-        nodes: node_count,
-        relationships: rel_count,
-        bytes: out.bytes,
-        content_sha256: hex(&digest),
+    Ok((node_count, rel_count))
+}
+
+/// A `.graph` file written by [`write_unfinished`], all but its `done`
+/// section, which [`finish`] adds.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct Unfinished {
+    /// Where the content the digest covers starts: after the manifest.
+    content_start: u64,
+    nodes: u64,
+    relationships: u64,
+}
+
+/// Write `graph` to a seekable file as [`write`] would, in one pass over the
+/// graph instead of two: each section header is written with a zero length,
+/// then patched once its payload is out. A checkpoint does this under the
+/// graph lock, so writes (and reads) wait for one pass, not two. The content
+/// digest can only be taken over the patched bytes, so it is not taken here:
+/// [`finish`] reads them back, without the lock, and writes `done`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn write_unfinished<F: Write + std::io::Seek>(
+    graph: &Graph,
+    created_by: &str,
+    file: &mut F,
+) -> Result<Unfinished, Error> {
+    use std::io::{Seek, SeekFrom};
+
+    /// Writes a payload once, measuring it as it goes.
+    struct Once<'a, W: Write> {
+        out: &'a mut W,
+        len: u64,
+        crc: crc32fast::Hasher,
+    }
+    impl<W: Write> Sink for Once<'_, W> {
+        fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
+            self.out.write_all(bytes)?;
+            self.len += bytes.len() as u64;
+            self.crc.update(bytes);
+            Ok(())
+        }
+    }
+
+    let mut out = BufWriter::with_capacity(BUFFER, file);
+    out.write_all(&MAGIC)?;
+    out.write_all(&FORMAT_VERSION.to_le_bytes())?;
+    let mut at = (MAGIC.len() + 4) as u64;
+    let mut content_start = 0;
+    let (nodes, relationships) =
+        encode_sections(graph, &ExportOptions::default(), created_by, &mut |kind, encode| {
+            out.write_all(&kind.tag())?;
+            out.write_all(&0u64.to_le_bytes())?;
+            let mut once = Once {
+                out: &mut out,
+                len: 0,
+                crc: crc32fast::Hasher::new(),
+            };
+            encode(&mut once)?;
+            let (len, crc) = (once.len, once.crc.finalize());
+            out.write_all(&crc.to_le_bytes())?;
+            let end = at + 12 + len + 4;
+            out.seek(SeekFrom::Start(at + 4))?;
+            out.write_all(&len.to_le_bytes())?;
+            out.seek(SeekFrom::Start(end))?;
+            at = end;
+            if kind == Section::Manifest {
+                content_start = end;
+            }
+            Ok(())
+        })?;
+    out.flush()?;
+    Ok(Unfinished {
+        content_start,
+        nodes,
+        relationships,
     })
+}
+
+/// Add the `done` section to a file [`write_unfinished`] wrote, making it
+/// exactly what [`write`] writes. Returns what was written and the SHA-256
+/// of the whole file.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn finish<F: Read + Write + std::io::Seek>(
+    file: &mut F,
+    unfinished: &Unfinished,
+) -> Result<(ExportSummary, [u8; 32]), Error> {
+    file.seek(std::io::SeekFrom::Start(0))?;
+    let mut whole = Sha256::new();
+    let mut content = Sha256::new();
+    let mut buf = vec![0u8; BUFFER];
+    let mut at = 0u64;
+    loop {
+        let n = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        whole.update(&buf[..n]);
+        let skip = unfinished.content_start.saturating_sub(at).min(n as u64) as usize;
+        content.update(&buf[skip..n]);
+        at += n as u64;
+    }
+    let digest: [u8; 32] = content.finalize().into();
+    let mut done = Vec::with_capacity(4 + 8 + 32 + 4);
+    done.extend_from_slice(&Section::Done.tag());
+    done.extend_from_slice(&(digest.len() as u64).to_le_bytes());
+    done.extend_from_slice(&digest);
+    done.extend_from_slice(&crc32fast::hash(&digest).to_le_bytes());
+    file.write_all(&done)?;
+    file.flush()?;
+    whole.update(&done);
+    Ok((
+        ExportSummary {
+            nodes: unfinished.nodes,
+            relationships: unfinished.relationships,
+            bytes: at + done.len() as u64,
+            content_sha256: hex(&digest),
+        },
+        whole.finalize().into(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
