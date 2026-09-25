@@ -76,7 +76,10 @@ test('embedded Calgary Point map uses native storage and survives reload and res
   const markers = () => page.evaluate(() => document.querySelector('#graph')._map
     ?.queryRenderedFeatures({ layers: ['zega-nodes'] }).map((feature) => feature.properties.name).sort() || []);
   try {
-    await tileFixture(page);
+    // The shared cities fixture only covers its own Cities-sample spots
+    // (London, Tokyo); this sample queries around Calgary, so it needs its
+    // own basemap archive (a zoom-0 world tile, overzoomed at any camera zoom).
+    await tileFixture(page, { archive: 'cli-tests/fixtures/calgary.pmtiles' });
     await page.goto(server.url);
     await expect(page.locator('#query .monaco-editor')).toBeVisible();
     await expect(page.locator('.conn')).toContainText('native');

@@ -2,8 +2,10 @@ import { readFile } from 'node:fs/promises';
 
 // Serves the explorer's tile host from local files: the committed fixture by
 // default, or another folder laid out like the upload (e.g. the full build).
-export async function tileFixture(page, { root = 'tests/fixtures' } = {}) {
-  const archive = await readFile(`${root}/cities.pmtiles`);
+// `archive` overrides which file answers the pmtiles requests while fonts and
+// sprites still come from `root` — for a spot the shared fixture doesn't cover.
+export async function tileFixture(page, { root = 'tests/fixtures', archive: archivePath = `${root}/cities.pmtiles` } = {}) {
+  const archive = await readFile(archivePath);
   await page.route('https://tiles.zega.dev/**', async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname !== '/cities.pmtiles') {
