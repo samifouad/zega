@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zega graph components</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="../vendor/maplibre-gl/maplibre-gl.css">
+<link rel="stylesheet" href="canvas.css">
+<link rel="stylesheet" href="demo.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="../">zega</a>
+  <span class="dim">graph components · path-on-map</span>
+  <span class="spacer"></span>
+  <label>value <select id="value"><option value="speed">speed</option><option value="dist">dist</option><option value="">none</option></select></label>
+  <label>colorScale <select id="colorScale"><option>sequential</option><option>diverging</option><option>solid</option></select></label>
+  <label>view <select id="view"><option>3d</option><option>2d</option></select></label>
+  <label><input type="checkbox" id="showBuildings" checked> buildings</label>
+  <button id="load" class="primary">load</button>
+  <button id="undo">undo</button>
+  <button id="clear">clear history</button>
+  <button id="theme">dark</button>
+</header>
+<main>
+  <section id="stage" aria-label="Graph component canvas"></section>
+  <aside>
+    <h2>history</h2>
+    <ol id="history"></ol>
+    <h2>view spec</h2>
+    <pre id="spec"></pre>
+    <h2>ZQL</h2>
+    <pre id="zql"></pre>
+    <pre id="errors" role="status" hidden></pre>
+  </aside>
+</main>
+<script type="module" src="demo.js"></script>
+</body>
+</html>

@@ -114,3 +114,25 @@ tiles of the same archive: central London (tile 14/8186/5447) and central
 Tokyo (14/14551/6452), retaining the same OSM attribution/license. The Cities
 tests zoom into both and check that streets are drawn. It is only a test
 fixture. Tests intercept requests locally; no test requires external tiles.
+
+## Monaco extract (graph components)
+
+`cities.pmtiles` has no Monaco, so the `path-on-map` graph component's sample
+(APS 21) ships its own small extract, served with the explorer rather than
+from the tile host: `data/monaco.pmtiles`, **660,422 bytes**, SHA-256
+`08bce1be5be79e30692cb182e01e84176895a7d560a97da6807721ef79ebff46`, zooms
+13–15 over `7.405,43.723,7.440,43.748` from the same 2026-09-23 Protomaps
+build. `components/surfaces/map.js` reads it whole, so it needs no HTTP range
+support (the CLI's embedded server has none). Rebuild it, and the sample, with:
+
+```sh
+node scripts/circuit-sample.mjs /path/to/pmtiles
+```
+
+The sample (`samples/monaco.zql`, `samples/monaco-track.csv`) is the Circuit de
+Monaco racing line from OSM relation 148194 (ODbL 1.0): its ways stitched in
+race order from the `start-finish` node and resampled every 10 m (333 points,
+3,332 m against OSM's `length=3337`). `dist` is metres along the lap. `speed`
+is **modelled** from the line's curvature (lateral, braking and traction limits
+in the script), not telemetry. The map's `© OpenStreetMap contributors` credit
+covers both. Its extract adds 660 KB to the CLI binary, which embeds `data/`.
