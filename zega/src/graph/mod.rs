@@ -6,14 +6,14 @@ use crate::value::Value;
 pub type NodeId = u64;
 pub type RelId = u64;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub labels: Vec<String>,
     pub props: HashMap<String, Value>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Relationship {
     pub id: RelId,
     pub kind: String,
@@ -39,6 +39,8 @@ pub struct Graph {
     examined: AtomicU64,
     /// Nodes a ZQL path search has expanded. A* lowers it.
     expanded: AtomicU64,
+    /// Schema text, declarations and metadata from the last `.graph` import.
+    carried: crate::graph_file::Carried,
 }
 
 impl Default for Graph {
@@ -63,7 +65,16 @@ impl Graph {
             next_rel_id: AtomicU64::new(1),
             examined: AtomicU64::new(0),
             expanded: AtomicU64::new(0),
+            carried: Default::default(),
         }
+    }
+
+    pub(crate) fn carried(&self) -> &crate::graph_file::Carried {
+        &self.carried
+    }
+
+    pub(crate) fn set_carried(&mut self, carried: crate::graph_file::Carried) {
+        self.carried = carried;
     }
 
     /// Conservative Morton-range candidates. Apply an exact predicate afterwards.
@@ -95,6 +106,23 @@ impl Graph {
                 .filter_map(|id| self.nodes.get(id));
             self.declared.build(spec, nodes);
         }
+    }
+
+    /// The declared indexes, sorted by type, field, then kind.
+    #[cfg(test)]
+    pub fn declared_indexes(&self) -> Vec<IndexSpec> {
+        let mut specs = self.declared.specs();
+        specs.sort_by(|a, b| {
+            (&a.type_name, &a.field, a.kind).cmp(&(&b.type_name, &b.field, b.kind))
+        });
+        specs
+    }
+
+    /// Keep the since-open statistics (`rows_examined`, `nodes_expanded`)
+    /// of `previous` when this graph replaces it wholesale (an import).
+    pub fn inherit_statistics(&mut self, previous: &Graph) {
+        self.examined.store(previous.examined(), Ordering::Relaxed);
+        self.expanded.store(previous.expanded(), Ordering::Relaxed);
     }
 
     pub fn has_index(&self, kind: IndexKind, types: &[&str], field: &str) -> bool {
@@ -351,9 +379,15 @@ impl Graph {
         self.incoming.get(&node_id)
     }
 
-    pub fn set_state(&mut self, nodes: HashMap<NodeId, Node>, rels: HashMap<RelId, Relationship>) {
+    pub fn set_state(
+        &mut self,
+        nodes: HashMap<NodeId, Node>,
+        rels: HashMap<RelId, Relationship>,
+        carried: crate::graph_file::Carried,
+    ) {
         // Snapshots and WAL replay use the same index-maintenance paths.
         *self = Self::new();
+        self.carried = carried;
         let mut nodes: Vec<_> = nodes.into_iter().collect();
         nodes.sort_by_key(|(id, _)| *id);
         for (id, node) in nodes {

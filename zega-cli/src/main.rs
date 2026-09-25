@@ -11,7 +11,7 @@ use include_dir::{include_dir, Dir};
 use std::{
     io,
     net::{IpAddr, Ipv4Addr},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 use tokio::net::TcpListener;
 use zega::Zega;
@@ -64,6 +64,33 @@ enum Command {
         /// roll back its writes. 0 turns the limit off.
         #[arg(long, value_name = "SECONDS", default_value_t = zega_server::DEFAULT_QUERY_TIME_LIMIT.as_secs_f64())]
         query_time_limit: f64,
+        /// The largest .graph file `PUT /graph` accepts, in bytes.
+        #[arg(long, value_name = "BYTES", default_value_t = zega_server::DEFAULT_MAX_IMPORT_BYTES)]
+        max_import_bytes: u64,
+    },
+    /// Write the database to a .graph file (docs/graph-format.md). `-` writes to stdout.
+    Export {
+        /// The .graph file to write. It appears only once complete.
+        file: PathBuf,
+        #[arg(long, default_value = "./zega-data")]
+        data: PathBuf,
+        /// A ZQL schema file to carry in the .graph file (types, unique, index).
+        #[arg(long)]
+        schema: Option<PathBuf>,
+        /// Manifest metadata, repeatable: --meta licence=CC-BY-4.0 --meta source=...
+        #[arg(long = "meta", value_name = "KEY=VALUE")]
+        meta: Vec<String>,
+    },
+    /// Replace the database with the graph in a .graph file. `-` reads stdin.
+    /// All or nothing: a damaged file changes nothing.
+    Import {
+        /// The .graph file to read.
+        file: PathBuf,
+        #[arg(long, default_value = "./zega-data")]
+        data: PathBuf,
+        /// Replace a database that already holds nodes or relationships.
+        #[arg(long)]
+        replace: bool,
     },
     /// Serve the embedded explorer against a local database. Prints a URL; opens nothing.
     Explorer {
@@ -73,6 +100,9 @@ enum Command {
         data: PathBuf,
         #[arg(long)]
         allow_private_imports: bool,
+        /// The largest .graph file `PUT /graph` accepts, in bytes.
+        #[arg(long, value_name = "BYTES", default_value_t = zega_server::DEFAULT_MAX_IMPORT_BYTES)]
+        max_import_bytes: u64,
     },
 }
 
@@ -90,55 +120,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(std::thread::available_parallelism()?.get())
-        .enable_all()
-        .build()?;
-    runtime.block_on(run(cli))
+    match cli.command {
+        Command::Export { file, data, schema, meta } => {
+            report("export", export(&file, &data, schema, &meta))
+        }
+        Command::Import { file, data, replace } => report("import", import(&file, &data, replace)),
+        command => serve_command(Cli { command }),
+    }
 }
 
-async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let (data, host, port, token_file, allow_private, explorer, time_limit) = match cli.command {
-        Command::Fmt { .. } => unreachable!("fmt runs without a server runtime"),
-        Command::Start {
-            data,
-            host,
-            port,
-            token_file,
-            allow_private_imports,
-            query_time_limit,
-        } => {
-            let limit = std::time::Duration::try_from_secs_f64(query_time_limit)
-                .map_err(|_| "--query-time-limit must be a number of seconds, 0 or more")?;
-            let limit = (!limit.is_zero()).then_some(limit);
-            (data, host, port, token_file, allow_private_imports, false, limit)
+/// `zega export: <message>` and exit 1, rather than the debug dump `main`
+/// would print: these errors are for the person at the terminal.
+fn report(command: &str, result: Result<(), Box<dyn std::error::Error>>) -> ! {
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(error) => {
+            eprintln!("zega {command}: {error}");
+            std::process::exit(1);
         }
-        Command::Explorer {
-            data,
-            port,
-            allow_private_imports,
-        } => (
-            data,
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port,
-            None,
-            allow_private_imports,
-            true,
-            // The explorer is one person's local database; nothing to share.
-            None,
-        ),
-    };
-    let token = token_file.map(std::fs::read_to_string).transpose()?;
-    let token = token.as_deref().map(str::trim);
-    if token.is_some_and(|token| token.is_empty() || token.chars().any(char::is_whitespace)) {
-        return Err("token file must contain one nonempty bearer token".into());
     }
-    if token.is_none() && host != IpAddr::V4(Ipv4Addr::LOCALHOST) {
-        return Err("--token-file is required when --host is not 127.0.0.1".into());
-    }
-    // Both commands can target the same directory; never let two CLI processes
-    // append independent graph histories to one WAL.
-    std::fs::create_dir_all(&data)?;
+}
+
+/// Take the data directory's lock, the one `zega start` and `zega explorer`
+/// hold for as long as they run: two processes never share a WAL.
+fn lock_data(data: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(data)?;
     let data_lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -151,13 +157,170 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             data.display()
         )
     })?;
+    Ok(data_lock)
+}
+
+fn open_data(data: &Path) -> Result<(std::fs::File, Zega), Box<dyn std::error::Error>> {
+    let lock = lock_data(data)?;
+    let path = data.to_str().ok_or("data path must be UTF-8")?;
+    let db = Zega::open(path).build().map_err(io::Error::other)?;
+    Ok((lock, db))
+}
+
+fn export(
+    file: &Path,
+    data: &Path,
+    schema: Option<PathBuf>,
+    meta: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut options = zega::graph_file::ExportOptions {
+        schema: schema.map(std::fs::read_to_string).transpose()?,
+        ..Default::default()
+    };
+    for entry in meta {
+        let (key, value) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("--meta {entry:?} must be KEY=VALUE"))?;
+        options.meta.insert(key.to_string(), value.to_string());
+    }
+    let (_lock, db) = open_data(data)?;
+    let summary = if file == Path::new("-") {
+        db.export_with(&mut io::stdout().lock(), &options)?
+    } else {
+        // Written beside the target and renamed into place, so a failed
+        // export never leaves a partial file under the real name.
+        let mut partial = file.as_os_str().to_owned();
+        partial.push(".partial");
+        let partial = PathBuf::from(partial);
+        let written = std::fs::File::create(&partial).map_err(Into::into).and_then(|mut out| {
+            let summary = db.export_with(&mut out, &options)?;
+            out.sync_all()?;
+            // Closed before the rename: Windows refuses to rename an open file.
+            drop(out);
+            std::fs::rename(&partial, file)?;
+            sync_parent(file)?;
+            Ok::<_, Box<dyn std::error::Error>>(summary)
+        });
+        // The handle is closed by now (it lived in the closure), and a
+        // failed delete never replaces the export's own error.
+        if written.is_err() {
+            let _ = std::fs::remove_file(&partial);
+        }
+        written?
+    };
+    eprintln!(
+        "wrote {} nodes and {} relationships to {} ({} bytes, .graph format {})",
+        summary.nodes,
+        summary.relationships,
+        file.display(),
+        summary.bytes,
+        zega::graph_file::FORMAT_VERSION
+    );
+    Ok(())
+}
+
+/// Make a rename into `file`'s directory durable. Windows has no directory
+/// handle to sync; its rename is already durable on NTFS.
+fn sync_parent(file: &Path) -> io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        let parent = file.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(windows)]
+    let _ = file;
+    Ok(())
+}
+
+fn import(file: &Path, data: &Path, replace: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let (_lock, db) = open_data(data)?;
+    if !replace && !db.is_empty()? {
+        return Err(format!(
+            "{} already holds a graph; pass --replace to replace it with {}",
+            data.display(),
+            file.display()
+        )
+        .into());
+    }
+    let summary = if file == Path::new("-") {
+        db.import(io::stdin().lock())?
+    } else {
+        db.import(std::fs::File::open(file)?)?
+    };
+    eprintln!(
+        "imported {} nodes and {} relationships from {} (.graph format {}, written by {})",
+        summary.nodes,
+        summary.relationships,
+        file.display(),
+        summary.format_version,
+        summary.created_by
+    );
+    Ok(())
+}
+
+fn serve_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(std::thread::available_parallelism()?.get())
+        .enable_all()
+        .build()?;
+    runtime.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let (data, host, port, token_file, allow_private, explorer, time_limit, max_import) = match cli.command {
+        Command::Fmt { .. } | Command::Export { .. } | Command::Import { .. } => {
+            unreachable!("fmt, export and import run without a server runtime")
+        }
+        Command::Start {
+            data,
+            host,
+            port,
+            token_file,
+            allow_private_imports,
+            query_time_limit,
+            max_import_bytes,
+        } => {
+            let limit = std::time::Duration::try_from_secs_f64(query_time_limit)
+                .map_err(|_| "--query-time-limit must be a number of seconds, 0 or more")?;
+            let limit = (!limit.is_zero()).then_some(limit);
+            (data, host, port, token_file, allow_private_imports, false, limit, max_import_bytes)
+        }
+        Command::Explorer {
+            data,
+            port,
+            allow_private_imports,
+            max_import_bytes,
+        } => (
+            data,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port,
+            None,
+            allow_private_imports,
+            true,
+            // The explorer is one person's local database; nothing to share.
+            None,
+            max_import_bytes,
+        ),
+    };
+    let token = token_file.map(std::fs::read_to_string).transpose()?;
+    let token = token.as_deref().map(str::trim);
+    if token.is_some_and(|token| token.is_empty() || token.chars().any(char::is_whitespace)) {
+        return Err("token file must contain one nonempty bearer token".into());
+    }
+    if token.is_none() && host != IpAddr::V4(Ipv4Addr::LOCALHOST) {
+        return Err("--token-file is required when --host is not 127.0.0.1".into());
+    }
+    // Both commands can target the same directory; never let two CLI processes
+    // append independent graph histories to one WAL.
+    let _data_lock = lock_data(&data)?;
     let path = data.to_str().ok_or("data path must be UTF-8")?;
     let mut db = Zega::open(path).allow_private_imports(allow_private);
     if let Some(limit) = time_limit {
         db = db.query_time_limit(limit);
     }
     let db = db.build().map_err(io::Error::other)?;
-    let state = AppState::new(db, token);
+    let state = AppState::new(db, token)
+        .with_import_limits(max_import, zega_server::DEFAULT_TRANSFER_IDLE_TIMEOUT);
     let listener = TcpListener::bind((host, port)).await?;
     let address = listener.local_addr()?;
     println!("http://{address}");

@@ -6,11 +6,12 @@ edition.workspace = true
 
 [dependencies]
 axum = "0.7"
+futures-util = { version = "0.3", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 subtle = "2.6"
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 zega = { workspace = true }
 
 [dev-dependencies]
