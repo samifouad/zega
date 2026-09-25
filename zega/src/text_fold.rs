@@ -4,11 +4,11 @@
 //!
 //! The fold is: decompose to NFD, drop every combining mark (accents), then
 //! apply Rust's Unicode uppercase mapping. Uppercase, not lowercase, because
-//! its special casing expands `ß` to `SS`, which is what makes
-//! `"STRASSE".foldLike("straße")` true; lowercasing never introduces `ß` back
-//! from `"SS"`. Order matters only a little: `ß` has no NFD decomposition, so
-//! stripping marks first and folding case second, or the reverse, agree on
-//! every case this module is tested against.
+//! its special casing expands `ß` to `SS`, which is what makes `STRASSE`
+//! and `straße` fold to the same string; lowercasing never introduces `ß`
+//! back from `SS`. Order matters only a little: `ß` has no NFD decomposition,
+//! so stripping marks first and folding case second, or the reverse, agree
+//! on every case this module is tested against.
 use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
 
