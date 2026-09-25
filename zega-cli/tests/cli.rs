@@ -294,3 +294,115 @@ fn only_one_cli_process_owns_a_data_directory() {
     let server = Running::start("explorer", directory.path(), &[]);
     assert_eq!(server.request("GET", "/health", None, None).0, 200);
 }
+
+// ---------------------------------------------------------------------------
+// `zega export` / `zega import`: the .graph file on the command line.
+
+const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../zega/tests/fixtures/golden-v1.graph");
+
+fn zega(args: &[&str], directory: &Path) -> std::process::Output {
+    Command::new(BIN)
+        .args(args)
+        .current_dir(directory)
+        .output()
+        .unwrap()
+}
+
+fn succeeds(args: &[&str], directory: &Path) -> std::process::Output {
+    let output = zega(args, directory);
+    assert!(
+        output.status.success(),
+        "zega {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+#[test]
+fn import_then_export_round_trips_and_every_later_export_is_identical() {
+    let directory = tempfile::tempdir().unwrap();
+    let dir = directory.path();
+    let output = succeeds(&["import", GOLDEN, "--data", "a"], dir);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        format!("imported 3 nodes and 2 relationships from {GOLDEN} (.graph format 1, written by zega 0.2.0)")
+    );
+    let output = succeeds(&["export", "a.graph", "--data", "a"], dir);
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("wrote 3 nodes and 2 relationships to a.graph"));
+    assert!(!dir.join("a.graph.partial").exists());
+    // Through a second store and back out: the same bytes.
+    succeeds(&["import", "a.graph", "--data", "b"], dir);
+    succeeds(&["export", "b.graph", "--data", "b"], dir);
+    let a = std::fs::read(dir.join("a.graph")).unwrap();
+    assert_eq!(std::fs::read(dir.join("b.graph")).unwrap(), a);
+    // `-` is stdout.
+    assert_eq!(succeeds(&["export", "-", "--data", "b"], dir).stdout, a);
+    // A server on the imported store serves the same bytes.
+    std::fs::rename(dir.join("b"), dir.join("db")).unwrap();
+    let server = Running::start("start", dir, &[]);
+    let (status, body, mime) = server.request("GET", "/graph", None, None);
+    assert_eq!((status, mime.as_str()), (200, "application/vnd.zega.graph"));
+    assert_eq!(body, a);
+}
+
+#[test]
+fn export_carries_a_schema_and_metadata() {
+    let directory = tempfile::tempdir().unwrap();
+    let dir = directory.path();
+    std::fs::write(dir.join("schema.zql"), "type City { name: String }\nunique { City { name } }\n").unwrap();
+    succeeds(&["import", GOLDEN, "--data", "a"], dir);
+    succeeds(
+        &["export", "a.graph", "--data", "a", "--schema", "schema.zql", "--meta", "licence=CC0-1.0", "--meta", "title=Cities"],
+        dir,
+    );
+    let summary = zega::Zega::in_memory()
+        .build()
+        .unwrap()
+        .import(std::fs::File::open(dir.join("a.graph")).unwrap())
+        .unwrap();
+    assert_eq!(summary.schema.as_deref(), Some("type City { name: String }\nunique { City { name } }\n"));
+    assert_eq!(summary.uniques, vec![("City".to_string(), "name".to_string())]);
+    assert_eq!(summary.meta["licence"], "CC0-1.0");
+    assert_eq!(summary.meta["title"], "Cities");
+    let output = zega(&["export", "b.graph", "--data", "a", "--meta", "no-equals"], dir);
+    assert!(!output.status.success());
+    assert!(!dir.join("b.graph").exists());
+}
+
+#[test]
+fn import_refuses_to_overwrite_without_replace_and_a_damaged_file_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let dir = directory.path();
+    {
+        let server = Running::start("start", dir, &[]);
+        server.zql("mutation { Player(name: \"Ada\" && salary: 1) { name } }");
+    }
+    let before = succeeds(&["export", "-", "--data", "db"], dir).stdout;
+
+    let output = zega(&["import", GOLDEN, "--data", "db"], dir);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("pass --replace"), "{output:?}");
+
+    let golden = std::fs::read(GOLDEN).unwrap();
+    std::fs::write(dir.join("cut.graph"), &golden[..golden.len() / 2]).unwrap();
+    let output = zega(&["import", "cut.graph", "--data", "db", "--replace"], dir);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("zega import: truncated .graph file"), "{output:?}");
+    assert_eq!(succeeds(&["export", "-", "--data", "db"], dir).stdout, before);
+
+    succeeds(&["import", GOLDEN, "--data", "db", "--replace"], dir);
+    assert_ne!(succeeds(&["export", "-", "--data", "db"], dir).stdout, before);
+}
+
+#[test]
+fn export_and_import_respect_a_running_server_s_lock() {
+    let directory = tempfile::tempdir().unwrap();
+    let dir = directory.path();
+    let _server = Running::start("start", dir, &[]);
+    for args in [["export", "x.graph", "--data", "db"], ["import", GOLDEN, "--data", "db"]] {
+        let output = zega(&args, dir);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("already in use"), "{output:?}");
+    }
+    assert!(!dir.join("x.graph").exists());
+}

@@ -13,6 +13,7 @@ use crate::wal::Operation;
 use crate::wal::Wal;
 
 mod graph;
+pub mod graph_file;
 mod index;
 mod journal;
 mod lang;
@@ -44,7 +45,14 @@ pub enum ZegaError {
     /// mutation's writes were rolled back.
     #[error("query exceeded the {} limit", seconds(*limit))]
     QueryTimeLimit { limit: std::time::Duration },
+    /// A `.graph` file could not be written or read (docs/graph-format.md).
+    /// On import, nothing was changed.
+    #[error(transparent)]
+    GraphFile(#[from] crate::graph_file::Error),
 }
+
+/// Who wrote a `.graph` file, as its manifest records it.
+pub const CREATED_BY: &str = concat!("zega ", env!("CARGO_PKG_VERSION"));
 
 /// `2 s`, `1.5 s`, `0.05 s`: a limit as a person would write it.
 fn seconds(limit: std::time::Duration) -> String {
@@ -189,7 +197,7 @@ impl Zega {
         if !builder.in_memory && wal_path.exists() {
             let ops = wal.iter()?;
             for op in ops {
-                apply_op_to_memory(&mut graph, &op);
+                apply_op_to_memory(&mut graph, &op, &path)?;
             }
         }
 
@@ -226,6 +234,115 @@ impl Zega {
         }
     }
 
+    /// Whether the graph holds no node and no relationship.
+    pub fn is_empty(&self) -> Result<bool> {
+        let graph = self.lock_graph()?;
+        Ok(graph.all_nodes().is_empty() && graph.all_relationships().is_empty())
+    }
+
+    /// Stream the whole graph to `out` as a `.graph` file
+    /// (docs/graph-format.md). Memory beyond the graph itself stays bounded:
+    /// the name dictionary and a 64 KiB buffer. Writers wait while it runs.
+    pub fn export(&self, out: &mut impl std::io::Write) -> Result<graph_file::ExportSummary> {
+        self.export_with(out, &graph_file::ExportOptions::default())
+    }
+
+    /// [`Zega::export`] with a schema and manifest metadata to carry along.
+    pub fn export_with(
+        &self,
+        out: &mut impl std::io::Write,
+        options: &graph_file::ExportOptions,
+    ) -> Result<graph_file::ExportSummary> {
+        let graph = self.lock_graph()?;
+        Ok(graph_file::write(&graph, options, CREATED_BY, out)?)
+    }
+
+    /// Replace the whole graph with the `.graph` file read from `input`.
+    ///
+    /// All or nothing: the file is decoded and checked to its last byte into
+    /// a new graph first, and only then installed, so on any error the graph
+    /// is exactly what it was. A disk database keeps a copy of the file in
+    /// `graphs/` and commits the import with one WAL entry naming it, so a
+    /// crash leaves either the old graph or the new one, never a mix.
+    pub fn import(&self, input: impl std::io::Read) -> Result<graph_file::ImportSummary> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.in_memory {
+            return self.import_durably(input);
+        }
+        let (graph, summary) = graph_file::read(input)?;
+        self.install(graph, None)?;
+        Ok(summary)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn import_durably(&self, input: impl std::io::Read) -> Result<graph_file::ImportSummary> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+
+        /// Copies every byte the decoder reads into the staging file.
+        struct Tee<R, W> {
+            input: R,
+            copy: W,
+            hash: Sha256,
+        }
+        impl<R: Read, W: std::io::Write> Read for Tee<R, W> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.input.read(buf)?;
+                self.copy.write_all(&buf[..n])?;
+                self.hash.update(&buf[..n]);
+                Ok(n)
+            }
+        }
+
+        let dir = self.path.join(IMPORTS_DIR);
+        std::fs::create_dir_all(&dir)?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default();
+        let staging = dir.join(format!(".incoming-{}-{nanos}.tmp", std::process::id()));
+        let mut tee = Tee {
+            input,
+            copy: std::io::BufWriter::new(std::fs::File::create(&staging)?),
+            hash: Sha256::new(),
+        };
+        let decoded = graph_file::read(&mut tee);
+        let committed = decoded.and_then(|(graph, summary)| {
+            let file = tee.copy.into_inner().map_err(|error| error.into_error())?;
+            let name = format!("{IMPORTS_DIR}/{}.graph", graph_file::hex(&tee.hash.finalize()));
+            crate::wal::persist_replacement(file, &staging, &self.path.join(&name))
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            Ok((graph, summary, name))
+        });
+        match committed {
+            Ok((graph, summary, file)) => {
+                self.install(graph, Some(Operation::ReplaceGraph { file }))?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&staging);
+                Err(error.into())
+            }
+        }
+    }
+
+    /// Swap in an imported graph once `entry` (if any) is durable in the WAL.
+    fn install(&self, mut replacement: Graph, entry: Option<crate::wal::Operation>) -> Result<()> {
+        let mut graph = self.lock_graph()?;
+        if let Some(entry) = entry {
+            self.wal.append(&entry)?;
+        }
+        replacement.inherit_statistics(&graph);
+        *graph = replacement;
+        Ok(())
+    }
+
+    fn lock_graph(&self) -> Result<std::sync::MutexGuard<'_, Graph>> {
+        self.graph
+            .lock()
+            .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))
+    }
+
     /// Serialize the full graph state to bytes. Platform-independent —
     /// this is how the wasm build persists an in-memory database.
     pub fn snapshot_bytes(&self) -> Result<Vec<u8>> {
@@ -249,7 +366,7 @@ impl Zega {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn apply_op_to_memory(graph: &mut Graph, op: &Operation) {
+fn apply_op_to_memory(graph: &mut Graph, op: &Operation, data: &std::path::Path) -> Result<()> {
     match op {
         Operation::InsertNode { id, labels, props } => {
             graph.restore_node(*id, labels.clone(), props.clone());
@@ -274,8 +391,44 @@ fn apply_op_to_memory(graph: &mut Graph, op: &Operation) {
         }
         Operation::Statement { ops } => {
             for op in ops {
-                apply_op_to_memory(graph, op);
+                apply_op_to_memory(graph, op, data)?;
             }
         }
+        Operation::ReplaceGraph { file } => {
+            let replacement = read_imported_graph(data, file)?;
+            *graph = replacement;
+        }
     }
+    Ok(())
 }
+
+/// The graph an [`Operation::ReplaceGraph`] entry names, read back from the
+/// data directory. It was fully checked before the entry was written, so a
+/// failure here means the data directory lost or damaged it.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_imported_graph(data: &std::path::Path, file: &str) -> Result<Graph> {
+    let valid_name = file
+        .strip_prefix(IMPORTS_DIR)
+        .and_then(|name| name.strip_prefix('/'))
+        .and_then(|name| name.strip_suffix(".graph"))
+        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()));
+    if !valid_name {
+        return Err(ZegaError::Execution(format!(
+            "the WAL replaces the graph with {file:?}, which is not an imported .graph file name"
+        )));
+    }
+    let path = data.join(file);
+    let opened = std::fs::File::open(&path).map_err(|error| {
+        ZegaError::Execution(format!(
+            "the WAL replaces the graph with {}, which cannot be opened: {error}",
+            path.display()
+        ))
+    })?;
+    let (graph, _) = crate::graph_file::read(opened)?;
+    Ok(graph)
+}
+
+/// Where a disk database keeps the `.graph` files it has imported, named by
+/// the SHA-256 of their bytes. The WAL entry of each import names its file.
+#[cfg(not(target_arch = "wasm32"))]
+const IMPORTS_DIR: &str = "graphs";

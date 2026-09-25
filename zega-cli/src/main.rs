@@ -11,7 +11,7 @@ use include_dir::{include_dir, Dir};
 use std::{
     io,
     net::{IpAddr, Ipv4Addr},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 use tokio::net::TcpListener;
 use zega::Zega;
@@ -65,6 +65,30 @@ enum Command {
         #[arg(long, value_name = "SECONDS", default_value_t = zega_server::DEFAULT_QUERY_TIME_LIMIT.as_secs_f64())]
         query_time_limit: f64,
     },
+    /// Write the database to a .graph file (docs/graph-format.md). `-` writes to stdout.
+    Export {
+        /// The .graph file to write. It appears only once complete.
+        file: PathBuf,
+        #[arg(long, default_value = "./zega-data")]
+        data: PathBuf,
+        /// A ZQL schema file to carry in the .graph file (types, unique, index).
+        #[arg(long)]
+        schema: Option<PathBuf>,
+        /// Manifest metadata, repeatable: --meta licence=CC-BY-4.0 --meta source=...
+        #[arg(long = "meta", value_name = "KEY=VALUE")]
+        meta: Vec<String>,
+    },
+    /// Replace the database with the graph in a .graph file. `-` reads stdin.
+    /// All or nothing: a damaged file changes nothing.
+    Import {
+        /// The .graph file to read.
+        file: PathBuf,
+        #[arg(long, default_value = "./zega-data")]
+        data: PathBuf,
+        /// Replace a database that already holds nodes or relationships.
+        #[arg(long)]
+        replace: bool,
+    },
     /// Serve the embedded explorer against a local database. Prints a URL; opens nothing.
     Explorer {
         #[arg(long, default_value_t = 9343)]
@@ -90,6 +114,127 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    match cli.command {
+        Command::Export { file, data, schema, meta } => {
+            report("export", export(&file, &data, schema, &meta))
+        }
+        Command::Import { file, data, replace } => report("import", import(&file, &data, replace)),
+        command => serve_command(Cli { command }),
+    }
+}
+
+/// `zega export: <message>` and exit 1, rather than the debug dump `main`
+/// would print: these errors are for the person at the terminal.
+fn report(command: &str, result: Result<(), Box<dyn std::error::Error>>) -> ! {
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(error) => {
+            eprintln!("zega {command}: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Take the data directory's lock, the one `zega start` and `zega explorer`
+/// hold for as long as they run: two processes never share a WAL.
+fn lock_data(data: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(data)?;
+    let data_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data.join("zega.lock"))?;
+    data_lock.try_lock().map_err(|error| {
+        format!(
+            "data directory {} is already in use or cannot be locked: {error}",
+            data.display()
+        )
+    })?;
+    Ok(data_lock)
+}
+
+fn open_data(data: &Path) -> Result<(std::fs::File, Zega), Box<dyn std::error::Error>> {
+    let lock = lock_data(data)?;
+    let path = data.to_str().ok_or("data path must be UTF-8")?;
+    let db = Zega::open(path).build().map_err(io::Error::other)?;
+    Ok((lock, db))
+}
+
+fn export(
+    file: &Path,
+    data: &Path,
+    schema: Option<PathBuf>,
+    meta: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut options = zega::graph_file::ExportOptions {
+        schema: schema.map(std::fs::read_to_string).transpose()?,
+        ..Default::default()
+    };
+    for entry in meta {
+        let (key, value) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("--meta {entry:?} must be KEY=VALUE"))?;
+        options.meta.insert(key.to_string(), value.to_string());
+    }
+    let (_lock, db) = open_data(data)?;
+    let summary = if file == Path::new("-") {
+        db.export_with(&mut io::stdout().lock(), &options)?
+    } else {
+        // Written beside the target and renamed into place, so a failed
+        // export never leaves a partial file under the real name.
+        let mut partial = file.as_os_str().to_owned();
+        partial.push(".partial");
+        let partial = PathBuf::from(partial);
+        let written = std::fs::File::create(&partial).map_err(Into::into).and_then(|mut out| {
+            let summary = db.export_with(&mut out, &options)?;
+            out.sync_all()?;
+            std::fs::rename(&partial, file)?;
+            Ok::<_, Box<dyn std::error::Error>>(summary)
+        });
+        if written.is_err() {
+            let _ = std::fs::remove_file(&partial);
+        }
+        written?
+    };
+    eprintln!(
+        "wrote {} nodes and {} relationships to {} ({} bytes, .graph format {})",
+        summary.nodes,
+        summary.relationships,
+        file.display(),
+        summary.bytes,
+        zega::graph_file::FORMAT_VERSION
+    );
+    Ok(())
+}
+
+fn import(file: &Path, data: &Path, replace: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let (_lock, db) = open_data(data)?;
+    if !replace && !db.is_empty()? {
+        return Err(format!(
+            "{} already holds a graph; pass --replace to replace it with {}",
+            data.display(),
+            file.display()
+        )
+        .into());
+    }
+    let summary = if file == Path::new("-") {
+        db.import(io::stdin().lock())?
+    } else {
+        db.import(std::fs::File::open(file)?)?
+    };
+    eprintln!(
+        "imported {} nodes and {} relationships from {} (.graph format {}, written by {})",
+        summary.nodes,
+        summary.relationships,
+        file.display(),
+        summary.format_version,
+        summary.created_by
+    );
+    Ok(())
+}
+
+fn serve_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(std::thread::available_parallelism()?.get())
         .enable_all()
@@ -99,7 +244,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let (data, host, port, token_file, allow_private, explorer, time_limit) = match cli.command {
-        Command::Fmt { .. } => unreachable!("fmt runs without a server runtime"),
+        Command::Fmt { .. } | Command::Export { .. } | Command::Import { .. } => {
+            unreachable!("fmt, export and import run without a server runtime")
+        }
         Command::Start {
             data,
             host,
@@ -138,19 +285,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
     // Both commands can target the same directory; never let two CLI processes
     // append independent graph histories to one WAL.
-    std::fs::create_dir_all(&data)?;
-    let data_lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(data.join("zega.lock"))?;
-    data_lock.try_lock().map_err(|error| {
-        format!(
-            "data directory {} is already in use or cannot be locked: {error}",
-            data.display()
-        )
-    })?;
+    let _data_lock = lock_data(&data)?;
     let path = data.to_str().ok_or("data path must be UTF-8")?;
     let mut db = Zega::open(path).allow_private_imports(allow_private);
     if let Some(limit) = time_limit {

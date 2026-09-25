@@ -53,7 +53,18 @@ zega start --data ./data
 # http://127.0.0.1:9342
 zega explorer --data ./data
 # http://127.0.0.1:9343
+zega export graph.graph --data ./data
+zega import graph.graph --data ./other --replace
 ```
+
+`zega export` and `zega import` move a whole graph as one `.graph` file, the
+format every zega surface reads and writes ([spec](docs/graph-format.md)).
+Export streams and never leaves a partial file; `--schema s.zql` and
+`--meta key=value` carry a schema and metadata along. Import is all or
+nothing: a truncated or damaged file changes nothing. It refuses to replace a
+database that holds data unless given `--replace`. `-` reads stdin or writes
+stdout. Both take the data directory's lock, so they fail while a server holds
+it: use `GET /graph` and `PUT /graph` then.
 
 The CLI locks its data directory for the life of the process; starting another
 CLI process against that directory fails instead of sharing the WAL. `start` defaults to port **9342** (ZEGA on a
@@ -96,7 +107,12 @@ optional `sources` object mapping literal ZQL locations to raw text. The engine
 parses and inserts that text. To execute a full ZQL file, set `document: true`
 and put the document in `query` (no separate schema needed).
 
-The explorer also uses authenticated `/graph` read/clear and graph edit routes.
+`GET /graph` streams the whole graph as a `.graph` file
+(`application/vnd.zega.graph`, [spec](docs/graph-format.md)); with
+`Accept: application/json` it returns the JSON view the explorer draws.
+`PUT /graph` replaces the graph with the `.graph` file in the request body,
+all or nothing, and answers with what the file carried. `DELETE /graph` clears
+it. The explorer also uses the authenticated graph edit routes.
 Requests execute on the blocking pool under a shared database gate; slow native
 loads do not block the HTTP health worker. See [data loading](docs/data-loading.md)
 for format, limits and WAL semantics.
@@ -173,7 +189,13 @@ const schema = 'type Person { name: String }';
 db.run(schema, 'mutation { Person(name: "Ada") { name } }');
 console.log(JSON.parse(db.run(schema, '{ Person { name } }')));
 
+const file = db.exportGraph();          // Uint8Array, a .graph file
+new ZegaWasm().importGraph(file);       // replaces that database's graph
 ```
+
+`export_base64` / `import_base64` still work for the explorer's saved
+sessions, but they carry the engine's internal snapshot and are deprecated
+for anything else: use `exportGraph` / `importGraph`.
 
 ## Formatting ZQL and JSON
 
@@ -256,7 +278,9 @@ fails or the WAL refuses it, nothing of it stays in memory or on disk.
 Torn writes and bad checksums are detected and truncated on replay.
 `Zega::snapshot()` writes a full `snapshot.bin`; the next open restores the
 snapshot and replays only the WAL after it. Legacy WAL versions are migrated
-automatically.
+automatically. `Zega::import` keeps the imported `.graph` file in `graphs/` and
+commits it with one WAL entry naming it, so a crash leaves the old graph or
+the new one, never a mix.
 
 ## Benchmarks
 

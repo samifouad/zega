@@ -1873,7 +1873,7 @@ fn snapshot_with_unicode_and_extreme_values_roundtrips() {
 // Replay through the same function `Zega::open` uses, so this test cannot
 // drift from real recovery.
 fn apply_op(graph: &mut Graph, op: &Operation) {
-    crate::apply_op_to_memory(graph, op);
+    crate::apply_op_to_memory(graph, op, std::path::Path::new(".")).unwrap();
 }
 
 #[test]

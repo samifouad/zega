@@ -1,10 +1,13 @@
 use crate::{auth, AppState};
 use axum::{
+    body::{Body, Bytes},
     extract::{rejection::JsonRejection, Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
+use futures_util::StreamExt;
+use std::io;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -132,11 +135,119 @@ pub async fn vector_view(
     .await
 }
 
+/// Chunks in flight between the engine and the socket, each one write of the
+/// exporter's 64 KiB buffer: what bounds a download's memory.
+const CHUNKS_IN_FLIGHT: usize = 4;
+
+type Chunk = Result<Bytes, io::Error>;
+
+/// Hands each write to the response body, blocking while the client is
+/// behind. A client that went away fails the write, which ends the export.
+struct BodyWriter(tokio::sync::mpsc::Sender<Chunk>);
+
+impl io::Write for BodyWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .blocking_send(Ok(Bytes::copy_from_slice(buf)))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "the client went away"))?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Reads a request body the async side forwards chunk by chunk.
+struct BodyReader {
+    chunks: tokio::sync::mpsc::Receiver<Chunk>,
+    current: Bytes,
+}
+
+impl io::Read for BodyReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        while self.current.is_empty() {
+            match self.chunks.blocking_recv() {
+                None => return Ok(0),
+                Some(chunk) => self.current = chunk?,
+            }
+        }
+        let n = buf.len().min(self.current.len());
+        buf[..n].copy_from_slice(&self.current.split_to(n));
+        Ok(n)
+    }
+}
+
+/// `GET /graph`: the whole graph as a `.graph` file (docs/graph-format.md),
+/// streamed as it is written. `Accept: application/json` gets the JSON view
+/// the explorer draws instead.
 pub async fn graph(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &state) {
         return error(StatusCode::UNAUTHORIZED, "unauthorized");
     }
-    execute(state, Zega::graph_json).await
+    let wants_json = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| accept.contains("application/json"));
+    if wants_json {
+        return execute(state, Zega::graph_json).await;
+    }
+    let (send, mut receive) = tokio::sync::mpsc::channel::<Chunk>(CHUNKS_IN_FLIGHT);
+    tokio::task::spawn_blocking(move || {
+        let result = match state.zega.lock() {
+            Ok(db) => db
+                .export(&mut BodyWriter(send.clone()))
+                .map_err(|error| io::Error::other(error.to_string())),
+            Err(_) => Err(io::Error::other("database lock poisoned")),
+        };
+        // Headers are already sent: failing the body is how the client
+        // learns the file is incomplete (and a .graph file without its
+        // final section never imports).
+        if let Err(error) = result {
+            let _ = send.blocking_send(Err(error));
+        }
+    });
+    let body = futures_util::stream::poll_fn(move |context| receive.poll_recv(context));
+    Response::builder()
+        .header(header::CONTENT_TYPE, zega::graph_file::MEDIA_TYPE)
+        .header(header::CONTENT_DISPOSITION, "attachment; filename=\"graph.graph\"")
+        .body(Body::from_stream(body))
+        .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "response failed"))
+}
+
+/// `PUT /graph`: replace the whole graph with the `.graph` file in the body.
+/// The body is decoded as it arrives; nothing changes unless all of it is a
+/// valid file.
+pub async fn import_graph(State(state): State<AppState>, headers: HeaderMap, body: Body) -> Response {
+    if !authorized(&headers, &state) {
+        return error(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    let (send, receive) = tokio::sync::mpsc::channel::<Chunk>(CHUNKS_IN_FLIGHT);
+    let import = tokio::task::spawn_blocking(move || {
+        let db = state
+            .zega
+            .lock()
+            .map_err(|_| ZegaError::Execution("database lock poisoned".into()))?;
+        db.import(BodyReader {
+            chunks: receive,
+            current: Bytes::new(),
+        })
+    });
+    let mut body = body.into_data_stream();
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.map_err(|error| io::Error::other(error.to_string()));
+        let failed = chunk.is_err();
+        // A send fails once the importer has stopped reading (it already
+        // knows the file is bad); its error is the one to report.
+        if send.send(chunk).await.is_err() || failed {
+            break;
+        }
+    }
+    drop(send);
+    match import.await {
+        Ok(Ok(summary)) => Json(json!({"ok": true, "result": summary})).into_response(),
+        Ok(Err(cause)) => error(StatusCode::BAD_REQUEST, cause.to_string()),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "database worker failed"),
+    }
 }
 
 pub async fn clear(State(state): State<AppState>, headers: HeaderMap) -> Response {

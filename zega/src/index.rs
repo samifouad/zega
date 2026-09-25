@@ -297,6 +297,21 @@ impl DeclaredIndexes {
         self.range.is_empty() && self.text.is_empty()
     }
 
+    /// Every declared index, in no particular order.
+    pub fn specs(&self) -> Vec<IndexSpec> {
+        let range = self.range.keys().map(|(type_name, field)| IndexSpec {
+            kind: IndexKind::Range,
+            type_name: type_name.clone(),
+            field: field.clone(),
+        });
+        let text = self.text.keys().map(|(type_name, field)| IndexSpec {
+            kind: IndexKind::Text,
+            type_name: type_name.clone(),
+            field: field.clone(),
+        });
+        range.chain(text).collect()
+    }
+
     pub fn contains(&self, spec: &IndexSpec) -> bool {
         let slot = (spec.type_name.clone(), spec.field.clone());
         match spec.kind {

@@ -70,6 +70,12 @@ pub enum Operation {
     Statement {
         ops: Vec<Operation>,
     },
+    /// Replace the whole graph with the `.graph` file `file` (a path inside
+    /// the data directory). One small entry commits an import of any size:
+    /// the file is written and synced first, and replay reads it back.
+    ReplaceGraph {
+        file: String,
+    },
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -511,7 +517,7 @@ fn migrate_legacy_wal(path: &Path, file: File, file_len: u64) -> Result<(), WalE
 // handles before entering here. Never remove the destination before replacing
 // it: a failed rename must leave the last durable version available.
 #[cfg(not(target_arch = "wasm32"))]
-fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), WalError> {
+pub(crate) fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), WalError> {
     file.sync_all()?;
     drop(file);
     #[cfg(windows)]

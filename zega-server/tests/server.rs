@@ -134,6 +134,7 @@ async fn raw_import_uses_the_engine_and_graph_edits_use_wal_paths() {
     assert_eq!(body["result"], json!([{"name":"Ada","age":37}]));
     let graph: Value = client
         .get(format!("{}/graph", server.base_url))
+        .header("accept", "application/json")
         .bearer_auth(TOKEN)
         .send()
         .await
@@ -170,6 +171,7 @@ async fn every_database_route_requires_the_bearer() {
         (reqwest::Method::POST, "/zql"),
         (reqwest::Method::POST, "/vector-view"),
         (reqwest::Method::GET, "/graph"),
+        (reqwest::Method::PUT, "/graph"),
         (reqwest::Method::DELETE, "/graph"),
         (reqwest::Method::DELETE, "/graph/nodes/1"),
         (reqwest::Method::DELETE, "/graph/relationships/1"),
@@ -512,4 +514,125 @@ async fn a_query_inside_the_limit_is_not_affected() {
         .await
         .unwrap();
     assert_eq!(body["ok"], true, "{body}");
+}
+
+// ---------------------------------------------------------------------------
+// `.graph` over HTTP: `GET /graph` streams it, `PUT /graph` imports it.
+
+const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../zega/tests/fixtures/golden-v1.graph");
+
+async fn download(client: &Client, server: &TestServer) -> Vec<u8> {
+    let response = client
+        .get(format!("{}/graph", server.base_url))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["content-type"],
+        zega::graph_file::MEDIA_TYPE
+    );
+    response.bytes().await.unwrap().to_vec()
+}
+
+async fn upload(client: &Client, server: &TestServer, bytes: Vec<u8>) -> (StatusCode, Value) {
+    let response = client
+        .put(format!("{}/graph", server.base_url))
+        .bearer_auth(TOKEN)
+        .header("content-type", zega::graph_file::MEDIA_TYPE)
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    (response.status(), response.json().await.unwrap())
+}
+
+/// What the engine exports after importing `bytes`: the graph without the
+/// schema text a file may carry (a database stores no schema).
+fn engine_export(bytes: &[u8]) -> Vec<u8> {
+    let local = Zega::in_memory().build().unwrap();
+    local.import(bytes).unwrap();
+    let mut out = Vec::new();
+    local.export(&mut out).unwrap();
+    out
+}
+
+#[tokio::test]
+async fn get_graph_streams_the_graph_file_the_engine_exports() {
+    let server = start_server().await;
+    let client = Client::new();
+    post(&client, &server)
+        .json(&json!({"schema":SCHEMA,"query":"mutation { Person(name: \"Ada\" && age: 37) { name } }"}))
+        .send()
+        .await
+        .unwrap();
+    let bytes = download(&client, &server).await;
+    assert!(bytes.starts_with(&zega::graph_file::MAGIC));
+    let local = Zega::in_memory().build().unwrap();
+    let summary = local.import(&bytes[..]).unwrap();
+    assert_eq!((summary.nodes, summary.relationships), (1, 0));
+    let mut again = Vec::new();
+    local.export(&mut again).unwrap();
+    assert_eq!(again, bytes, "the download is exactly what the engine exports");
+}
+
+#[tokio::test]
+async fn put_graph_replaces_the_graph_and_get_returns_it() {
+    let server = start_server().await;
+    let client = Client::new();
+    let golden = std::fs::read(GOLDEN).unwrap();
+    let (status, body) = upload(&client, &server, golden.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"]["nodes"], 3);
+    assert_eq!(body["result"]["relationships"], 2);
+    assert_eq!(body["result"]["meta"]["licence"], "CC0-1.0");
+    assert_eq!(download(&client, &server).await, engine_export(&golden));
+}
+
+#[tokio::test]
+async fn put_graph_refuses_a_damaged_file_and_changes_nothing() {
+    let server = start_server().await;
+    let client = Client::new();
+    post(&client, &server)
+        .json(&json!({"schema":SCHEMA,"query":"mutation { Person(name: \"Ada\" && age: 37) { name } }"}))
+        .send()
+        .await
+        .unwrap();
+    let before = download(&client, &server).await;
+    let golden = std::fs::read(GOLDEN).unwrap();
+    let mut flipped = golden.clone();
+    let at = flipped.len() / 2;
+    flipped[at] ^= 0x01;
+    for (bytes, message) in [
+        (golden[..golden.len() - 1].to_vec(), "truncated .graph file"),
+        (flipped, "corrupt .graph file"),
+        (b"not a graph".to_vec(), "not a .graph file"),
+    ] {
+        let (status, body) = upload(&client, &server, bytes).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].as_str().unwrap().starts_with(message), "{body}");
+        assert_eq!(download(&client, &server).await, before);
+    }
+}
+
+/// `PUT /graph` streams: a file past the 16 MB JSON body limit imports.
+#[tokio::test]
+async fn put_graph_accepts_a_file_larger_than_the_json_body_limit() {
+    let source = Zega::in_memory().build().unwrap();
+    let big = "x".repeat(1_000_000);
+    for _ in 0..18 {
+        source
+            .run_lang(SCHEMA, &format!("mutation {{ Person(name: \"{big}\") {{ name }} }}"))
+            .unwrap();
+    }
+    let mut bytes = Vec::new();
+    source.export(&mut bytes).unwrap();
+    assert!(bytes.len() > 16_000_000);
+    let server = start_server().await;
+    let client = Client::new();
+    let (status, body) = upload(&client, &server, bytes.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(download(&client, &server).await, bytes);
 }

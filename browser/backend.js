@@ -19,7 +19,8 @@ class NativeDatabase {
   async request(path, method = 'GET', body) {
     const response = await fetch(path, {
       method,
-      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      // `GET /graph` answers with a .graph file unless JSON is asked for.
+      headers: body === undefined ? { Accept: 'application/json' } : { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const result = await response.json();

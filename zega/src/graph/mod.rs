@@ -6,14 +6,14 @@ use crate::value::Value;
 pub type NodeId = u64;
 pub type RelId = u64;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub labels: Vec<String>,
     pub props: HashMap<String, Value>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Relationship {
     pub id: RelId,
     pub kind: String,
@@ -95,6 +95,22 @@ impl Graph {
                 .filter_map(|id| self.nodes.get(id));
             self.declared.build(spec, nodes);
         }
+    }
+
+    /// The declared indexes, sorted by type, field, then kind.
+    pub fn declared_indexes(&self) -> Vec<IndexSpec> {
+        let mut specs = self.declared.specs();
+        specs.sort_by(|a, b| {
+            (&a.type_name, &a.field, a.kind).cmp(&(&b.type_name, &b.field, b.kind))
+        });
+        specs
+    }
+
+    /// Keep the since-open statistics (`rows_examined`, `nodes_expanded`)
+    /// of `previous` when this graph replaces it wholesale (an import).
+    pub fn inherit_statistics(&mut self, previous: &Graph) {
+        self.examined.store(previous.examined(), Ordering::Relaxed);
+        self.expanded.store(previous.expanded(), Ordering::Relaxed);
     }
 
     pub fn has_index(&self, kind: IndexKind, types: &[&str], field: &str) -> bool {
