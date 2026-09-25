@@ -1,11 +1,15 @@
 import { readFile } from 'node:fs/promises';
 
-export async function tileFixture(page) {
-  const archive = await readFile('tests/fixtures/calgary.pmtiles');
+// Serves the explorer's tile host from local files: the committed fixture by
+// default, or another folder laid out like the upload (e.g. the full build).
+// `archive` overrides which file answers the pmtiles requests while fonts and
+// sprites still come from `root` — for a spot the shared fixture doesn't cover.
+export async function tileFixture(page, { root = 'tests/fixtures', archive: archivePath = `${root}/cities.pmtiles` } = {}) {
+  const archive = await readFile(archivePath);
   await page.route('https://tiles.zega.dev/**', async (route) => {
     const url = new URL(route.request().url());
-    if (url.pathname !== '/calgary.pmtiles') {
-      try { return route.fulfill({ body: await readFile(`tests/fixtures${decodeURIComponent(url.pathname)}`), contentType: url.pathname.endsWith('.json') ? 'application/json' : url.pathname.endsWith('.png') ? 'image/png' : 'application/x-protobuf' }); }
+    if (url.pathname !== '/cities.pmtiles') {
+      try { return route.fulfill({ body: await readFile(`${root}${decodeURIComponent(url.pathname)}`), contentType: url.pathname.endsWith('.json') ? 'application/json' : url.pathname.endsWith('.png') ? 'image/png' : 'application/x-protobuf' }); }
       catch { return route.fulfill({ status: 404 }); }
     }
     const range = /bytes=(\d+)-(\d+)/.exec(route.request().headers().range || '');

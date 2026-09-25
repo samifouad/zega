@@ -9,7 +9,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     environment: public-ci
-    timeout-minutes: 10
+    timeout-minutes: 25
     env:
       WRANGLER_SEND_METRICS: 'false'
     defaults:

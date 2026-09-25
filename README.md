@@ -306,8 +306,9 @@ Apache-2.0. See [LICENSE](LICENSE).
 NOTICE: the explorer's Flights sample (`browser/samples/flights*.csv`) contains
 information from [OpenFlights](https://openflights.org/data.php), made
 available under the Open Database License (ODbL 1.0); those files are a derived
-database under the same licence. The Calgary sample and the basemap are
-© OpenStreetMap contributors, ODbL 1.0.
+database under the same licence, as are the Cities sample's routes
+(`browser/samples/cities-routes.csv`). The Cities and Calgary samples' places
+and cities, and the basemap, are © OpenStreetMap contributors, ODbL 1.0.
 
 ZQL uses `@` for language-owned names and `&` for user edge fields. See
 [Names in ZQL (APS 6)](docs/names.md) for the complete syntax inventory and migration rules.

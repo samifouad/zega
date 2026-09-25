@@ -1,0 +1,18 @@
+from,to
+Addis Ababa,London
+Addis Ababa,Rome
+Calgary,London
+Calgary,New York
+Calgary,San Francisco
+Calgary,Tokyo
+London,Tokyo
+New York,London
+New York,San Francisco
+New York,Tokyo
+Rome,London
+Rome,New York
+Rome,Tokyo
+San Francisco,London
+San Francisco,Tokyo
+Sydney,San Francisco
+Sydney,Tokyo
