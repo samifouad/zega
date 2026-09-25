@@ -248,6 +248,13 @@ struct Adjacency {
     inc: IdSet,
 }
 
+/// What stored node `id` holds in `field`.
+fn stored_value<'g>(nodes: &'g IdMap<NodeRecord>, shapes: &Shapes, id: NodeId, field: Sym) -> Option<&'g Value> {
+    let record = nodes.get(id)?;
+    let at = shapes.get(record.shape).keys.binary_search(&field).ok()?;
+    record.values.get(at)
+}
+
 pub struct Graph {
     names: Names,
     shapes: Shapes,
@@ -481,7 +488,9 @@ impl Graph {
                 }
             }
         }
-        self.uniques.insert(id, node.shape, node.values);
+        let (nodes, shapes) = (&self.nodes, &self.shapes);
+        let stored = |other: NodeId, field: Sym| stored_value(nodes, shapes, other, field);
+        self.uniques.insert(id, node.shape, node.values, &stored);
         self.declared.insert(&node);
     }
 
@@ -646,9 +655,11 @@ impl Graph {
             }
             self.uniques.add(ty, field);
             let ids: Vec<NodeId> = self.label_index.get(&ty).map(|set| set.iter().copied().collect()).unwrap_or_default();
+            let (nodes, shapes) = (&self.nodes, &self.shapes);
+            let stored = |other: NodeId, field: Sym| stored_value(nodes, shapes, other, field);
             for id in ids {
-                if let Some(record) = self.nodes.get(id) {
-                    self.uniques.insert(id, self.shapes.get(record.shape), &record.values);
+                if let Some(record) = nodes.get(id) {
+                    self.uniques.insert(id, shapes.get(record.shape), &record.values, &stored);
                 }
             }
         }
@@ -667,7 +678,7 @@ impl Graph {
                 .is_some_and(|node| node.has_label(ty) && node.prop(field) == Some(value))
         };
         let mut ids: Vec<NodeId> = match self.uniques.candidates(ty_sym, field_sym, value) {
-            Some(candidates) => candidates.into_iter().flat_map(IdSet::iter).copied().filter(holds).collect(),
+            Some(candidates) => candidates.into_iter().filter(holds).collect(),
             None => self.label_index.get(&ty_sym).into_iter().flat_map(IdSet::iter).copied().filter(holds).collect(),
         };
         ids.sort_unstable();

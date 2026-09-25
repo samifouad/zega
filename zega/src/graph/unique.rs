@@ -8,41 +8,26 @@
 //! new one from the nodes already stored, and every write keeps them
 //! current after.
 //!
-//! An entry maps a per-graph keyed hash of the value to the ids holding it.
-//! It stores no value: a lookup checks each candidate's stored value, so a
-//! collision costs a comparison, never a wrong answer, and equality is
+//! An index is a hash table of node ids, each placed by a per-graph keyed
+//! hash of the value its node stores. It stores no value: a lookup checks
+//! each candidate's stored value, so a collision costs a comparison, never a
+//! wrong answer, and equality is
 //! `Value`'s own (NaN payloads, `-0.0` and Int against Float exactly as a
 //! map keyed by `Value` compared them).
 
-use std::collections::HashMap;
-use std::hash::{BuildHasher, BuildHasherDefault, Hasher, RandomState};
+use std::hash::{BuildHasher, RandomState};
+
+use hashbrown::HashTable;
 
 use super::names::{Shape, Sym};
-use crate::idset::IdSet;
 use crate::value::Value;
-
-/// A hasher for keys that are already hashes.
-#[derive(Default)]
-struct PreHashed(u64);
-
-impl Hasher for PreHashed {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 = (self.0 << 8) | u64::from(*byte);
-        }
-    }
-    fn write_u64(&mut self, value: u64) {
-        self.0 = value;
-    }
-}
 
 struct Slot {
     ty: Sym,
     field: Sym,
-    ids: HashMap<u64, IdSet, BuildHasherDefault<PreHashed>>,
+    /// Node ids, each placed by the hash of the value its node stores in
+    /// `field`. Growing the table rehashes an id by reading that value.
+    ids: HashTable<u64>,
 }
 
 pub(crate) struct UniqueIndexes {
@@ -74,20 +59,35 @@ impl UniqueIndexes {
     /// Start an empty index on (`ty`, `field`); the caller fills it.
     pub fn add(&mut self, ty: Sym, field: Sym) {
         if !self.contains(ty, field) {
-            self.slots.push(Slot { ty, field, ids: HashMap::default() });
+            self.slots.push(Slot { ty, field, ids: HashTable::new() });
         }
     }
 
     /// Index node `id` (with `shape` and `values`) in every index whose type
-    /// it carries and whose field it has.
-    pub fn insert(&mut self, id: u64, shape: &Shape, values: &[Value]) {
+    /// it carries and whose field it has. `stored(id, field)` reads what
+    /// another indexed node stores, for rehashing when a table grows; every
+    /// id in an index is a stored node holding that field.
+    pub fn insert<'g>(
+        &mut self,
+        id: u64,
+        shape: &Shape,
+        values: &[Value],
+        stored: &dyn Fn(u64, Sym) -> Option<&'g Value>,
+    ) {
+        let hasher = &self.hasher;
         for slot in &mut self.slots {
             if !shape.labels.contains(&slot.ty) {
                 continue;
             }
             if let Ok(at) = shape.keys.binary_search(&slot.field) {
-                let hash = self.hasher.hash_one(&values[at]);
-                slot.ids.entry(hash).or_default().insert(id);
+                let hash = hasher.hash_one(&values[at]);
+                if slot.ids.find(hash, |&other| other == id).is_some() {
+                    continue;
+                }
+                let field = slot.field;
+                slot.ids.insert_unique(hash, id, |&other| {
+                    stored(other, field).map_or(0, |value| hasher.hash_one(value))
+                });
             }
         }
     }
@@ -100,11 +100,8 @@ impl UniqueIndexes {
             }
             if let Ok(at) = shape.keys.binary_search(&slot.field) {
                 let hash = self.hasher.hash_one(&values[at]);
-                if let Some(set) = slot.ids.get_mut(&hash) {
-                    set.remove(id);
-                    if set.is_empty() {
-                        slot.ids.remove(&hash);
-                    }
+                if let Ok(entry) = slot.ids.find_entry(hash, |&other| other == id) {
+                    entry.remove();
                 }
             }
         }
@@ -113,13 +110,14 @@ impl UniqueIndexes {
     /// How many node ids the indexes hold, over all of them.
     #[cfg(test)]
     pub fn entries(&self) -> usize {
-        self.slots.iter().flat_map(|slot| slot.ids.values()).map(IdSet::len).sum()
+        self.slots.iter().map(|slot| slot.ids.len()).sum()
     }
 
-    /// The ids that may hold `value` in (`ty`, `field`): None when that pair
-    /// has no index, and then the caller scans.
-    pub fn candidates(&self, ty: Sym, field: Sym, value: &Value) -> Option<Option<&IdSet>> {
+    /// The ids that may hold `value` in (`ty`, `field`), a superset the
+    /// caller checks: None when that pair has no index, and then the caller
+    /// scans.
+    pub fn candidates(&self, ty: Sym, field: Sym, value: &Value) -> Option<Vec<u64>> {
         let slot = self.slots.iter().find(|slot| slot.ty == ty && slot.field == field)?;
-        Some(slot.ids.get(&self.hasher.hash_one(value)))
+        Some(slot.ids.iter_hash(self.hasher.hash_one(value)).copied().collect())
     }
 }
