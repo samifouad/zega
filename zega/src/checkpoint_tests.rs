@@ -77,7 +77,7 @@ fn labels(names: &[&str]) -> Vec<String> {
 
 /// The node whose `key` property is `key`.
 fn id_of(graph: &Graph, key: &str) -> NodeId {
-    let key = Value::String(key.to_string());
+    let key = Value::from(key.to_string());
     graph
         .all_nodes()
         .values()
@@ -87,7 +87,7 @@ fn id_of(graph: &Graph, key: &str) -> NodeId {
 }
 
 fn create(zega: &Zega, key: &str, kind: &[&str], mut extra: Vec<(&str, Value)>) {
-    extra.push(("key", Value::String(key.to_string())));
+    extra.push(("key", Value::from(key.to_string())));
     write(zega, |graph, journal| {
         journal.create_node(graph, labels(kind), props(extra));
     });
@@ -135,11 +135,11 @@ fn seed() -> Vec<u8> {
 fn writes_a(zega: &Zega) {
     zega.import(&seed()[..]).unwrap();
     let point = Value::Point(Point::new(51.05, -114.07).unwrap());
-    let vector = Value::Vector(Vector::new(&[0.5, -1.0, 0.0], Metric::Cosine).unwrap());
-    let nested = Value::Map(props(vec![
-        ("list", Value::List(vec![Value::Int(1), Value::Null, Value::Bool(true)])),
+    let vector = Value::Vector(Box::new(Vector::new(&[0.5, -1.0, 0.0], Metric::Cosine).unwrap()));
+    let nested = Value::Map(Box::new(props(vec![
+        ("list", Value::List(vec![Value::Int(1), Value::Null, Value::Bool(true)].into())),
         ("float", Value::Float(1.5f64.to_bits())),
-    ]));
+    ])));
     create(zega, "a1", &["Person", "Admin"], vec![("at", point), ("embedding", vector)]);
     create(zega, "a2", &["Person"], vec![("nested", nested)]);
     create(zega, "a3", &["Player"], vec![("name", Value::String("Bo".into())), ("salary", Value::Int(100))]);
@@ -432,7 +432,7 @@ fn concurrent_writers_lose_nothing_across_checkpoints() {
             let zega = &zega;
             scope.spawn(move || {
                 for i in 0..each {
-                    create(zega, &format!("w{writer}-{i}"), &["Person"], vec![("pad", Value::String("x".repeat(64)))]);
+                    create(zega, &format!("w{writer}-{i}"), &["Person"], vec![("pad", Value::from("x".repeat(64)))]);
                 }
             });
         }
@@ -460,7 +460,7 @@ fn a_disk_store_checkpoints_on_its_own_once_the_wal_is_due() {
         .build()
         .unwrap();
     for i in 0..200 {
-        create(&zega, &format!("n{i}"), &["Person"], vec![("pad", Value::String("x".repeat(200)))]);
+        create(&zega, &format!("n{i}"), &["Person"], vec![("pad", Value::from("x".repeat(200)))]);
     }
     // The WAL, read raw while the store is open: its first entry is a
     // `ReplaceGraph` (variant 6) once a checkpoint has rotated it.
@@ -486,7 +486,7 @@ fn snapshot_every_zero_takes_no_checkpoint_of_its_own() {
     let dir = tempfile::tempdir().unwrap();
     let zega = open(dir.path());
     for i in 0..100 {
-        create(&zega, &format!("n{i}"), &["Person"], vec![("pad", Value::String("x".repeat(200)))]);
+        create(&zega, &format!("n{i}"), &["Person"], vec![("pad", Value::from("x".repeat(200)))]);
     }
     std::thread::sleep(Duration::from_millis(500));
     assert!(graph_files(dir.path()).is_empty());
@@ -761,7 +761,7 @@ fn a_long_tail_does_not_make_the_next_checkpoint_due_at_once() {
         });
         wait_for_reached.recv_timeout(Duration::from_secs(30)).unwrap();
         for i in 0..40 {
-            create(zega, &format!("t{i}"), &["Person"], vec![("pad", Value::String("x".repeat(200)))]);
+            create(zega, &format!("t{i}"), &["Person"], vec![("pad", Value::from("x".repeat(200)))]);
         }
         resume.send(()).unwrap();
         let checkpoint = checkpoint.join().unwrap();
@@ -771,7 +771,7 @@ fn a_long_tail_does_not_make_the_next_checkpoint_due_at_once() {
     let (_, due, _) = store.due(floor).unwrap();
     assert!(!due, "the tail of the last checkpoint made the next one due at once");
     for i in 0..40 {
-        create(&zega, &format!("u{i}"), &["Person"], vec![("pad", Value::String("x".repeat(200)))]);
+        create(&zega, &format!("u{i}"), &["Person"], vec![("pad", Value::from("x".repeat(200)))]);
     }
     assert!(store.due(floor).unwrap().1, "new writes past the threshold did not make it due");
 }

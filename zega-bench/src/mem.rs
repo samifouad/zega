@@ -669,10 +669,21 @@ fn run_file(shape: Shape, n: u64, rels: bool) {
     let (node_count, rel_count) = (nodes.len() as u64, edges.len() as u64);
     std::fs::write(dir.join("snapshot.bin"), snapshot(&nodes, &edges)).expect("write snapshot");
     drop((nodes, edges));
-    let child = std::process::Command::new(std::env::current_exe().expect("own path"))
-        .args(["reopen", shape.name(), dir.to_str().expect("utf-8 temp dir")])
-        .output()
+    // The child is this binary with one literal argument; what it opens
+    // arrives on its stdin, so no argument is built from data.
+    let mut child = std::process::Command::new(std::env::current_exe().expect("own path"))
+        .arg("reopen")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .expect("child runs");
+    {
+        use std::io::Write as _;
+        let mut stdin = child.stdin.take().expect("child stdin");
+        writeln!(stdin, "{}\n{}", shape.name(), dir.to_str().expect("utf-8 temp dir")).expect("child stdin");
+    }
+    let child = child.wait_with_output().expect("child finishes");
     let _ = std::fs::remove_dir_all(&dir);
     assert!(child.status.success(), "reopen failed: {}", String::from_utf8_lossy(&child.stderr));
     let mut out: Json = serde_json::from_slice(&child.stdout).expect("child json");
@@ -686,14 +697,19 @@ fn run_file(shape: Shape, n: u64, rels: bool) {
     println!("{out}");
 }
 
-/// The child of `--via file`: open the data directory and report.
-fn reopen(args: &[String]) {
-    let shape = Shape::parse(args.first().map(String::as_str).unwrap_or_else(|| usage()));
-    let dir = args.get(1).unwrap_or_else(|| usage());
+/// The child of `--via file`: read the shape and the data directory from
+/// stdin, one per line, open the directory and report.
+fn reopen() {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).expect("stdin");
+    let mut lines = input.lines();
+    let shape = Shape::parse(lines.next().unwrap_or_else(|| usage()));
+    let dir = lines.next().unwrap_or_else(|| usage()).to_string();
+    drop(input);
     let base = live();
     let base_rss = rss();
     let started = Instant::now();
-    let zega = Zega::open(dir).build().expect("open");
+    let zega = Zega::open(&dir).build().expect("open");
     let load_ms = started.elapsed().as_secs_f64() * 1e3;
     zega.run_lang(shape.schema(), shape.probe()).expect("probe");
     let after = rss();
@@ -814,7 +830,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]),
         Some("table") => table(&args[1..]),
-        Some("reopen") => reopen(&args[1..]),
+        Some("reopen") => reopen(),
         _ => usage(),
     }
 }
