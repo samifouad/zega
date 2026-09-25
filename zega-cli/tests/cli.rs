@@ -471,7 +471,11 @@ fn kill_9_under_write_load_loses_no_acknowledged_write_and_always_reopens() {
         }
     }
     let mut killed_mid_checkpoint = 0;
-    for (round, run_for) in [1_700u64, 2_300, 1_100, 2_900, 1_500, 2_000].into_iter().enumerate() {
+    // Each round runs until its writers have had enough writes acknowledged
+    // (however fast the machine), then a little longer, varied so the kill
+    // lands at different points of a checkpoint.
+    const PER_ROUND: usize = 30;
+    for (round, extra) in [300u64, 900, 0, 1_500, 600, 1_100].into_iter().enumerate() {
         let mut server = Running::start("start", directory.path(), &args);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writers: Vec<_> = (0..WRITERS)
@@ -504,7 +508,17 @@ fn kill_9_under_write_load_loses_no_acknowledged_write_and_always_reopens() {
                 })
             })
             .collect();
-        thread::sleep(Duration::from_millis(run_for));
+        let target = PER_ROUND * (round + 1);
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
+        while load.lock().unwrap().created.len() < target {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "round {round}: {} of {target} creates acknowledged in 180 s",
+                load.lock().unwrap().created.len()
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(extra));
         server.child.kill().unwrap(); // SIGKILL
         server.child.wait().unwrap();
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -515,7 +529,7 @@ fn kill_9_under_write_load_loses_no_acknowledged_write_and_always_reopens() {
         let data = directory.path().join("db");
         let mid_checkpoint = data.join("wal.rotate.tmp").exists()
             || std::fs::read_dir(data.join("graphs")).is_ok_and(|mut dir| {
-                dir.any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".checkpoint"))
+                dir.any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".partial"))
             });
         killed_mid_checkpoint += usize::from(mid_checkpoint);
 
@@ -545,9 +559,10 @@ fn kill_9_under_write_load_loses_no_acknowledged_write_and_always_reopens() {
                 "round {round}: counter {writer} is {counters:?}, acknowledged at {acked}, tried up to {tried}"
             );
         }
-        assert!(load.created.len() > 20 * (round + 1), "round {round}: too little load to test anything");
+        assert!(load.created.len() >= PER_ROUND * (round + 1), "round {round}: too little load to test anything");
         println!(
-            "round {round}: killed after {run_for} ms{}; {} creates acknowledged so far; wal.bin {} bytes",
+            "round {round}: killed {extra} ms after {} creates{}; {} creates acknowledged so far; wal.bin {} bytes",
+            PER_ROUND * (round + 1),
             if mid_checkpoint { " mid-checkpoint" } else { "" },
             load.created.len(),
             std::fs::metadata(data.join("wal.bin")).unwrap().len(),

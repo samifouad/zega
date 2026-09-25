@@ -124,7 +124,7 @@ impl Store {
             .import_lock
             .lock()
             .map_err(|_| ZegaError::Execution("import lock poisoned".to_string()))?;
-        let result = crate::create_staging(&self.path, "checkpoint").and_then(|(file, staging)| {
+        let result = crate::create_checkpoint_file(&self.path).and_then(|(file, staging)| {
             let result = self.checkpoint_into(file, &staging);
             if result.is_err() {
                 // Gone already once renamed; a leftover is removed at open.
@@ -254,15 +254,9 @@ impl std::io::Seek for Spill<'_> {
     }
 }
 
-#[cfg(test)]
-thread_local! {
-    /// A test's [`MEMORY_CAP`] for checkpoints taken on this thread.
-    pub(crate) static MEMORY_CAP_FOR_TEST: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
-}
-
 fn memory_cap() -> u64 {
     #[cfg(test)]
-    if let Some(cap) = MEMORY_CAP_FOR_TEST.with(|cap| cap.get()) {
+    if let Some(cap) = test_hooks::MEMORY_CAP_FOR_TEST.with(|cap| cap.get()) {
         return cap;
     }
     MEMORY_CAP
@@ -359,26 +353,33 @@ pub(crate) enum Step {
     ImportsRemoved,
 }
 
+/// What the tests reach into a checkpoint with. None of it exists outside
+/// `cfg(test)`, the process abort included: the library never ends the
+/// process.
 #[cfg(test)]
-pub(crate) static CRASH_AT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub(crate) mod test_hooks {
+    use super::Step;
+    use std::sync::atomic::Ordering;
 
-/// A test's hook on the steps of a checkpoint.
-#[cfg(test)]
-pub(crate) type StepHook = Box<dyn FnMut(Step)>;
+    /// The step a crash test's child process aborts at (0: none).
+    pub(crate) static CRASH_AT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-#[cfg(test)]
-thread_local! {
-    /// Runs at every step of a checkpoint taken on this thread.
-    pub(crate) static AT_STEP: std::cell::RefCell<Option<StepHook>> =
-        const { std::cell::RefCell::new(None) };
-}
+    /// A test's hook on the steps of a checkpoint.
+    pub(crate) type StepHook = Box<dyn FnMut(Step)>;
 
-/// Abort the process at `step` when a test asked for it: what a crash (or a
-/// `kill -9`) there leaves on disk. Nothing outside tests.
-#[inline]
-pub(crate) fn crash_point(step: Step) {
-    #[cfg(test)]
-    {
+    thread_local! {
+        /// Runs at every step of a checkpoint taken on this thread.
+        pub(crate) static AT_STEP: std::cell::RefCell<Option<StepHook>> =
+            const { std::cell::RefCell::new(None) };
+
+        /// A test's [`super::MEMORY_CAP`] for checkpoints taken on this thread.
+        pub(crate) static MEMORY_CAP_FOR_TEST: std::cell::Cell<Option<u64>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// Abort the process at `step` when a test asked for it: what a crash
+    /// (or a `kill -9`) there leaves on disk.
+    pub(crate) fn crash_point(step: Step) {
         if CRASH_AT.load(Ordering::SeqCst) == step as u8 {
             std::process::abort();
         }
@@ -388,6 +389,12 @@ pub(crate) fn crash_point(step: Step) {
             }
         });
     }
-    #[cfg(not(test))]
-    let _ = step;
 }
+
+#[cfg(test)]
+pub(crate) use test_hooks::crash_point;
+
+/// A step of a checkpoint: nothing outside tests ([`test_hooks`]).
+#[cfg(not(test))]
+#[inline(always)]
+pub(crate) fn crash_point(_step: Step) {}

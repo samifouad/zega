@@ -645,6 +645,30 @@ fn read_imported_graph(data: &std::path::Path, file: &str) -> Result<Graph> {
 /// Open deletes any a crash leaves behind.
 #[cfg(not(target_arch = "wasm32"))]
 fn create_staging(data: &std::path::Path, purpose: &str) -> Result<(std::fs::File, std::path::PathBuf)> {
+    create_in_imports(data, &format!(".{purpose}-{{}}.tmp"))
+}
+
+/// A new, empty file for a checkpoint's `.graph` file in `data`'s `graphs/`
+/// directory: `checkpoint-<pid>-<n>.partial`. A name apart from staging
+/// files (`.<purpose>-…tmp`) and from `.graph` files, so nothing that
+/// cleans up either (a transfer deleting its staging file, an import
+/// deleting the `.graph` files it supersedes) ever matches one in flight.
+/// Open deletes any a crash leaves behind.
+#[cfg(not(target_arch = "wasm32"))]
+fn create_checkpoint_file(data: &std::path::Path) -> Result<(std::fs::File, std::path::PathBuf)> {
+    create_in_imports(data, &format!("{CHECKPOINT_PREFIX}{{}}{CHECKPOINT_SUFFIX}"))
+}
+
+/// What a checkpoint's file in `graphs/` is called until it is renamed to
+/// `<sha256>.graph`.
+#[cfg(not(target_arch = "wasm32"))]
+const CHECKPOINT_PREFIX: &str = "checkpoint-";
+#[cfg(not(target_arch = "wasm32"))]
+const CHECKPOINT_SUFFIX: &str = ".partial";
+
+/// Create `graphs/<pattern>`, `{}` standing for `<pid>-<n>`, new and owner-only.
+#[cfg(not(target_arch = "wasm32"))]
+fn create_in_imports(data: &std::path::Path, pattern: &str) -> Result<(std::fs::File, std::path::PathBuf)> {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = data.join(IMPORTS_DIR);
     if !dir.exists() {
@@ -653,7 +677,8 @@ fn create_staging(data: &std::path::Path, purpose: &str) -> Result<(std::fs::Fil
         sync_dir(data)?;
     }
     let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = dir.join(format!(".{purpose}-{}-{sequence}.tmp", std::process::id()));
+    let unique = format!("{}-{sequence}", std::process::id());
+    let path = dir.join(pattern.replacen("{}", &unique, 1));
     let mut options = std::fs::OpenOptions::new();
     // Read too: a checkpoint reads its file back for its digests.
     options.read(true).write(true).create_new(true);
@@ -684,13 +709,14 @@ fn sync_dir(dir: &std::path::Path) -> std::io::Result<()> {
 fn remove_stale_imports(data: &std::path::Path, keep: Option<&str>) -> Result<()> {
     remove_in_imports(data, |name| {
         let staging = name.starts_with('.') && name.ends_with(".tmp");
+        let checkpoint = name.starts_with(CHECKPOINT_PREFIX) && name.ends_with(CHECKPOINT_SUFFIX);
         // Only a log that names the graph it starts from says which files
         // are superseded. Without one, a `.graph` file is either the leftover
         // of an import or checkpoint that never committed (the log holds
         // every write, and the next checkpoint deletes it) or the only copy
         // of the graph ([`refuse_lost_log`]): never deleted here.
         let superseded = keep.and_then(file_name).is_some_and(|keep| name != keep);
-        staging || (name.ends_with(".graph") && superseded)
+        staging || checkpoint || (name.ends_with(".graph") && superseded)
     })
 }
 

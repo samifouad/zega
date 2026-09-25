@@ -14,7 +14,8 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::checkpoint::{Step, AT_STEP, CRASH_AT};
+use crate::checkpoint::test_hooks::{AT_STEP, CRASH_AT, MEMORY_CAP_FOR_TEST};
+use crate::checkpoint::Step;
 use crate::graph::{Graph, Node, NodeId, RelId, Relationship};
 use crate::graph_file::{Carried, ExportOptions};
 use crate::index::IndexSpec;
@@ -24,8 +25,6 @@ use crate::vector::{Metric, Vector};
 use crate::wal::{Operation, Wal};
 use crate::{Value, Zega, ZegaError};
 
-const CRASH_DIR: &str = "ZEGA_CHECKPOINT_CRASH_DIR";
-const CRASH_STEP: &str = "ZEGA_CHECKPOINT_CRASH_AT";
 
 const STEPS: [Step; 11] = [
     Step::GraphPartial,
@@ -264,35 +263,48 @@ fn a_checkpoint_bounds_the_wal_and_reopens_to_the_same_graph() {
     assert_eq!(state(&zega), reference(&[writes_a, writes_b]));
 }
 
-#[test]
-fn crash_helper() {
-    let (Some(dir), Some(step)) = (std::env::var_os(CRASH_DIR), std::env::var_os(CRASH_STEP)) else {
-        return;
-    };
-    let zega = open(Path::new(&dir));
-    writes_c(&zega);
-    let step: u8 = step.to_str().unwrap().parse().unwrap();
-    CRASH_AT.store(step, std::sync::atomic::Ordering::SeqCst);
-    zega.checkpoint().unwrap();
-    // Reaching here means the crash point was never passed.
-    println!("CHECKPOINT FINISHED");
-}
+/// The child side of the crash tests. In a `cfg(test)` module of its own
+/// (this file is test-only already) so that the process it spawns, this test
+/// binary, and the variables it passes read as test code to static analysis.
+#[cfg(test)]
+mod child {
+    use super::*;
 
-/// Run `writes_c` and a checkpoint that aborts at `step` in a child process.
-fn crash_checkpoint(dir: &Path, step: Step) {
-    let output = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "checkpoint_tests::crash_helper", "--nocapture", "--test-threads=1"])
-        .env(CRASH_DIR, dir)
-        .env(CRASH_STEP, (step as u8).to_string())
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !output.status.success() && !stdout.contains("CHECKPOINT FINISHED"),
-        "{step:?}: the child should have aborted there\n{stdout}\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    #[test]
+    fn crash_helper() {
+        let (Some(dir), Some(step)) = (
+            std::env::var_os("ZEGA_CHECKPOINT_CRASH_DIR"),
+            std::env::var_os("ZEGA_CHECKPOINT_CRASH_AT"),
+        ) else {
+            return;
+        };
+        let zega = open(Path::new(&dir));
+        writes_c(&zega);
+        let step: u8 = step.to_str().unwrap().parse().unwrap();
+        CRASH_AT.store(step, std::sync::atomic::Ordering::SeqCst);
+        zega.checkpoint().unwrap();
+        // Reaching here means the crash point was never passed.
+        println!("CHECKPOINT FINISHED");
+    }
+
+    /// Run `writes_c` and a checkpoint that aborts at `step` in a child
+    /// process: this test binary, running `crash_helper` alone.
+    pub(super) fn crash_checkpoint(dir: &Path, step: Step) {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "checkpoint_tests::child::crash_helper", "--nocapture", "--test-threads=1"])
+            .env("ZEGA_CHECKPOINT_CRASH_DIR", dir)
+            .env("ZEGA_CHECKPOINT_CRASH_AT", (step as u8).to_string())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !output.status.success() && !stdout.contains("CHECKPOINT FINISHED"),
+            "{step:?}: the child should have aborted there\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
+use child::crash_checkpoint;
 
 /// A store with writes A, a first checkpoint, then writes B: the crashing
 /// checkpoint has an earlier `.graph` file to supersede and a WAL tail.
@@ -352,7 +364,8 @@ fn a_power_cut_leaves_nothing_that_stops_an_open() {
         writes_c(&zega);
     }
     let graphs = dir.path().join("graphs");
-    std::fs::write(graphs.join(".checkpoint-1-0.tmp"), b"\x89ZGRAPH\ntorn").unwrap();
+    std::fs::write(graphs.join("checkpoint-1-0.partial"), b"\x89ZGRAPH\ntorn").unwrap();
+    std::fs::write(graphs.join(".incoming-1-0.tmp"), b"\x89ZGRAPH\n").unwrap();
     std::fs::write(graphs.join(format!("{}.graph", "ab".repeat(32))), b"\x89ZGR").unwrap();
     std::fs::write(dir.path().join("wal.rotate.tmp"), b"ZWAL\x03\x00\x40\x00").unwrap();
     assert_recovers(dir.path(), "power cut");
@@ -787,9 +800,9 @@ fn a_checkpoint_past_the_memory_cap_spills_to_its_file() {
         writes_b(&zega);
         let mut exported = Vec::new();
         zega.export(&mut exported).unwrap();
-        crate::checkpoint::MEMORY_CAP_FOR_TEST.with(|c| c.set(cap));
+        MEMORY_CAP_FOR_TEST.with(|c| c.set(cap));
         let checkpoint = zega.checkpoint().unwrap().unwrap();
-        crate::checkpoint::MEMORY_CAP_FOR_TEST.with(|c| c.set(None));
+        MEMORY_CAP_FOR_TEST.with(|c| c.set(None));
         assert!(exported.len() > 512, "{} bytes", exported.len());
         assert_eq!(checkpoint.spilled, cap.is_some(), "cap {cap:?}");
         let written = std::fs::read(dir.path().join(&checkpoint.file)).unwrap();
@@ -797,4 +810,46 @@ fn a_checkpoint_past_the_memory_cap_spills_to_its_file() {
         drop(zega);
         assert_eq!(state(&open(dir.path())), reference(&[writes_a, writes_b]), "cap {cap:?}");
     }
+}
+
+/// zega#112 CI: a checkpoint's file in flight and a transfer's staging file
+/// share `graphs/` but never a name pattern, so neither side's cleanup can
+/// match the other's file, and a staging file never counts as a checkpoint.
+#[test]
+fn a_checkpoint_in_flight_and_a_staging_file_never_share_a_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let zega = open(dir.path());
+    writes_a(&zega);
+    let (mut export, staged) = zega.staging_file("export").unwrap().unwrap();
+    zega.export(&mut export).unwrap();
+    let exported = std::fs::read(&staged).unwrap();
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let during = std::rc::Rc::clone(&seen);
+    let graphs = dir.path().join("graphs");
+    AT_STEP.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |step| {
+            if step == Step::GraphSynced {
+                *during.borrow_mut() = graph_files(graphs.parent().unwrap());
+            }
+        }));
+    });
+    let checkpoint = zega.checkpoint().unwrap().unwrap();
+    AT_STEP.with(|hook| hook.borrow_mut().take());
+    let seen = seen.borrow().clone();
+    let staging: Vec<_> = seen.iter().filter(|name| name.starts_with('.')).collect();
+    let in_flight: Vec<_> = seen
+        .iter()
+        .filter(|name| name.starts_with("checkpoint-") && name.ends_with(".partial"))
+        .collect();
+    assert_eq!(staging.len(), 1, "only the export is staging: {seen:?}");
+    assert_eq!(in_flight.len(), 1, "the checkpoint's file has its own pattern: {seen:?}");
+    assert!(!in_flight[0].starts_with('.') && !in_flight[0].ends_with(".graph") && !in_flight[0].ends_with(".tmp"));
+    // The staged export went through the checkpoint untouched, and the
+    // checkpoint went through with the staging file beside it.
+    assert_eq!(std::fs::read(&staged).unwrap(), exported);
+    assert!(dir.path().join(&checkpoint.file).exists());
+    drop(export);
+    std::fs::remove_file(&staged).unwrap();
+    drop(zega);
+    assert_settled(dir.path(), "after a checkpoint beside a staged export");
 }
