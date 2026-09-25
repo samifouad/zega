@@ -1134,12 +1134,12 @@ fn pattern_match_undirected_uses_both_adjacency_sets() {
     g.create_relationship("R".to_string(), c, a, HashMap::new()); // c -> a
     let mut neighbors: HashSet<NodeId> = HashSet::new();
     if let Some(out) = g.outgoing_rels(a) {
-        for rid in out {
+        for rid in out.iter() {
             neighbors.insert(g.get_relationship(*rid).unwrap().to_relationship().to);
         }
     }
     if let Some(inc) = g.incoming_rels(a) {
-        for rid in inc {
+        for rid in inc.iter() {
             neighbors.insert(g.get_relationship(*rid).unwrap().to_relationship().from);
         }
     }

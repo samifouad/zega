@@ -1786,7 +1786,7 @@ fn neighbors(
     let Some(ids) = ids else {
         return out;
     };
-    for rel_id in ids {
+    for rel_id in ids.iter() {
         let Some(rel) = graph.get_relationship(*rel_id) else {
             continue;
         };

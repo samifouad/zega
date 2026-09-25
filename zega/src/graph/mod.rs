@@ -256,6 +256,14 @@ impl Hasher for PreHashed {
     }
 }
 
+/// The relationships that leave and enter one node. A node has an entry
+/// only while it has a relationship.
+#[derive(Default)]
+struct Adjacency {
+    out: IdSet,
+    inc: IdSet,
+}
+
 pub struct Graph {
     names: Names,
     shapes: Shapes,
@@ -274,8 +282,8 @@ pub struct Graph {
     vector_index: crate::vector::VectorIndex,
     /// `index { }` declarations of the schema last run against this graph.
     declared: DeclaredIndexes,
-    outgoing: HashMap<NodeId, HashSet<RelId>>,
-    incoming: HashMap<NodeId, HashSet<RelId>>,
+    /// Each node's relationships, both directions in one entry.
+    adjacency: HashMap<NodeId, Adjacency>,
     next_node_id: AtomicU64,
     next_rel_id: AtomicU64,
     /// Rows a ZQL filter has been tested on. Indexes lower it.
@@ -303,8 +311,7 @@ impl Graph {
             spatial_index: Default::default(),
             vector_index: Default::default(),
             declared: Default::default(),
-            outgoing: HashMap::new(),
-            incoming: HashMap::new(),
+            adjacency: HashMap::new(),
             next_node_id: AtomicU64::new(1),
             next_rel_id: AtomicU64::new(1),
             examined: AtomicU64::new(0),
@@ -505,11 +512,9 @@ impl Graph {
     /// DETACH DELETE to remove a node's relationships before the node itself.
     pub fn node_relationship_ids(&self, id: NodeId) -> Vec<RelId> {
         let mut ids: Vec<RelId> = Vec::new();
-        if let Some(out) = self.outgoing.get(&id) {
-            ids.extend(out.iter().copied());
-        }
-        if let Some(inc) = self.incoming.get(&id) {
-            ids.extend(inc.iter().copied());
+        if let Some(adjacency) = self.adjacency.get(&id) {
+            ids.extend(adjacency.out.iter().copied());
+            ids.extend(adjacency.inc.iter().copied());
         }
         ids.sort_unstable();
         ids.dedup();
@@ -520,13 +525,9 @@ impl Graph {
         if let Some(node) = self.nodes.remove(&id) {
             self.remove_node_indexes(id, &node);
             // Remove connected relationships
-            let out_rels: Vec<RelId> = self.outgoing.remove(&id).unwrap_or_default().into_iter().collect();
-            let in_rels: Vec<RelId> = self.incoming.remove(&id).unwrap_or_default().into_iter().collect();
-            for rid in out_rels {
-                self.delete_relationship(rid);
-            }
-            for rid in in_rels {
-                self.delete_relationship(rid);
+            let adjacency = self.adjacency.remove(&id).unwrap_or_default();
+            for rid in adjacency.out.iter().chain(adjacency.inc.iter()) {
+                self.delete_relationship(*rid);
             }
         }
     }
@@ -562,17 +563,24 @@ impl Graph {
         if let Some(previous) = self.relationships.insert(id, rel) {
             self.remove_relationship_indexes(id, &previous);
         }
-        self.outgoing.entry(from).or_default().insert(id);
-        self.incoming.entry(to).or_default().insert(id);
+        self.adjacency.entry(from).or_default().out.insert(id);
+        self.adjacency.entry(to).or_default().inc.insert(id);
         self.next_rel_id.fetch_max(id + 1, Ordering::SeqCst);
     }
 
     fn remove_relationship_indexes(&mut self, id: RelId, rel: &RelRecord) {
-        if let Some(set) = self.outgoing.get_mut(&rel.from) {
-            set.remove(&id);
-        }
-        if let Some(set) = self.incoming.get_mut(&rel.to) {
-            set.remove(&id);
+        for (node, outgoing) in [(rel.from, true), (rel.to, false)] {
+            let Some(adjacency) = self.adjacency.get_mut(&node) else {
+                continue;
+            };
+            if outgoing {
+                adjacency.out.remove(id);
+            } else {
+                adjacency.inc.remove(id);
+            }
+            if adjacency.out.is_empty() && adjacency.inc.is_empty() {
+                self.adjacency.remove(&node);
+            }
         }
     }
 
@@ -628,12 +636,14 @@ impl Graph {
             .map(|(id, rel)| rel_ref(&self.names, &self.shapes, *id, rel))
     }
 
-    pub fn outgoing_rels(&self, node_id: NodeId) -> Option<&HashSet<RelId>> {
-        self.outgoing.get(&node_id)
+    /// The relationships leaving `node_id`; None when there are none.
+    pub fn outgoing_rels(&self, node_id: NodeId) -> Option<&IdSet> {
+        Some(&self.adjacency.get(&node_id)?.out).filter(|rels| !rels.is_empty())
     }
 
-    pub fn incoming_rels(&self, node_id: NodeId) -> Option<&HashSet<RelId>> {
-        self.incoming.get(&node_id)
+    /// The relationships entering `node_id`; None when there are none.
+    pub fn incoming_rels(&self, node_id: NodeId) -> Option<&IdSet> {
+        Some(&self.adjacency.get(&node_id)?.inc).filter(|rels| !rels.is_empty())
     }
 
     pub fn set_state(&mut self, nodes: HashMap<NodeId, Node>, rels: HashMap<RelId, Relationship>) {
