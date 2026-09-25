@@ -141,9 +141,9 @@ export async function createSurface(host) {
     /**
      * Resolves after a frame drawn once every component source is parsed and
      * tiled. Rejects on an error from one of those sources, or when no such
-     * frame comes within 5 s.
+     * frame comes within `timeout` ms (5 s by default).
      */
-    rendered() {
+    rendered(timeout = RENDER_TIMEOUT) {
       return new Promise((resolve, reject) => {
         const ready = () => [...sources].every((id) => map.getSource(id) && map.isSourceLoaded(id));
         const done = (error) => {
@@ -156,7 +156,7 @@ export async function createSurface(host) {
         const drawn = () => { if (ready()) done(); };
         const check = () => { if (ready()) { map.off('sourcedata', check); map.once('render', drawn); map.triggerRepaint(); } };
         const failed = (event) => { if (event.sourceId && sources.has(event.sourceId)) done(event.error || new Error(`source ${event.sourceId} failed`)); };
-        const timer = setTimeout(() => done(new Error(`the map did not draw within ${RENDER_TIMEOUT / 1000} s`)), RENDER_TIMEOUT);
+        const timer = setTimeout(() => done(new Error(`the map did not draw within ${timeout / 1000} s`)), timeout);
         map.on('error', failed);
         if (ready()) { map.on('render', drawn); map.triggerRepaint(); } else map.on('sourcedata', check);
       });

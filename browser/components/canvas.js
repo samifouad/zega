@@ -101,7 +101,9 @@ export function createCanvas(container, { theme = 'light', historyLimit = 100, s
     for (const ref of results.keys()) if (!used.has(ref)) results.delete(ref);
   };
 
-  async function draw(spec, data) {
+  // One swap may block for at most this long in all, including putting the previous view back.
+  const SWAP_BUDGET = 5000;
+  async function draw(spec, data, deadline = performance.now() + SWAP_BUDGET) {
     const entry = component(spec.component);
     const kind = entry.contract.surface;
     const [module, surface] = await Promise.all([entry.load(), surfaceFor(kind)]);
@@ -114,20 +116,23 @@ export function createCanvas(container, { theme = 'light', historyLimit = 100, s
       surface.clear();
       drawn = { component: spec.component, kind, handle: module.mount(surface, props) };
     }
-    await surface.rendered();
+    const left = deadline - performance.now();
+    if (left > 0) await surface.rendered(left);
     gear.show(entry.contract, spec);
   }
   /** Draw; if that fails, put the previous entry (or nothing) back and rethrow. */
   async function show(spec, data) {
     const started = performance.now();
+    const deadline = started + SWAP_BUDGET;
     try {
-      await draw(spec, data);
+      await draw(spec, data, deadline);
     } catch (error) {
       drawn = null;
       for (const made of surfaces.values()) (await made.catch(() => null))?.clear();
       const previous = history[current];
       if (previous) {
-        try { await draw(previous.spec, checked(previous.spec, results.get(previous.resultRef)).data); }
+        // Within what is left of the same budget; with none left it is mounted without waiting for a frame.
+        try { await draw(previous.spec, checked(previous.spec, results.get(previous.resultRef)).data, deadline); }
         catch { drawn = null; current = -1; gear.hide(); }
       } else gear.hide();
       throw error;
@@ -311,7 +316,13 @@ export function createCanvas(container, { theme = 'light', historyLimit = 100, s
       const index = history.findIndex((e) => e.id === change.id);
       if (index < 0) return;
       history.splice(index, 1);
-      if (current === index) current = -1; else if (current > index) current--;
+      if (current === index) {
+        // The entry on screen was trimmed or cleared in another tab: clear the view with it.
+        current = -1;
+        drawn = null;
+        for (const made of surfaces.values()) (await made).clear();
+        gear.hide();
+      } else if (current > index) current--;
       pruneResults();
     }
     emit('sync');

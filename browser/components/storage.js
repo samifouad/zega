@@ -26,9 +26,7 @@ export function memoryStore() {
     for (const ref of results.keys()) if (!used.has(ref)) results.delete(ref);
   };
   return {
-    async list() {
-      return entries(true).sort((a, b) => (typeof a.time === 'number' && typeof b.time === 'number' ? byTime(a, b) : 0));
-    },
+    async list() { return [...entries.values()].map((e) => structuredClone(e)).sort(byTime); },
     async getResult(ref) { return results.has(ref) ? structuredClone(results.get(ref)) : null; },
     async put(entry, result) {
       if (!results.has(entry.resultRef)) results.set(entry.resultRef, structuredClone(result));
@@ -63,19 +61,17 @@ export function localStorageStore(key = 'zega.canvas.history', { onError = (erro
     for (const k of keys(E)) {
       const entry = parse(k);
       if (entry && typeof entry === 'object') out.push(entry);
-      else if (report) onError(new Error(`unreadable entry ${k}`));
+      else if (report) {
+        onError(new Error(`unreadable entry ${k}; removed`));
+        attempt(() => localStorage.removeItem(k));
+      }
     }
     return out;
   };
   const store = {
+    /** Every readable entry, oldest first. An unreadable one is reported and removed by its key. */
     async list() {
-      const out = [];
-      for (const k of keys(E)) {
-        const entry = parse(k);
-        if (entry && typeof entry === 'object') out.push(entry);
-        else if (entry === null) onError(new Error(`unreadable entry ${k}`));
-      }
-      return out.sort((a, b) => (typeof a.time === 'number' && typeof b.time === 'number' ? byTime(a, b) : 0));
+      return entries(true).sort((a, b) => (typeof a.time === 'number' && typeof b.time === 'number' ? byTime(a, b) : 0));
     },
     async getResult(ref) { return typeof ref === 'string' ? parse(`${R}${ref}`) : null; },
     async put(entry, result) {

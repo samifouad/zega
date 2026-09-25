@@ -58,11 +58,26 @@ vocabulary:
 | `Float`, `Int` | a finite number (`Int`: whole) | the number |
 | `Bool`, `String` | | |
 | `Enum` | a String from the role's `enum` | |
-| `XY` | `{ x, y }` in the role's planar `frame` (rink, court, field), optionally `relativeTo` a surface parameter | `[x, y]` |
+| `XY` | `{ x, y }` in the role's planar `frame`, optionally `relativeTo` a reference | `[x, y]` |
 
 `shape` is `one` (default), `list` or `list<list>`. Roles may carry
 `minimum`/`maximum` and a `unit` from a closed list: `ft m deg pct fraction
-km/h yd s`. Surface parameters and options are **settings**: a JSON Schema
+km/h yd s`. **`pct` is 0–100 and `fraction` is 0–1**; a role in either is held
+to that range too, so a share given as 0.45 where the role says `pct` binds as
+0.45 %, and one given as 45 where it says `fraction` is refused. `unique: true`
+on a per-row role refuses a value listed twice in a group (one row per zone).
+
+**Frames** (`frames.js`) are the planar surfaces, each with its unit and both
+axes' extents: `rink` (ft, x ±100, y ±42.5), `court` (ft, x ±47, y ±25),
+`field` (yd, x 0–120, y 0–53.3), `pitch` (m, x 0–105, y 0–68). An XY role
+names its frame and takes its unit and ranges from it (it may not set its own).
+`relativeTo` names the reference its x is measured from — a surface parameter,
+or a result- or group-level role such as each play's line of scrimmage — and
+its x then spans ± the frame's length.
+
+**Units of the data.** A ZQL result carries no units, so a spec may say what a
+role's data is in: `"units": { "at": "ft" }`. It must be the role's unit (for
+XY, its frame's); anything else is refused, to be converted in the query. Surface parameters and options are **settings**: a JSON Schema
 limited to exactly `type enum const minimum maximum minLength maxLength
 pattern items prefixItems minItems maxItems format` (`format:
 "lonlat-bounds"` = `[w, s, e, n]` with w < e, s < n), plus `default` and
@@ -93,17 +108,23 @@ How the next components would declare themselves (not built):
 
 // rink heat: one row per event, in rink feet
 "roles": {
-  "at":     { "per": "row", "type": "XY", "frame": "rink", "unit": "ft", "minimum": -100, "maximum": 100, "required": true },
+  "at":     { "per": "row", "type": "XY", "frame": "rink", "required": true },
   "weight": { "per": "row", "type": "Float", "minimum": 0, "required": false }
 }
 
-// route chart: groups are routes, rows their points, relative to the line of scrimmage
+// route chart: groups are routes (plays), rows their points, from each play's line of scrimmage
 "data":  { "groups": "required" },
 "roles": {
-  "at":      { "per": "row",   "type": "XY", "frame": "field", "unit": "yd", "relativeTo": "los", "required": true },
+  "los":     { "per": "group", "type": "Float", "minimum": 0, "maximum": 120, "unit": "yd", "required": true },
+  "at":      { "per": "row",   "type": "XY", "frame": "field", "relativeTo": "los", "required": true },
   "outcome": { "per": "group", "type": "Enum", "enum": ["complete", "incomplete", "td"], "required": false }
-},
-"surfaceParams": { "los": { "type": "number", "minimum": 0, "maximum": 100, "default": 25, "description": "Line of scrimmage, yards from the own goal line." } }
+}
+
+// zone chart: one row per zone, its share
+"roles": {
+  "zone":  { "per": "row", "type": "Enum", "enum": ["paint", "mid", "corner3", "arc3"], "unique": true, "required": true },
+  "share": { "per": "row", "type": "Float", "unit": "pct", "required": true }
+}
 ```
 
 ## View spec (format 1)
@@ -117,7 +138,18 @@ How the next components would declare themselves (not built):
 `groups` (from the result) and `rows` (from each group, or the result) are
 paths to lists; `.` is the value itself. Role paths are fields, nested with
 dots (at most 32 steps). Every error has `code`, `at`, `message`, `help` and,
-where one exists, `fix` — a JSON Patch against the spec (`applyFix`).
+where one exists, `fix: { kind, patch }` — a JSON Patch against the spec.
+
+- `kind: "safe"` only repairs what the spec already means: a misspelt field,
+  option or role corrected to the one it names, a number clamped into range,
+  an unknown key removed, the version's major set. These may be applied
+  automatically.
+- `kind: "guess"` chooses something: a field that merely has the right type,
+  a list to use as rows, a default. A person or the planner must confirm it.
+
+`applyFix(spec, fix)` applies `safe` fixes and refuses `guess` ones unless
+called with `{ allowGuess: true }`. It unescapes pointer segments (`~1`, `~0`)
+and refuses any segment named `__proto__`, `constructor` or `prototype`.
 
 ## Versions
 

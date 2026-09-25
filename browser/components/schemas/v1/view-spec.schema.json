@@ -19,6 +19,11 @@
       },
       "additionalProperties": { "$ref": "#/$defs/fieldPath" }
     },
+    "units": {
+      "type": "object",
+      "description": "Role -> the unit its bound data is in, when a ZQL result's numbers need saying (results carry no units). It must be the role's unit (for XY, its frame's); anything else is refused, to be converted in the query.",
+      "additionalProperties": { "enum": ["ft", "m", "deg", "pct", "fraction", "km/h", "yd", "s"] }
+    },
     "surface": { "type": "object", "description": "Surface parameters, checked against the contract's `surfaceParams`. Omitted ones take their defaults." },
     "options": { "type": "object", "description": "Display options, checked against the contract's `options`. Omitted ones take their defaults." }
   },

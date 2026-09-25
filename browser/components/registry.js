@@ -5,6 +5,7 @@ import CONTRACT_SCHEMA from './schemas/v1/contract.schema.json' with { type: 'js
 import pathOnMap from './path-on-map/contract.json' with { type: 'json' };
 import { check } from './schema.js';
 import { BASEMAP_VALUES, MERCATOR_LAT } from './surfaces/archives.js';
+import { FRAMES } from './frames.js';
 
 export const COMPONENTS = Object.freeze({
   'path-on-map': Object.freeze({ contract: pathOnMap, load: () => import('./path-on-map/index.js') }),
@@ -34,9 +35,18 @@ export function checkContract(contract) {
   const err = (at, message) => errors.push({ code: 'contract', at, message, help: '' });
   for (const [name, role] of Object.entries(contract.roles)) {
     if (name === 'rows' || name === 'groups') err(`roles.${name}`, `\`${name}\` is reserved for the binding's structure`);
-    if (role.relativeTo !== undefined && !Object.hasOwn(contract.surfaceParams, role.relativeTo)) err(`roles.${name}.relativeTo`, `names no surface parameter: \`${role.relativeTo}\``);
+    if (role.relativeTo !== undefined) {
+      const reference = Object.hasOwn(contract.roles, role.relativeTo) ? contract.roles[role.relativeTo] : null;
+      const ok = Object.hasOwn(contract.surfaceParams, role.relativeTo) || (reference && reference !== role && (reference.per === 'result' || reference.per === 'group'));
+      if (!ok) err(`roles.${name}.relativeTo`, `names no surface parameter or result/group role: \`${role.relativeTo}\``);
+    }
     if (role.type === 'Enum' && !role.enum) err(`roles.${name}`, 'an Enum role needs `enum`');
-    if (role.type === 'XY' && !role.frame) err(`roles.${name}`, 'an XY role needs a `frame`');
+    if (role.type === 'XY') {
+      if (!role.frame) err(`roles.${name}`, 'an XY role needs a `frame`');
+      else if (!Object.hasOwn(FRAMES, role.frame)) err(`roles.${name}.frame`, `\`${role.frame}\` is not a frame (${Object.keys(FRAMES).join(', ')})`);
+      for (const key of ['unit', 'minimum', 'maximum']) if (role[key] !== undefined) err(`roles.${name}.${key}`, `an XY role takes its ${key === 'unit' ? 'unit' : 'range'} from its frame`);
+    } else if (role.frame !== undefined || role.relativeTo !== undefined) err(`roles.${name}`, '`frame` and `relativeTo` are for XY roles');
+    if (role.unique && role.per !== 'row') err(`roles.${name}.unique`, '`unique` is for per-row roles');
   }
   for (const field of ['surfaceParams', 'options']) {
     for (const [key, setting] of Object.entries(contract[field])) {

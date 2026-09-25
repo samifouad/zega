@@ -9,7 +9,8 @@
 // machine-applicable fix (`fix`: a JSON Patch against the spec). A spec that
 // fails never renders.
 import SPEC_SCHEMA from './schemas/v1/view-spec.schema.json' with { type: 'json' };
-import { check, closest, describe } from './schema.js';
+import { check, closest, describe, fixOf, pointer } from './schema.js';
+import { extents } from './frames.js';
 import { migrate } from './migrate.js';
 
 export class ViewSpecError extends Error {
@@ -25,19 +26,34 @@ export function renderErrors(errors) {
   return errors.map(({ at, message, help }) => `error: ${message}\n  at: ${at}${help ? `\n  help: ${help}` : ''}`).join('\n\n');
 }
 
-/** Apply a `fix` (JSON Patch: add, replace, remove, move) to a copy of `spec`. */
-export function applyFix(spec, fix) {
+const FORBIDDEN = new Set(['__proto__', 'constructor', 'prototype']);
+/**
+ * Apply a `fix` ({ kind, patch }: a JSON Patch of add, replace, remove, move)
+ * to a copy of `spec`. A `guess` fix is refused unless `allowGuess` is set:
+ * it chooses something (a field of the right type, a default) that a person
+ * or the planner should confirm. Pointers are unescaped (~1 → /, ~0 → ~), and
+ * a segment that names a prototype is refused.
+ */
+export function applyFix(spec, fix, { allowGuess = false } = {}) {
+  if (!fix || !Array.isArray(fix.patch)) throw new TypeError('a fix is { kind, patch }');
+  if (fix.kind !== 'safe' && !(fix.kind === 'guess' && allowGuess)) throw new Error(`refusing a \`${fix.kind}\` fix without allowGuess`);
   const out = structuredClone(spec);
-  const parts = (pointer) => pointer.split('/').slice(1).map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'));
+  const parts = (p) => {
+    if (typeof p !== 'string' || !p.startsWith('/')) throw new Error(`bad pointer ${p}`);
+    const keys = p.split('/').slice(1).map((k) => k.replace(/~1/g, '/').replace(/~0/g, '~'));
+    for (const key of keys) if (FORBIDDEN.has(key)) throw new Error(`refusing to patch \`${key}\``);
+    return keys;
+  };
   const parent = (keys) => {
     let node = out;
     for (const key of keys.slice(0, -1)) {
       if (!Object.hasOwn(node, key)) node[key] = {};
       node = node[key];
+      if (node === null || typeof node !== 'object') throw new Error(`cannot patch inside ${JSON.stringify(key)}`);
     }
     return node;
   };
-  for (const op of fix) {
+  for (const op of fix.patch) {
     const keys = parts(op.path);
     if (op.op === 'add' || op.op === 'replace') parent(keys)[keys.at(-1)] = structuredClone(op.value);
     else if (op.op === 'remove') delete parent(keys)[keys.at(-1)];
@@ -59,8 +75,16 @@ const typeName = (value) => value === null ? 'null' : value === undefined ? 'not
   : typeof value === 'string' ? 'String' : typeof value === 'boolean' ? 'Bool'
   : own(value, 'lat') && own(value, 'lon') ? 'Point' : own(value, 'x') && own(value, 'y') ? 'XY' : 'an object';
 const nameOf = (role) => ({ Point: 'a Point', Float: 'a Float', Int: 'an Int', Bool: 'a Bool', String: 'a String', Enum: 'an Enum', XY: 'an XY' })[role.type] || role.type;
-const ranged = (v, role) => (role.minimum === undefined || v >= role.minimum) && (role.maximum === undefined || v <= role.maximum);
-const range = (role) => `[${role.minimum ?? '-∞'}, ${role.maximum ?? '∞'}]`;
+// Units with a fixed range: a percentage is 0-100, a fraction 0-1, whatever the role says.
+const UNIT_RANGES = { pct: [0, 100], fraction: [0, 1] };
+const bounds = (role) => {
+  const [lo, hi] = UNIT_RANGES[role.unit] || [-Infinity, Infinity];
+  return [Math.max(lo, role.minimum ?? -Infinity), Math.min(hi, role.maximum ?? Infinity)];
+};
+const ranged = (v, role) => { const [lo, hi] = bounds(role); return v >= lo && v <= hi; };
+const range = (role) => { const [lo, hi] = bounds(role); return `[${lo === -Infinity ? '-∞' : lo}, ${hi === Infinity ? '∞' : hi}]${role.unit ? ` ${role.unit}` : ''}`; };
+/** The unit a role's data is in: its frame's (XY) or its own. */
+export const unitOf = (role) => (role.type === 'XY' ? extents(role)?.unit : role.unit);
 
 /**
  * Read one value of `role.type`. Returns `{ value }` (normalised: a Point is
@@ -87,8 +111,11 @@ function readOne(value, role, rules) {
     case 'String': return typeof value === 'string' ? { value } : { error: `is ${typeName(value)} (${describe(value)}), not a String` };
     case 'Enum': return typeof value === 'string' && role.enum.includes(value) ? { value } : { error: `is ${describe(value)}, not one of ${role.enum.map((v) => JSON.stringify(v)).join(', ')}` };
     case 'XY': {
-      if (!isObject(value) || !Number.isFinite(value.x) || !Number.isFinite(value.y) || !own(value, 'x') || !own(value, 'y')) return { error: `is ${typeName(value)}, not an XY {x, y}` };
-      if (!ranged(value.x, role) || !ranged(value.y, role)) return { error: `is (${value.x}, ${value.y}), outside ${range(role)}${role.unit ? ` ${role.unit}` : ''}` };
+      if (!isObject(value) || !own(value, 'x') || !own(value, 'y') || !Number.isFinite(value.x) || !Number.isFinite(value.y)) return { error: `is ${typeName(value)}, not an XY {x, y}` };
+      const box = extents(role);
+      if (!box) return { error: `names no frame \`${role.frame}\`` };
+      const out = (axis) => value[axis] < box[axis][0] || value[axis] > box[axis][1];
+      if (out('x') || out('y')) return { error: `is (${value.x}, ${value.y}), outside the ${role.frame}: x in [${box.x}], y in [${box.y}] ${box.unit}` };
       return { value: [value.x, value.y] };
     }
     default: return { error: `has unknown role type ${role.type}` };
@@ -178,7 +205,7 @@ function validateInner(input, result, contract, rules) {
   if (spec.component !== contract.id) errors.push({ code: 'component', at: 'component', message: `spec is for \`${spec.component}\`, contract is \`${contract.id}\``, help: '' });
   if (major(spec.version) !== major(contract.version)) {
     errors.push({ code: 'version', at: 'version', message: `\`${contract.id}\` is version ${contract.version}; this spec was written for ${spec.version}`,
-      help: `re-check the spec against the current contract and set "version": "${major(contract.version)}"`, fix: [{ op: 'replace', path: '/version', value: major(contract.version) }] });
+      help: `re-check the spec against the current contract and set "version": "${major(contract.version)}"`, fix: fixOf('safe', [{ op: 'replace', path: '/version', value: major(contract.version) }]) });
   } else if (minor(spec.version) > minor(contract.version)) {
     warnings.push({ code: 'newer', at: 'version', message: `this spec was written for ${contract.id} ${spec.version}; this runtime has ${contract.version}`, help: 'anything the newer version added is refused below' });
   }
@@ -192,27 +219,27 @@ function validateInner(input, result, contract, rules) {
     const guess = closest(key, Object.keys(roles));
     errors.push({ code: 'unknown-role', at: `binding.${key}`, message: `\`${contract.id}\` has no role \`${key}\``,
       help: guess ? `did you mean \`${guess}\`?` : `its roles are ${Object.keys(roles).map((r) => `\`${r}\``).join(', ')}`,
-      fix: guess && !own(binding, guess) ? [{ op: 'move', from: `/binding/${key}`, path: `/binding/${guess}` }] : [{ op: 'remove', path: `/binding/${key}` }] });
+      fix: fixOf('safe', guess && !own(binding, guess) ? [{ op: 'move', from: pointer('binding', key), path: pointer('binding', guess) }] : [{ op: 'remove', path: pointer('binding', key) }]) });
   }
   const bad = (code, at, message, help, fix) => { errors.push({ code, at, message, help, ...(fix ? { fix } : {}) }); };
 
   // Groups: the result itself (one group), or a list in it.
   let groups = [result];
   if (own(binding, 'groups')) {
-    if (contract.data.groups === 'none') bad('groups', 'binding.groups', `\`${contract.id}\` does not take groups`, 'remove `groups`', [{ op: 'remove', path: '/binding/groups' }]);
+    if (contract.data.groups === 'none') bad('groups', 'binding.groups', `\`${contract.id}\` does not take groups`, 'remove `groups`', fixOf('safe', [{ op: 'remove', path: '/binding/groups' }]));
     else {
       const got = read(result, binding.groups);
       if (got.error || !Array.isArray(got.value) || !got.value.every(isObject)) {
         const found = lists(result);
         bad(got.error === 'missing' ? 'unresolved' : 'type', 'binding.groups', got.error === 'missing' ? `\`${binding.groups}\` is not in the result` : `\`${binding.groups}\` is not a list of objects`,
-          found.length ? `bind it to ${found.map((f) => `\`${f}\``).join(' or ')}` : 'select a list in the ZQL query', found.length ? [{ op: 'replace', path: '/binding/groups', value: found[0] }] : undefined);
+          found.length ? `bind it to ${found.map((f) => `\`${f}\``).join(' or ')}` : 'select a list in the ZQL query', found.length ? fixOf('guess', [{ op: 'replace', path: '/binding/groups', value: found[0] }]) : undefined);
         groups = null;
       } else groups = got.value;
     }
   } else if (contract.data.groups === 'required') {
     const found = lists(result);
     bad('missing-groups', 'binding.groups', `\`${contract.id}\` needs \`groups\`: a list in the result`, found.length ? `bind it to ${found.map((f) => `\`${f}\``).join(' or ')}` : 'select a list in the ZQL query',
-      found.length ? [{ op: 'add', path: '/binding/groups', value: found[0] }] : undefined);
+      found.length ? fixOf('guess', [{ op: 'add', path: '/binding/groups', value: found[0] }]) : undefined);
     groups = null;
   }
 
@@ -223,7 +250,7 @@ function validateInner(input, result, contract, rules) {
     if (!own(binding, 'rows')) {
       const found = lists(groups[0]);
       bad('missing-rows', 'binding.rows', `\`${contract.id}\` reads its data from rows: bind \`rows\` to a list of them`, found.length ? `bind it to ${found.map((f) => `\`${f}\``).join(' or ')}` : 'select a list in the ZQL query',
-        found.length ? [{ op: 'add', path: '/binding/rows', value: found[0] }] : undefined);
+        found.length ? fixOf('guess', [{ op: 'add', path: '/binding/rows', value: found[0] }]) : undefined);
     } else {
       rowsOf = [];
       for (let g = 0; g < groups.length; g++) {
@@ -233,7 +260,7 @@ function validateInner(input, result, contract, rules) {
           const found = lists(groups[g]);
           bad(got.error === 'missing' ? 'unresolved' : 'type', 'binding.rows', got.error === 'missing' ? `\`${binding.rows}\` is not in ${own(binding, 'groups') ? 'each group' : 'the result'}${where}` : `\`${binding.rows}\` is not a list of objects${where}`,
             found.length ? `bind it to ${found.map((f) => `\`${f}\``).join(' or ')}` : got.list ? 'a list inside a list: bind the outer one as `groups`' : 'select a list in the ZQL query',
-            found.length ? [{ op: 'replace', path: '/binding/rows', value: found[0] }] : undefined);
+            found.length ? fixOf('guess', [{ op: 'replace', path: '/binding/rows', value: found[0] }]) : undefined);
           rowsOf = null;
           break;
         }
@@ -244,7 +271,7 @@ function validateInner(input, result, contract, rules) {
       }
     }
   } else if (own(binding, 'rows') && !perRow) {
-    bad('rows', 'binding.rows', `\`${contract.id}\` has no per-row roles`, 'remove `rows`', [{ op: 'remove', path: '/binding/rows' }]);
+    bad('rows', 'binding.rows', `\`${contract.id}\` has no per-row roles`, 'remove `rows`', fixOf('safe', [{ op: 'remove', path: '/binding/rows' }]));
   }
 
   // Roles.
@@ -262,7 +289,7 @@ function validateInner(input, result, contract, rules) {
           const found = suggest();
           bad('missing-role', at, `role \`${name}\` is required: ${nameOf(role)} from ${levelName}`,
             found.length ? `bind it to ${found.map((f) => `\`${f}\``).join(' or ')}` : `select a field in the ZQL query that holds ${nameOf(role)}`,
-            found.length ? [{ op: 'add', path: `/binding/${name}`, value: found[0] }] : undefined);
+            found.length ? fixOf('guess', [{ op: 'add', path: pointer('binding', name), value: found[0] }]) : undefined);
         }
         continue;
       }
@@ -277,7 +304,7 @@ function validateInner(input, result, contract, rules) {
             const place = got.trail ? `\`${got.trail}\` of ${levelName}` : levelName;
             bad('unresolved', at, got.error === 'missing' ? `\`${got.step}\` is not in ${place}` : got.error,
               guess ? `did you mean \`${got.trail ? `${got.trail}.` : ''}${guess}\`?` : found.length ? `bind it to ${found.map((f) => `\`${f}\``).join(' or ')}` : fields.length ? `it has ${fields.slice(0, 8).map((f) => `\`${f}\``).join(', ')}` : '',
-              guess ? [{ op: 'replace', path: `/binding/${name}`, value: `${got.trail ? `${got.trail}.` : ''}${guess}` }] : found.length ? [{ op: 'replace', path: `/binding/${name}`, value: found[0] }] : undefined);
+              guess ? fixOf('safe', [{ op: 'replace', path: pointer('binding', name), value: `${got.trail ? `${got.trail}.` : ''}${guess}` }]) : found.length ? fixOf('guess', [{ op: 'replace', path: pointer('binding', name), value: found[0] }]) : undefined);
             return false;
           }
           const value = readRole(got.value, role, rules);
@@ -286,7 +313,7 @@ function validateInner(input, result, contract, rules) {
             const which = items.length > 1 ? ` (${role.per} ${i})` : '';
             bad('type', at, `role \`${name}\` needs ${nameOf(role)}, but \`${path}\`${which} ${value.error}`,
               found.length ? `bind it to ${found.map((f) => `\`${f}\``).join(' or ')}` : `select a field in the ZQL query that holds ${nameOf(role)}`,
-              found.length ? [{ op: 'replace', path: `/binding/${name}`, value: found[0] }] : undefined);
+              found.length ? fixOf('guess', [{ op: 'replace', path: pointer('binding', name), value: found[0] }]) : undefined);
             return false;
           }
           put(i, value.value);
@@ -299,9 +326,30 @@ function validateInner(input, result, contract, rules) {
         for (let g = 0; g < rowsOf.length; g++) {
           const out = new Array(rowsOf[g].length);
           if (!readAll(rowsOf[g], (i, v) => { out[i] = v; })) break;
+          if (role.unique) {
+            const seen = new Map();
+            const twice = out.findIndex((v, i) => { const k = JSON.stringify(v); if (seen.has(k)) return true; seen.set(k, i); return false; });
+            if (twice >= 0) {
+              bad('unique', `binding.${name}`, `role \`${name}\` takes each value once, but ${describe(rowsOf[g][twice] && read(rowsOf[g][twice], binding[name]).value)} is in rows ${seen.get(JSON.stringify(out[twice]))} and ${twice}${rowsOf.length > 1 ? ` (group ${g})` : ''}`,
+                'aggregate in the ZQL query so each value is one row');
+              break;
+            }
+          }
           data.groups[g].rows[name] = out;
         }
       }
+    }
+  }
+
+  // Units: a result carries no units, so a spec says what its data is in when
+  // it is not the role's own unit; a different unit is refused (convert it in ZQL).
+  for (const [name, unit] of Object.entries(spec.units || {})) {
+    if (!own(roles, name)) { bad('unknown-role', `units.${name}`, `\`${contract.id}\` has no role \`${name}\``, '', fixOf('safe', [{ op: 'remove', path: pointer('units', name) }])); continue; }
+    const want = unitOf(roles[name]);
+    if (!want) bad('unit', `units.${name}`, `role \`${name}\` has no unit`, 'remove it', fixOf('safe', [{ op: 'remove', path: pointer('units', name) }]));
+    else if (unit !== want) {
+      bad('unit', `units.${name}`, `role \`${name}\` is in ${want}${roles[name].frame ? ` (the ${roles[name].frame} frame)` : ''}, but the data is in ${unit}`,
+        `convert it in the ZQL query to ${want}`);
     }
   }
 
@@ -313,10 +361,10 @@ function validateInner(input, result, contract, rules) {
         const guess = closest(key, Object.keys(descriptors));
         bad('unknown-option', `${kind}.${key}`, `\`${contract.id}\` has no ${kind === 'options' ? 'option' : 'surface parameter'} \`${key}\``,
           guess ? `did you mean \`${guess}\`?` : `it has ${Object.keys(descriptors).map((k) => `\`${k}\``).join(', ') || 'none'}`,
-          guess && !own(given, guess) ? [{ op: 'move', from: `/${kind}/${key}`, path: `/${kind}/${guess}` }] : [{ op: 'remove', path: `/${kind}/${key}` }]);
+          fixOf('safe', guess && !own(given, guess) ? [{ op: 'move', from: pointer(kind, key), path: pointer(kind, guess) }] : [{ op: 'remove', path: pointer(kind, key) }]));
         continue;
       }
-      const problems = check(given[key], descriptors[key], `${kind}.${key}`);
+      const problems = check(given[key], descriptors[key], `${kind}.${key}`, descriptors[key], 0, [kind, key]);
       errors.push(...problems.map((p) => ({ ...p, code: p.code === 'range' ? 'range' : 'option' })));
     }
     for (const key of Object.keys(descriptors)) out[key] = own(given, key) ? structuredClone(given[key]) : structuredClone(descriptors[key].default);
@@ -328,6 +376,8 @@ function validateInner(input, result, contract, rules) {
   if (errors.length) return { ok: false, errors, warnings };
   const cleanBinding = {};
   for (const key of ['groups', 'rows', ...Object.keys(roles)]) if (own(binding, key)) cleanBinding[key] = binding[key];
+  const units = {};
+  for (const key of Object.keys(roles)) if (own(spec.units, key)) units[key] = spec.units[key];
   return { ok: true, warnings, data,
-    spec: { format: 1, component: spec.component, version: spec.version, binding: cleanBinding, surface, options } };
+    spec: { format: 1, component: spec.component, version: spec.version, binding: cleanBinding, ...(Object.keys(units).length ? { units } : {}), surface, options } };
 }

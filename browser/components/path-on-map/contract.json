@@ -117,7 +117,7 @@
           "at": "binding.value",
           "message": "`sped` is not in each row of `points`",
           "help": "did you mean `speed`?",
-          "fix": [{ "op": "replace", "path": "/binding/value", "value": "speed" }]
+          "fix": { "kind": "safe", "patch": [{ "op": "replace", "path": "/binding/value", "value": "speed" }] }
         }
       }
     ]

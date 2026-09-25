@@ -30,7 +30,7 @@ async function engine() {
   return (query) => JSON.parse(db.run(zql, query));
 }
 const spec = (binding, extra = {}) => ({ format: 1, component: 'path-on-map', version: '1', binding: { rows: 'points', path: 'at', ...binding }, ...extra });
-const run = (s, result) => validate(s, result, contract, RULES);
+const run = (s, r) => validate(s, r, contract, RULES);
 const first = (outcome, at) => outcome.errors.find((e) => e.at.startsWith(at));
 
 test.describe('contracts and the view-spec validator', () => {
@@ -49,7 +49,8 @@ test.describe('contracts and the view-spec validator', () => {
     expect(checkContract(broken).map((e) => e.at)).toEqual(['options.lineWidth.multipleOf']);
     delete broken.options.lineWidth.multipleOf;
     expect(checkContract(broken).map((e) => [e.at, e.message])).toEqual([
-      ['roles.value.relativeTo', 'names no surface parameter: `los`'],
+      ['roles.value.relativeTo', 'names no surface parameter or result/group role: `los`'],
+      ['roles.value', '`frame` and `relativeTo` are for XY roles'],
       ['surfaceParams.basemap', `"atlantis" is not a map basemap (it has auto, ${Object.keys(ARCHIVES).join(', ')})`],
     ]);
   });
@@ -82,9 +83,9 @@ test.describe('contracts and the view-spec validator', () => {
 
   test('missing structure or roles are refused with a fix drawn from the result', () => {
     const noRows = run({ format: 1, component: 'path-on-map', version: '1', binding: { path: 'at' } }, result);
-    expect(first(noRows, 'binding.rows')).toMatchObject({ code: 'missing-rows', help: 'bind it to `points`', fix: [{ op: 'add', path: '/binding/rows', value: 'points' }] });
+    expect(first(noRows, 'binding.rows')).toMatchObject({ code: 'missing-rows', help: 'bind it to `points`', fix: { kind: 'guess', patch: [{ op: 'add', path: '/binding/rows', value: 'points' }] } });
     const noPath = run({ format: 1, component: 'path-on-map', version: '1', binding: { rows: 'points' } }, result);
-    expect(first(noPath, 'binding.path')).toMatchObject({ code: 'missing-role', message: 'role `path` is required: a Point from each row of `points`', fix: [{ op: 'add', path: '/binding/path', value: 'at' }] });
+    expect(first(noPath, 'binding.path')).toMatchObject({ code: 'missing-role', message: 'role `path` is required: a Point from each row of `points`', fix: { kind: 'guess', patch: [{ op: 'add', path: '/binding/path', value: 'at' }] } });
   });
 
   test('a role bound to the wrong type is refused against the actual result', () => {
@@ -101,8 +102,8 @@ test.describe('contracts and the view-spec validator', () => {
   test('out-of-range, non-finite and unknown options are refused; nothing else is', () => {
     const outcome = run(spec({}, { options: { lineWidth: 40, view: '4d', colorscale: 'solid' } }), result);
     expect(outcome.errors.map((e) => [e.at, e.code])).toEqual([['options.lineWidth', 'range'], ['options.view', 'option'], ['options.colorscale', 'unknown-option']]);
-    expect(first(outcome, 'options.lineWidth')).toMatchObject({ help: 'use a value in [1, 16]', fix: [{ op: 'replace', path: '/options/lineWidth', value: 16 }] });
-    expect(first(outcome, 'options.colorscale').fix).toEqual([{ op: 'move', from: '/options/colorscale', path: '/options/colorScale' }]);
+    expect(first(outcome, 'options.lineWidth')).toMatchObject({ help: 'use a value in [1, 16]', fix: { kind: 'safe', patch: [{ op: 'replace', path: '/options/lineWidth', value: 16 }] } });
+    expect(first(outcome, 'options.colorscale').fix).toEqual({ kind: 'safe', patch: [{ op: 'move', from: '/options/colorscale', path: '/options/colorScale' }] });
     expect(renderErrors(outcome.errors)).toContain('error: 40 is above the maximum 16\n  at: options.lineWidth\n  help: use a value in [1, 16]');
     expect(run(spec({}, { options: { lineWidth: 16, bearing: -180 } }), result).ok).toBe(true);
     expect(first(run(spec({}, { options: { bearing: NaN } }), result), 'options.bearing').message).toBe('NaN is not a finite number');
@@ -149,26 +150,94 @@ test.describe('contracts and the view-spec validator', () => {
     expect(old.spec.binding).toEqual({ rows: 'points', path: 'at', value: 'speed', label: 'name' });
     expect(old.warnings.map((w) => w.code)).toEqual(['migrated']);
     expect(run(spec({}, { version: '1.4' }), result).warnings.map((w) => w.code)).toEqual(['newer']);
-    expect(first(run(spec({}, { version: '2' }), result), 'version').fix).toEqual([{ op: 'replace', path: '/version', value: '1' }]);
+    expect(first(run(spec({}, { version: '2' }), result), 'version').fix).toEqual({ kind: 'safe', patch: [{ op: 'replace', path: '/version', value: '1' }] });
     expect(first(run({ ...spec({}), format: 2 }, result), 'format').code).toBe('const');
   });
 
-  test('the format covers planar frames: a rink heat contract (docs only) binds XY in feet', () => {
-    const rink = {
-      format: 1, id: 'rink-heat', version: '0.1.0', title: 'Rink heat', category: 'Sports', surface: 'rink', mark: 'heat',
-      data: { groups: 'none', description: 'One row per event.' },
-      roles: {
-        at: { per: 'row', type: 'XY', frame: 'rink', unit: 'ft', minimum: -100, maximum: 100, required: true, description: 'Where.' },
-        weight: { per: 'row', type: 'Float', minimum: 0, required: false, description: 'How much.' },
-      },
-      surfaceParams: { half: { enum: ['full', 'offensive', 'defensive'], default: 'full', description: 'Which part.' } },
-      options: { bin: { type: 'number', minimum: 1, maximum: 20, default: 5, description: 'Bin size, ft.' } },
-      examples: { valid: [{ title: 'a', spec: {} }, { title: 'b', spec: {} }], invalid: [{ title: 'c', spec: {}, error: {} }] },
-    };
+  test('fixes say whether they are safe; only safe ones apply without a decision', () => {
+    const typo = run(spec({ value: 'sped' }), result).errors[0];
+    expect(typo.fix.kind).toBe('safe');
+    const swap = run(spec({ value: 'at' }), result).errors[0];
+    expect(swap.fix).toEqual({ kind: 'guess', patch: [{ op: 'replace', path: '/binding/value', value: 'dist' }] });
+    expect(() => applyFix(spec({ value: 'at' }), swap.fix)).toThrow('refusing a `guess` fix without allowGuess');
+    expect(applyFix(spec({ value: 'at' }), swap.fix, { allowGuess: true }).binding.value).toBe('dist');
+    // Pointers are unescaped, and prototype names are refused.
+    expect(applyFix({ options: { 'a/b~c': 1 } }, { kind: 'safe', patch: [{ op: 'remove', path: '/options/a~1b~0c' }] })).toEqual({ options: {} });
+    for (const key of ['__proto__', 'constructor', 'prototype']) {
+      expect(() => applyFix({}, { kind: 'safe', patch: [{ op: 'add', path: `/${key}/polluted`, value: 1 }] })).toThrow(`refusing to patch \`${key}\``);
+    }
+    expect(({}).polluted).toBeUndefined();
+    // An unknown option whose name has a slash is removed by an escaped pointer.
+    const odd = run(spec({}, { options: { 'x/y': 1 } }), result).errors[0];
+    expect(odd.fix).toEqual({ kind: 'safe', patch: [{ op: 'remove', path: '/options/x~1y' }] });
+    expect(run(applyFix(spec({}, { options: { 'x/y': 1 } }), odd.fix), result).ok).toBe(true);
+  });
+
+  // The README's rink heat, zone chart and route chart declarations, checked for real.
+  const base = (id, surface, data, roles, surfaceParams = {}) => ({
+    format: 1, id, version: '0.1.0', title: id, category: 'Sports', surface, mark: 'm', data: { description: 'd', ...data }, roles, surfaceParams,
+    options: {}, examples: { valid: [{ title: 'a', spec: {} }, { title: 'b', spec: {} }], invalid: [{ title: 'c', spec: {}, error: {} }] },
+  });
+  const rink = base('rink-heat', 'rink', { groups: 'none' }, {
+    at: { per: 'row', type: 'XY', frame: 'rink', required: true, description: 'Where.' },
+    weight: { per: 'row', type: 'Float', minimum: 0, required: false, description: 'How much.' },
+  });
+  const bind = (id, binding, extra = {}) => ({ format: 1, component: id, version: '0', binding, ...extra });
+
+  test('frames are first-class: a rink role takes each axis\'s extent and its unit from the rink frame', () => {
     expect(checkContract(rink)).toEqual([]);
-    const shots = { shots: [{ xy: { x: 60, y: 10 }, w: 1 }, { xy: { x: 150, y: 0 }, w: 2 }] };
-    const outcome = validate({ format: 1, component: 'rink-heat', version: '0', binding: { rows: 'shots', at: 'xy', weight: 'w' } }, shots, rink);
-    expect(first(outcome, 'binding.at').message).toBe('role `at` needs an XY, but `xy` (row 1) is (150, 0), outside [-100, 100] ft');
+    const shots = (y) => ({ shots: [{ xy: { x: 60, y: 10 }, w: 1 }, { xy: { x: -95, y }, w: 2 }] });
+    expect(validate(bind('rink-heat', { rows: 'shots', at: 'xy', weight: 'w' }), shots(40), rink).ok).toBe(true);
+    // y = 90 ft: inside x's ±100, outside the rink's ±42.5 width.
+    expect(first(validate(bind('rink-heat', { rows: 'shots', at: 'xy' }), shots(90), rink), 'binding.at').message)
+      .toBe('role `at` needs an XY, but `xy` (row 1) is (-95, 90), outside the rink: x in [-100,100], y in [-42.5,42.5] ft');
+    // Metre data is refused, with the conversion to do.
+    const metres = validate(bind('rink-heat', { rows: 'shots', at: 'xy' }, { units: { at: 'm' } }), shots(10), rink);
+    expect(first(metres, 'units.at')).toMatchObject({ code: 'unit', message: 'role `at` is in ft (the rink frame), but the data is in m', help: 'convert it in the ZQL query to ft' });
+    expect(validate(bind('rink-heat', { rows: 'shots', at: 'xy' }, { units: { at: 'ft' } }), shots(10), rink).ok).toBe(true);
+    // A frame's role may not set its own range or unit, and must name a frame that exists.
+    const own = structuredClone(rink);
+    own.roles.at.unit = 'm';
+    own.roles.at.maximum = 5;
+    own.roles.weight.frame = 'rink';
+    expect(checkContract(own).map((e) => e.at)).toEqual(['roles.at.unit', 'roles.at.maximum', 'roles.weight']);
+    own.roles = { at: { per: 'row', type: 'XY', frame: 'ice', required: true, description: 'd' } };
+    expect(checkContract(own)[0].message).toBe('`ice` is not a frame (rink, court, field, pitch)');
+  });
+
+  test('zones: a zone listed twice is refused; pct is 0-100 and fraction 0-1', () => {
+    const zones = base('zones', 'court', { groups: 'none' }, {
+      zone: { per: 'row', type: 'Enum', enum: ['paint', 'mid', 'corner3', 'arc3'], unique: true, required: true, description: 'd' },
+      share: { per: 'row', type: 'Float', unit: 'pct', required: true, description: 'd' },
+      frac: { per: 'row', type: 'Float', unit: 'fraction', required: false, description: 'd' },
+    });
+    expect(checkContract(zones)).toEqual([]);
+    const b = bind('zones', { rows: 'z', zone: 'k', share: 'p' });
+    expect(validate(b, { z: [{ k: 'paint', p: 45 }, { k: 'mid', p: 30 }] }, zones).ok).toBe(true);
+    expect(first(validate(b, { z: [{ k: 'paint', p: 45 }, { k: 'paint', p: 30 }] }, zones), 'binding.zone').message)
+      .toBe('role `zone` takes each value once, but "paint" is in rows 0 and 1');
+    expect(first(validate(b, { z: [{ k: 'paint', p: 145 }] }, zones), 'binding.share').message).toBe('role `share` needs a Float, but `p` is 145, outside [0, 100] pct');
+    expect(first(validate(bind('zones', { rows: 'z', zone: 'k', share: 'p', frac: 'f' }), { z: [{ k: 'paint', p: 45, f: 45 }] }, zones), 'binding.frac').message)
+      .toBe('role `frac` needs a Float, but `f` is 45, outside [0, 1] fraction');
+    const perGroup = structuredClone(zones);
+    perGroup.roles.zone.per = 'group';
+    expect(checkContract(perGroup).map((e) => e.at)).toEqual(['roles.zone.unique']);
+  });
+
+  test('relativeTo names a surface parameter or a result/group role (the per-play line of scrimmage)', () => {
+    const routes = base('route-chart', 'field', { groups: 'required' }, {
+      los: { per: 'group', type: 'Float', minimum: 0, maximum: 120, unit: 'yd', required: true, description: 'd' },
+      at: { per: 'row', type: 'XY', frame: 'field', relativeTo: 'los', required: true, description: 'd' },
+      outcome: { per: 'group', type: 'Enum', enum: ['complete', 'incomplete', 'td'], required: false, description: 'd' },
+    });
+    expect(checkContract(routes)).toEqual([]);
+    const plays = { plays: [{ los: 30, result: 'td', pts: [{ xy: { x: 0, y: 20 } }, { xy: { x: -8, y: 25 } }, { xy: { x: 70, y: 30 } }] }] };
+    const outcome = validate(bind('route-chart', { groups: 'plays', rows: 'pts', at: 'xy', los: 'los', outcome: 'result' }), plays, routes);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.data.groups[0]).toMatchObject({ los: 30, outcome: 'td' });
+    const rowRef = structuredClone(routes);
+    rowRef.roles.los.per = 'row';
+    expect(checkContract(rowRef)[0].message).toBe('names no surface parameter or result/group role: `los`');
   });
 });
 
@@ -282,9 +351,10 @@ test('one canvas, one WebGL context and a flat heap over 200 swaps; swap time wi
   expect(await page.locator('#stage canvas').count()).toBe(1);
   expect(await layers()).toBe(layersBefore);
   expect(await inPage(page, 'return [z.canvas.history.length, z.canvas.stats().results]')).toEqual([8, 1]);
-  // Flat: 200 swaps may not grow the collected heap by more than 1 MB
-  // (a result snapshot is ~60 KB; a leak of one per swap would be ~12 MB).
-  expect(growth).toBeLessThan(1_000_000);
+  // Flat: 200 swaps may not grow the collected heap by more than 2 MB. Runs
+  // measure +45-120 KB here and up to ~1.5 MB with theme flips (V8 code); a
+  // result snapshot is ~60 KB, so a leak of one per swap would be ~12 MB.
+  expect(growth).toBeLessThan(2_000_000);
   // Swap time is load/restore to a frame drawn with the new path. The 100 ms
   // target is for a GPU (scripts/bench-components.mjs --gpu). The headless
   // shell's SwiftShader rasterises each 1440x1000 frame on the CPU (~30 ms a
@@ -431,10 +501,9 @@ test('stored entries that cannot be used are dropped and reported; the demo fall
   expect(after.notes.filter((n) => n.startsWith('unreadable entry zega.components.demo:e:garbage'))).toHaveLength(1);
   expect(after.notes.filter((n) => n.startsWith('dropped a stored entry that is not an entry'))).toHaveLength(1);
   expect(after.notes.filter((n) => /its result is missing|does not match its hash|99 is above the maximum 16/.test(n))).toHaveLength(3);
-  // Dropped entries are gone from storage too, bar the unreadable one (reported, never parsed); results no entry uses are gone.
-  const left = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('zega.components.demo:')).map((k) => k.split(':').slice(1, 3).join(':').slice(0, 12)).sort());
-  expect(left.filter((k) => k.startsWith('r:'))).toHaveLength(1);
-  expect(left.filter((k) => k.startsWith('e:') && !k.startsWith('e:garbage'))).toHaveLength(1);
+  // Every dropped entry is gone from storage, the unreadable one by its key; results no entry uses are gone.
+  const left = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('zega.components.demo:')).map((k) => k.split(':')[1]).sort());
+  expect(left).toEqual(['e', 'r']);
 });
 
 test('two tabs share one notebook without overwriting each other', async ({ page, context }) => {
@@ -456,4 +525,107 @@ test('two tabs share one notebook without overwriting each other', async ({ page
   // Every load from both tabs is there: the first tab's example, the second's (it opened on the first's
   // entry, so it made none of its own), and one load each.
   expect(stored).toHaveLength(3);
+});
+
+test('a canvas made with no store starts, loads and restores', async ({ page }) => {
+  await open(page);
+  const outcome = await inPage(page, `
+    const { createCanvas } = await import('/components/canvas.js');
+    const host = document.createElement('div');
+    host.style.cssText = 'position:fixed;left:0;top:0;width:400px;height:300px';
+    document.body.append(host);
+    const canvas = createCanvas(host);
+    await canvas.ready;
+    const empty = canvas.history.length;
+    await canvas.load(arg, z.result);
+    await canvas.load({ ...arg, options: { view: '2d' } }, z.result);
+    await canvas.restore(0);
+    const out = { empty, n: canvas.history.length, current: canvas.current, results: canvas.stats().results };
+    await canvas.destroy();
+    return out;`, SPEED_3D);
+  expect(outcome).toEqual({ empty: 0, n: 2, current: 0, results: 1 });
+});
+
+test('perf guard: swaps never toggle layer visibility, and never reload basemap tiles', async ({ page }) => {
+  test.setTimeout(120_000);
+  await open(page);
+  await swaps(page, 12); // every view once, so its tiles are cached
+  const watched = await inPage(page, `
+    const calls = [], tiles = [];
+    const set = map.setLayoutProperty.bind(map);
+    map.setLayoutProperty = (layer, name, value) => { calls.push([layer, name, value]); return set(layer, name, value); };
+    const onData = (e) => { if (e.sourceId === 'basemap' && e.tile) tiles.push(e.tile.tileID.key); };
+    map.on('sourcedataloading', onData);
+    const specs = [arg[0], arg[1], arg[2]];
+    for (let i = 0; i < 24; i++) await z.canvas.load(specs[i % 3], z.result);
+    map.off('sourcedataloading', onData);
+    map.setLayoutProperty = set;
+    return { visibility: calls.filter(([, name]) => name === 'visibility'), tiles: tiles.length, shown: surface.buildingsShown() };`, [SPEED_3D, DIST_2D, SOLID_2D]);
+  expect(watched.visibility).toEqual([]);
+  expect(watched.tiles).toBe(0);
+});
+
+test('a map that never draws times out within one 5 s budget, previous view included', async ({ page }) => {
+  test.setTimeout(60_000);
+  await open(page);
+  const before = await state(page);
+  const outcome = await inPage(page, `
+    const loaded = map.isSourceLoaded.bind(map);
+    map.isSourceLoaded = (id) => (id.startsWith('path-on-map') ? false : loaded(id));
+    const started = performance.now();
+    let message = null;
+    try { await z.canvas.load(arg, z.result); } catch (e) { message = e.message; }
+    const took = performance.now() - started;
+    map.isSourceLoaded = loaded;
+    return { message, took, current: z.canvas.current, n: z.canvas.history.length };`, SOLID_2D);
+  expect(outcome.message).toMatch(/^the map did not draw within 5 s$|^the map did not draw within 4\.\d+ s$/);
+  expect(outcome.took).toBeGreaterThan(4_500);
+  expect(outcome.took).toBeLessThan(6_500); // not 5 s for the swap plus 5 s for the redraw
+  expect({ current: outcome.current, n: outcome.n }).toEqual({ current: 0, n: 1 });
+  await idle(page);
+  expect(await state(page)).toEqual(before);
+});
+
+test('undo waits its turn: queued after a load, it undoes that load', async ({ page }) => {
+  await open(page);
+  const outcome = await inPage(page, `
+    const first = z.canvas.history[0].id;
+    const loading = z.canvas.load(arg, z.result);
+    const undoing = z.canvas.undo();
+    const [made, undone] = await Promise.all([loading, undoing]);
+    return { parent: made.parent === first, undone: undone?.id === first, current: z.canvas.history[z.canvas.current].id === first };`, DIST_2D);
+  expect(outcome).toEqual({ parent: true, undone: true, current: true });
+  // Called before a load, it undoes what was on screen when it was called, and the load then follows it.
+  const reversed = await inPage(page, `
+    const [a, b] = [z.canvas.history[0].id, z.canvas.history[1].id]; // on screen: a (after the undo above)
+    await z.canvas.load(arg, z.result);                                // c, parent a
+    const c = z.canvas.history[z.canvas.current].id;
+    const undoing = z.canvas.undo();                                   // back to a
+    const loading = z.canvas.load(arg, z.result);                      // d, parent a
+    const [undone, made] = await Promise.all([undoing, loading]);
+    return { undone: undone?.id === a, parent: made.parent === a, onScreen: z.canvas.history[z.canvas.current].id === made.id };`, SOLID_2D);
+  expect(reversed).toEqual({ undone: true, parent: true, onScreen: true });
+});
+
+test('a failed read of the local basemap is retried on the next swap', async ({ page }) => {
+  await tileFixture(page);
+  let failures = 1;
+  await page.route('**/data/monaco.pmtiles', (route) => (failures-- > 0 ? route.fulfill({ status: 503, body: 'busy' }) : route.continue()));
+  await page.goto('/components/');
+  await expect(page.locator('html')).toHaveAttribute('data-ready', 'true', { timeout: 30_000 });
+  await expect(page.locator('#errors')).toContainText('HTTP 503');
+  expect(await page.evaluate(() => window.zegaComponents.canvas.history.length)).toBe(0);
+  expect(await inPage(page, 'await z.canvas.load(z.EXAMPLE, z.result); return [z.canvas.current, map.getSource("path-on-map") ? 1 : 0]')).toEqual([0, 1]);
+});
+
+test('another tab clearing the notebook clears the entry on screen here', async ({ page, context }) => {
+  await open(page);
+  const other = await context.newPage();
+  await tileFixture(other);
+  await other.goto('/components/');
+  await expect(other.locator('html')).toHaveAttribute('data-ready', 'true', { timeout: 30_000 });
+  await inPage(other, 'await z.canvas.clearHistory();');
+  await expect.poll(() => inPage(page, 'return [z.canvas.history.length, z.canvas.current, surface.owned().layers]')).toEqual([0, -1, 0]);
+  // And this tab carries on: its next entry starts a fresh line.
+  expect(await inPage(page, 'return (await z.canvas.load(arg, z.result)).parent', SPEED_3D)).toBeNull();
 });
