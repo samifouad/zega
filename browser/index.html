@@ -36,27 +36,27 @@
 </header>
 <div id="panes">
   <div class="band" id="band-top">
-    <section class="pane">
+    <section class="pane" data-pane="schema">
       <h2>schema</h2>
       <div id="schema" class="editor"></div>
     </section>
     <div class="split split-x" data-band="top" title="drag the graph wider or narrower"></div>
-    <section class="pane pane-graph">
+    <section class="pane pane-graph" data-pane="view">
       <div id="view-tabs" role="tablist" aria-label="Data views"></div>
       <div id="graph"></div>
     </section>
   </div>
   <div id="split-rows" class="split split-y" title="drag to resize rows"></div>
   <div class="band" id="band-bottom">
-    <section class="pane">
+    <section class="pane" data-pane="query">
       <h2>query <span id="query-time" class="pane-stat"></span></h2>
       <div id="query" class="editor"></div>
     </section>
-    <section class="pane">
+    <section class="pane" data-pane="output">
       <h2>output <span id="output-size" class="pane-stat"></span></h2>
       <div id="output" class="editor"></div>
     </section>
-    <section class="pane">
+    <section class="pane" data-pane="raw">
       <h2>raw <span id="raw-count" class="pane-stat"></span></h2>
       <div id="raw" class="editor"></div>
     </section>
@@ -67,5 +67,6 @@
   <div id="tour-queries"></div>
 </div>
 <script type="module" src="repl.js"></script>
+<script type="module" src="panes.js"></script>
 </body>
 </html>

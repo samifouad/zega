@@ -298,5 +298,18 @@ fn fragment_layout(ts: &[Token<'_>], types: bool, expand_attributes: bool) -> Do
         }
         Doc::seq(docs)
     }
-    sequence(ts, types, expand_attributes).group()
+    // A header that breaks at a top-level comma (`order by a, b desc, c`) keeps
+    // its continuation lines one level in, so they do not read as new items.
+    // Breaks inside brackets are already nested by the bracket.
+    match sequence(ts, types, expand_attributes) {
+        Doc::Seq(docs) => match docs.iter().position(|d| matches!(d, Doc::Line(" "))) {
+            Some(first) => {
+                let mut head = docs;
+                let tail = head.split_off(first);
+                Doc::seq([Doc::seq(head), Doc::seq(tail).nest()]).group()
+            }
+            None => Doc::seq(docs).group(),
+        },
+        other => other.group(),
+    }
 }

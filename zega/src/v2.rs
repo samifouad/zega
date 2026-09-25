@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use crate::graph::{Graph, Node, NodeId, RelId};
 use crate::index::{IndexKind, Interval, TextPattern};
 use crate::lang::{
-    BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, Pred, Schema, Selection, Span,
-    Statement,
+    BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, OrderBy, OrderKey, Pred, Schema,
+    Selection, Span, Statement,
 };
 use crate::value::Value;
 use crate::journal::{atomically, Journal};
@@ -703,7 +703,11 @@ fn read(
     context: &mut ReadContext<'_>,
 ) -> Result<Json, LangError> {
     let mut ids = candidates(graph, root, context.work)?;
-    retain_matches(graph, &mut ids, root.condition.as_ref(), context.work)?;
+    // Candidates are in ascending id order, which is also the result order,
+    // so without a ranking (`near`, `order by`) the first `limit` matches are
+    // the answer and the rest need not be tested (zegadb/zega#82).
+    let enough = root.limit.filter(|_| root.near.is_none() && root.order.is_empty());
+    retain_first_matches(graph, &mut ids, root.condition.as_ref(), enough, context.work)?;
     order_limit(graph, root, &mut ids, |id| *id, context.work)?;
     if equality_lookup(root) {
         return match ids.len() {
@@ -731,7 +735,66 @@ fn mutate(
     uniques: &[(String, String)],
     work: &mut Work,
 ) -> Result<Json, LangError> {
+    if root.delete.is_some() {
+        return delete_nodes(graph, journal, root, work);
+    }
     apply_node(graph, journal, schema, root, None, uniques, work)
+}
+
+/// `delete Type(condition) { @detach @id field }`: every matching row goes.
+/// Without `@detach`, a row that still has relationships refuses the whole
+/// statement, which is one transaction (APS 10), so nothing is deleted.
+/// Projected values are read before anything is deleted.
+fn delete_nodes(
+    graph: &mut Graph,
+    journal: &mut Journal,
+    sel: &Selection,
+    work: &mut Work,
+) -> Result<Json, LangError> {
+    // The checker requires a condition; a delete never matches everything by default.
+    let Some(condition) = sel.condition.as_ref() else {
+        return Err(LangError::at(sel.type_span, format!("delete needs a condition: which {} rows?", sel.type_name)));
+    };
+    let mut ids = candidates(graph, sel, work)?;
+    retain_matches(graph, &mut ids, Some(condition), work)?;
+    let detach = sel.items.iter().any(|item| matches!(item, Item::Detach(_)));
+    let mut rows = Vec::new();
+    for &id in &ids {
+        work.step()?;
+        let node = graph
+            .get_node(id)
+            .ok_or_else(|| LangError::bare(format!("missing node {id}")))?;
+        let attached = graph.node_relationship_ids(id).len();
+        if attached > 0 && !detach {
+            let plural = if attached == 1 { "relationship" } else { "relationships" };
+            return Err(LangError::at(
+                sel.type_span,
+                format!("{} {id} has {attached} {plural}", sel.type_name),
+            )
+            .with_help("add `@detach` to remove them with it; nothing was deleted"));
+        }
+        let mut row = serde_json::Map::new();
+        for item in &sel.items {
+            match item {
+                Item::Id(alias) => { row.insert(alias.clone(), json!(id)); }
+                Item::Prop(name, _) => { row.insert(name.clone(), prop_json(node, name)); }
+                // The checker allows nothing else in a delete.
+                _ => {}
+            }
+        }
+        if !row.is_empty() {
+            rows.push(Json::Object(row));
+        }
+    }
+    for &id in &ids {
+        journal.delete_node(graph, id);
+    }
+    let mut out = serde_json::Map::new();
+    out.insert("deleted".into(), json!(ids.len()));
+    if sel.items.iter().any(|item| matches!(item, Item::Id(_) | Item::Prop(_, _))) {
+        out.insert("rows".into(), Json::Array(rows));
+    }
+    Ok(Json::Object(out))
 }
 
 /// Writes or finds this selection and returns only the rows this statement touched.
@@ -806,6 +869,8 @@ fn apply_node(
                 object.insert(name.clone(), prop_json(&node, name));
             }
             Item::Id(alias) => { object.insert(alias.clone(), json!(node.id)); }
+            // Only a delete reads @detach; the checker refuses it anywhere else.
+            Item::Detach(_) => {}
             Item::Score(alias, _) => { object.insert(alias.clone(), score_json(&node, sel)); }
             Item::Similarity(alias, sim) => { object.insert(alias.clone(), similarity_json(&node, sim)); }
             Item::Distance(alias, distance) => {
@@ -1258,6 +1323,7 @@ fn project(
                 object.insert(name.clone(), prop_json(node, name));
             }
             Item::Id(alias) => { object.insert(alias.clone(), json!(node.id)); }
+            Item::Detach(_) => {}
             Item::Score(alias, _) => { object.insert(alias.clone(), score_json(node, sel)); }
             Item::Similarity(alias, sim) => { object.insert(alias.clone(), similarity_json(node, sim)); }
             Item::Distance(alias, distance) => {
@@ -1753,21 +1819,42 @@ fn retain_matches(
     condition: Option<&BoolExpr>,
     work: &mut Work,
 ) -> Result<(), LangError> {
+    retain_first_matches(graph, ids, condition, None, work)
+}
+
+/// Like `retain_matches`, but stop once `enough` rows match: the rows after
+/// that are neither tested nor kept, nor counted as examined.
+fn retain_first_matches(
+    graph: &Graph,
+    ids: &mut Vec<NodeId>,
+    condition: Option<&BoolExpr>,
+    enough: Option<usize>,
+    work: &mut Work,
+) -> Result<(), LangError> {
+    let enough = enough.unwrap_or(usize::MAX);
     if condition.is_none() {
+        ids.truncate(enough);
         return Ok(());
     }
-    graph.note_examined(ids.len());
+    let mut kept = 0;
+    let mut tested = 0;
     let mut stopped = Ok(());
-    ids.retain(|id| {
-        if stopped.is_err() {
-            return false;
+    for i in 0..ids.len() {
+        if kept == enough {
+            break;
         }
         if let Err(error) = work.step() {
             stopped = Err(error);
-            return false;
+            break;
         }
-        node_matches(graph, *id, condition)
-    });
+        tested += 1;
+        if node_matches(graph, ids[i], condition) {
+            ids[kept] = ids[i];
+            kept += 1;
+        }
+    }
+    graph.note_examined(tested);
+    ids.truncate(kept);
     stopped
 }
 
@@ -1888,7 +1975,9 @@ fn candidates(graph: &Graph, sel: &Selection, work: &mut Work) -> Result<Vec<Nod
         .and_then(|expr| index_filter(graph, &types, expr));
     // Expand a geodesic circle until k qualifying points are inside. Every
     // point outside is farther than the kth match, so early stopping is exact.
-    if let Some(order) = &sel.order {
+    // Only when the first key is the nearest distance first: a later key
+    // breaks ties among rows that are all inside the circle.
+    if let Some(OrderKey { by: OrderBy::Distance(order), desc: false, .. }) = sel.order.first() {
         if sel.limit == Some(0) {
             return Ok(Vec::new());
         }
@@ -1956,17 +2045,28 @@ fn order_limit<T>(
         ids.retain(|row| ranks.contains_key(&id(row)));
         ids.sort_by_key(|row| ranks[&id(row)]);
     }
-    if let Some(order) = &sel.order {
-        // Each distance is computed once, as a step of work, rather than twice
-        // per comparison inside a sort that cannot be stopped part way.
+    if !sel.order.is_empty() {
+        // Each key is read once per row, as a step of work, rather than inside
+        // a sort that cannot be stopped part way.
         let mut keyed = Vec::with_capacity(ids.len());
-        for row in ids.drain(..) {
+        'rows: for row in ids.drain(..) {
             work.step()?;
-            if let Some(distance) = node_distance(graph, id(&row), order) {
-                keyed.push((distance, row));
+            let node = graph.get_node(id(&row));
+            let mut values = Vec::with_capacity(sel.order.len());
+            for key in &sel.order {
+                values.push(match &key.by {
+                    OrderBy::Distance(distance) => match node_distance(graph, id(&row), distance) {
+                        Some(d) => SortValue::Float(d),
+                        // No location, no distance: such a row is not in a distance order.
+                        None => continue 'rows,
+                    },
+                    OrderBy::Field(field) => SortValue::of(node.and_then(|n| n.props.get(field))),
+                });
             }
+            keyed.push((values, row));
         }
-        keyed.sort_by(|(a, x), (b, y)| a.total_cmp(b).then(id(x).cmp(&id(y))));
+        // Ties keep creation order.
+        keyed.sort_by(|(a, x), (b, y)| compare_keys(&sel.order, a, b).then(id(x).cmp(&id(y))));
         ids.extend(keyed.into_iter().map(|(_, row)| row));
     }
     if let Some(limit) = sel.limit {
@@ -1974,6 +2074,64 @@ fn order_limit<T>(
     }
     Ok(())
 }
+/// One `order by` value. A row without the value sorts after every row with
+/// one, in either direction. Values of different kinds (a union type whose
+/// types disagree) sort bool, then number, then string.
+#[derive(Debug)]
+enum SortValue {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(String),
+    Missing,
+}
+
+impl SortValue {
+    fn of(value: Option<&Value>) -> Self {
+        match value {
+            Some(Value::Bool(b)) => SortValue::Bool(*b),
+            Some(Value::Int(i)) => SortValue::Int(*i),
+            Some(Value::Float(bits)) => SortValue::Float(f64::from_bits(*bits)),
+            Some(Value::String(text)) => SortValue::Text(text.clone()),
+            // Null, and kinds the checker refuses to order (Point, Vector, lists).
+            _ => SortValue::Missing,
+        }
+    }
+
+    fn rank(&self) -> u8 {
+        match self {
+            SortValue::Bool(_) => 0,
+            SortValue::Int(_) | SortValue::Float(_) => 1,
+            SortValue::Text(_) => 2,
+            SortValue::Missing => 3,
+        }
+    }
+}
+
+fn compare_keys(keys: &[OrderKey], a: &[SortValue], b: &[SortValue]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    for ((key, x), y) in keys.iter().zip(a).zip(b) {
+        let order = match (x, y) {
+            (SortValue::Missing, SortValue::Missing) => Ordering::Equal,
+            // Missing is last whatever the direction, so it is not reversed.
+            (SortValue::Missing, _) => return Ordering::Greater,
+            (_, SortValue::Missing) => return Ordering::Less,
+            (SortValue::Bool(x), SortValue::Bool(y)) => x.cmp(y),
+            (SortValue::Int(x), SortValue::Int(y)) => x.cmp(y),
+            (SortValue::Int(x), SortValue::Float(y)) => (*x as f64).total_cmp(y),
+            (SortValue::Float(x), SortValue::Int(y)) => x.total_cmp(&(*y as f64)),
+            (SortValue::Float(x), SortValue::Float(y)) => x.total_cmp(y),
+            (SortValue::Text(x), SortValue::Text(y)) => x.cmp(y),
+            (x, y) => x.rank().cmp(&y.rank()),
+        };
+        let order = if key.desc { order.reverse() } else { order };
+        if order != Ordering::Equal {
+            return order;
+        }
+    }
+    Ordering::Equal
+}
+
 fn require_points(schema: &Schema, sel: &Selection) -> Result<(), LangError> {
     let tests = sel
         .condition
@@ -2109,7 +2267,7 @@ fn cmp_value(left: &Json, right: &Json) -> Option<std::cmp::Ordering> {
 }
 
 fn equality_lookup(sel: &Selection) -> bool {
-    sel.near.is_none() && sel.order.is_none()
+    sel.near.is_none() && sel.order.is_empty()
         && sel.limit.is_none()
         && sel
             .condition
