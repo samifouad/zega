@@ -1,7 +1,7 @@
 import { test, expect } from './offline.js';
 import { globe as openGlobe, map, idle, setEditor } from './globe-helpers.js';
 
-// zega#100: once the reader has touched the globe's camera (dragged it,
+// zega#101: once the reader has touched the globe's camera (dragged it,
 // scroll-zoomed it, tilted it), it is theirs. Nothing here should snap it
 // back: not a resize (a real one, or the kind a mobile browser's address
 // bar makes by changing the viewport height), and not a query re-run that

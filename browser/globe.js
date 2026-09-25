@@ -258,12 +258,17 @@ export function renderGlobe(container, { countries, codes, places, rels = [], cr
     map.once('render', frame);
   };
   centrePlanet();
-  // zoomend/pitchend are not a resize: they fire for the reader's own scroll,
-  // pinch and drag too, and re-fitting on them is what snapped the camera
-  // back under them (zega#101). Only a real layout change (below) still
-  // drives the fit, and only before the reader has taken the camera.
   for (const event of ['dragstart', 'zoomstart', 'pitchstart', 'rotatestart']) {
     map.on(event, (event) => { if (event.originalEvent) userMoved = true; });
+  }
+  // zoomend/pitchend fire for the reader's own scroll, pinch and drag too,
+  // and re-fitting on those is what snapped the camera back under them
+  // (zega#101). But they also fire for this module's own programmatic
+  // zoom/pitch changes (an `originalEvent`-less event), which still need a
+  // render to re-converge the fit against — so only skip the ones a reader
+  // caused, and only before the reader has taken the camera at all.
+  for (const event of ['zoomend', 'pitchend']) {
+    map.on(event, (event) => { if (!event.originalEvent && !userMoved) centrePlanet(); });
   }
   map.on('style.load', () => { if (!map.getLayer(arcs.id)) map.addLayer(arcs, 'zega-nodes'); });
 
