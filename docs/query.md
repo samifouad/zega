@@ -203,7 +203,9 @@ query {
 More keys break ties, left to right: `order by position, salary desc`. Equal
 rows keep creation order. Numbers, strings and `true`/`false` sort as you
 would expect; a node without the field, or with `null`, comes last in either
-direction. A location is ordered by its distance from a point,
+direction. `order by @count(players) desc` orders by how many relationships a
+node has; see [counting relationships](relationships.md#counting-relationships).
+A location is ordered by its distance from a point,
 `order by @distance(field, @point(lat, lon))`, nearest first unless `desc`; see
 [locations](location.md).
 

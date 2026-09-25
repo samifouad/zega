@@ -184,6 +184,158 @@ query {
 For the shortest or cheapest route between two nodes, with distances and
 costs, see [paths](path.md).
 
+## Filtering by a related node
+
+A relationship with its arrow and a target type can go inside a filter too. It
+keeps the nodes that have at least one related node meeting the target's
+condition. Cara joins a second team first:
+
+```zql
+mutation {
+  Team(name: "Flames")
+}
+```
+
+```zql
+mutation {
+  Player(name: "Cara") {
+    playsFor -> link Team(name: "Flames") { &since: 2024 }
+  }
+}
+```
+
+```zql
+query {
+  Player(playsFor -> Team(name = "Oilers")) { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" },
+  { "name": "Bob" }
+]
+```
+
+A filter on a relationship in the braces filters only that list; every team
+still comes back. In the parentheses, it filters the teams themselves:
+
+```zql
+query {
+  Team {
+    name
+    players <- Player(position = "C") { name }
+  }
+}
+```
+
+```json
+[
+  {
+    "name": "Oilers",
+    "players": [
+      { "name": "Alice" }
+    ]
+  },
+  { "name": "Flames", "players": [] }
+]
+```
+
+```zql
+query {
+  Team(players <- Player(position = "C")) { name }
+}
+```
+
+```json
+[
+  { "name": "Oilers" }
+]
+```
+
+- **Any, not all.** One matching related node is enough, for a relationship
+  to one or to many. A node without the relationship does not match.
+- **Direction.** The arrow is the one in the schema: `playsFor ->` from a
+  player, `players <-` from a team.
+- **No parentheses** on the target means the relationship exists:
+  `Player(playsFor -> Team)` is every player on a team.
+- **Nesting.** The target's condition can walk further, and joins with `&&` and
+  `||` like any test. Players who mentor someone on the Oilers:
+
+```zql
+query {
+  Player(mentors -> Player(playsFor -> Team(name = "Oilers"))) { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" }
+]
+```
+
+A test on the related node goes through its relationship. Testing the
+relationship as if it were a field is an error that shows the right form:
+
+```zql error
+query {
+  Player(playsFor = "Oilers") { name }
+}
+```
+
+```text
+execution error: error: playsFor is a relationship
+  query:2:10
+    Player(playsFor = "Oilers") { name }
+           ^^^^^^^^
+  help: filter by a field of the related node: `playsFor -> Team(name = "Oilers")`; Team has name
+```
+
+When the target's condition can use an [index](index.md), the matching targets
+are found through the index first and the relationship is followed backwards
+from them, so only the nodes that reach them are tested.
+
+## Counting relationships
+
+`@count(field)` is how many relationships a node has. It works in a filter,
+with `=`, `!=`, `<`, `<=`, `>`, `>=` and a whole number; in the braces, where
+its key is `count` unless you name it; and in `order by`.
+
+```zql
+query {
+  Team(@count(players) >= 1) order by @count(players) desc {
+    name
+    size: @count(players)
+  }
+}
+```
+
+```json
+[
+  { "name": "Oilers", "size": 2 },
+  { "name": "Flames", "size": 1 }
+]
+```
+
+With an arrow and a target, it counts only the relationships whose related node
+matches. `= 0` finds the nodes with none: here, players who mentor no defender.
+
+```zql
+query {
+  Player(@count(mentors -> Player(position = "D")) = 0) { name }
+}
+```
+
+```json
+[
+  { "name": "Bob" },
+  { "name": "Cara" }
+]
+```
+
+A node without the relationship counts 0. `@count` reads stored
+relationships, so it is not allowed in a mutation's braces.
+
 ## Next
 
 - [Mutations](mutation.md): creating and linking relationships.
