@@ -467,7 +467,8 @@ impl Graph {
             self.label_index.entry(*label).or_default().insert(id);
         }
         self.add_prop_indexes(id);
-        self.next_node_id.fetch_max(id + 1, Ordering::SeqCst);
+        // Saturating: a restored id of u64::MAX leaves no id after it.
+        self.next_node_id.fetch_max(id.saturating_add(1), Ordering::SeqCst);
     }
 
     /// Add stored node `id` to the spatial, vector, unique and declared
@@ -601,7 +602,7 @@ impl Graph {
         }
         self.adjacency.get_or_default(from).out.insert(id);
         self.adjacency.get_or_default(to).inc.insert(id);
-        self.next_rel_id.fetch_max(id + 1, Ordering::SeqCst);
+        self.next_rel_id.fetch_max(id.saturating_add(1), Ordering::SeqCst);
     }
 
     fn remove_relationship_indexes(&mut self, id: RelId, rel: &RelRecord) {
@@ -907,3 +908,5 @@ mod tests {
 mod differential_tests;
 #[cfg(test)]
 mod exhaustive_tests;
+#[cfg(test)]
+mod review_114_tests;

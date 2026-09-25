@@ -60,6 +60,17 @@ impl<T> Default for IdMap<T> {
     }
 }
 
+/// The number of the chunk that holds `u64::MAX`.
+const LAST_CHUNK: u64 = u64::MAX >> CHUNK_BITS;
+
+/// The first and last id of chunk `number` (at most [`LAST_CHUNK`]). The
+/// last id of the last chunk is `u64::MAX`, so a range over a chunk is
+/// inclusive: one past its end does not exist.
+fn chunk_ids(number: u64) -> (u64, u64) {
+    let first = number << CHUNK_BITS;
+    (first, first | (CHUNK as u64 - 1))
+}
+
 fn split(id: u64) -> (u64, usize) {
     (id >> CHUNK_BITS, (id as usize) & (CHUNK - 1))
 }
@@ -194,8 +205,9 @@ impl<T> IdMap<T> {
             live: 0,
             slots: (0..CHUNK).map(|_| None).collect(),
         };
-        let start = number << CHUNK_BITS;
-        let covered: Vec<u64> = self.sparse.range(start..start + CHUNK as u64).map(|(id, _)| *id).collect();
+        // Inclusive: the last chunk ends at u64::MAX; one past it overflows.
+        let (first, last) = chunk_ids(number);
+        let covered: Vec<u64> = self.sparse.range(first..=last).map(|(id, _)| *id).collect();
         for id in covered {
             let value = self.sparse.remove(&id).expect("listed just now");
             chunk.slots[split(id).1] = Some(value);
@@ -228,9 +240,9 @@ impl<T> IdMap<T> {
         } else {
             (self.base.saturating_sub(reach), (self.base + self.chunks.len() as u64).saturating_add(reach))
         };
-        let mut next = low.checked_shl(CHUNK_BITS).filter(|s| s >> CHUNK_BITS == low).unwrap_or(0);
-        let limit = high.checked_shl(CHUNK_BITS).filter(|s| s >> CHUNK_BITS == high).unwrap_or(u64::MAX);
-        while let Some((&id, _)) = self.sparse.range(next..limit).next() {
+        let mut next = chunk_ids(low.min(LAST_CHUNK)).0;
+        let limit = chunk_ids(high.min(LAST_CHUNK)).1;
+        while let Some((&id, _)) = self.sparse.range(next..=limit).next() {
             let number = split(id).0;
             if self.may_allocate(number) {
                 self.allocate(number);
@@ -239,10 +251,10 @@ impl<T> IdMap<T> {
             {
                 return;
             }
-            match (number + 1).checked_shl(CHUNK_BITS).filter(|s| s >> CHUNK_BITS == number + 1) {
-                Some(after) => next = after,
-                None => return,
+            if number >= LAST_CHUNK {
+                return;
             }
+            next = chunk_ids(number + 1).0;
         }
     }
 
@@ -255,7 +267,7 @@ impl<T> IdMap<T> {
         let base = self.base;
         for (at, chunk) in std::mem::take(&mut self.chunks).into_iter().enumerate() {
             let Some(chunk) = chunk else { continue };
-            let start = (base + at as u64) << CHUNK_BITS;
+            let start = chunk_ids(base + at as u64).0;
             for (slot, value) in chunk.slots.into_vec().into_iter().enumerate() {
                 if let Some(value) = value {
                     self.sparse.insert(start + slot as u64, value);
@@ -290,7 +302,7 @@ impl<T> IdMap<T> {
             .enumerate()
             .filter_map(move |(at, chunk)| Some((base + at as u64, chunk.as_ref()?)))
             .flat_map(|(number, chunk)| {
-                let start = number << CHUNK_BITS;
+                let start = chunk_ids(number).0;
                 chunk
                     .slots
                     .iter()
@@ -413,6 +425,40 @@ mod tests {
         assert!(map.allocated_chunks() <= 2);
         assert_eq!(map.len(), 1_000);
         assert!(map.iter().map(|(id, v)| (id, *v)).eq((0..1_000).map(|k| (k * CHUNK as u64, k))));
+    }
+
+    /// Review H1 of #114: the chunk that ends at `u64::MAX` has no id one
+    /// past its end. Its first id may be the first one seen, it may take in
+    /// overflow entries, and a rebuild may choose it.
+    #[test]
+    fn the_last_chunk_holds_ids_up_to_u64_max() {
+        let mut map = IdMap::default();
+        map.insert(u64::MAX - 1, 1u8);
+        assert_eq!(map.get(u64::MAX - 1), Some(&1));
+        map.insert(u64::MAX, 2);
+        assert_eq!(map.get(u64::MAX), Some(&2));
+        assert_eq!(map.iter().map(|(id, _)| id).collect::<Vec<_>>(), vec![u64::MAX - 1, u64::MAX]);
+        assert_eq!(map.remove(u64::MAX), Some(2));
+        assert_eq!(map.remove(u64::MAX - 1), Some(1));
+        assert!(map.is_empty());
+
+        // A low id first, then two chunks' worth at the top: the top ids
+        // start in the overflow map, and a rebuild moves them into the last
+        // two chunks.
+        let mut map = IdMap::default();
+        map.insert(5, 0u64);
+        let top: Vec<u64> = (u64::MAX - 2 * CHUNK as u64 + 1..=u64::MAX).collect();
+        for &id in &top {
+            map.insert(id, id);
+        }
+        assert_eq!(map.len(), top.len() + 1);
+        assert!(map.allocated_chunks() >= 2);
+        let want: Vec<u64> = std::iter::once(5).chain(top.iter().copied()).collect();
+        assert_eq!(map.iter().map(|(id, _)| id).collect::<Vec<_>>(), want);
+        for &id in &top {
+            assert_eq!(map.remove(id), Some(id));
+        }
+        assert_eq!(map.len(), 1);
     }
 
     #[test]
