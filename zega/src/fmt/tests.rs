@@ -89,14 +89,21 @@ fn ast(source: &str) -> Result<Parsed> {
         if let Some(near) = &mut sel.near {
             span(&mut near.similarity.span);
         }
-        if let Some(order) = &mut sel.order {
-            span(&mut order.span);
+        for key in &mut sel.order {
+            span(&mut key.span);
+            if let OrderBy::Distance(distance) = &mut key.by {
+                span(&mut distance.span);
+            }
+        }
+        if let Some(s) = &mut sel.delete {
+            span(s);
         }
         for item in &mut sel.items {
             match item {
                 Item::Score(_, s)
                 | Item::Prop(_, s)
                 | Item::EdgeProp(_, s)
+                | Item::Detach(s)
                 | Item::EdgeSet(_, _, s) => span(s),
                 Item::Similarity(_, sim) => span(&mut sim.span),
                 Item::Distance(_, distance) => span(&mut distance.span),
@@ -277,7 +284,7 @@ fn syntax_goldens() {
         invariant(&source, &path.display().to_string());
         count += 1;
     }
-    assert_eq!(count, 22);
+    assert_eq!(count, 24);
 }
 
 /// CRLF input (a Windows editor, or a checkout with core.autocrlf) formats to
@@ -300,7 +307,7 @@ fn crlf_input_emits_lf() {
         invariant(&source, &path.display().to_string());
         count += 1;
     }
-    assert_eq!(count, 22);
+    assert_eq!(count, 24);
     let literal = "query { A(name = \"one\r\ntwo\") { name } }";
     let output = format_zql(literal).unwrap();
     assert!(output.contains("\"one\r\ntwo\""), "{output:?}");

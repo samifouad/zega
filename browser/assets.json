@@ -11,6 +11,7 @@
   "map.js",
   "globe.js",
   "arcs.js",
+  "panes.js",
   "data",
   "map-style.js",
   "table.js",

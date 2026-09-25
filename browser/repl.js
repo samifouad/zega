@@ -13,6 +13,7 @@ import { formatEditor, hasMutation, typingAfterSpace } from './zql-edit.js';
 const LS_DB = 'zega.v2.since';
 const LS_SCHEMA = 'zega.v2.schema';
 const LS_QUERY = 'zega.v2.query';
+const LS_SAMPLE = 'zega.v2.sample';
 
 const mug = (id) => `https://assets.nhle.com/mugs/nhl/latest/${id}.png`;
 const logo = (abbr) => `https://assets.nhle.com/logos/nhl/svg/${abbr}_light.svg`;
@@ -115,6 +116,53 @@ const TOUR = [
   }
 }`],
 ];
+
+// The Flights sample (zega#83): the example bar while it is loaded. Routes
+// are stored once, from the smaller airport to the larger hub, so Calgary's
+// are its `route`s and Amsterdam's its `inbound` ones.
+const CALGARY_TOWER = '@point(51.0443, -114.0631)';
+const FLIGHTS_TOUR = [
+  ['Out of Calgary', `{
+  Airport(code: "YYC") {
+    name
+    city
+    route -> Airport { code city }
+  }
+}`],
+  ['Into Amsterdam', `{
+  Airport(code: "AMS") {
+    name
+    inbound <- Airport {
+      code
+      city
+      country -> Country { name }
+    }
+  }
+}`],
+  ["Canada's airports", `{
+  Country(iso: "CA") {
+    name
+    airports <- Airport {
+      code
+      city
+      route -> Airport { code }
+    }
+  }
+}`],
+  ['Nearest to the Calgary Tower', `{
+  Airport order by @distance(at, ${CALGARY_TOWER}) limit 5 {
+    code
+    city
+    @distance(at, ${CALGARY_TOWER})
+  }
+}`],
+];
+// Samples with an example bar and a data credit on the map. Which one is
+// loaded persists with the panes, so both come back on reload and go with
+// the data on clear.
+const SAMPLES = {
+  flights: { tour: FLIGHTS_TOUR, credit: 'Routes: <a href="https://openflights.org/data.php" target="_blank" rel="noopener">OpenFlights</a> (ODbL)' },
+};
 
 function teamSeed(name, city, abbr, players) {
   const roster = players.map(([player, position, id, salary, since]) => {
@@ -221,7 +269,13 @@ const graphEl = $('#graph');
 let theme = localStorage.getItem('zega.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 if (!['light', 'dark'].includes(theme)) theme = 'light';
 applyTheme(theme);
-let activeView = null, displayKey = '', disposeView = null;
+let activeView = null, displayKey = '', disposeView = null, globeKey = '';
+let sampleKey = localStorage.getItem(LS_SAMPLE);
+const sample = () => SAMPLES[sampleKey];
+function setSample(key) {
+  sampleKey = key;
+  if (key) localStorage.setItem(LS_SAMPLE, key); else localStorage.removeItem(LS_SAMPLE);
+}
 
 
 const savedQuery = localStorage.getItem(LS_QUERY);
@@ -350,6 +404,7 @@ $('#btn-theme').onclick = () => {
 
 
 async function clearDatabase() {
+  setSample(null);
   if (db.native) await db.clear();
   else {
     db.import_base64(EMPTY_DB);
@@ -525,6 +580,25 @@ $('#btn-calgary').onclick = async () => {
     persist();
   } catch (error) { showThrown(error); }
 };
+$('#btn-flights').onclick = async () => {
+  try {
+    const response = await fetch('./samples/flights.zql');
+    if (!response.ok) throw new Error(`Cannot load Flights: HTTP ${response.status}`);
+    const source = await response.text();
+    db.schema(source);
+    const sources = await loadSources(source, true);
+    hideTour();
+    await clearDatabase();
+    setSample('flights');
+    setQuiet(schemaEditor, source);
+    setQuiet(queryEditor, FLIGHTS_TOUR[0][1]);
+    await execute({ apply: true, sources });
+    persist();
+    setTour(FLIGHTS_TOUR);
+    showTourBar();
+    markTour();
+  } catch (error) { showThrown(error); }
+};
 $('#btn-tickets').onclick = async () => {
   try {
     const response = await fetch('./samples/tickets.zql');
@@ -540,6 +614,7 @@ $('#btn-tickets').onclick = async () => {
 $('#btn-clear').onclick = async () => {
   pauseAutoplay();
   await clearDatabase();
+  if (tour !== TOUR) { setTour(TOUR); hideTour(); }
   setQuiet(schemaEditor, '');
   setQuiet(queryEditor, '');
   localStorage.setItem(LS_SCHEMA, '');
@@ -644,15 +719,23 @@ let playing = false;
 const playBtn = $('#btn-play');
 const tourBox = $('#tour-queries');
 
-TOUR.forEach(([label], index) => {
-  const button = document.createElement('button');
-  button.textContent = label;
-  button.onclick = () => {
-    pauseAutoplay();
-    showTour(index);
-  };
-  tourBox.appendChild(button);
-});
+// The example bar holds the loaded sample's queries: the seed's by default.
+let tour = TOUR;
+function setTour(list) {
+  tour = list;
+  tourIndex = 0;
+  tourBox.replaceChildren();
+  list.forEach(([label], index) => {
+    const button = document.createElement('button');
+    button.textContent = label;
+    button.onclick = () => {
+      pauseAutoplay();
+      showTour(index);
+    };
+    tourBox.appendChild(button);
+  });
+}
+setTour(TOUR);
 
 function markTour() {
   [...tourBox.children].forEach((button, index) => {
@@ -664,7 +747,7 @@ function markTour() {
 // the same mutation pause as auto-run and never writes on its own.
 function showTour(index, { auto = false } = {}) {
   tourIndex = index;
-  setQuiet(queryEditor, TOUR[index][1]);
+  setQuiet(queryEditor, tour[index][1]);
   markTour();
   if (auto && autorunPaused()) { drawGraph(); return; }
   execute();
@@ -682,7 +765,7 @@ function startAutoplay() {
   playBtn.textContent = 'pause';
   clearInterval(tourTimer);
   tourTimer = setInterval(() => {
-    showTour((tourIndex + 1) % TOUR.length, { auto: true });
+    showTour((tourIndex + 1) % tour.length, { auto: true });
   }, 5000);
 }
 
@@ -705,6 +788,7 @@ async function reseed() {
   await clearDatabase();
   setQuiet(schemaEditor, SCHEMA);
   for (const seed of SEEDS) await run(seed);
+  setTour(TOUR);
   showTourBar();
   showTour(0);
   startAutoplay();
@@ -811,31 +895,62 @@ function relsAmong(rels, nodes) {
   return rels.filter((rel) => ids.has(rel.from) && ids.has(rel.to));
 }
 
+// The stored nodes a result object names: by its `@id`, or by every selected
+// property agreeing. An explicit `id` also distinguishes equal-valued nodes.
+function matchNodes(value, nodes, types) {
+  return nodes.filter((node) => {
+    if (value.id != null) return value.id === node.id;
+    const type = types.find((type) => node.labels.includes(type.name));
+    const selected = (type?.fields || []).filter((field) => field.kind === 'prop' && field.name in value);
+    return selected.length > 0 && selected.every((field) => JSON.stringify(node[field.name]) === JSON.stringify(value[field.name]));
+  });
+}
+
 // Projection values carry coordinates. Resolve their stored identity for the
-// shared inspector; an explicit `id` also distinguishes equal-valued nodes.
+// shared inspector.
 function mapResults(value, nodes, types, into = new Map()) {
   if (Array.isArray(value)) value.forEach((item) => mapResults(item, nodes, types, into));
   else if (value && typeof value === 'object') {
-    for (const node of nodes) {
+    for (const node of matchNodes(value, nodes, types)) {
       const type = types.find((type) => node.labels.includes(type.name));
-      const fields = type?.fields.filter((field) => field.kind === 'prop') || [];
-      const point = fields.find((field) => field.ty === 'Point' && value[field.name] != null);
+      const point = type.fields.find((field) => field.kind === 'prop' && field.ty === 'Point' && value[field.name] != null);
       const coordinates = point ? value[point.name] : value;
-      if (!Number.isFinite(coordinates.lat) || !Number.isFinite(coordinates.lon)) continue;
-      const matches = value.id != null ? value.id === node.id : fields
-        .filter((field) => field.name in value)
-        .every((field) => JSON.stringify(node[field.name]) === JSON.stringify(value[field.name]));
-      if (matches && (value.id != null || fields.some((field) => field.name in value))) {
-        into.set(node.id, { ...node, lat: coordinates.lat, lon: coordinates.lon });
-      }
+      if (Number.isFinite(coordinates.lat) && Number.isFinite(coordinates.lon)) into.set(node.id, { ...node, lat: coordinates.lat, lon: coordinates.lon });
     }
     Object.values(value).forEach((child) => mapResults(child, nodes, types, into));
   }
   return [...into.values()];
 }
 
+// The relationships a query's result follows (zega#83): an object that names
+// a stored node, then a relationship field under it whose objects name nodes
+// too. `index` is the stored relationships by type and ends. The globe draws
+// these in focus; null when the result follows none.
+function relResults(value, nodes, types, index, into = new Set()) {
+  if (Array.isArray(value)) value.forEach((item) => relResults(item, nodes, types, index, into));
+  else if (value && typeof value === 'object') {
+    for (const node of matchNodes(value, nodes, types)) {
+      const type = types.find((type) => node.labels.includes(type.name));
+      for (const field of type.fields.filter((field) => field.kind === 'edge' && value[field.field] != null)) {
+        for (const item of [value[field.field]].flat()) {
+          if (!item || typeof item !== 'object') continue;
+          for (const other of matchNodes(item, nodes, types)) {
+            const [from, to] = field.direction === 'out' ? [node.id, other.id] : [other.id, node.id];
+            const id = index.get(`${field.rel}\n${from}\n${to}`);
+            if (id != null) into.add(id);
+          }
+        }
+      }
+    }
+    Object.values(value).forEach((child) => relResults(child, nodes, types, index, into));
+  }
+  return into.size ? into : null;
+}
+
 function drawGraph() {
-  const graph = storedGraph();
+  const raw = db.graph();
+  const graph = JSON.parse(raw);
+  const credit = sample()?.credit || '';
   showRaw(graph);
   let schema;
   try { schema = JSON.parse(db.schema(schemaText())); }
@@ -875,10 +990,19 @@ function drawGraph() {
     renderTable(graphEl, graph, types, inspectNode);
   } else if (activeView === 'map') {
     disposeView?.();
-    disposeView = renderMap(graphEl, mapResults(lastValue, nodes, types), theme, inspectNode);
+    disposeView = renderMap(graphEl, mapResults(lastValue, nodes, types), theme, inspectNode, credit);
   } else if (activeView === 'globe') {
+    // The globe draws the stored graph, with the query's relationships in
+    // focus. While that graph, the camera, the theme and the credit are
+    // unchanged, a re-run refocuses the arcs and leaves the globe as it is:
+    // mid-animation, and where the reader put it.
+    const rels = relsAmong(graph.rels, nodes);
+    const focus = relResults(lastValue, nodes, types, new Map(rels.map((rel) => [`${rel.type}\n${rel.from}\n${rel.to}`, rel.id])));
+    const key = [theme, JSON.stringify(view.globe), credit, raw].join('\n');
+    if (graphEl._map && key === globeKey) { graphEl._globe?.focus(focus); return; }
+    globeKey = key;
     disposeView?.();
-    disposeView = renderGlobe(graphEl, globeData(nodes, types, relsAmong(graph.rels, nodes)), view.globe, theme, inspectNode, inspectRel);
+    disposeView = renderGlobe(graphEl, { ...globeData(nodes, types, rels), credit, focus }, view.globe, theme, inspectNode, inspectRel);
   } else if (activeView === 'vector2d' || activeView === 'vector3d') {
     disposeView?.();
     const analyze = async (selected, k, threshold) => {
@@ -1084,4 +1208,10 @@ if (db.native) {
   hideTour();
   drawGraph();
   if (queryText().trim() && !hasMutation(queryText())) await execute();
+  if (sample()) {
+    setTour(sample().tour);
+    tourIndex = tour.findIndex(([, query]) => format(query).trim() === queryText().trim());
+    markTour();
+    showTourBar();
+  }
 }

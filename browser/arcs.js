@@ -25,13 +25,21 @@
 const SEGMENTS = 64;
 const POINTS = SEGMENTS + 1;
 const LINE_WIDTH = 1.6; // CSS px
+// A dense set (zega#83): thinner ribbons and a lighter ink, so hundreds of
+// routes read as a network rather than a band along the limb.
+const DENSE = 300; // arcs
+const DENSE_WIDTH = 1.1; // CSS px
+const DENSE_ALPHA = 0.55;
+// With a query's relationships in focus, the rest stay as context.
+const FAINT_ALPHA = 0.2;
+const DENSE_FAINT_ALPHA = 0.1;
 const PULSE_RADIUS = 3.2; // CSS px
 const DASH = [6, 5]; // on, off in CSS px
 const DASH_SPEED = 20; // CSS px per second, towards the target
 const PULSE_SPEED = 0.25; // arcs per second
 const PICK_HALF_WIDTH = 6; // CSS px: a comfortable click target
 const MAX_LAT = 85.051129;
-const FLOATS_PER_ARC = 10; // u(3) v(3) omega phase id x0
+const FLOATS_PER_ARC = 11; // u(3) v(3) omega phase id x0 focus
 
 // The lift of a route, in globe radii: the approved preview's
 // `lift·(0.25 + 0.75·d/π)`, capped at twice the angular length so a short hop
@@ -113,6 +121,7 @@ layout(location=0) in vec2 a_t;
 layout(location=1) in vec3 a_u;
 layout(location=2) in vec3 a_v;
 layout(location=3) in vec4 a_arc;
+layout(location=4) in float a_focus;
 uniform sampler2D u_merc;
 uniform int u_per_row;
 uniform vec2 u_viewport;
@@ -121,6 +130,7 @@ uniform float u_px_per_rad;
 out float v_side;
 out float v_along;
 flat out float v_id;
+flat out float v_focus;
 vec3 merc(int i) {
   return texelFetch(u_merc, ivec2((gl_InstanceID % u_per_row) * ${POINTS} + i, gl_InstanceID / u_per_row), 0).xyz;
 }
@@ -147,6 +157,7 @@ void main() {
   v_side = a_t.y * u_extrude;
   v_along = a_t.x / ${SEGMENTS}.0 * a_arc.x * u_px_per_rad;
   v_id = a_arc.z;
+  v_focus = a_focus;
 }`;
 
 const ARC_FRAGMENT = `#version 300 es
@@ -154,6 +165,7 @@ precision highp float;
 in float v_side;
 in float v_along;
 flat in float v_id;
+flat in float v_focus;
 uniform vec4 u_color;
 uniform float u_half_width;
 uniform float u_animate;
@@ -161,6 +173,9 @@ uniform float u_time;
 uniform float u_pick;
 uniform vec2 u_dash;
 uniform float u_speed;
+uniform float u_alpha;
+uniform float u_faint;
+uniform float u_focused;
 out vec4 fragColor;
 void main() {
   float d = abs(v_side);
@@ -170,12 +185,15 @@ void main() {
     return;
   }
   float edge = 1.0 - smoothstep(u_half_width - 0.5, u_half_width + 0.5, d);
+  // In focus: full strength, animated. Out of focus: faint and still.
+  bool focused = u_focused < 0.5 || v_focus > 0.5;
+  float strength = u_focused < 0.5 ? u_alpha : (v_focus > 0.5 ? 1.0 : u_faint);
   float dash = 1.0;
-  if (u_animate > 0.5) {
+  if (u_animate > 0.5 && focused) {
     float phase = mod(v_along - u_time * u_speed, u_dash.x + u_dash.y);
     dash = smoothstep(0.0, 0.75, phase) * (1.0 - smoothstep(u_dash.x - 0.75, u_dash.x, phase));
   }
-  float alpha = edge * dash * u_color.a;
+  float alpha = edge * dash * u_color.a * strength;
   fragColor = vec4(u_color.rgb * alpha, alpha);
 }`;
 
@@ -186,14 +204,17 @@ ${COMMON}
 layout(location=1) in vec3 a_u;
 layout(location=2) in vec3 a_v;
 layout(location=3) in vec4 a_arc;
+layout(location=4) in float a_focus;
 uniform sampler2D u_merc;
 uniform int u_per_row;
 uniform float u_time;
 uniform float u_point_size;
+uniform float u_focused;
 vec3 merc(int i) {
   return texelFetch(u_merc, ivec2((gl_VertexID % u_per_row) * ${POINTS} + i, gl_VertexID / u_per_row), 0).xyz;
 }
 void main() {
+  if (u_focused > 0.5 && a_focus < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
   float s = fract(u_time * ${PULSE_SPEED} + a_arc.y);
   float a = s * a_arc.x;
   float k = s * ${SEGMENTS}.0;
@@ -208,10 +229,11 @@ precision highp float;
 uniform vec4 u_color;
 uniform float u_point_size;
 uniform float u_radius;
+uniform float u_alpha;
 out vec4 fragColor;
 void main() {
   float d = length(gl_PointCoord - 0.5) * u_point_size;
-  float alpha = (1.0 - smoothstep(u_radius - 0.75, u_radius + 0.75, d)) * u_color.a;
+  float alpha = (1.0 - smoothstep(u_radius - 0.75, u_radius + 0.75, d)) * u_color.a * u_alpha;
   fragColor = vec4(u_color.rgb * alpha, alpha);
 }`;
 
@@ -235,15 +257,28 @@ void main() { fragColor = vec4(0.0); }`;
 
 function compile(gl, vertex, fragment) {
   const program = gl.createProgram();
-  for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
-    const shader = gl.createShader(type);
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(`arc shader: ${gl.getShaderInfoLog(shader)}`);
-    gl.attachShader(program, shader);
+  const shaders = [];
+  try {
+    for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
+      const shader = gl.createShader(type);
+      shaders.push({ shader, attached: false });
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(`arc shader: ${gl.getShaderInfoLog(shader)}`);
+      gl.attachShader(program, shader);
+      shaders[shaders.length - 1].attached = true;
+    }
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(`arc program: ${gl.getProgramInfoLog(program)}`);
+  } finally {
+    // Once linked, the program keeps its own copy: the shader objects are
+    // freed here rather than left attached, where a delete would wait for
+    // the program's and every view leaked six of them (zega#83).
+    for (const { shader, attached } of shaders) {
+      if (attached) gl.detachShader(program, shader);
+      gl.deleteShader(shader);
+    }
   }
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(`arc program: ${gl.getProgramInfoLog(program)}`);
   const uniforms = {};
   for (let i = 0; i < gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS); i++) {
     const name = gl.getActiveUniform(program, i).name;
@@ -286,6 +321,8 @@ export class ArcLayer {
     this.lift = lift;
     this.animate = animate;
     this.records = [];
+    this.focused = false;
+    this.dense = false;
     this.geometry = [];
     this.instances = new Float32Array(0);
     this.points = new Float32Array(0);
@@ -298,9 +335,15 @@ export class ArcLayer {
 
   get count() { return this.records.length; }
 
-  /** `records`: `{ from: [lon, lat], to: [lon, lat], rel }` per arc. */
+  /**
+   * `records`: `{ from: [lon, lat], to: [lon, lat], rel, focus }` per arc.
+   * When any record is in `focus`, those arcs draw at full strength and
+   * animated, and the rest faint and still; with none, all draw alike.
+   */
   setArcs(records) {
     this.records = records;
+    this.focused = records.some((record) => record.focus);
+    this.dense = records.length > DENSE;
     this.geometry = records.map(({ from, to }) => greatCircle(from, to));
     this.instances = new Float32Array(records.length * FLOATS_PER_ARC);
     this.points = new Float32Array(records.length * POINTS * 4);
@@ -312,7 +355,7 @@ export class ArcLayer {
         previous = m[0];
         this.points.set(m, (i * POINTS + j) * 4);
       }
-      this.instances.set([...arc.u, ...arc.v, arc.omega, (i * 0.618033988749895) % 1, i + 1, arc.x0], i * FLOATS_PER_ARC);
+      this.instances.set([...arc.u, ...arc.v, arc.omega, (i * 0.618033988749895) % 1, i + 1, arc.x0, records[i].focus ? 1 : 0], i * FLOATS_PER_ARC);
     });
     if (this.gl) this.upload();
     this.map?.triggerRepaint();
@@ -410,6 +453,46 @@ export class ArcLayer {
     return { x: (c[0] / c[3] + 1) / 2 * f.width / f.dpr, y: (1 - c[1] / c[3]) / 2 * f.height / f.dpr };
   }
 
+  // A unit-sphere point on the canvas (CSS px) in the last frame, or null on the flat map or behind the camera.
+  onCanvas(p) {
+    const f = this.frame;
+    if (!f || f.t <= 0.999) return null;
+    const c = multiply(f.globe, [...p, 1]);
+    if (c[3] <= 0) return null;
+    return { x: (c[0] / c[3] + 1) / 2 * f.width / f.dpr, y: (1 - c[1] / c[3]) / 2 * f.height / f.dpr, w: c[3] };
+  }
+
+  /** Where the globe's centre lands on the canvas (CSS px) in the last frame, or null on the flat map. */
+  planetCenter() {
+    return this.onCanvas([0, 0, 0]);
+  }
+
+  /**
+   * The globe's apparent radius on the canvas (CSS px): the silhouette is
+   * the circle of points at angle acos(R/D) from the camera direction, and
+   * clip-space w is linear in depth, so R/D is the drop in w from the
+   * centre to the surface point nearest the camera.
+   */
+  planetRadius() {
+    const f = this.frame;
+    const centre = this.planetCenter(), near = f && this.onCanvas(f.eye);
+    if (!centre || !near) return null;
+    const a = Math.acos(Math.max(0, Math.min(1, (centre.w - near.w) / centre.w)));
+    const e = f.eye, ref = Math.abs(e[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    const d = ref[0] * e[0] + ref[1] * e[1] + ref[2] * e[2];
+    let u = ref.map((x, i) => x - d * e[i]);
+    const n = Math.hypot(...u);
+    u = u.map((x) => x / n);
+    const v = [e[1] * u[2] - e[2] * u[1], e[2] * u[0] - e[0] * u[2], e[0] * u[1] - e[1] * u[0]];
+    let radius = 0;
+    for (let t = 0; t < 36; t++) {
+      const b = t * Math.PI / 18;
+      const p = this.onCanvas(e.map((x, i) => Math.cos(a) * x + Math.sin(a) * (Math.cos(b) * u[i] + Math.sin(b) * v[i])));
+      if (p) radius = Math.max(radius, Math.hypot(p.x - centre.x, p.y - centre.y));
+    }
+    return radius;
+  }
+
   render(gl, args) {
     const data = args.defaultProjectionData;
     const globe = args.shaderData.variantName === 'globe';
@@ -481,7 +564,7 @@ export class ArcLayer {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
     gl.vertexAttribDivisor(0, 0);
-    for (const location of [1, 2, 3]) gl.disableVertexAttribArray(location);
+    for (const location of [1, 2, 3, 4]) gl.disableVertexAttribArray(location);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.surfaceIndices);
     gl.drawElements(gl.TRIANGLES, this.surfaceCount, gl.UNSIGNED_SHORT, 0);
   }
@@ -489,7 +572,7 @@ export class ArcLayer {
   bindInstances(gl, instanced) {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
     const stride = FLOATS_PER_ARC * 4;
-    for (const [location, size, offset] of [[1, 3, 0], [2, 3, 12], [3, 4, 24]]) {
+    for (const [location, size, offset] of [[1, 3, 0], [2, 3, 12], [3, 4, 24], [4, 1, 40]]) {
       gl.enableVertexAttribArray(location);
       gl.vertexAttribPointer(location, size, gl.FLOAT, false, stride, offset);
       gl.vertexAttribDivisor(location, instanced ? 1 : 0);
@@ -506,7 +589,7 @@ export class ArcLayer {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
     gl.vertexAttribDivisor(0, 0);
     this.bindInstances(gl, true);
-    const halfWidth = (pick ? PICK_HALF_WIDTH : LINE_WIDTH / 2) * f.dpr;
+    const halfWidth = (pick ? PICK_HALF_WIDTH : (this.dense ? DENSE_WIDTH : LINE_WIDTH) / 2) * f.dpr;
     gl.uniform2f(uniforms.u_viewport, f.width, f.height);
     gl.uniform1f(uniforms.u_extrude, halfWidth + 1);
     gl.uniform1f(uniforms.u_half_width, halfWidth);
@@ -517,8 +600,15 @@ export class ArcLayer {
     gl.uniform1f(uniforms.u_pick, pick ? 1 : 0);
     gl.uniform2f(uniforms.u_dash, DASH[0] * f.dpr, DASH[1] * f.dpr);
     gl.uniform1f(uniforms.u_speed, DASH_SPEED * f.dpr);
+    this.strength(gl, uniforms);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, POINTS * 2, this.count);
-    for (const location of [1, 2, 3]) gl.vertexAttribDivisor(location, 0);
+    for (const location of [1, 2, 3, 4]) gl.vertexAttribDivisor(location, 0);
+  }
+
+  strength(gl, uniforms) {
+    gl.uniform1f(uniforms.u_alpha, this.dense ? DENSE_ALPHA : 1);
+    gl.uniform1f(uniforms.u_faint, this.dense ? DENSE_FAINT_ALPHA : FAINT_ALPHA);
+    gl.uniform1f(uniforms.u_focused, this.focused ? 1 : 0);
   }
 
   drawPulses(gl) {
@@ -532,6 +622,7 @@ export class ArcLayer {
     gl.uniform1f(uniforms.u_point_size, (PULSE_RADIUS * 2 + 2) * f.dpr);
     gl.uniform1f(uniforms.u_radius, PULSE_RADIUS * f.dpr);
     gl.uniform4fv(uniforms.u_color, this.color);
+    this.strength(gl, uniforms);
     gl.drawArrays(gl.POINTS, 0, this.count);
   }
 

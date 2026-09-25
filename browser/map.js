@@ -4,7 +4,7 @@ import { ATTRIBUTION, mapStyle } from './map-style.js';
 const protocol = new Protocol();
 maplibre.addProtocol('pmtiles', protocol.tile);
 
-export function renderMap(container, nodes, theme, onNode) {
+export function renderMap(container, nodes, theme, onNode, credit = '') {
   const root = document.createElement('div');
   root.className = 'map-view';
   const canvas = document.createElement('div');
@@ -25,7 +25,17 @@ export function renderMap(container, nodes, theme, onNode) {
     geometry: { type: 'Point', coordinates: [node.lon, node.lat] },
   })) };
   let plain = false;
-  const map = new maplibre.Map({ container: canvas, style: mapStyle(theme, data), center: [-114.07, 51.05], zoom: 11, attributionControl: false });
+  let map;
+  try {
+    map = new maplibre.Map({ container: canvas, style: mapStyle(theme, data, true, credit), center: [-114.07, 51.05], zoom: 11, attributionControl: false });
+  } catch (error) {
+    // No WebGL2: an in-view notice, as for a failed basemap (zega#83).
+    if (!/WebGL/.test(String(error?.message))) throw error;
+    count.remove();
+    notice.textContent = 'WebGL2 unavailable. This browser cannot draw the map.';
+    notice.hidden = false;
+    return () => {};
+  }
   // A custom attribution remains visible even after a failed basemap is removed.
   map.addControl(new maplibre.AttributionControl({ compact: false, customAttribution: ATTRIBUTION }), 'bottom-right');
   map.addControl(new maplibre.NavigationControl({ showCompass: false }), 'top-right');
@@ -34,7 +44,7 @@ export function renderMap(container, nodes, theme, onNode) {
     plain = true;
     notice.textContent = 'Base map unavailable. Your places are still shown.';
     notice.hidden = false;
-    map.setStyle(mapStyle(theme, data, false));
+    map.setStyle(mapStyle(theme, data, false, credit));
   });
   if (plotted.length) {
     const bounds = new maplibre.LngLatBounds();

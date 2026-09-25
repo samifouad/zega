@@ -1,0 +1,4 @@
+schema{type Player{name:String salary?:Int team?:String at?:Point}}
+query{Player(team="A") order  by salary desc,name asc limit 5{name salary}}
+query{Player order by team,salary desc,name,@distance(at,@point(51.05,-114.07)) desc limit 10{name team salary}}
+query{Player order by @distance(at,@point(0,0)){name}}

@@ -1,0 +1,50 @@
+// Airports and routes: OpenFlights (ODbL 1.0), see browser/docs/display.md
+schema {
+  type Country {
+    name: String
+    iso: String<iso2>
+    airports: BASE <- Airport[]
+  }
+
+  type Airport {
+    code: String
+    name: String
+    city: String
+    at: Point from (lat, lon)
+    country: BASE -> Country
+    route: ROUTE -> Airport[]
+    inbound: ROUTE <- Airport[]
+  }
+
+  display {
+    globe(@zoom: 1.0, @tilt: 40, @center: @point(55, -45)) { Airport } : Default
+    map { Airport }
+    table
+    graph
+  }
+}
+
+unique {
+  Airport { code }
+  Country { iso }
+}
+
+mutation csv ["./samples/flights-countries.csv"] {
+  Country(name: $name && iso: $iso) { name }
+}
+
+mutation csv ["./samples/flights-airports.csv"] {
+  Airport(code: $code && name: $name && city: $city) { code at }
+}
+
+mutation csv ["./samples/flights-airports.csv"] {
+  Airport(code: $code) {
+    country -> link Country(iso: $country)
+  }
+}
+
+mutation csv ["./samples/flights-routes.csv"] {
+  Airport(code: $origin) {
+    route -> link Airport(code: $destination)
+  }
+}
