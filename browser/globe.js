@@ -1,7 +1,7 @@
 import * as maplibre from './vendor/maplibre-gl/maplibre-gl.mjs';
 import { Protocol } from './vendor/pmtiles/index.js';
 import { layers } from './vendor/basemaps/index.js';
-import { ATTRIBUTION, TILE_ORIGIN, basemapFlavor } from './map-style.js';
+import { ATTRIBUTION, BASEMAP, TILE_ORIGIN, basemapFlavor } from './map-style.js';
 import { palettes } from './theme.js';
 import { ArcLayer } from './arcs.js';
 
@@ -11,6 +11,7 @@ const protocol = new Protocol();
 maplibre.addProtocol('pmtiles', protocol.tile);
 export const COUNTRIES_URL = new URL('./data/countries-110m.geojson', import.meta.url).href;
 const BASEMAP_MINZOOM = 5;
+const HIGHLIGHT_FADED = 9; // the zoom by which a highlighted country's fill has faded out
 const PLANET_MARGIN = 14; // CSS px around the planet when the view fits it to the pane
 const PLANET_ZOOM = 3; // at or below this, a globe view is a view of the planet, and is fitted to the pane
 export const NO_WEBGL2 = 'WebGL2 unavailable. This browser cannot draw the globe.';
@@ -116,7 +117,7 @@ function globeStyle(theme, codes, places, outlines, basemap, credit) {
     sky: { 'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 5, 0.3, 8, 0] },
     ...(basemap ? { glyphs: `${TILE_ORIGIN}/fonts/{fontstack}/{range}.pbf`, sprite: `${TILE_ORIGIN}/sprites/v4/${theme}` } : {}),
     sources: {
-      ...(basemap ? { basemap: { type: 'vector', url: `pmtiles://${TILE_ORIGIN}/calgary.pmtiles`, attribution: ATTRIBUTION } } : {}),
+      ...(basemap ? { basemap: { type: 'vector', url: `pmtiles://${BASEMAP}`, attribution: ATTRIBUTION } } : {}),
       countries: { type: 'geojson', data: outlines, attribution: NATURAL_EARTH },
       'zega-nodes': { type: 'geojson', ...(credit ? { attribution: credit } : {}), data: {
         type: 'FeatureCollection',
@@ -133,7 +134,10 @@ function globeStyle(theme, codes, places, outlines, basemap, credit) {
       ...(basemap ? layers('basemap', basemapFlavor(theme), { lang: 'en' }).filter((layer) => layer.id !== 'background')
         .map((layer) => ({ ...layer, minzoom: Math.max(layer.minzoom ?? 0, BASEMAP_MINZOOM) })) : []),
       { id: 'globe-borders', type: 'line', source: 'countries', paint: { 'line-color': c.strongRule, 'line-width': 0.6 } },
-      { id: 'globe-countries', type: 'fill', source: 'countries', filter: matched, paint: { 'fill-color': c.accent, 'fill-opacity': 0.55 } },
+      // The highlight fades out as the streets come in, so a city in a
+      // highlighted country reads as its own map, not under a wash.
+      { id: 'globe-countries', type: 'fill', source: 'countries', filter: matched, paint: { 'fill-color': c.accent,
+        'fill-opacity': ['interpolate', ['linear'], ['zoom'], BASEMAP_MINZOOM, 0.55, HIGHLIGHT_FADED, 0] } },
       { id: 'globe-countries-edge', type: 'line', source: 'countries', filter: matched, paint: { 'line-color': c.accent, 'line-width': 1.4 } },
       // The arcs layer (zega#74) is added here, under the markers, once the style loads.
       { id: 'zega-nodes', type: 'circle', source: 'zega-nodes', paint: { 'circle-radius': 6, 'circle-color': c.accent, 'circle-stroke-color': c.panel, 'circle-stroke-width': 2 } },

@@ -1,13 +1,17 @@
-# Calgary fixture
+# City fixture
 
-`calgary.pmtiles` (68,132 bytes) is the zoom-0 subset of the 2026-09-23 Calgary
-Protomaps extract. Source: https://build.protomaps.com/20260923.pmtiles.
+`cities.pmtiles` (202,798 bytes) holds two zoom-14 tiles of the 2026-09-23
+cities extract (`../../docs/tiles.md`): central London (14/8186/5447) and
+central Tokyo (14/14551/6452). Source: https://build.protomaps.com/20260923.pmtiles.
 © OpenStreetMap contributors, ODbL 1.0; https://www.openstreetmap.org/copyright.
 
-Rebuild from the repository root:
+Rebuild from the repository root, with a region of one tiny box at the centre
+of each tile (`.tmp/fixture-region.geojson`: a MultiPolygon of ±0.0003° boxes
+around -0.120850,51.515580 and 139.735107,35.666222):
 
 ```sh
-.tmp/bin/pmtiles extract .tmp/tiles/calgary.pmtiles browser/tests/fixtures/calgary.pmtiles --maxzoom=0
+.tmp/bin/pmtiles extract .tmp/tiles/cities.pmtiles browser/tests/fixtures/cities.pmtiles \
+  --region=.tmp/fixture-region.geojson --minzoom=14 --maxzoom=14
 ```
 
 Playwright's routes serve range requests from this local file and block all

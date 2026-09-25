@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, readdir, writeFile, stat, copyFile } from 'node:fs/promises';
 import { resolve, join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
+import { region } from './cities.mjs';
 
 const [pmtiles, outputArg] = process.argv.slice(2);
 if (!pmtiles || !outputArg) throw new Error('Usage: node scripts/prepare-tiles.mjs /path/to/pmtiles /path/to/tiles');
@@ -11,8 +12,12 @@ await mkdir(output, { recursive: true });
 const buildDate = '20260923';
 const source = `https://build.protomaps.com/${buildDate}.pmtiles`;
 const assetsCommit = '028c18f713baecad011301ff7a69acc39bcc2ae7';
-const file = join(output, 'calgary.pmtiles');
-execFileSync(pmtiles, ['extract', source, file, '--bbox=-114.32,50.84,-113.86,51.21', '--maxzoom=15'], { stdio: 'inherit' });
+// One archive for every city in cities.mjs: a MultiPolygon region with one
+// city-sized rectangle each. The region file sits beside the output, never in it.
+const file = join(output, 'cities.pmtiles');
+const regionFile = resolve(output, '../cities-region.geojson');
+await writeFile(regionFile, JSON.stringify(region()) + '\n');
+execFileSync(pmtiles, ['extract', source, file, `--region=${regionFile}`, '--maxzoom=15'], { stdio: 'inherit' });
 execFileSync(pmtiles, ['verify', file], { stdio: 'inherit' });
 const archive = join(output, '../basemaps-assets.tar.gz');
 const response = await fetch(`https://github.com/protomaps/basemaps-assets/archive/${assetsCommit}.tar.gz`);
@@ -41,6 +46,6 @@ async function walk(path) {
     manifest.push({ key: relative(output, path).replaceAll('\\', '/'), bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
   }
 }
-for (const key of ['calgary.pmtiles', 'fonts', 'sprites']) await walk(join(output, key));
+for (const key of ['cities.pmtiles', 'fonts', 'sprites']) await walk(join(output, key));
 await writeFile(join(output, 'upload-manifest.json'), JSON.stringify({ buildDate, source, assetsCommit, files: manifest }, null, 2) + '\n');
 console.log(`${manifest.length} upload objects; ${manifest.reduce((n, f) => n + f.bytes, 0)} bytes. Exact keys and SHA-256: ${output}/upload-manifest.json`);

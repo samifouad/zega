@@ -157,11 +157,37 @@ const FLIGHTS_TOUR = [
   }
 }`],
 ];
+// The Cities sample: eight cities, the non-stop routes between them, and
+// twelve OSM places in each. The first query focuses every route on the
+// globe; each city's own query returns that city and its places, which the
+// map view frames on its own.
+const CITY_NAMES = ['Calgary', 'New York', 'San Francisco', 'London', 'Rome', 'Addis Ababa', 'Tokyo', 'Sydney'];
+const CITIES_TOUR = [
+  ['Every route', `{
+  City {
+    name
+    country
+    route -> City { name }
+  }
+}`],
+  ...CITY_NAMES.map((name) => [name, `{
+  City(name: "${name}") {
+    name
+    places <- Place {
+      name
+      kind
+      at
+    }
+  }
+}`]),
+];
 // Samples with an example bar and a data credit on the map. Which one is
 // loaded persists with the panes, so both come back on reload and go with
 // the data on clear.
+const OPENFLIGHTS = '<a href="https://openflights.org/data.php" target="_blank" rel="noopener">OpenFlights</a> (ODbL)';
 const SAMPLES = {
-  flights: { tour: FLIGHTS_TOUR, credit: 'Routes: <a href="https://openflights.org/data.php" target="_blank" rel="noopener">OpenFlights</a> (ODbL)' },
+  flights: { tour: FLIGHTS_TOUR, credit: `Routes: ${OPENFLIGHTS}` },
+  cities: { tour: CITIES_TOUR, credit: `Routes: ${OPENFLIGHTS}` },
 };
 
 function teamSeed(name, city, abbr, players) {
@@ -580,25 +606,29 @@ $('#btn-calgary').onclick = async () => {
     persist();
   } catch (error) { showThrown(error); }
 };
-$('#btn-flights').onclick = async () => {
+// A sample with an example bar: validate, load its CSVs, run its first
+// example, and show the bar.
+async function loadTourSample(key, path, label) {
   try {
-    const response = await fetch('./samples/flights.zql');
-    if (!response.ok) throw new Error(`Cannot load Flights: HTTP ${response.status}`);
+    const response = await fetch(path);
+    if (!response.ok) throw new Error(`Cannot load ${label}: HTTP ${response.status}`);
     const source = await response.text();
     db.schema(source);
     const sources = await loadSources(source, true);
     hideTour();
     await clearDatabase();
-    setSample('flights');
+    setSample(key);
     setQuiet(schemaEditor, source);
-    setQuiet(queryEditor, FLIGHTS_TOUR[0][1]);
+    setQuiet(queryEditor, SAMPLES[key].tour[0][1]);
     await execute({ apply: true, sources });
     persist();
-    setTour(FLIGHTS_TOUR);
+    setTour(SAMPLES[key].tour);
     showTourBar();
     markTour();
   } catch (error) { showThrown(error); }
-};
+}
+$('#btn-flights').onclick = () => loadTourSample('flights', './samples/flights.zql', 'Flights');
+$('#btn-cities').onclick = () => loadTourSample('cities', './samples/cities.zql', 'Cities');
 $('#btn-tickets').onclick = async () => {
   try {
     const response = await fetch('./samples/tickets.zql');
