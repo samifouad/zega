@@ -1,0 +1,88 @@
+{
+  "$schema": "../contract.schema.json",
+  "id": "path-on-map",
+  "version": "1.0.0",
+  "title": "Path on map",
+  "category": "Geo",
+  "description": "An ordered path (a race lap, a route, a track) drawn on the street map with 3D buildings, coloured by an optional value per point, with a start/finish marker.",
+  "surface": "map",
+  "mark": "path",
+  "roles": {
+    "path": {
+      "type": "lonlat[]",
+      "required": true,
+      "ordered": true,
+      "unit": "degrees (WGS84)",
+      "minItems": 2,
+      "description": "The path's points, in order. A list of ZQL Point values or [lon, lat] pairs. The first point is the start/finish."
+    },
+    "value": {
+      "type": "f64[]",
+      "required": false,
+      "sameLengthAs": "path",
+      "unit": "any (e.g. km/h, m)",
+      "description": "One number per point (speed, distance, sector…). Each segment takes the colour of its start point's value."
+    },
+    "label": {
+      "type": "string",
+      "required": false,
+      "description": "A name shown at the start/finish marker."
+    }
+  },
+  "surfaceParams": {
+    "bounds": {
+      "type": ["array", "null"],
+      "items": { "type": "number" },
+      "minItems": 4,
+      "maxItems": 4,
+      "default": null,
+      "description": "[west, south, east, north] to frame; null frames the path."
+    },
+    "basemap": {
+      "enum": ["auto", "cities", "monaco"],
+      "default": "auto",
+      "description": "Which street-map archive to draw under the path. auto picks the one that covers it."
+    }
+  },
+  "options": {
+    "colorScale": {
+      "enum": ["sequential", "diverging", "solid"],
+      "default": "sequential",
+      "description": "sequential: one hue, light to dark with the value. diverging: two hues around the value's midpoint. solid: the accent colour, value ignored."
+    },
+    "lineWidth": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 16,
+      "default": 6,
+      "description": "Path width in CSS pixels."
+    },
+    "view": {
+      "enum": ["2d", "3d"],
+      "default": "3d",
+      "description": "2d looks straight down; 3d tilts the camera (pitch 60°) so buildings stand up."
+    },
+    "bearing": {
+      "type": "number",
+      "minimum": -180,
+      "maximum": 180,
+      "default": 0,
+      "description": "Camera bearing in degrees, clockwise from north."
+    },
+    "showBuildings": {
+      "type": "boolean",
+      "default": true,
+      "description": "Extrude buildings to their OSM heights."
+    }
+  },
+  "example": {
+    "sample": "samples/monaco.zql",
+    "zql": "query {\n  Circuit(name: \"Circuit de Monaco\") {\n    name\n    points <- TrackPoint order by seq { at speed dist }\n  }\n}",
+    "spec": {
+      "component": "path-on-map",
+      "version": "1",
+      "binding": { "path": "points[].at", "value": "points[].speed", "label": "name" },
+      "options": { "colorScale": "sequential", "view": "3d", "bearing": -30 }
+    }
+  }
+}
