@@ -58,7 +58,8 @@ relationship chips. Graph type filters also filter relationship endpoints. Maps
 plot coordinates projected by the current query; include `@id lat lon` to preserve
 identity even when two nodes share the same values. Clicking a map marker, table
 cell/chip, or graph node opens the same inspector. The Calgary button loads the
-committed OSM sample and selects its declared default. Light/dark theme preference
+committed OSM sample and selects its declared default; the Flights button loads
+the OpenFlights sample (below). Light/dark theme preference
 persists across reloads.
 
 MapLibre, its worker modules/CSS, PMTiles and the Protomaps layer generator are
@@ -169,7 +170,8 @@ and 12.
 
 Settings follow the view name. Every setting is optional:
 
-- `@zoom`: a number from 0 to 22 (default 1.5).
+- `@zoom`: a number from 0 to 22 (default 1.5). At or below 3 it is as far in
+  as the view goes; see [framing](#framing-a-tilted-globe).
 - `@tilt`: degrees from straight down, 0 to 85 (default 0).
 - `@center`: `@point(latitude, longitude)` (default `@point(20, 0)`).
 
@@ -253,3 +255,84 @@ The gear under the zoom buttons opens the globe's settings, kept in
 
 `scripts/bench-arcs.mjs` measures frame times with 500 and 5,000 animated
 arcs headless; the target is 60 fps with 5,000.
+
+### The Flights sample
+
+The **Flights** button loads a flight map: the busiest airport of the 45
+busiest countries, the 15 busiest airports overall and YYC (52 airports in 45
+countries), with every non-stop route among them (715). "Busiest" is the
+number of distinct non-stop routes in the whole dataset; a route counts when
+both ends are IATA-coded airports and it has no stops.
+
+The data is OpenFlights' airports, routes and countries, made available under
+the [ODbL 1.0](https://openflights.org/data.php) with their contents under the
+DbCL 1.0. The three CSV files in `browser/samples/` are a derived database
+under the same licence, and the map credits OpenFlights in its attribution
+while the sample is loaded. `browser/scripts/prepare-flights.mjs` rebuilds the
+files from `github.com/jpatokal/openflights` at commit
+`7d1a611e070295dba776d6afb86e57d0d1aa1cef` and refuses any other source:
+
+| file | SHA-256 |
+|---|---|
+| `data/airports.dat` | `9387cdb38df5bd664da823f8ccb69fdd9b33a1888f5b7cca09c34a3cd9ff59f9` |
+| `data/routes.dat` | `bd373706238134f619c624c606dccc74c05c2582a977c489c81de501735f2390` |
+| `data/countries.dat` | `5cbd1a7da0f4f8003f595d22d80f025f483caad7a0672354ef9bc70221d348ed` |
+
+The sample is 5 KB gzipped.
+
+Each route is stored once, from the smaller airport to the larger hub
+("busiest" is the number of distinct non-stop routes in the whole dataset), so
+Calgary's routes are its `route`s and Amsterdam's are its `inbound` ones. The
+schema declares both ends of the same `ROUTE` relationship on `Airport`, and
+`BASE` between an airport and its `Country` (`String<iso2>`).
+
+Its display opens the globe by default, tilted 40° and centred on the North
+Atlantic at 55°N, so the Europe–North America corridor faces the reader with its arcs
+rising, with the arcs animated unless the reader prefers reduced motion. The
+example bar holds four queries: routes out of Calgary, routes into Amsterdam,
+Canada's airports with their routes, and the five airports nearest the Calgary
+Tower. Which sample is loaded persists with the panes, so the bar and the
+credit come back on reload and go with the data on clear.
+
+### Query focus
+
+The globe draws the stored graph, with the query's relationships in focus.
+A result object that names a stored node (by `@id`, or by every selected
+property agreeing), with a relationship field under it whose objects name
+nodes too, follows those relationships; the globe draws them at full strength
+and animated, and every other stored relationship faint and still, as
+context. When the result follows none, all draw alike. So "Out of Calgary"
+lights up Calgary's ten routes over the rest of the network, and the count
+reads `10 of 715 relationships`. Running a query changes the output pane and
+the focus, and leaves the globe where the reader put it; a change to the
+stored graph, the camera, the theme or the credit redraws it.
+
+A dense set, more than 300 arcs, draws thinner ribbons (1.1 px instead of
+1.6) with a lighter ink (55%), and its out-of-focus arcs fainter still (10%,
+against 20%), so hundreds of routes read as a network rather than a band along
+the limb.
+
+### Framing a tilted globe
+
+A globe view at or below zoom 3 is a view of the planet, and the view shows
+the whole planet in the pane: `@zoom` is then as far in as the view goes, and
+a pane too small for the planet at that zoom zooms out until the planet fits
+with a 14 px margin, and back in as the pane grows, never past the schema's
+zoom and never over a zoom the reader chose. Above zoom 3 the camera is a
+region's and is exactly the schema's. MapLibre keeps the
+map's centre point at the centre of the pane, so a tilted globe hangs below
+it; the view measures where the planet's centre lands in the arc layer's frame
+and pads the map below by twice the offset, which puts the planet itself in
+the middle. The silhouette radius is measured from the same frame (the circle
+at `acos(R/D)` from the camera direction, with `R/D` read off clip-space `w`).
+On the flat map there is no planet to frame and the padding is removed. The
+sample's `@zoom: 1.0` fills the explorer's pane at 1440 px; at 390 px the view
+zooms out to fit.
+
+### Without WebGL2
+
+MapLibre draws with WebGL2 only. When a browser cannot provide it, the globe
+and the map say so in the view ("WebGL2 unavailable. This browser cannot draw
+the globe."), as they do for a failed basemap, and the query still answers in
+the output pane. The arc layer frees its shaders as soon as their programs are
+linked, so switching views does not accumulate them.

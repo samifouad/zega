@@ -11,6 +11,9 @@ const protocol = new Protocol();
 maplibre.addProtocol('pmtiles', protocol.tile);
 export const COUNTRIES_URL = new URL('./data/countries-110m.geojson', import.meta.url).href;
 const BASEMAP_MINZOOM = 5;
+const PLANET_MARGIN = 14; // CSS px around the planet when the view fits it to the pane
+const PLANET_ZOOM = 3; // at or below this, a globe view is a view of the planet, and is fitted to the pane
+export const NO_WEBGL2 = 'WebGL2 unavailable. This browser cannot draw the globe.';
 const NATURAL_EARTH = '<a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener">Natural Earth</a>';
 
 /** Globe inputs from the stored nodes of the view's types, and the relationships among them. */
@@ -104,7 +107,7 @@ class SettingsControl {
   onRemove() { this.container.remove(); }
 }
 
-function globeStyle(theme, codes, places, outlines, basemap) {
+function globeStyle(theme, codes, places, outlines, basemap, credit) {
   const c = palettes[theme];
   const matched = ['in', ['get', 'iso'], ['literal', codes]];
   return {
@@ -115,7 +118,7 @@ function globeStyle(theme, codes, places, outlines, basemap) {
     sources: {
       ...(basemap ? { basemap: { type: 'vector', url: `pmtiles://${TILE_ORIGIN}/calgary.pmtiles`, attribution: ATTRIBUTION } } : {}),
       countries: { type: 'geojson', data: outlines, attribution: NATURAL_EARTH },
-      'zega-nodes': { type: 'geojson', data: {
+      'zega-nodes': { type: 'geojson', ...(credit ? { attribution: credit } : {}), data: {
         type: 'FeatureCollection',
         features: places.map(({ node, lat, lon }) => ({ type: 'Feature', properties: { id: node.id }, geometry: { type: 'Point', coordinates: [lon, lat] } })),
       } },
@@ -138,7 +141,7 @@ function globeStyle(theme, codes, places, outlines, basemap) {
   };
 }
 
-export function renderGlobe(container, { countries, codes, places, rels = [] }, camera, theme, onNode, onEdge) {
+export function renderGlobe(container, { countries, codes, places, rels = [], credit = '', focus = null }, camera, theme, onNode, onEdge) {
   const root = document.createElement('div');
   root.className = 'map-view globe-view';
   const canvas = document.createElement('div');
@@ -156,15 +159,26 @@ export function renderGlobe(container, { countries, codes, places, rels = [] }, 
   let plain = false;
   let outlines = { type: 'FeatureCollection', features: [] };
   const show = (text) => { notice.textContent = text; notice.hidden = false; };
-  const map = new maplibre.Map({
-    container: canvas,
-    style: globeStyle(theme, codeList, places, outlines, true),
-    center: [camera.center.lon, camera.center.lat],
-    zoom: camera.zoom,
-    pitch: camera.tilt,
-    maxPitch: 85,
-    attributionControl: false,
-  });
+  let map;
+  try {
+    map = new maplibre.Map({
+      container: canvas,
+      style: globeStyle(theme, codeList, places, outlines, true, credit),
+      center: [camera.center.lon, camera.center.lat],
+      zoom: camera.zoom,
+      pitch: camera.tilt,
+      maxPitch: 85,
+      attributionControl: false,
+    });
+  } catch (error) {
+    // MapLibre draws with WebGL2 only. Without it the view says so, as it
+    // does for a failed basemap, instead of going blank and putting the
+    // error in the output pane (zega#83).
+    if (!/WebGL/.test(String(error?.message))) throw error;
+    count.remove();
+    show(NO_WEBGL2);
+    return () => {};
+  }
   map.addControl(new maplibre.AttributionControl({ compact: false, customAttribution: ATTRIBUTION }), 'bottom-right');
   map.addControl(new maplibre.NavigationControl({ showCompass: false }), 'top-right');
 
@@ -176,17 +190,62 @@ export function renderGlobe(container, { countries, codes, places, rels = [] }, 
   const placeAt = new Map(places.map(({ node, lat, lon }) => [node.id, [lon, lat]]));
   let labels = new Map();
   const locate = (id) => placeAt.get(id) || labels.get(codes.get(id)) || null;
+  // The query's relationships (zega#83) draw in focus, last so they sit on
+  // top; the rest are context. With none in the result, all draw alike.
+  let focused = focus;
   function updateArcs() {
     const records = rels.flatMap((rel) => {
       const from = locate(rel.from), to = locate(rel.to);
-      return from && to ? [{ from, to, rel }] : [];
-    });
+      return from && to ? [{ from, to, rel, focus: Boolean(focused?.has(rel.id)) }] : [];
+    }).sort((a, b) => a.focus - b.focus);
     arcs.setArcs(records);
-    const n = countries.size, m = places.length, k = records.length;
-    count.textContent = `${n} ${n === 1 ? 'country' : 'countries'} · ${m} ${m === 1 ? 'place' : 'places'}`
-      + (k ? ` · ${k} ${k === 1 ? 'relationship' : 'relationships'}` : '');
+    const n = countries.size, m = places.length, k = records.length, f = records.filter((record) => record.focus).length;
+    count.textContent = [[n, 'country', 'countries'], [m, 'place', 'places'], [k, 'relationship', 'relationships']]
+      .filter(([value]) => value).map(([value, one, many]) => `${f && many === 'relationships' ? `${f} of ` : ''}${value} ${value === 1 ? one : many}`).join(' · ') || 'nothing to draw';
   }
   updateArcs();
+  // The whole planet in the pane (zega#83), measured from the layer's last
+  // frame. A view at or below zoom 3 is a view of the planet: `@zoom` is
+  // then as far in as the view goes, and a pane too small for the planet
+  // at that zoom zooms out until it fits with a margin, and back in as the
+  // pane grows, never past the schema's zoom and never over a zoom the
+  // reader chose. Above zoom 3 the camera is a region's, exactly the
+  // schema's. A tilted globe hangs below the map's centre point, which
+  // MapLibre keeps at the pane's centre; padding below moves that point up
+  // by half of it, so the planet itself sits in the middle. On the flat map
+  // there is no planet to frame.
+  let fitted = camera.zoom, settling = false, pending = false;
+  const frame = () => {
+    pending = false;
+    if (!container._map) return;
+    const planet = arcs.planetCenter(), radius = arcs.planetRadius();
+    const pane = { width: canvas.clientWidth, height: canvas.clientHeight };
+    // A region's camera is exactly the schema's: no fit, and no padding.
+    if (camera.zoom > PLANET_ZOOM || !planet || !radius || !pane.height) {
+      if (map.getPadding().bottom) map.setPadding({ top: 0, left: 0, right: 0, bottom: 0 });
+      return;
+    }
+    const room = Math.min(pane.width, pane.height) / 2 - PLANET_MARGIN;
+    const zoom = Math.min(camera.zoom, map.getZoom() + Math.log2(room / radius));
+    if (map.getZoom() === fitted && Math.abs(zoom - fitted) > 0.005) {
+      // One step, then the padding for the new size; our own zoomend is not a reader's.
+      fitted = zoom;
+      settling = true;
+      map.setZoom(zoom);
+      settling = false;
+      centrePlanet();
+      return;
+    }
+    const bottom = Math.max(0, Math.round(2 * (planet.y - pane.height / 2)));
+    if (bottom !== map.getPadding().bottom) map.setPadding({ top: 0, left: 0, right: 0, bottom });
+  };
+  const centrePlanet = () => {
+    if (settling || pending) return;
+    pending = true;
+    map.once('render', frame);
+  };
+  centrePlanet();
+  for (const event of ['pitchend', 'zoomend']) map.on(event, centrePlanet);
   map.on('style.load', () => { if (!map.getLayer(arcs.id)) map.addLayer(arcs, 'zega-nodes'); });
 
   // Auto-spin: the preview's slow eastward turn, slowing as the map zooms in
@@ -232,7 +291,7 @@ export function renderGlobe(container, { countries, codes, places, rels = [] }, 
     if (plain) return;
     plain = true;
     show('Base map unavailable. Countries and places are still shown.');
-    map.setStyle(globeStyle(theme, codeList, places, outlines, false));
+    map.setStyle(globeStyle(theme, codeList, places, outlines, false, credit));
   });
   const nearest = (event) => [...event.features].sort((a, b) => {
     const distance = (feature) => { const p = map.project(feature.geometry.coordinates); return Math.hypot(p.x - event.point.x, p.y - event.point.y); };
@@ -268,11 +327,12 @@ export function renderGlobe(container, { countries, codes, places, rels = [] }, 
       cursor();
     }, 80);
   });
-  const resize = new ResizeObserver(() => map.resize());
+  const resize = new ResizeObserver(() => { map.resize(); centrePlanet(); });
   resize.observe(canvas);
   container._map = map;
   container._arcs = arcs;
   container._outlines = loaded;
+  container._globe = { focus(ids) { focused = ids; updateArcs(); } };
   return () => {
     resize.disconnect();
     clearTimeout(hover);
@@ -280,5 +340,6 @@ export function renderGlobe(container, { countries, codes, places, rels = [] }, 
     map.remove();
     container._map = null;
     container._arcs = null;
+    container._globe = null;
   };
 }

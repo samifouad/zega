@@ -18,7 +18,7 @@ export function basemapFlavor(theme) {
   return flavor;
 }
 
-export function mapStyle(theme, data, basemap = true) {
+export function mapStyle(theme, data, basemap = true, credit = '') {
   const c = palettes[theme];
   const flavor = basemapFlavor(theme);
   return {
@@ -26,7 +26,7 @@ export function mapStyle(theme, data, basemap = true) {
     ...(basemap ? { glyphs: `${TILE_ORIGIN}/fonts/{fontstack}/{range}.pbf`, sprite: `${TILE_ORIGIN}/sprites/v4/${theme}` } : {}),
     sources: {
       ...(basemap ? { basemap: { type: 'vector', url: `pmtiles://${TILE_ORIGIN}/calgary.pmtiles`, attribution: ATTRIBUTION } } : {}),
-      'zega-nodes': { type: 'geojson', data },
+      'zega-nodes': { type: 'geojson', ...(credit ? { attribution: credit } : {}), data },
     },
     layers: [
       ...(basemap ? layers('basemap', flavor, { lang: 'en' }) : [{ id: 'ground', type: 'background', paint: { 'background-color': c.ground } }]),

@@ -61,8 +61,20 @@ async function arcIndex(page, from, to) {
   expect(index, `arc ${from} -> ${to}`).toBeGreaterThanOrEqual(0);
   return index;
 }
+// Move the camera and wait for a frame drawn after the move: `screen` reads
+// the layer's last frame, and under software GL (the Linux runner's
+// SwiftShader) the render lags the jump, so a sample taken from the old
+// frame lands where the new one draws nothing. The counter is read and the
+// jump made in one evaluate, so every later frame has the new camera.
 async function look(page, center, extra = {}) {
-  await map(page, 'map.jumpTo({ center: arg.center, ...arg.extra })', { center, extra });
+  const before = await page.evaluate(({ center, extra }) => {
+    const graph = document.querySelector('#graph');
+    const frames = graph._arcs.frames;
+    graph._map.jumpTo({ center, ...extra });
+    return frames;
+  }, { center, extra });
+  await idle(page);
+  await expect.poll(() => arcs(page, 'return arcs.frames')).toBeGreaterThan(before);
   await idle(page);
 }
 async function open(page, schema = SCHEMA) {
