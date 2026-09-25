@@ -4,25 +4,62 @@
   "title": "zega graph-component contract, format 1 (APS 21)",
   "description": "What a graph component accepts. Data arrives as rows (optionally inside groups) of a ZQL result; each role reads one field per row, per group or per result, typed in ZQL's value vocabulary. Surface parameters and display options are settings: a JSON Schema from the published keyword subset below, plus a default. Agents and the /components gallery read this file; the runtime validates view specs against it.",
   "type": "object",
-  "required": ["format", "id", "version", "title", "category", "surface", "mark", "data", "roles", "surfaceParams", "options", "examples"],
+  "required": [
+    "format",
+    "id",
+    "version",
+    "title",
+    "category",
+    "surface",
+    "mark",
+    "data",
+    "roles",
+    "surfaceParams",
+    "options",
+    "examples"
+  ],
   "additionalProperties": false,
   "properties": {
     "$schema": { "type": "string" },
-    "format": { "const": 1, "description": "The contract format major. A breaking change to this schema is format 2." },
-    "id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$", "maxLength": 64 },
-    "version": { "type": "string", "pattern": "^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$", "description": "The component's semver. Major: an existing view spec may stop binding. Minor: something added (a role, an option). Patch: rendering only." },
+    "format": {
+      "const": 1,
+      "description": "The contract format major. A breaking change to this schema is format 2."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+      "maxLength": 64
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$",
+      "description": "The component's semver. Major: an existing view spec may stop binding. Minor: something added (a role, an option). Patch: rendering only."
+    },
     "title": { "type": "string", "minLength": 1 },
     "category": { "enum": ["Geo", "Sports", "Network", "Charts"] },
     "description": { "type": "string" },
-    "surface": { "type": "string", "description": "The surface this component draws on, e.g. \"map\"." },
-    "mark": { "type": "string", "description": "The mark it draws, e.g. \"path\"." },
+    "surface": {
+      "type": "string",
+      "description": "The surface this component draws on, e.g. \"map\"."
+    },
+    "mark": {
+      "type": "string",
+      "description": "The mark it draws, e.g. \"path\"."
+    },
     "data": {
       "type": "object",
       "required": ["groups", "description"],
       "additionalProperties": false,
       "properties": {
-        "minRows": { "type": "integer", "minimum": 0, "description": "The fewest rows a group must have (e.g. 2 for a path)." },
-        "groups": { "enum": ["none", "optional", "required"], "description": "Whether the rows may come in groups (e.g. several paths, each with its own label). Without a `groups` binding the whole result is one group." },
+        "minRows": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The fewest rows a group must have (e.g. 2 for a path)."
+        },
+        "groups": {
+          "enum": ["none", "optional", "required"],
+          "description": "Whether the rows may come in groups (e.g. several paths, each with its own label). Without a `groups` binding the whole result is one group."
+        },
         "description": { "type": "string" }
       }
     },
@@ -31,17 +68,39 @@
       "description": "Data roles by name. `rows` and `groups` are reserved (they are the binding's structure).",
       "additionalProperties": { "$ref": "#/$defs/role" }
     },
-    "surfaceParams": { "type": "object", "additionalProperties": { "$ref": "#/$defs/setting" } },
-    "options": { "type": "object", "additionalProperties": { "$ref": "#/$defs/setting" } },
+    "surfaceParams": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/setting" }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/setting" }
+    },
     "examples": {
       "type": "object",
       "required": ["valid", "invalid"],
       "additionalProperties": false,
       "properties": {
-        "sample": { "type": "string", "description": "A .zql file (schema + data) the examples' ZQL runs against." },
-        "zql": { "type": "string", "description": "The query whose result the examples bind." },
-        "valid": { "type": "array", "minItems": 2, "maxItems": 3, "items": { "$ref": "#/$defs/example" } },
-        "invalid": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/invalidExample" } }
+        "sample": {
+          "type": "string",
+          "description": "A .zql file (schema + data) the examples' ZQL runs against."
+        },
+        "zql": {
+          "type": "string",
+          "description": "The query whose result the examples bind."
+        },
+        "valid": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/example" }
+        },
+        "invalid": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/invalidExample" }
+        }
       }
     }
   },
@@ -50,23 +109,52 @@
       "enum": ["Point", "Float", "Int", "Bool", "String", "Enum", "XY"],
       "description": "ZQL's value vocabulary. Point: {lat, lon}. Float: any finite number (Ints included). Int: a whole number. Bool, String. Enum: a String from the role's `enum`. XY: {x, y} in the role's planar `frame` (a rink, a court, a field)."
     },
-    "unit": { "enum": ["ft", "m", "deg", "pct", "fraction", "km/h", "yd", "s"], "description": "pct is 0-100 and fraction is 0-1; a role in either is held to that range as well as its own minimum/maximum." },
+    "unit": {
+      "enum": ["ft", "m", "deg", "pct", "fraction", "km/h", "yd", "s"],
+      "description": "pct is 0-100 and fraction is 0-1; a role in either is held to that range as well as its own minimum/maximum."
+    },
     "role": {
       "type": "object",
       "required": ["per", "type", "required", "description"],
       "additionalProperties": false,
       "properties": {
-        "per": { "enum": ["row", "group", "result"], "description": "Where the role is read: a field of each row, of each group, or of the result." },
+        "per": {
+          "enum": ["row", "group", "result"],
+          "description": "Where the role is read: a field of each row, of each group, or of the result."
+        },
         "type": { "$ref": "#/$defs/valueType" },
-        "shape": { "enum": ["one", "list", "list<list>"], "description": "One value (the default), a list of values, or a list of lists." },
+        "shape": {
+          "enum": ["one", "list", "list<list>"],
+          "description": "One value (the default), a list of values, or a list of lists."
+        },
         "required": { "type": "boolean" },
-        "unit": { "$ref": "#/$defs/unit", "description": "Not for XY: an XY role's unit is its frame's." },
-        "minimum": { "type": "number", "description": "For Float and Int. Not for XY: its frame gives both axes' ranges." },
+        "unit": {
+          "$ref": "#/$defs/unit",
+          "description": "Not for XY: an XY role's unit is its frame's."
+        },
+        "minimum": {
+          "type": "number",
+          "description": "For Float and Int. Not for XY: its frame gives both axes' ranges."
+        },
         "maximum": { "type": "number" },
-        "enum": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "The allowed values of an Enum role." },
-        "frame": { "type": "string", "description": "An XY role's planar frame, from the frames registry (frames.js): rink, court, field, pitch. It gives the unit and each axis's extent." },
-        "relativeTo": { "type": "string", "description": "An XY role measured from a reference: a surface parameter, or a result- or group-level role (e.g. the per-play line of scrimmage, \"los\"). Its x then spans ± the frame's length." },
-        "unique": { "type": "boolean", "description": "Each row's value may appear only once per group (e.g. one row per zone)." },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "The allowed values of an Enum role."
+        },
+        "frame": {
+          "type": "string",
+          "description": "An XY role's planar frame, from the frames registry (frames.js): rink, court, field, pitch. It gives the unit and each axis's extent."
+        },
+        "relativeTo": {
+          "type": "string",
+          "description": "An XY role measured from a reference: a surface parameter, or a result- or group-level role (e.g. the per-play line of scrimmage, \"los\"). Its x then spans ± the frame's length."
+        },
+        "unique": {
+          "type": "boolean",
+          "description": "Each row's value may appear only once per group (e.g. one row per zone)."
+        },
         "description": { "type": "string" }
       }
     },
@@ -78,7 +166,16 @@
       "properties": {
         "default": {},
         "description": { "type": "string" },
-        "type": { "oneOf": [{ "$ref": "#/$defs/jsonType" }, { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/jsonType" } }] },
+        "type": {
+          "oneOf": [
+            { "$ref": "#/$defs/jsonType" },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/jsonType" }
+            }
+          ]
+        },
         "enum": { "type": "array", "minItems": 1 },
         "const": {},
         "minimum": { "type": "number" },
@@ -90,15 +187,31 @@
         "prefixItems": { "type": "array", "items": { "type": "object" } },
         "minItems": { "type": "integer", "minimum": 0 },
         "maxItems": { "type": "integer", "minimum": 0 },
-        "format": { "enum": ["lonlat-bounds"], "description": "lonlat-bounds: [west, south, east, north] with west < east and south < north." }
+        "format": {
+          "enum": ["lonlat-bounds"],
+          "description": "lonlat-bounds: [west, south, east, north] with west < east and south < north."
+        }
       }
     },
-    "jsonType": { "enum": ["string", "number", "integer", "boolean", "array", "object", "null"] },
+    "jsonType": {
+      "enum": [
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "array",
+        "object",
+        "null"
+      ]
+    },
     "example": {
       "type": "object",
       "required": ["title", "spec"],
       "additionalProperties": false,
-      "properties": { "title": { "type": "string" }, "spec": { "type": "object" } }
+      "properties": {
+        "title": { "type": "string" },
+        "spec": { "type": "object" }
+      }
     },
     "invalidExample": {
       "type": "object",
@@ -107,7 +220,10 @@
       "properties": {
         "title": { "type": "string" },
         "spec": { "type": "object" },
-        "error": { "type": "object", "description": "The first teaching error the validator gives, exactly (code, at, message, help, fix)." }
+        "error": {
+          "type": "object",
+          "description": "The first teaching error the validator gives, exactly (code, at, message, help, fix)."
+        }
       }
     }
   }

@@ -7,9 +7,22 @@
   "required": ["format", "component", "version", "binding"],
   "additionalProperties": false,
   "properties": {
-    "format": { "const": 1, "description": "The view-spec format major. Specs without it are format 0 (the first draft) and are migrated." },
-    "component": { "type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$", "description": "The component id, e.g. \"path-on-map\"." },
-    "version": { "type": "string", "maxLength": 16, "pattern": "^[0-9]{1,4}(\\.[0-9]{1,4}){0,2}$", "description": "The component version the spec was written for, e.g. \"1\" or \"1.0.0\". Its major must equal the component's." },
+    "format": {
+      "const": 1,
+      "description": "The view-spec format major. Specs without it are format 0 (the first draft) and are migrated."
+    },
+    "component": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+      "description": "The component id, e.g. \"path-on-map\"."
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 16,
+      "pattern": "^[0-9]{1,4}(\\.[0-9]{1,4}){0,2}$",
+      "description": "The component version the spec was written for, e.g. \"1\" or \"1.0.0\". Its major must equal the component's."
+    },
     "binding": {
       "type": "object",
       "description": "`groups`: where the groups are, from the result (optional). `rows`: where the rows are, from each group (or the result). Every other key is a role: a field of each row, group or result, as the contract says. `.` is the value itself.",
@@ -22,10 +35,18 @@
     "units": {
       "type": "object",
       "description": "Role -> the unit its bound data is in, when a ZQL result's numbers need saying (results carry no units). It must be the role's unit (for XY, its frame's); anything else is refused, to be converted in the query.",
-      "additionalProperties": { "enum": ["ft", "m", "deg", "pct", "fraction", "km/h", "yd", "s"] }
+      "additionalProperties": {
+        "enum": ["ft", "m", "deg", "pct", "fraction", "km/h", "yd", "s"]
+      }
     },
-    "surface": { "type": "object", "description": "Surface parameters, checked against the contract's `surfaceParams`. Omitted ones take their defaults." },
-    "options": { "type": "object", "description": "Display options, checked against the contract's `options`. Omitted ones take their defaults." }
+    "surface": {
+      "type": "object",
+      "description": "Surface parameters, checked against the contract's `surfaceParams`. Omitted ones take their defaults."
+    },
+    "options": {
+      "type": "object",
+      "description": "Display options, checked against the contract's `options`. Omitted ones take their defaults."
+    }
   },
   "$defs": {
     "fieldPath": {
