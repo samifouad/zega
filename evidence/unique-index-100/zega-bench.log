@@ -1,0 +1,36 @@
+## 113 1
+zega-bench USERS=10000 LOOKUPS=10000
+
+=== ZEGA (embedded, in-process, ZQL) ===
+zega graph load                    loaded 10000 users in 0.11s
+zega node lookup                         113024 ops/s   p50=    8.41us  p99=    9.15us
+## uniq 1
+zega-bench USERS=10000 LOOKUPS=10000
+
+=== ZEGA (embedded, in-process, ZQL) ===
+zega graph load                    loaded 10000 users in 0.12s
+zega node lookup                         102709 ops/s   p50=    8.75us  p99=   27.92us
+## 113 2
+zega-bench USERS=10000 LOOKUPS=10000
+
+=== ZEGA (embedded, in-process, ZQL) ===
+zega graph load                    loaded 10000 users in 0.12s
+zega node lookup                         108836 ops/s   p50=    8.52us  p99=   25.78us
+## uniq 2
+zega-bench USERS=10000 LOOKUPS=10000
+
+=== ZEGA (embedded, in-process, ZQL) ===
+zega graph load                    loaded 10000 users in 0.12s
+zega node lookup                         110680 ops/s   p50=    8.56us  p99=    9.64us
+## 113 3
+zega-bench USERS=10000 LOOKUPS=10000
+
+=== ZEGA (embedded, in-process, ZQL) ===
+zega graph load                    loaded 10000 users in 0.12s
+zega node lookup                         109220 ops/s   p50=    8.48us  p99=   26.55us
+## uniq 3
+zega-bench USERS=10000 LOOKUPS=10000
+
+=== ZEGA (embedded, in-process, ZQL) ===
+zega graph load                    loaded 10000 users in 0.12s
+zega node lookup                         105797 ops/s   p50=    8.72us  p99=   27.40us
