@@ -373,7 +373,9 @@ fn writes_go_through_while_a_checkpoint_syncs_and_are_carried_into_the_new_wal()
                 *hook.borrow_mut() = Some(Box::new(move |step| {
                     if step == Step::GraphDurable {
                         reached.send(()).unwrap();
-                        wait_for_resume.recv().unwrap();
+                        // Bounded, so a failing assertion ends the test
+                        // instead of leaving this checkpoint waiting forever.
+                        let _ = wait_for_resume.recv_timeout(Duration::from_secs(10));
                     }
                 }));
             });
@@ -387,8 +389,9 @@ fn writes_go_through_while_a_checkpoint_syncs_and_are_carried_into_the_new_wal()
             writes_b(zega);
             done.send(()).unwrap();
         });
+        // Well inside the 10 s the checkpoint waits for `resume`.
         wait_for_done
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(Duration::from_secs(5))
             .expect("writes waited for a checkpoint that had released the graph");
         resume.send(()).unwrap();
         let checkpoint = checkpoint.join().unwrap();
@@ -573,7 +576,9 @@ fn an_import_waits_for_a_checkpoint_in_progress() {
                 *hook.borrow_mut() = Some(Box::new(move |step| {
                     if step == Step::GraphDurable {
                         reached.send(()).unwrap();
-                        wait_for_resume.recv().unwrap();
+                        // Bounded, so a failing assertion ends the test
+                        // instead of leaving this checkpoint waiting forever.
+                        let _ = wait_for_resume.recv_timeout(Duration::from_secs(10));
                     }
                 }));
             });
