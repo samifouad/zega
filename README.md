@@ -291,10 +291,16 @@ one entry naming it plus the writes made since, so a restart reads that file
 and replays only the WAL after it. A disk database checkpoints on its own once
 the WAL reaches 16 MiB and the size of the graph it starts from (`zega start
 --snapshot-every-mb`, `ZegaBuilder::snapshot_every`; 0 turns it off), and
-`Zega::snapshot()` takes one now. Writes wait only while the graph is written
-out, not while it is synced. A crash at any point of a checkpoint reopens to
-every acknowledged write. Legacy WAL versions and `snapshot.bin` files are read
-and migrated automatically.
+`Zega::snapshot()` takes one now. While the graph is written out, in one pass
+under the graph lock, every query waits, reads as well as writes: about 15-25
+ms per MB of `.graph` file (under 0.1 s for 100,000 nodes, 1.5-2 s for
+1,000,000 on an iMac). The sync and the WAL rotation run without the lock.
+A crash at any point of a checkpoint reopens to every acknowledged write, and
+a WAL that is lost or emptied after one is refused rather than opened empty.
+Legacy WAL versions and `snapshot.bin` files are read and migrated
+automatically. The first checkpoint marks the WAL version 3, as the first
+`.graph` import does, so a zega from before `.graph` imports can no longer
+open the directory: downgrading past that release is not supported.
 
 ## Benchmarks
 

@@ -883,6 +883,81 @@ fn sync_pending(state: &mut WalState) -> Result<(), WalError> {
     Ok(())
 }
 
+/// Settle a rotation a crash interrupted, before the log is opened.
+///
+/// [`Wal::rotate`] writes the next log to [`rotation_path`] and renames it
+/// over the log. A next log next to a log with entries was never committed
+/// (the rename is the commit), so it is deleted. One with no log beside it,
+/// or a log with no entries, is a rename that did not finish, or a log that
+/// was lost: it is promoted to the log if every entry in it checks out, and
+/// otherwise the open is refused. It is never deleted unread.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn settle_rotation(path: &Path) -> Result<(), WalError> {
+    let next = rotation_path(path);
+    if !next.exists() {
+        return Ok(());
+    }
+    let log_len = match std::fs::metadata(path) {
+        Ok(meta) => meta.len(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error.into()),
+    };
+    if log_len > WAL_FILE_HEADER_LEN {
+        std::fs::remove_file(&next)?;
+        return Ok(());
+    }
+    check_log(&next).map_err(|error| WalError::Corruption {
+        offset: 0,
+        reason: format!(
+            "{} has no entries and {} is not a complete log ({error}); refusing to open \
+             rather than start empty. Move {} aside to open an empty database",
+            path.display(),
+            next.display(),
+            next.display()
+        ),
+    })?;
+    rename_into_place(&next, path)?;
+    sync_parent(path)?;
+    Ok(())
+}
+
+/// Every entry of the log at `path` is whole, checksummed and decodes, and
+/// nothing follows the last one.
+#[cfg(not(target_arch = "wasm32"))]
+fn check_log(path: &Path) -> Result<(), WalError> {
+    let bytes = std::fs::read(path)?;
+    let corrupt = |offset: usize, reason: &str| WalError::Corruption {
+        offset: offset as u64,
+        reason: reason.to_string(),
+    };
+    if bytes.len() < WAL_FILE_HEADER.len() || bytes[..4] != WAL_MAGIC[..] {
+        return Err(corrupt(0, "invalid WAL header"));
+    }
+    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    if !matches!(version, WAL_VERSION | WAL_VERSION_IMPORTS) {
+        return Err(corrupt(0, "unsupported WAL version"));
+    }
+    let mut at = WAL_FILE_HEADER.len();
+    while at < bytes.len() {
+        let header = bytes
+            .get(at..at + ENTRY_HEADER_LEN as usize)
+            .ok_or_else(|| corrupt(at, "torn entry header"))?;
+        let len = u64::from_le_bytes(header[..8].try_into().expect("8 bytes"));
+        let crc = u32::from_le_bytes(header[8..12].try_into().expect("4 bytes"));
+        let start = at + ENTRY_HEADER_LEN as usize;
+        let payload = usize::try_from(len)
+            .ok()
+            .and_then(|len| bytes.get(start..start.checked_add(len)?))
+            .ok_or_else(|| corrupt(at, "torn entry"))?;
+        if crc32fast::hash(payload) != crc {
+            return Err(corrupt(at, "checksum mismatch"));
+        }
+        decode_exact::<Operation>(payload).map_err(|_| corrupt(at, "invalid operation payload"))?;
+        at = start + payload.len();
+    }
+    Ok(())
+}
+
 /// Refuse every later append with `message`, until the store is reopened.
 #[cfg(not(target_arch = "wasm32"))]
 fn poison(state: &mut WalState, message: String) -> WalError {

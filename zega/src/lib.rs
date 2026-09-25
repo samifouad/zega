@@ -31,7 +31,7 @@ mod wal;
 mod wal_order_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use crate::checkpoint::{Checkpoint, DEFAULT_SNAPSHOT_EVERY_BYTES};
+pub use crate::checkpoint::{Checkpoint, CheckpointCounts, DEFAULT_SNAPSHOT_EVERY_BYTES};
 pub use crate::lang::{diagnose, fmt};
 pub use crate::validation::{Diagnostic, Pane, Report, Severity};
 
@@ -86,6 +86,8 @@ pub struct Zega {
     /// the WAL must outgrow it before the next checkpoint.
     #[cfg(not(target_arch = "wasm32"))]
     base_bytes: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(not(target_arch = "wasm32"))]
+    checkpoint_counts: Arc<checkpoint::Counts>,
     /// Takes a checkpoint whenever the WAL is due; `None` in memory or when
     /// the builder turned automatic checkpoints off.
     #[cfg(not(target_arch = "wasm32"))]
@@ -207,6 +209,12 @@ impl Zega {
         let snapshot_path = path.join(SNAPSHOT_FILE);
         let wal_path = path.join("wal.bin");
 
+        // A rotation a crash interrupted is settled before the log is opened.
+        #[cfg(not(target_arch = "wasm32"))]
+        if !builder.in_memory {
+            crate::wal::settle_rotation(&wal_path)?;
+        }
+
         // Replay WAL
         #[cfg(not(target_arch = "wasm32"))]
         let wal = if builder.in_memory {
@@ -225,15 +233,15 @@ impl Zega {
         let mut base_bytes = 0;
         #[cfg(not(target_arch = "wasm32"))]
         if !builder.in_memory {
-            // A next log a checkpoint was writing when it crashed: never the
-            // log, which is still whole (checkpoint.rs).
-            let _ = std::fs::remove_file(crate::wal::rotation_path(&wal_path));
             let ops = if wal_path.exists() { wal.iter()? } else { Vec::new() };
             // The last import replaces everything before it, snapshot
             // included: replay starts there, and reads only that one file.
             let last_import = ops
                 .iter()
                 .rposition(|op| matches!(op, Operation::ReplaceGraph { .. }));
+            if ops.is_empty() {
+                refuse_lost_log(&path)?;
+            }
             if last_import.is_none() && snapshot_path.exists() {
                 restore(&mut graph, &snapshot_path)?;
             }
@@ -270,6 +278,8 @@ impl Zega {
             #[cfg(not(target_arch = "wasm32"))]
             base_bytes: Arc::new(std::sync::atomic::AtomicU64::new(base_bytes)),
             #[cfg(not(target_arch = "wasm32"))]
+            checkpoint_counts: Arc::default(),
+            #[cfg(not(target_arch = "wasm32"))]
             checkpointer: None,
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -284,8 +294,10 @@ impl Zega {
 
     /// Checkpoint a disk database: write the graph as a `.graph` file in
     /// `graphs/` and start the WAL over from it, so a restart reads that file
-    /// and replays only what came after. Writes wait only while the graph is
-    /// written out, not while it is synced. A no-op in memory. A disk
+    /// and replays only what came after. The graph lock is held while the
+    /// graph is written out (one pass, about 15 ms per MB of `.graph` file on
+    /// an iMac), so reads and writes both wait that long; the sync and the
+    /// WAL rotation run without it. A no-op in memory. A disk
     /// database also does this on its own ([`ZegaBuilder::snapshot_every`]).
     pub fn snapshot(&self) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -310,7 +322,17 @@ impl Zega {
             path: self.path.clone(),
             import_lock: Arc::clone(&self.import_lock),
             base_bytes: Arc::clone(&self.base_bytes),
+            counts: Arc::clone(&self.checkpoint_counts),
         }
+    }
+
+    /// How many checkpoints this database has taken and failed since it
+    /// opened, its own and [`Zega::snapshot`]'s. A failed one only means the
+    /// WAL keeps every write until the next succeeds; each failure is also
+    /// printed to stderr.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn checkpoint_counts(&self) -> CheckpointCounts {
+        self.checkpoint_counts.get()
     }
 
     /// Whether the graph holds no node and no relationship.
@@ -631,7 +653,8 @@ fn create_staging(data: &std::path::Path, purpose: &str) -> Result<(std::fs::Fil
     let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = dir.join(format!(".{purpose}-{}-{sequence}.tmp", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
+    // Read too: a checkpoint reads its file back for its digests.
+    options.read(true).write(true).create_new(true);
     // Staging files become the database's copies of its imports: owner
     // only, like the WAL's contents deserve.
     #[cfg(unix)]
@@ -659,8 +682,48 @@ fn sync_dir(dir: &std::path::Path) -> std::io::Result<()> {
 fn remove_stale_imports(data: &std::path::Path, keep: Option<&str>) -> Result<()> {
     remove_in_imports(data, |name| {
         let staging = name.starts_with('.') && name.ends_with(".tmp");
-        staging || (name.ends_with(".graph") && Some(name) != keep.and_then(file_name))
+        // Only a log that names the graph it starts from says which files
+        // are superseded. Without one, a `.graph` file is either the leftover
+        // of an import or checkpoint that never committed (the log holds
+        // every write, and the next checkpoint deletes it) or the only copy
+        // of the graph ([`refuse_lost_log`]): never deleted here.
+        let superseded = keep.and_then(file_name).is_some_and(|keep| name != keep);
+        staging || (name.ends_with(".graph") && superseded)
     })
+}
+
+/// A log with no entries, next to `.graph` files in `graphs/`: the log that
+/// named one of them is gone (deleted, or truncated to nothing), and the
+/// graph is in that file. Opening would start an empty database; refuse, and
+/// say how to get the graph back.
+#[cfg(not(target_arch = "wasm32"))]
+fn refuse_lost_log(data: &std::path::Path) -> Result<()> {
+    let mut files: Vec<String> = match std::fs::read_dir(data.join(IMPORTS_DIR)) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| !name.starts_with('.') && name.ends_with(".graph"))
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if files.is_empty() {
+        return Ok(());
+    }
+    files.sort();
+    let files: Vec<String> = files.iter().map(|name| format!("{IMPORTS_DIR}/{name}")).collect();
+    Err(ZegaError::Execution(format!(
+        "{} holds no writes, but {} holds {}: the database's graph is in {} and the log \
+         that named it is missing or empty. Refusing to open this as an empty database. \
+         To recover, move {} out of {}, then run `zega import <file> --data {}` with it. \
+         A file left by an import that never finished can be deleted instead",
+        data.join("wal.bin").display(),
+        data.join(IMPORTS_DIR).display(),
+        files.join(", "),
+        if files.len() == 1 { "that file" } else { "one of these files" },
+        if files.len() == 1 { "it" } else { "them" },
+        data.join(IMPORTS_DIR).display(),
+        data.display(),
+    )))
 }
 
 /// Delete every imported file but `keep`.

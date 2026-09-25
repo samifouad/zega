@@ -608,3 +608,170 @@ fn an_import_waits_for_a_checkpoint_in_progress() {
     assert_eq!(state(&open(dir.path())).nodes, imported.nodes);
     assert_eq!(graph_files(dir.path()).len(), 1);
 }
+
+/// The one-pass writer a checkpoint uses writes the bytes an export does.
+#[test]
+fn a_checkpoint_file_is_the_export_of_the_graph_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let zega = open(dir.path());
+    writes_a(&zega);
+    writes_b(&zega);
+    let mut exported = Vec::new();
+    zega.export(&mut exported).unwrap();
+    let checkpoint = zega.checkpoint().unwrap().unwrap();
+    let written = std::fs::read(dir.path().join(&checkpoint.file)).unwrap();
+    assert_eq!(written.len() as u64, checkpoint.graph_bytes);
+    assert!(written == exported, "the checkpoint file differs from the export");
+}
+
+/// A checkpointed store: its graph is only in the `.graph` file its WAL names.
+fn checkpointed() -> (tempfile::TempDir, State) {
+    let dir = tempfile::tempdir().unwrap();
+    let zega = open(dir.path());
+    writes_a(&zega);
+    zega.checkpoint().unwrap();
+    writes_b(&zega);
+    zega.checkpoint().unwrap();
+    let expected = state(&zega);
+    drop(zega);
+    (dir, expected)
+}
+
+fn open_error(dir: &Path) -> String {
+    match Zega::open(dir.to_str().unwrap()).snapshot_every(0).build() {
+        Ok(_) => panic!("opened a store whose log is gone as a database"),
+        Err(error) => error.to_string(),
+    }
+}
+
+/// zega#112 review: a log deleted or emptied after a checkpoint must not open
+/// as an empty database and delete the only copy of the graph. The open is
+/// refused, the file stays, and the recovery the error gives works.
+#[test]
+fn a_lost_log_refuses_to_open_and_keeps_the_graph_file() {
+    for lose in ["deleted", "emptied"] {
+        let (dir, expected) = checkpointed();
+        let files = graph_files(dir.path());
+        assert_eq!(files.len(), 1);
+        let wal = dir.path().join("wal.bin");
+        match lose {
+            "deleted" => std::fs::remove_file(&wal).unwrap(),
+            _ => std::fs::write(&wal, b"").unwrap(),
+        }
+        for attempt in 0..2 {
+            let error = open_error(dir.path());
+            assert!(error.contains(&files[0]) && error.contains("zega import"), "{lose} {attempt}: {error}");
+            assert_eq!(graph_files(dir.path()), files, "{lose} {attempt}: the graph file was deleted");
+        }
+        // The recovery the error describes: move the file out, import it.
+        let rescued = dir.path().join("rescued.graph");
+        std::fs::rename(dir.path().join("graphs").join(&files[0]), &rescued).unwrap();
+        let zega = open(dir.path());
+        zega.import(std::fs::File::open(&rescued).unwrap()).unwrap();
+        let recovered = state(&zega);
+        assert_eq!((recovered.nodes, recovered.rels), (expected.nodes, expected.rels), "{lose}");
+    }
+}
+
+/// A log found only as `wal.rotate.tmp` (the rename to `wal.bin` did not
+/// finish, or `wal.bin` was lost): promoted when it is whole, refused and
+/// kept when it is not.
+#[test]
+fn a_next_log_without_a_log_is_promoted_when_whole_and_refused_when_torn() {
+    let (dir, expected) = checkpointed();
+    let wal = dir.path().join("wal.bin");
+    let next = dir.path().join("wal.rotate.tmp");
+    std::fs::rename(&wal, &next).unwrap();
+    let zega = open(dir.path());
+    assert_eq!(state(&zega), expected, "the promoted log opened differently");
+    drop(zega);
+    assert!(wal.exists() && !next.exists());
+
+    for torn in [1usize, 5] {
+        let (dir, _) = checkpointed();
+        let (wal, next) = (dir.path().join("wal.bin"), dir.path().join("wal.rotate.tmp"));
+        let bytes = std::fs::read(&wal).unwrap();
+        std::fs::write(&next, &bytes[..bytes.len() - torn]).unwrap();
+        std::fs::write(&wal, b"").unwrap();
+        let error = open_error(dir.path());
+        assert!(error.contains("wal.rotate.tmp") && error.contains("not a complete log"), "{error}");
+        assert_eq!(std::fs::read(&next).unwrap(), &bytes[..bytes.len() - torn], "the torn next log was touched");
+        assert_eq!(graph_files(dir.path()).len(), 1);
+    }
+}
+
+/// A `.graph` file the log does not name, beside a log with entries but no
+/// `ReplaceGraph` (a first checkpoint or import that never committed): the
+/// log is whole, so it opens; the file is left alone rather than deleted,
+/// and the next checkpoint removes it.
+#[test]
+fn an_unnamed_graph_file_beside_a_whole_log_is_kept_until_the_next_checkpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let zega = open(dir.path());
+    writes_b_without_import(&zega);
+    let expected = state(&zega);
+    drop(zega);
+    let stray = format!("{}.graph", "cd".repeat(32));
+    std::fs::create_dir_all(dir.path().join("graphs")).unwrap();
+    std::fs::write(dir.path().join("graphs").join(&stray), b"\x89ZGRAPH\n").unwrap();
+    let zega = open(dir.path());
+    assert_eq!(state(&zega), expected);
+    assert_eq!(graph_files(dir.path()), std::slice::from_ref(&stray), "an unnamed file was deleted without a log naming another");
+    zega.checkpoint().unwrap();
+    drop(zega);
+    assert_settled(dir.path(), "after the next checkpoint");
+}
+
+/// Writes made during a checkpoint's sync are carried into the new WAL; they
+/// count toward the next checkpoint only as what they are, so a tail that
+/// already passed the threshold does not start another one straight away.
+#[test]
+fn a_long_tail_does_not_make_the_next_checkpoint_due_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let zega = open(dir.path());
+    writes_a(&zega);
+    let floor = 4 * 1024;
+    let (reached, wait_for_reached) = mpsc::channel();
+    let (resume, wait_for_resume) = mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let zega = &zega;
+        let checkpoint = scope.spawn(move || {
+            AT_STEP.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move |step| {
+                    if step == Step::GraphDurable {
+                        reached.send(()).unwrap();
+                        let _ = wait_for_resume.recv_timeout(Duration::from_secs(10));
+                    }
+                }));
+            });
+            zega.checkpoint().unwrap().unwrap()
+        });
+        wait_for_reached.recv_timeout(Duration::from_secs(30)).unwrap();
+        for i in 0..40 {
+            create(zega, &format!("t{i}"), &["Person"], vec![("pad", Value::String("x".repeat(200)))]);
+        }
+        resume.send(()).unwrap();
+        let checkpoint = checkpoint.join().unwrap();
+        assert!(checkpoint.wal_bytes_after > floor, "the tail is {} bytes", checkpoint.wal_bytes_after);
+    });
+    let store = zega.store();
+    let (_, due, _) = store.due(floor).unwrap();
+    assert!(!due, "the tail of the last checkpoint made the next one due at once");
+    for i in 0..40 {
+        create(&zega, &format!("u{i}"), &["Person"], vec![("pad", Value::String("x".repeat(200)))]);
+    }
+    assert!(store.due(floor).unwrap().1, "new writes past the threshold did not make it due");
+}
+
+#[test]
+fn checkpoints_taken_and_failed_are_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    let zega = open(dir.path());
+    writes_a(&zega);
+    zega.checkpoint().unwrap();
+    write(&zega, |graph, journal| {
+        journal.create_node(graph, labels(&["Twice", "Twice"]), HashMap::new());
+    });
+    assert!(zega.checkpoint().is_err());
+    assert_eq!(zega.checkpoint_counts(), crate::CheckpointCounts { taken: 1, failed: 1 });
+}

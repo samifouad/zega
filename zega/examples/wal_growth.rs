@@ -50,6 +50,13 @@ fn main() {
             );
             println!("rss after checkpoint: {} MB", rss_mb());
         }
+        Some("export") => {
+            // The two-pass writer, to nowhere: encoding alone, no I/O.
+            let (zega, _) = open(&args[1]);
+            let started = Instant::now();
+            let summary = zega.export(&mut std::io::sink()).unwrap();
+            println!("export to nowhere: {:.0} ms, {} MB", ms(started.elapsed()), summary.bytes >> 20);
+        }
         Some("json") => {
             let (zega, _) = open(&args[1]);
             println!("rss before GET /graph JSON: {} MB", rss_mb());

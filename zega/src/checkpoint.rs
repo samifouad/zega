@@ -8,30 +8,37 @@
 //! imports already have, and adds no file or WAL entry of its own:
 //!
 //! 1. Under the graph lock, note where the WAL ends and write the graph to a
-//!    staging file in `graphs/`. Since every write appends to the WAL (and
-//!    waits for it to be durable) under that same lock, the file holds
-//!    exactly the log up to that byte. Writes wait for this step only.
-//! 2. Without the lock: sync the file and rename it to `graphs/<sha256>.graph`,
-//!    then sync the directory. Writes carry on appending to the WAL.
+//!    staging file in `graphs/`, in one pass (`graph_file::write_unfinished`).
+//!    Since every write appends to the WAL (and waits for it to be durable)
+//!    under that same lock, the file holds exactly the log up to that byte.
+//!    Everything that takes the lock waits for this step: writes, and reads
+//!    too, since the graph has one lock. The pause grows with the graph.
+//! 2. Without the lock: read the file back for its digests, add its last
+//!    section, sync it and rename it to `graphs/<sha256>.graph`, then sync
+//!    the directory. Reads and writes carry on.
 //! 3. [`Wal::rotate`]: write a new log holding one `ReplaceGraph` entry naming
 //!    that file, followed by every entry written since step 1, sync it and
 //!    rename it over `wal.bin`. That rename is the commit.
 //! 4. Delete what no replay reads any more: earlier `.graph` files (imports
 //!    and checkpoints) and a `snapshot.bin` from before checkpoints.
 //!
-//! Open already replays from the last `ReplaceGraph` entry and deletes
-//! staging files and `.graph` files the log does not name, so a crash at any
-//! step opens to every acknowledged write: before the rename in step 3 the
-//! old log is whole, and after it the new log's file is already durable.
-//! `checkpoint_tests.rs` crashes at each step.
+//! Open replays from the last `ReplaceGraph` entry, so a crash at any step
+//! opens to every acknowledged write: before the rename in step 3 the old log
+//! is whole, and after it the new log's file is already durable. Open deletes
+//! staging files, and `.graph` files only when the log names another one; it
+//! refuses to open a log with no entries beside a `.graph` file (the log that
+//! named it is lost) and promotes a whole `wal.rotate.tmp` found without a
+//! log. `checkpoint_tests.rs` crashes at each step and deletes, empties and
+//! renames the log.
+//!
+//! The first checkpoint marks the WAL version 3, as the first import does: a
+//! zega from before `.graph` imports refuses the directory after it.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
-
-use sha2::Digest;
 
 use crate::graph::Graph;
 use crate::wal::{Operation, Wal};
@@ -70,6 +77,33 @@ pub(crate) struct Store {
     pub import_lock: Arc<Mutex<()>>,
     /// The size of the `.graph` file the WAL starts from, 0 without one.
     pub base_bytes: Arc<AtomicU64>,
+    pub counts: Arc<Counts>,
+}
+
+/// How many checkpoints a database has taken and failed since it opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CheckpointCounts {
+    pub taken: u64,
+    pub failed: u64,
+}
+
+#[derive(Default)]
+pub(crate) struct Counts {
+    taken: AtomicU64,
+    failed: AtomicU64,
+    /// The WAL's length when the last checkpoint finished: what it had
+    /// already outgrown then (writes made during that checkpoint) is not
+    /// counted again, so checkpoints never run back to back.
+    wal_after: AtomicU64,
+}
+
+impl Counts {
+    pub fn get(&self) -> CheckpointCounts {
+        CheckpointCounts {
+            taken: self.taken.load(Ordering::Relaxed),
+            failed: self.failed.load(Ordering::Relaxed),
+        }
+    }
 }
 
 impl Store {
@@ -79,37 +113,38 @@ impl Store {
             .import_lock
             .lock()
             .map_err(|_| ZegaError::Execution("import lock poisoned".to_string()))?;
-        let (file, staging) = crate::create_staging(&self.path, "checkpoint")?;
-        let result = self.checkpoint_into(file, &staging);
-        if result.is_err() {
-            // Gone already once renamed; a leftover is removed at open.
-            let _ = std::fs::remove_file(&staging);
-        }
+        let result = crate::create_staging(&self.path, "checkpoint").and_then(|(file, staging)| {
+            let result = self.checkpoint_into(file, &staging);
+            if result.is_err() {
+                // Gone already once renamed; a leftover is removed at open.
+                let _ = std::fs::remove_file(&staging);
+            }
+            result
+        });
+        let counter = if result.is_ok() { &self.counts.taken } else { &self.counts.failed };
+        counter.fetch_add(1, Ordering::Relaxed);
         result
     }
 
-    fn checkpoint_into(&self, file: std::fs::File, staging: &Path) -> Result<Checkpoint> {
-        let mut out = Hashing {
-            inner: file,
-            hash: sha2::Sha256::new(),
-        };
-        let (from, bytes, paused) = {
+    fn checkpoint_into(&self, mut file: std::fs::File, staging: &Path) -> Result<Checkpoint> {
+        let (from, unfinished, paused) = {
             let graph = self
                 .graph
                 .lock()
                 .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
             let started = std::time::Instant::now();
             let from = self.wal.end()?;
-            let options = crate::graph_file::ExportOptions::default();
-            let summary = crate::graph_file::write(&graph, &options, crate::CREATED_BY, &mut out)?;
-            (from, summary.bytes, started.elapsed())
+            let unfinished = crate::graph_file::write_unfinished(&graph, crate::CREATED_BY, &mut file)?;
+            (from, unfinished, started.elapsed())
         };
+        crash_point(Step::GraphPartial);
+        let (summary, sha256) = crate::graph_file::finish(&mut file, &unfinished)?;
+        let bytes = summary.bytes;
         crash_point(Step::GraphWritten);
-        let Hashing { inner: file, hash } = out;
         file.sync_all()?;
         drop(file);
         crash_point(Step::GraphSynced);
-        let name = format!("{}/{}.graph", crate::IMPORTS_DIR, crate::graph_file::hex(&hash.finalize()));
+        let name = format!("{}/{}.graph", crate::IMPORTS_DIR, crate::graph_file::hex(&sha256));
         let target = self.path.join(&name);
         crate::wal::rename_into_place(staging, &target)?;
         crash_point(Step::GraphRenamed);
@@ -120,6 +155,7 @@ impl Store {
             .wal
             .rotate(from, &Operation::ReplaceGraph { file: name.clone() })?;
         self.base_bytes.store(bytes, Ordering::Relaxed);
+        self.counts.wal_after.store(wal_bytes_after, Ordering::Relaxed);
         // Committed. What is left is garbage a failed delete only leaves for
         // the next open, never an error.
         let _ = crate::remove_imported_except(&self.path, &name);
@@ -134,37 +170,16 @@ impl Store {
         })
     }
 
-    /// Whether the WAL has grown enough to checkpoint: to `floor`, and to the
-    /// size of the graph it starts from, so rewriting the graph never costs
-    /// more than the log it replaces (at most 2x the writes, amortised).
-    /// Returns the WAL's length and that threshold.
-    fn due(&self, floor: u64) -> Result<(u64, u64)> {
+    /// Whether the WAL has grown enough since the last checkpoint to take
+    /// another: by `floor`, and by the size of the graph it starts from, so
+    /// rewriting the graph never costs more than the log it replaces (at most
+    /// 2x the writes, amortised). Returns the WAL's length, whether it is
+    /// due, and that threshold.
+    pub(crate) fn due(&self, floor: u64) -> Result<(u64, bool, u64)> {
         let end = self.wal.end()?;
-        Ok((end, floor.max(self.base_bytes.load(Ordering::Relaxed))))
-    }
-}
-
-/// Feeds the SHA-256 that names the file with every byte written.
-struct Hashing {
-    inner: std::fs::File,
-    hash: sha2::Sha256,
-}
-
-impl std::io::Write for Hashing {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        #[cfg(test)]
-        if CRASH_AT.load(Ordering::SeqCst) == Step::GraphPartial as u8 {
-            // Torn: half of the first write reaches the file, then the crash.
-            std::io::Write::write_all(&mut self.inner, &buf[..buf.len() / 2])?;
-            crash_point(Step::GraphPartial);
-        }
-        let n = self.inner.write(buf)?;
-        self.hash.update(&buf[..n]);
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
+        let threshold = floor.max(self.base_bytes.load(Ordering::Relaxed));
+        let grown = end.saturating_sub(self.counts.wal_after.load(Ordering::Relaxed));
+        Ok((end, grown >= threshold, threshold))
     }
 }
 
@@ -204,8 +219,8 @@ fn run(store: Store, floor: u64, stop: &(Mutex<bool>, Condvar)) {
             }
         }
         // A poisoned WAL refuses writes, so it cannot grow: nothing to do.
-        let Ok((end, threshold)) = store.due(floor) else { continue };
-        if end < threshold || end < retry_at {
+        let Ok((end, due, threshold)) = store.due(floor) else { continue };
+        if !due || end < retry_at {
             continue;
         }
         if let Err(error) = store.checkpoint() {
@@ -235,7 +250,7 @@ impl Drop for Checkpointer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum Step {
-    /// Part of the `.graph` file is in its staging file.
+    /// The `.graph` file is in its staging file but for its last section.
     GraphPartial = 1,
     /// All of it, not synced.
     GraphWritten,
