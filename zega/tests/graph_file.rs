@@ -269,3 +269,123 @@ fn the_stored_copy_of_an_import_is_what_replay_needs() {
     let error = Zega::open(dir.path().to_str().unwrap()).build().err().unwrap();
     assert!(error.to_string().contains("cannot be opened"), "{error}");
 }
+
+// ---------------------------------------------------------------------------
+// What an import carries (schema text, declarations, metadata) is graph
+// state: import then export gives the same file on every path.
+
+#[test]
+fn import_then_export_gives_back_the_same_file_in_memory_on_disk_and_through_snapshots() {
+    let golden = golden();
+    let zega = Zega::in_memory().build().unwrap();
+    zega.import(&golden[..]).unwrap();
+    assert_eq!(export(&zega), golden);
+
+    // The explorer's localStorage path (`export_base64`) carries it too.
+    let restored = Zega::in_memory().build().unwrap();
+    restored.restore_bytes(&zega.snapshot_bytes().unwrap()).unwrap();
+    assert_eq!(export(&restored), golden);
+
+    let dir = tempfile::tempdir().unwrap();
+    let zega = open(dir.path());
+    zega.import(&golden[..]).unwrap();
+    zega.snapshot().unwrap();
+    drop(zega);
+    assert_eq!(export(&open(dir.path())), golden);
+}
+
+#[test]
+fn the_wal_is_marked_version_3_once_it_holds_an_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let zega = open(dir.path());
+    seeded(&zega);
+    let header = || std::fs::read(dir.path().join("wal.bin")).unwrap()[..6].to_vec();
+    assert_eq!(header(), b"ZWAL\x02\x00");
+    zega.import(&golden()[..]).unwrap();
+    assert_eq!(header(), b"ZWAL\x03\x00");
+    drop(zega);
+    assert_eq!(export(&open(dir.path())), golden());
+}
+
+/// A graph of `n` people, loaded in one statement.
+fn people(n: usize) -> Vec<u8> {
+    let rows: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"Name":"person {i}","Age":{}}}"#, i % 90))
+        .collect();
+    let sources = std::collections::HashMap::from([("./p.json".to_string(), format!("[{}]", rows.join(",")))]);
+    let zega = Zega::in_memory().build().unwrap();
+    zega.run_lang_with_sources(PEOPLE, r#"mutation json ["./p.json"] { Person(name: $Name && age: $Age) { name } }"#, &sources)
+        .unwrap();
+    export(&zega)
+}
+
+fn imported_files(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir.join("graphs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Opening replays from the last import only: every earlier import is
+/// replaced by it, so its file is deleted as soon as the next one commits,
+/// and opening after N imports reads one file, not N.
+#[test]
+fn reopening_after_many_imports_reads_only_the_last_one() {
+    let big = people(5_000);
+    let small = golden();
+    let time_open = |dir: &Path| {
+        let start = std::time::Instant::now();
+        let zega = open(dir);
+        (start.elapsed(), zega)
+    };
+
+    let one = tempfile::tempdir().unwrap();
+    open(one.path()).import(&big[..]).unwrap();
+    let (after_one, zega) = time_open(one.path());
+    assert_eq!(export(&zega), big);
+    drop(zega);
+
+    let many = tempfile::tempdir().unwrap();
+    let zega = open(many.path());
+    for round in 0..30 {
+        zega.import(&big[..]).unwrap();
+        zega.run_lang(PEOPLE, &format!(r#"mutation {{ Person(name: "round {round}" && age: 1) {{ name }} }}"#))
+            .unwrap();
+        zega.import(&small[..]).unwrap();
+        assert_eq!(imported_files(many.path()).len(), 1, "round {round}");
+    }
+    zega.import(&big[..]).unwrap();
+    zega.run_lang(PEOPLE, r#"mutation { Person(name: "last" && age: 2) { name } }"#).unwrap();
+    let expected = export(&zega);
+    drop(zega);
+    // Leftovers a crash could leave: a staging file and an unreferenced import.
+    std::fs::write(many.path().join("graphs/.incoming-1-1.tmp"), b"partial").unwrap();
+    std::fs::write(many.path().join("graphs").join(format!("{}.graph", "0".repeat(64))), &small).unwrap();
+
+    let (after_many, zega) = time_open(many.path());
+    assert_eq!(export(&zega), expected);
+    assert_eq!(imported_files(many.path()).len(), 1, "{:?}", imported_files(many.path()));
+    println!("open after 1 import: {after_one:?}; after 61 imports and 31 writes: {after_many:?}");
+}
+
+/// docs/graph-format.md shows an empty graph byte for byte; it is what this
+/// zega writes (a version bump changes `created_by`, and the doc with it).
+#[test]
+fn the_spec_s_empty_graph_is_what_zega_writes() {
+    let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/graph-format.md")).unwrap();
+    let section = doc.split("## An empty graph").nth(1).unwrap();
+    let block = section.split("```text").nth(1).unwrap().split("```").next().unwrap();
+    let bytes: Vec<u8> = block
+        .lines()
+        .filter_map(|line| line.split_once(": "))
+        .flat_map(|(_, rest)| {
+            rest.split(' ')
+                .take_while(|word| word.len() == 2 && word.bytes().all(|b| b.is_ascii_hexdigit()))
+                .map(|word| u8::from_str_radix(word, 16).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(bytes, export(&Zega::in_memory().build().unwrap()));
+}

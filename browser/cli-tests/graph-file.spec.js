@@ -62,6 +62,10 @@ test('a graph moves between the CLI, the HTTP server and wasm with identical byt
     expect(Buffer.compare(exported, served)).toBe(0);
 
     // 3. wasm imports it and exports it again: identical bytes, same graph.
+    const golden = new ZegaWasm();
+    golden.importGraph(await readFile(GOLDEN));
+    expect(Buffer.compare(golden.exportGraph(), await readFile(GOLDEN))).toBe(0);
+    golden.free();
     const db = new ZegaWasm();
     const summary = JSON.parse(db.importGraph(exported));
     expect(summary).toMatchObject({ format_version: 1, nodes: 4, relationships: 2 });

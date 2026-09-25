@@ -64,6 +64,9 @@ enum Command {
         /// roll back its writes. 0 turns the limit off.
         #[arg(long, value_name = "SECONDS", default_value_t = zega_server::DEFAULT_QUERY_TIME_LIMIT.as_secs_f64())]
         query_time_limit: f64,
+        /// The largest .graph file `PUT /graph` accepts, in bytes.
+        #[arg(long, value_name = "BYTES", default_value_t = zega_server::DEFAULT_MAX_IMPORT_BYTES)]
+        max_import_bytes: u64,
     },
     /// Write the database to a .graph file (docs/graph-format.md). `-` writes to stdout.
     Export {
@@ -97,6 +100,9 @@ enum Command {
         data: PathBuf,
         #[arg(long)]
         allow_private_imports: bool,
+        /// The largest .graph file `PUT /graph` accepts, in bytes.
+        #[arg(long, value_name = "BYTES", default_value_t = zega_server::DEFAULT_MAX_IMPORT_BYTES)]
+        max_import_bytes: u64,
     },
 }
 
@@ -190,6 +196,7 @@ fn export(
             let summary = db.export_with(&mut out, &options)?;
             out.sync_all()?;
             std::fs::rename(&partial, file)?;
+            sync_parent(file)?;
             Ok::<_, Box<dyn std::error::Error>>(summary)
         });
         if written.is_err() {
@@ -205,6 +212,19 @@ fn export(
         summary.bytes,
         zega::graph_file::FORMAT_VERSION
     );
+    Ok(())
+}
+
+/// Make a rename into `file`'s directory durable. Windows has no directory
+/// handle to sync; its rename is already durable on NTFS.
+fn sync_parent(file: &Path) -> io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        let parent = file.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(windows)]
+    let _ = file;
     Ok(())
 }
 
@@ -243,7 +263,7 @@ fn serve_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let (data, host, port, token_file, allow_private, explorer, time_limit) = match cli.command {
+    let (data, host, port, token_file, allow_private, explorer, time_limit, max_import) = match cli.command {
         Command::Fmt { .. } | Command::Export { .. } | Command::Import { .. } => {
             unreachable!("fmt, export and import run without a server runtime")
         }
@@ -254,16 +274,18 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             token_file,
             allow_private_imports,
             query_time_limit,
+            max_import_bytes,
         } => {
             let limit = std::time::Duration::try_from_secs_f64(query_time_limit)
                 .map_err(|_| "--query-time-limit must be a number of seconds, 0 or more")?;
             let limit = (!limit.is_zero()).then_some(limit);
-            (data, host, port, token_file, allow_private_imports, false, limit)
+            (data, host, port, token_file, allow_private_imports, false, limit, max_import_bytes)
         }
         Command::Explorer {
             data,
             port,
             allow_private_imports,
+            max_import_bytes,
         } => (
             data,
             IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -273,6 +295,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             true,
             // The explorer is one person's local database; nothing to share.
             None,
+            max_import_bytes,
         ),
     };
     let token = token_file.map(std::fs::read_to_string).transpose()?;
@@ -292,7 +315,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         db = db.query_time_limit(limit);
     }
     let db = db.build().map_err(io::Error::other)?;
-    let state = AppState::new(db, token);
+    let state = AppState::new(db, token)
+        .with_import_limits(max_import, zega_server::DEFAULT_IMPORT_IDLE_TIMEOUT);
     let listener = TcpListener::bind((host, port)).await?;
     let address = listener.local_addr()?;
     println!("http://{address}");

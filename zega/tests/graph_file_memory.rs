@@ -137,10 +137,10 @@ fn write_graph(nodes: u64, out: impl Write) -> std::io::Result<()> {
     out.raw(&1u32.to_le_bytes())?;
 
     let created_by = string("memory test");
-    out.begin(b"MNFT", created_by.len() as u64 + 36)?;
+    out.begin(b"MNFT", created_by.len() as u64 + 20)?;
     out.put(&created_by)?;
-    for field in [nodes, rels, nodes + 1, rels + 1] {
-        out.put(&field.to_le_bytes())?;
+    for count in [nodes, rels] {
+        out.put(&count.to_le_bytes())?;
     }
     out.put(&0u32.to_le_bytes())?;
     out.end()?;
@@ -159,7 +159,8 @@ fn write_graph(nodes: u64, out: impl Write) -> std::io::Result<()> {
     out.end()?;
 
     // id, 1 label (City), 2 props: name = "c0000001" (tag 5), pop = id (tag 3).
-    out.begin(b"NODE", nodes * 50)?;
+    out.begin(b"NODE", 8 + nodes * 50)?;
+    out.put(&(nodes + 1).to_le_bytes())?; // next node id
     for id in 1..=nodes {
         out.put(&id.to_le_bytes())?;
         out.put(&1u32.to_le_bytes())?;
@@ -175,7 +176,8 @@ fn write_graph(nodes: u64, out: impl Write) -> std::io::Result<()> {
     out.end()?;
 
     // id, kind ROUTE, from id, to id + 1, no props.
-    out.begin(b"RELS", rels * 32)?;
+    out.begin(b"RELS", 8 + rels * 32)?;
+    out.put(&(rels + 1).to_le_bytes())?; // next relationship id
     for id in 1..=rels {
         out.put(&id.to_le_bytes())?;
         out.put(&1u32.to_le_bytes())?;

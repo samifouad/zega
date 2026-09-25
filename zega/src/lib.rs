@@ -173,12 +173,6 @@ impl Zega {
         let snapshot_path = path.join("snapshot.bin");
         let wal_path = path.join("wal.bin");
 
-        // Restore from snapshot if exists
-        #[cfg(not(target_arch = "wasm32"))]
-        if !builder.in_memory && snapshot_path.exists() {
-            restore(&mut graph, &snapshot_path)?;
-        }
-
         // Replay WAL
         #[cfg(not(target_arch = "wasm32"))]
         let wal = if builder.in_memory {
@@ -194,11 +188,24 @@ impl Zega {
         #[cfg(target_arch = "wasm32")]
         let wal = Wal::in_memory();
         #[cfg(not(target_arch = "wasm32"))]
-        if !builder.in_memory && wal_path.exists() {
-            let ops = wal.iter()?;
-            for op in ops {
-                apply_op_to_memory(&mut graph, &op, &path)?;
+        if !builder.in_memory {
+            let ops = if wal_path.exists() { wal.iter()? } else { Vec::new() };
+            // The last import replaces everything before it, snapshot
+            // included: replay starts there, and reads only that one file.
+            let last_import = ops
+                .iter()
+                .rposition(|op| matches!(op, Operation::ReplaceGraph { .. }));
+            if last_import.is_none() && snapshot_path.exists() {
+                restore(&mut graph, &snapshot_path)?;
             }
+            for op in &ops[last_import.unwrap_or(0)..] {
+                apply_op_to_memory(&mut graph, op, &path)?;
+            }
+            let keep = last_import.and_then(|at| match &ops[at] {
+                Operation::ReplaceGraph { file } => Some(file.as_str()),
+                _ => None,
+            });
+            remove_stale_imports(&path, keep)?;
         }
 
         Ok(Zega {
@@ -276,14 +283,14 @@ impl Zega {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn import_durably(&self, input: impl std::io::Read) -> Result<graph_file::ImportSummary> {
-        use sha2::{Digest, Sha256};
+        use sha2::Digest;
         use std::io::Read;
 
         /// Copies every byte the decoder reads into the staging file.
         struct Tee<R, W> {
             input: R,
             copy: W,
-            hash: Sha256,
+            hash: sha2::Sha256,
         }
         impl<R: Read, W: std::io::Write> Read for Tee<R, W> {
             fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -294,36 +301,105 @@ impl Zega {
             }
         }
 
-        let dir = self.path.join(IMPORTS_DIR);
-        std::fs::create_dir_all(&dir)?;
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or_default();
-        let staging = dir.join(format!(".incoming-{}-{nanos}.tmp", std::process::id()));
+        let (file, staging) = self.create_staging("incoming")?;
         let mut tee = Tee {
             input,
-            copy: std::io::BufWriter::new(std::fs::File::create(&staging)?),
-            hash: Sha256::new(),
+            copy: std::io::BufWriter::new(file),
+            hash: sha2::Sha256::new(),
         };
-        let decoded = graph_file::read(&mut tee);
-        let committed = decoded.and_then(|(graph, summary)| {
+        let decoded = graph_file::read(&mut tee).map_err(ZegaError::from);
+        let result = decoded.and_then(|(graph, summary)| {
             let file = tee.copy.into_inner().map_err(|error| error.into_error())?;
-            let name = format!("{IMPORTS_DIR}/{}.graph", graph_file::hex(&tee.hash.finalize()));
-            crate::wal::persist_replacement(file, &staging, &self.path.join(&name))
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-            Ok((graph, summary, name))
+            self.commit_import(file, &staging, &tee.hash.finalize(), graph)?;
+            Ok(summary)
         });
-        match committed {
-            Ok((graph, summary, file)) => {
-                self.install(graph, Some(Operation::ReplaceGraph { file }))?;
-                Ok(summary)
-            }
-            Err(error) => {
-                let _ = std::fs::remove_file(&staging);
-                Err(error.into())
+        if result.is_err() {
+            let _ = std::fs::remove_file(&staging);
+        }
+        result
+    }
+
+    /// Import a `.graph` file already written to a staging file of this
+    /// database ([`Zega::create_staging`]), without copying it: it is read
+    /// once, then renamed to become the database's copy. The staging file is
+    /// gone afterwards, whatever the outcome. A server spools an upload this
+    /// way so a slow client never holds the database.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn import_staged(&self, staging: &std::path::Path) -> Result<graph_file::ImportSummary> {
+        use sha2::Digest;
+        use std::io::Read;
+
+        struct Hashing<R> {
+            input: R,
+            hash: sha2::Sha256,
+        }
+        impl<R: Read> Read for Hashing<R> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.input.read(buf)?;
+                self.hash.update(&buf[..n]);
+                Ok(n)
             }
         }
+
+        let result = (|| {
+            let file = std::fs::OpenOptions::new().read(true).write(true).open(staging)?;
+            if self.in_memory {
+                return self.import(file);
+            }
+            let mut hashing = Hashing {
+                input: file.try_clone()?,
+                hash: sha2::Sha256::new(),
+            };
+            let (graph, summary) = graph_file::read(&mut hashing)?;
+            self.commit_import(file, staging, &hashing.hash.finalize(), graph)?;
+            Ok(summary)
+        })();
+        let _ = std::fs::remove_file(staging);
+        result
+    }
+
+    /// A new, empty staging file in this database's `graphs/` directory, and
+    /// its path: `None` for an in-memory database. Staging files a crash
+    /// leaves behind are deleted the next time the database opens.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn staging_file(&self, purpose: &str) -> Result<Option<(std::fs::File, std::path::PathBuf)>> {
+        if self.in_memory {
+            return Ok(None);
+        }
+        Ok(Some(self.create_staging(purpose)?))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn create_staging(&self, purpose: &str) -> Result<(std::fs::File, std::path::PathBuf)> {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = self.path.join(IMPORTS_DIR);
+        if !dir.exists() {
+            std::fs::create_dir_all(&dir)?;
+            // The new directory entry is durable before anything in it is.
+            std::fs::File::open(&self.path)?.sync_all()?;
+        }
+        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = dir.join(format!(".{purpose}-{}-{sequence}.tmp", std::process::id()));
+        Ok((std::fs::File::create(&path)?, path))
+    }
+
+    /// Make a fully checked staging file the database's copy of an import,
+    /// commit it with one WAL entry, then install `graph`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn commit_import(
+        &self,
+        file: std::fs::File,
+        staging: &std::path::Path,
+        sha256: &[u8],
+        graph: Graph,
+    ) -> Result<()> {
+        let name = format!("{IMPORTS_DIR}/{}.graph", graph_file::hex(sha256));
+        crate::wal::persist_replacement(file, staging, &self.path.join(&name))?;
+        self.wal.mark_imports()?;
+        self.install(graph, Some(Operation::ReplaceGraph { file: name.clone() }))?;
+        // Replay starts at this import, so no earlier imported file is read
+        // again. Staging files may belong to requests in flight: kept.
+        remove_imported_except(&self.path, &name)
     }
 
     /// Swap in an imported graph once `entry` (if any) is durable in the WAL.
@@ -335,6 +411,12 @@ impl Zega {
         replacement.inherit_statistics(&graph);
         *graph = replacement;
         Ok(())
+    }
+
+    /// This database's directory; `None` in memory.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn data_dir(&self) -> Option<&std::path::Path> {
+        (!self.in_memory).then_some(self.path.as_path())
     }
 
     fn lock_graph(&self) -> Result<std::sync::MutexGuard<'_, Graph>> {
@@ -426,6 +508,46 @@ fn read_imported_graph(data: &std::path::Path, file: &str) -> Result<Graph> {
     })?;
     let (graph, _) = crate::graph_file::read(opened)?;
     Ok(graph)
+}
+
+/// Delete what no replay will read: imported files other than `keep` (the
+/// last import, which replaces all earlier ones) and staging files left by a
+/// crash. Runs at open, with the data directory to ourselves.
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_stale_imports(data: &std::path::Path, keep: Option<&str>) -> Result<()> {
+    remove_in_imports(data, |name| {
+        let staging = name.starts_with('.') && name.ends_with(".tmp");
+        staging || (name.ends_with(".graph") && Some(name) != keep.and_then(file_name))
+    })
+}
+
+/// Delete every imported file but `keep`.
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_imported_except(data: &std::path::Path, keep: &str) -> Result<()> {
+    remove_in_imports(data, |name| {
+        !name.starts_with('.') && name.ends_with(".graph") && Some(name) != file_name(keep)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn file_name(file: &str) -> Option<&str> {
+    file.strip_prefix(IMPORTS_DIR)?.strip_prefix('/')
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_in_imports(data: &std::path::Path, stale: impl Fn(&str) -> bool) -> Result<()> {
+    let entries = match std::fs::read_dir(data.join(IMPORTS_DIR)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_name().to_str().is_some_and(&stale) {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 /// Where a disk database keeps the `.graph` files it has imported, named by

@@ -62,7 +62,8 @@ format every zega surface reads and writes ([spec](docs/graph-format.md)).
 Export streams and never leaves a partial file; `--schema s.zql` and
 `--meta key=value` carry a schema and metadata along. Import is all or
 nothing: a truncated or damaged file changes nothing. It refuses to replace a
-database that holds data unless given `--replace`. `-` reads stdin or writes
+database that holds data unless given `--replace`. An imported graph keeps its
+file's schema text and metadata, so exporting it again gives the same file. `-` reads stdin or writes
 stdout. Both take the data directory's lock, so they fail while a server holds
 it: use `GET /graph` and `PUT /graph` then.
 
@@ -107,12 +108,15 @@ optional `sources` object mapping literal ZQL locations to raw text. The engine
 parses and inserts that text. To execute a full ZQL file, set `document: true`
 and put the document in `query` (no separate schema needed).
 
-`GET /graph` streams the whole graph as a `.graph` file
-(`application/vnd.zega.graph`, [spec](docs/graph-format.md)); with
-`Accept: application/json` it returns the JSON view the explorer draws.
-`PUT /graph` replaces the graph with the `.graph` file in the request body,
-all or nothing, and answers with what the file carried. `DELETE /graph` clears
-it. The explorer also uses the authenticated graph edit routes.
+`GET /graph` returns the whole graph as a `.graph` file
+(`application/vnd.zega.graph`, [spec](docs/graph-format.md)); a client that
+prefers `application/json` in its `Accept` header gets the JSON view the
+explorer draws. `PUT /graph` replaces the graph with the `.graph` file in the
+request body, all or nothing, and answers with what the file carried; uploads
+over `--max-import-bytes` (default 1 GiB) get `413`, and one that stalls for
+30 s gets `408`. Both spool through a staging file in the data directory, so
+a slow client never holds the database. `DELETE /graph` clears it. The
+explorer also uses the authenticated graph edit routes.
 Requests execute on the blocking pool under a shared database gate; slow native
 loads do not block the HTTP health worker. See [data loading](docs/data-loading.md)
 for format, limits and WAL semantics.

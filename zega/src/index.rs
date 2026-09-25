@@ -24,7 +24,7 @@ use serde_json::Value as Json;
 use crate::graph::{Node, NodeId};
 use crate::value::Value;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum IndexKind {
     Range,
     Text,
@@ -40,7 +40,7 @@ impl IndexKind {
 }
 
 /// One index on one field of one type.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct IndexSpec {
     pub kind: IndexKind,
     pub type_name: String,

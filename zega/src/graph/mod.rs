@@ -39,6 +39,8 @@ pub struct Graph {
     examined: AtomicU64,
     /// Nodes a ZQL path search has expanded. A* lowers it.
     expanded: AtomicU64,
+    /// Schema text, declarations and metadata from the last `.graph` import.
+    carried: crate::graph_file::Carried,
 }
 
 impl Default for Graph {
@@ -63,7 +65,16 @@ impl Graph {
             next_rel_id: AtomicU64::new(1),
             examined: AtomicU64::new(0),
             expanded: AtomicU64::new(0),
+            carried: Default::default(),
         }
+    }
+
+    pub(crate) fn carried(&self) -> &crate::graph_file::Carried {
+        &self.carried
+    }
+
+    pub(crate) fn set_carried(&mut self, carried: crate::graph_file::Carried) {
+        self.carried = carried;
     }
 
     /// Conservative Morton-range candidates. Apply an exact predicate afterwards.
@@ -368,9 +379,15 @@ impl Graph {
         self.incoming.get(&node_id)
     }
 
-    pub fn set_state(&mut self, nodes: HashMap<NodeId, Node>, rels: HashMap<RelId, Relationship>) {
+    pub fn set_state(
+        &mut self,
+        nodes: HashMap<NodeId, Node>,
+        rels: HashMap<RelId, Relationship>,
+        carried: crate::graph_file::Carried,
+    ) {
         // Snapshots and WAL replay use the same index-maintenance paths.
         *self = Self::new();
+        self.carried = carried;
         let mut nodes: Vec<_> = nodes.into_iter().collect();
         nodes.sort_by_key(|(id, _)| *id);
         for (id, node) in nodes {

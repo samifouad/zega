@@ -39,10 +39,16 @@ pub const FORMAT_VERSION: u32 = 1;
 /// The media type `zega start` serves `GET /graph` with.
 pub const MEDIA_TYPE: &str = "application/vnd.zega.graph";
 
-/// The deepest nesting of lists and maps inside one property value.
-pub const MAX_VALUE_DEPTH: usize = 256;
+/// The deepest nesting of lists and maps inside one property value: ZQL's
+/// own nesting limit, and deeper than any JSON load can produce.
+pub const MAX_VALUE_DEPTH: usize = 128;
 
 const BUFFER: usize = 64 * 1024;
+
+/// The most a reader reserves up front for a count the file claims. A count
+/// is only a claim until its items arrive, so collections grow with the
+/// bytes actually read: a few bytes can never make the reader allocate much.
+const RESERVE: usize = 16;
 
 /// The sections of a version 1 file, in the order they must appear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,14 +119,29 @@ pub enum Error {
     Io(#[from] io::Error),
 }
 
-/// What an export carries besides the graph itself.
+/// What an export carries besides the graph itself. Anything given here
+/// overrides what the graph carries from its last import.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExportOptions {
     /// ZQL schema text to travel with the graph (types, `unique`, `index`).
-    /// The engine does not store a schema, so this is the caller's to give.
+    /// `None` keeps the schema the graph was imported with, if any.
     pub schema: Option<String>,
-    /// Free-form manifest metadata. Well-known keys: `title`, `source`,
-    /// `source_version`, `licence`, `fetched_at` (docs/graph-format.md).
+    /// Manifest metadata, merged over what the graph was imported with.
+    /// Well-known keys: `title`, `source`, `source_version`, `licence`,
+    /// `fetched_at` (docs/graph-format.md).
+    pub meta: BTreeMap<String, String>,
+}
+
+/// What a `.graph` file carries besides nodes and relationships: its schema
+/// text, the declarations that schema makes, and its manifest metadata. A
+/// graph keeps these from its import, in memory, in the WAL (through the
+/// imported file) and in snapshots, and exports them again, so import then
+/// export gives back the same file.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Carried {
+    pub schema: Option<String>,
+    pub uniques: Vec<(String, String)>,
+    pub indexes: Vec<IndexSpec>,
     pub meta: BTreeMap<String, String>,
 }
 
@@ -381,6 +402,12 @@ fn put_props(
 }
 
 fn put_node(sink: &mut dyn Sink, names: &Names<'_>, node: &Node) -> Result<(), Error> {
+    if let Some(label) = duplicate_label(&node.labels) {
+        return Err(Error::Unexportable(format!(
+            "node {} has the label {label:?} twice",
+            node.id
+        )));
+    }
     put_u64(sink, node.id)?;
     put_len(sink, node.labels.len(), "a label list")?;
     for label in &node.labels {
@@ -408,6 +435,15 @@ fn put_relationship(
     put_u64(sink, rel.from)?;
     put_u64(sink, rel.to)?;
     put_props(sink, names, &rel.props)
+}
+
+/// The first label that appears twice in `labels`.
+fn duplicate_label(labels: &[String]) -> Option<&String> {
+    if labels.len() <= 8 {
+        return labels.iter().enumerate().find(|(i, l)| labels[..*i].contains(l)).map(|(_, l)| l);
+    }
+    let mut seen = std::collections::HashSet::new();
+    labels.iter().find(|label| !seen.insert(label.as_str()))
 }
 
 /// `unique` `(type, field)` pairs and index declarations.
@@ -441,10 +477,16 @@ pub(crate) fn write<W: Write>(
     out: W,
 ) -> Result<ExportSummary, Error> {
     let names = Names::collect(graph)?;
-    let (uniques, indexes) = match &options.schema {
-        Some(source) => declarations(source)?,
-        None => (Vec::new(), Vec::new()),
+    let carried = graph.carried();
+    let (schema, uniques, indexes) = match &options.schema {
+        Some(source) => {
+            let (uniques, indexes) = declarations(source)?;
+            (Some(source), uniques, indexes)
+        }
+        None => (carried.schema.as_ref(), carried.uniques.clone(), carried.indexes.clone()),
     };
+    let mut meta = carried.meta.clone();
+    meta.extend(options.meta.iter().map(|(k, v)| (k.clone(), v.clone())));
     let (next_node, next_rel) = graph.next_ids();
     let node_count = graph.all_nodes().len() as u64;
     let rel_count = graph.all_relationships().len() as u64;
@@ -460,10 +502,8 @@ pub(crate) fn write<W: Write>(
         put_str(sink, created_by)?;
         put_u64(sink, node_count)?;
         put_u64(sink, rel_count)?;
-        put_u64(sink, next_node)?;
-        put_u64(sink, next_rel)?;
-        put_len(sink, options.meta.len(), "the manifest metadata")?;
-        for (key, value) in &options.meta {
+        put_len(sink, meta.len(), "the manifest metadata")?;
+        for (key, value) in &meta {
             put_str(sink, key)?;
             put_str(sink, value)?;
         }
@@ -478,7 +518,7 @@ pub(crate) fn write<W: Write>(
         Ok(())
     })?;
     section(&mut out, Section::Schema, &|sink| {
-        match &options.schema {
+        match schema {
             Some(source) => {
                 put_u8(sink, 1)?;
                 put_str(sink, source)?;
@@ -499,12 +539,14 @@ pub(crate) fn write<W: Write>(
         Ok(())
     })?;
     section(&mut out, Section::Nodes, &|sink| {
+        put_u64(sink, next_node)?;
         for node in ascending(graph.all_nodes()) {
             put_node(sink, &names, node)?;
         }
         Ok(())
     })?;
     section(&mut out, Section::Relationships, &|sink| {
+        put_u64(sink, next_rel)?;
         for rel in ascending(graph.all_relationships()) {
             put_relationship(sink, graph, &names, rel)?;
         }
@@ -641,7 +683,7 @@ impl<R: Read> SectionIn<'_, R> {
             )));
         }
         // Grows as bytes arrive rather than trusting `len` up front.
-        let mut bytes = Vec::with_capacity(len.min(BUFFER));
+        let mut bytes = Vec::with_capacity(len.min(4096));
         let mut chunk = [0u8; 4096];
         while bytes.len() < len {
             let n = (len - bytes.len()).min(chunk.len());
@@ -739,8 +781,6 @@ struct Manifest {
     created_by: String,
     nodes: u64,
     relationships: u64,
-    next_node: u64,
-    next_rel: u64,
     meta: BTreeMap<String, String>,
 }
 
@@ -748,8 +788,6 @@ fn read_manifest<R: Read>(s: &mut SectionIn<'_, R>) -> Result<Manifest, Error> {
     let created_by = s.string()?;
     let nodes = s.u64()?;
     let relationships = s.u64()?;
-    let next_node = s.u64()?;
-    let next_rel = s.u64()?;
     let count = s.count(8)?;
     let mut meta = BTreeMap::new();
     let mut last: Option<String> = None;
@@ -766,15 +804,13 @@ fn read_manifest<R: Read>(s: &mut SectionIn<'_, R>) -> Result<Manifest, Error> {
         created_by,
         nodes,
         relationships,
-        next_node,
-        next_rel,
         meta,
     })
 }
 
 fn read_names<R: Read>(s: &mut SectionIn<'_, R>) -> Result<Vec<String>, Error> {
     let count = s.count(4)?;
-    let mut names: Vec<String> = Vec::with_capacity(count.min(BUFFER));
+    let mut names: Vec<String> = Vec::with_capacity(count.min(RESERVE));
     for _ in 0..count {
         let name = s.string()?;
         if names.last().is_some_and(|last| *last >= name) {
@@ -798,7 +834,7 @@ fn read_schema<R: Read>(s: &mut SectionIn<'_, R>) -> Result<Schema, Error> {
         other => return Err(s.invalid(format!("schema presence flag must be 0 or 1, not {other}"))),
     };
     let count = s.count(9)?;
-    let mut indexes: Vec<IndexSpec> = Vec::with_capacity(count.min(BUFFER));
+    let mut indexes: Vec<IndexSpec> = Vec::with_capacity(count.min(RESERVE));
     for _ in 0..count {
         let kind = match s.u8()? {
             0 => IndexKind::Range,
@@ -817,13 +853,18 @@ fn read_schema<R: Read>(s: &mut SectionIn<'_, R>) -> Result<Schema, Error> {
         indexes.push(spec);
     }
     let count = s.count(8)?;
-    let mut uniques: Vec<(String, String)> = Vec::with_capacity(count.min(BUFFER));
+    let mut uniques: Vec<(String, String)> = Vec::with_capacity(count.min(RESERVE));
     for _ in 0..count {
         let unique = (s.string()?, s.string()?);
         if uniques.last().is_some_and(|last| *last >= unique) {
             return Err(s.invalid("unique declarations must be unique and sorted by type, field"));
         }
         uniques.push(unique);
+    }
+    if source.is_none() && !(indexes.is_empty() && uniques.is_empty()) {
+        return Err(s.invalid(
+            "index and unique declarations need the schema text they come from",
+        ));
     }
     Ok(Schema {
         source,
@@ -852,8 +893,50 @@ impl NameTable {
     }
 }
 
+/// One value. Lists and maps recurse through [`read_list`] and [`read_map`];
+/// everything else is read by non-inlined helpers, so each level of nesting
+/// costs two small stack frames (the depth limit must hold on wasm's 1 MiB
+/// stack, in a debug build too).
 fn read_value<R: Read>(s: &mut SectionIn<'_, R>, depth: usize) -> Result<Value, Error> {
-    let code = s.u8()?;
+    match s.u8()? {
+        tag::LIST | tag::MAP if depth >= MAX_VALUE_DEPTH => Err(s.invalid(format!(
+            "a value nests lists and maps more than {MAX_VALUE_DEPTH} deep"
+        ))),
+        tag::LIST => read_list(s, depth),
+        tag::MAP => read_map(s, depth),
+        code => read_scalar(s, code),
+    }
+}
+
+#[inline(never)]
+fn read_list<R: Read>(s: &mut SectionIn<'_, R>, depth: usize) -> Result<Value, Error> {
+    let count = s.count(1)?;
+    let mut items = Vec::with_capacity(count.min(RESERVE));
+    for _ in 0..count {
+        items.push(read_value(s, depth + 1)?);
+    }
+    Ok(Value::List(items))
+}
+
+#[inline(never)]
+fn read_map<R: Read>(s: &mut SectionIn<'_, R>, depth: usize) -> Result<Value, Error> {
+    let count = s.count(5)?;
+    let mut map = HashMap::with_capacity(count.min(RESERVE));
+    let mut last: Option<String> = None;
+    for _ in 0..count {
+        let key = s.string()?;
+        if last.as_ref().is_some_and(|last| *last >= key) {
+            return Err(s.invalid("map keys must be unique and in ascending byte order"));
+        }
+        let value = read_value(s, depth + 1)?;
+        last = Some(key.clone());
+        map.insert(key, value);
+    }
+    Ok(Value::Map(map))
+}
+
+#[inline(never)]
+fn read_scalar<R: Read>(s: &mut SectionIn<'_, R>, code: u8) -> Result<Value, Error> {
     Ok(match code {
         tag::NULL => Value::Null,
         tag::FALSE => Value::Bool(false),
@@ -861,34 +944,6 @@ fn read_value<R: Read>(s: &mut SectionIn<'_, R>, depth: usize) -> Result<Value, 
         tag::INT => Value::Int(s.u64()? as i64),
         tag::FLOAT => Value::Float(s.u64()?),
         tag::STRING => Value::String(s.string()?),
-        tag::LIST | tag::MAP if depth >= MAX_VALUE_DEPTH => {
-            return Err(s.invalid(format!(
-                "a value nests lists and maps more than {MAX_VALUE_DEPTH} deep"
-            )))
-        }
-        tag::LIST => {
-            let count = s.count(1)?;
-            let mut items = Vec::with_capacity(count.min(BUFFER));
-            for _ in 0..count {
-                items.push(read_value(s, depth + 1)?);
-            }
-            Value::List(items)
-        }
-        tag::MAP => {
-            let count = s.count(5)?;
-            let mut map = HashMap::with_capacity(count.min(BUFFER));
-            let mut last: Option<String> = None;
-            for _ in 0..count {
-                let key = s.string()?;
-                if last.as_ref().is_some_and(|last| *last >= key) {
-                    return Err(s.invalid("map keys must be unique and in ascending byte order"));
-                }
-                let value = read_value(s, depth + 1)?;
-                last = Some(key.clone());
-                map.insert(key, value);
-            }
-            Value::Map(map)
-        }
         tag::POINT => {
             let (lat, lon) = (s.u64()?, s.u64()?);
             let point = Point::new(f64::from_bits(lat), f64::from_bits(lon))
@@ -906,7 +961,7 @@ fn read_value<R: Read>(s: &mut SectionIn<'_, R>, depth: usize) -> Result<Value, 
                 other => return Err(s.invalid(format!("unknown vector metric {other}"))),
             };
             let dimensions = s.count(4)?;
-            let mut bits = Vec::with_capacity(dimensions.min(4096));
+            let mut bits = Vec::with_capacity(dimensions.min(RESERVE));
             for _ in 0..dimensions {
                 bits.push(s.u32()?);
             }
@@ -921,7 +976,7 @@ fn read_props<R: Read>(
     names: &mut NameTable,
 ) -> Result<HashMap<String, Value>, Error> {
     let count = s.count(5)?;
-    let mut props = HashMap::with_capacity(count.min(BUFFER));
+    let mut props = HashMap::with_capacity(count.min(RESERVE));
     let mut last: Option<u32> = None;
     for _ in 0..count {
         let key = s.u32()?;
@@ -940,30 +995,33 @@ fn read_nodes<R: Read>(
     graph: &mut Graph,
     names: &mut NameTable,
     manifest: &Manifest,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
+    let next_node = s.u64()?;
     let mut last: Option<NodeId> = None;
     for _ in 0..manifest.nodes {
         let id = s.u64()?;
         if last.is_some_and(|last| last >= id) {
             return Err(s.invalid(format!("node {id} is out of order: node ids must ascend")));
         }
-        if id >= manifest.next_node {
+        if id >= next_node {
             return Err(s.invalid(format!(
-                "node {id} is not below the manifest's next node id {}",
-                manifest.next_node
+                "node {id} is not below the next node id {next_node}"
             )));
         }
         last = Some(id);
         let count = s.count(4)?;
-        let mut labels = Vec::with_capacity(count.min(BUFFER));
+        let mut labels = Vec::with_capacity(count.min(RESERVE));
         for _ in 0..count {
             let label = s.u32()?;
             labels.push(names.get(s, label)?);
         }
+        if let Some(label) = duplicate_label(&labels) {
+            return Err(s.invalid(format!("node {id} has the label {label:?} twice")));
+        }
         let props = read_props(s, names)?;
         graph.restore_node(id, labels, props);
     }
-    Ok(())
+    Ok(next_node)
 }
 
 fn read_relationships<R: Read>(
@@ -971,7 +1029,8 @@ fn read_relationships<R: Read>(
     graph: &mut Graph,
     names: &mut NameTable,
     manifest: &Manifest,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
+    let next_rel = s.u64()?;
     let mut last: Option<u64> = None;
     for _ in 0..manifest.relationships {
         let id = s.u64()?;
@@ -980,10 +1039,9 @@ fn read_relationships<R: Read>(
                 "relationship {id} is out of order: relationship ids must ascend"
             )));
         }
-        if id >= manifest.next_rel {
+        if id >= next_rel {
             return Err(s.invalid(format!(
-                "relationship {id} is not below the manifest's next relationship id {}",
-                manifest.next_rel
+                "relationship {id} is not below the next relationship id {next_rel}"
             )));
         }
         last = Some(id);
@@ -1000,7 +1058,7 @@ fn read_relationships<R: Read>(
         let props = read_props(s, names)?;
         graph.restore_relationship(id, kind, from, to, props);
     }
-    Ok(())
+    Ok(next_rel)
 }
 
 /// Decode a whole `.graph` file into a new graph. The graph is returned only
@@ -1049,10 +1107,10 @@ pub(crate) fn read<R: Read>(input: R) -> Result<(Graph, ImportSummary), Error> {
         names,
     };
     let mut graph = Graph::new();
-    read_section(&mut input, Section::Nodes, |s| {
+    let next_node = read_section(&mut input, Section::Nodes, |s| {
         read_nodes(s, &mut graph, &mut names, &manifest)
     })?;
-    read_section(&mut input, Section::Relationships, |s| {
+    let next_rel = read_section(&mut input, Section::Relationships, |s| {
         read_relationships(s, &mut graph, &mut names, &manifest)
     })?;
     let digest: [u8; 32] = input
@@ -1097,8 +1155,14 @@ pub(crate) fn read<R: Read>(input: R) -> Result<(Graph, ImportSummary), Error> {
         ));
     }
 
-    graph.reset_next_ids((manifest.next_node, manifest.next_rel));
+    graph.reset_next_ids((next_node, next_rel));
     graph.sync_indexes(&schema.indexes);
+    graph.set_carried(Carried {
+        schema: schema.source.clone(),
+        uniques: schema.uniques.clone(),
+        indexes: schema.indexes.clone(),
+        meta: manifest.meta.clone(),
+    });
     let indexes = schema
         .indexes
         .iter()

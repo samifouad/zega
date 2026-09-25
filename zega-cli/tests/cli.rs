@@ -270,6 +270,7 @@ fn help_version_and_defaults_are_available_without_starting_a_server() {
                 help.contains("9342")
                     && help.contains("127.0.0.1")
                     && help.contains("--token-file")
+                    && help.contains("--max-import-bytes")
             );
         }
         if args[0] == "explorer" {
@@ -334,6 +335,8 @@ fn import_then_export_round_trips_and_every_later_export_is_identical() {
     succeeds(&["import", "a.graph", "--data", "b"], dir);
     succeeds(&["export", "b.graph", "--data", "b"], dir);
     let a = std::fs::read(dir.join("a.graph")).unwrap();
+    // Import then export is the same file, schema and metadata included.
+    assert_eq!(a, std::fs::read(GOLDEN).unwrap());
     assert_eq!(std::fs::read(dir.join("b.graph")).unwrap(), a);
     // `-` is stdout.
     assert_eq!(succeeds(&["export", "-", "--data", "b"], dir).stdout, a);

@@ -20,7 +20,7 @@ fn export_with(graph: &Graph, options: &ExportOptions, created_by: &str) -> Vec<
 }
 
 /// Everything a graph is: its nodes and relationships with their ids, the
-/// id counters, and the declared indexes. The label, property, spatial and
+/// id counters, the declared indexes, and what its import carried. The label, property, spatial and
 /// vector indexes are rebuilt from the nodes by the same `restore_*` calls
 /// every other load path uses.
 fn assert_same(a: &Graph, b: &Graph) {
@@ -28,6 +28,7 @@ fn assert_same(a: &Graph, b: &Graph) {
     assert_eq!(a.all_relationships(), b.all_relationships());
     assert_eq!(a.next_ids(), b.next_ids());
     assert_eq!(a.declared_indexes(), b.declared_indexes());
+    assert_eq!(a.carried(), b.carried());
 }
 
 fn props(entries: Vec<(&str, Value)>) -> HashMap<String, Value> {
@@ -102,9 +103,31 @@ fn golden_graph() -> Graph {
     );
     graph.restore_relationship(3, "NEAR".into(), 1, 1, HashMap::new());
     graph.reset_next_ids((7, 9));
-    // What the golden schema declares, which an import declares again.
+    // As imported from a file with the golden schema and metadata.
     graph.sync_indexes(&golden_indexes());
+    graph.set_carried(golden_carried());
     graph
+}
+
+const GOLDEN_SCHEMA: &str = "type City { name: String population: Int }\n\
+                             unique { City { name } }\n\
+                             index { range City { population } text City { name } }\n";
+
+fn golden_meta() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("licence".into(), "CC0-1.0".into()),
+        ("source".into(), "zega golden fixture".into()),
+        ("title".into(), "golden v1".into()),
+    ])
+}
+
+fn golden_carried() -> Carried {
+    Carried {
+        schema: Some(GOLDEN_SCHEMA.into()),
+        uniques: vec![("City".into(), "name".into())],
+        indexes: golden_indexes(),
+        meta: golden_meta(),
+    }
 }
 
 fn golden_indexes() -> Vec<IndexSpec> {
@@ -116,28 +139,12 @@ fn golden_indexes() -> Vec<IndexSpec> {
     ]
 }
 
-fn golden_options() -> ExportOptions {
-    ExportOptions {
-        schema: Some(
-            "type City { name: String population: Int }\n\
-             unique { City { name } }\n\
-             index { range City { population } text City { name } }\n"
-                .into(),
-        ),
-        meta: BTreeMap::from([
-            ("licence".into(), "CC0-1.0".into()),
-            ("source".into(), "zega golden fixture".into()),
-            ("title".into(), "golden v1".into()),
-        ]),
-    }
-}
-
 /// Written once, for format version 1, and committed. Never regenerate it
 /// for version 1: `golden_v1_*` exist to prove old files keep reading.
 #[test]
 #[ignore = "writes tests/fixtures/golden-v1.graph; run once per format version"]
 fn write_golden_v1() {
-    let bytes = export_with(&golden_graph(), &golden_options(), crate::CREATED_BY);
+    let bytes = export_with(&golden_graph(), &ExportOptions::default(), crate::CREATED_BY);
     std::fs::write(GOLDEN, bytes).unwrap();
 }
 
@@ -149,8 +156,8 @@ fn golden_v1_reads_back_as_the_graph_it_was_written_from() {
     assert_eq!(summary.format_version, 1);
     assert_eq!(summary.created_by, "zega 0.2.0");
     assert_eq!((summary.nodes, summary.relationships), (3, 2));
-    assert_eq!(summary.schema, golden_options().schema);
-    assert_eq!(summary.meta, golden_options().meta);
+    assert_eq!(summary.schema.as_deref(), Some(GOLDEN_SCHEMA));
+    assert_eq!(summary.meta, golden_meta());
     assert_eq!(summary.uniques, vec![("City".to_string(), "name".to_string())]);
     let declared: Vec<_> = golden_indexes()
         .into_iter()
@@ -166,45 +173,93 @@ fn golden_v1_reads_back_as_the_graph_it_was_written_from() {
 fn golden_v1_is_what_the_writer_writes() {
     let bytes = std::fs::read(GOLDEN).unwrap();
     let (_, summary) = read(&bytes[..]).unwrap();
-    assert_eq!(export_with(&golden_graph(), &golden_options(), &summary.created_by), bytes);
+    let written = export_with(&golden_graph(), &ExportOptions::default(), &summary.created_by);
+    assert_eq!(written, bytes);
+    // And what the carried schema declares is what the engine derives from it.
+    assert_eq!(
+        declarations(GOLDEN_SCHEMA).unwrap(),
+        (golden_carried().uniques, golden_carried().indexes)
+    );
 }
 
 #[test]
-fn the_content_digest_ignores_who_wrote_the_file() {
-    let graph = golden_graph();
+fn the_content_digest_ignores_the_writer_and_metadata_but_not_the_id_counters() {
+    let mut graph = golden_graph();
     let mut a = Vec::new();
     let mut b = Vec::new();
     let first = write(&graph, &ExportOptions::default(), "zega 0.2.0", &mut a).unwrap();
-    let second = write(&graph, &golden_options(), "zega 9.9.9", &mut b).unwrap();
+    let meta = ExportOptions { meta: BTreeMap::from([("title".into(), "x".into())]), ..Default::default() };
+    let second = write(&graph, &meta, "zega 9.9.9", &mut b).unwrap();
     assert_ne!(a, b);
-    // The schema section is content, so compare the same options.
-    let mut c = Vec::new();
-    let third = write(&graph, &ExportOptions::default(), "zega 9.9.9", &mut c).unwrap();
-    assert_ne!(a, c);
-    assert_eq!(first.content_sha256, third.content_sha256);
-    assert_ne!(first.content_sha256, second.content_sha256);
+    assert_eq!(first.content_sha256, second.content_sha256);
+    // The id counters are graph state: a graph that will give its next node
+    // another id is another graph.
+    graph.reset_next_ids((8, 9));
+    let third = write(&graph, &ExportOptions::default(), "zega 0.2.0", &mut Vec::new()).unwrap();
+    assert_ne!(first.content_sha256, third.content_sha256);
+    graph.reset_next_ids((7, 10));
+    let fourth = write(&graph, &ExportOptions::default(), "zega 0.2.0", &mut Vec::new()).unwrap();
+    assert_ne!(first.content_sha256, fourth.content_sha256);
 }
 
 /// Declared indexes follow the schema a query last ran with, and a restart
-/// forgets them: they are not durable graph state, so they do not change
-/// the bytes. A file declares the indexes of the schema it carries.
+/// forgets them: they are session state, so they do not change the bytes.
+/// A file declares what its schema declares, and an import carries it on.
 #[test]
-fn index_declarations_come_from_the_carried_schema_not_the_session() {
+fn declarations_come_from_the_carried_schema_not_the_session() {
     let mut graph = golden_graph();
-    let with_indexes = export(&graph);
+    let bytes = export(&graph);
     graph.sync_indexes(&[]);
-    assert_eq!(export(&graph), with_indexes);
-    let (imported, summary) = read(&with_indexes[..]).unwrap();
-    assert!(summary.indexes.is_empty());
-    assert!(imported.declared_indexes().is_empty());
-
-    let bytes = export_with(&graph, &golden_options(), "zega test");
-    let (imported, _) = read(&bytes[..]).unwrap();
+    assert_eq!(export(&graph), bytes);
+    let (imported, summary) = read(&bytes[..]).unwrap();
+    assert_eq!(summary.schema.as_deref(), Some(GOLDEN_SCHEMA));
     assert_eq!(imported.declared_indexes(), golden_indexes());
+    assert_eq!(export(&imported), bytes, "import then export gives the same file");
+
+    // A schema given at export replaces the carried one; metadata merges.
+    let options = ExportOptions {
+        schema: Some("type City { name: String }\nindex { text City { name } }\n".into()),
+        meta: BTreeMap::from([("title".into(), "renamed".into())]),
+    };
+    let (imported, summary) = read(&export_with(&graph, &options, "t")[..]).unwrap();
+    assert_eq!(summary.uniques, Vec::<(String, String)>::new());
+    assert_eq!(imported.declared_indexes(), vec![IndexSpec { kind: IndexKind::Text, type_name: "City".into(), field: "name".into() }]);
+    assert_eq!(summary.meta["title"], "renamed");
+    assert_eq!(summary.meta["licence"], "CC0-1.0");
 
     let bad = ExportOptions { schema: Some("type {".into()), ..Default::default() };
     let error = write(&graph, &bad, "t", &mut Vec::new()).unwrap_err();
     assert!(error.to_string().starts_with("cannot export this graph as .graph: the schema does not parse"), "{error}");
+}
+
+#[test]
+fn declarations_without_schema_text_are_refused() {
+    let bytes = export(&golden_graph());
+    let tampered = rewrite_section(&bytes, Section::Schema, |payload| {
+        // Drop the source (flag 1, u32 length, text), keep the declarations.
+        let len = u32::from_le_bytes(payload[1..5].try_into().unwrap()) as usize;
+        [&[0u8][..], &payload[5 + len..]].concat()
+    });
+    let error = read(&tampered[..]).map(|_| ()).unwrap_err();
+    assert!(matches!(error, Error::Invalid { ref reason, .. } if reason.contains("need the schema text")), "{error}");
+}
+
+#[test]
+fn a_label_twice_on_one_node_is_refused_on_both_sides() {
+    let mut graph = Graph::new();
+    graph.restore_node(1, vec!["A".into(), "B".into(), "A".into()], HashMap::new());
+    let error = write(&graph, &ExportOptions::default(), "t", &mut Vec::new()).unwrap_err();
+    assert!(error.to_string().contains("label \"A\" twice"), "{error}");
+    let mut graph = Graph::new();
+    graph.restore_node(1, vec!["A".into(), "B".into()], HashMap::new());
+    let tampered = rewrite_section(&export(&graph), Section::Nodes, |payload| {
+        // next id, node id, then 2 labels: A (0), B (1) becomes A, A.
+        let mut out = payload.to_vec();
+        out[24..28].copy_from_slice(&0u32.to_le_bytes());
+        out
+    });
+    let error = read(&tampered[..]).map(|_| ()).unwrap_err();
+    assert!(error.to_string().contains("label \"A\" twice"), "{error}");
 }
 
 #[test]
@@ -241,8 +296,8 @@ fn unsorted_property_keys_are_refused() {
     graph.restore_node(1, vec![], props(vec![("a", Value::Null), ("b", Value::Null)]));
     let bytes = export(&graph);
     let tampered = rewrite_section(&bytes, Section::Nodes, |payload| {
-        // id, 0 labels, 2 props: (key 1, null) then (key 0, null).
-        let mut out = payload[..16].to_vec();
+        // next id, id, 0 labels, 2 props: (key 1, null) then (key 0, null).
+        let mut out = payload[..24].to_vec();
         out.extend(1u32.to_le_bytes());
         out.push(tag::NULL);
         out.extend(0u32.to_le_bytes());
@@ -351,7 +406,12 @@ struct GraphSpec {
 }
 
 fn graph_spec() -> impl Strategy<Value = GraphSpec> {
-    let node = (id_gap(), prop::collection::vec(name(), 0..3), properties());
+    // Labels in any order, each at most once per node.
+    let labels = prop::collection::vec(name(), 0..3).prop_map(|labels| {
+        let mut seen = std::collections::HashSet::new();
+        labels.into_iter().filter(|label| seen.insert(label.clone())).collect::<Vec<_>>()
+    });
+    let node = (id_gap(), labels, properties());
     prop::collection::vec(node, 0..16).prop_flat_map(|nodes| {
         let n = nodes.len().max(1);
         let rel = (id_gap(), name(), 0..n, 0..n, properties());
