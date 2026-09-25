@@ -67,6 +67,12 @@ enum Command {
         /// The largest .graph file `PUT /graph` accepts, in bytes.
         #[arg(long, value_name = "BYTES", default_value_t = zega_server::DEFAULT_MAX_IMPORT_BYTES)]
         max_import_bytes: u64,
+        /// Checkpoint once the WAL reaches this many MiB (and the size of the
+        /// last checkpoint): the graph is written to graphs/ and the WAL starts
+        /// over, so a restart replays at most about this much. 0 turns
+        /// automatic checkpoints off.
+        #[arg(long, value_name = "MIB", default_value_t = zega::DEFAULT_SNAPSHOT_EVERY_BYTES >> 20)]
+        snapshot_every_mb: u64,
     },
     /// Write the database to a .graph file (docs/graph-format.md). `-` writes to stdout.
     Export {
@@ -103,6 +109,12 @@ enum Command {
         /// The largest .graph file `PUT /graph` accepts, in bytes.
         #[arg(long, value_name = "BYTES", default_value_t = zega_server::DEFAULT_MAX_IMPORT_BYTES)]
         max_import_bytes: u64,
+        /// Checkpoint once the WAL reaches this many MiB (and the size of the
+        /// last checkpoint): the graph is written to graphs/ and the WAL starts
+        /// over, so a restart replays at most about this much. 0 turns
+        /// automatic checkpoints off.
+        #[arg(long, value_name = "MIB", default_value_t = zega::DEFAULT_SNAPSHOT_EVERY_BYTES >> 20)]
+        snapshot_every_mb: u64,
     },
 }
 
@@ -267,7 +279,7 @@ fn serve_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let (data, host, port, token_file, allow_private, explorer, time_limit, max_import) = match cli.command {
+    let (data, host, port, token_file, allow_private, explorer, time_limit, max_import, snapshot_every_mb) = match cli.command {
         Command::Fmt { .. } | Command::Export { .. } | Command::Import { .. } => {
             unreachable!("fmt, export and import run without a server runtime")
         }
@@ -279,17 +291,19 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             allow_private_imports,
             query_time_limit,
             max_import_bytes,
+            snapshot_every_mb,
         } => {
             let limit = std::time::Duration::try_from_secs_f64(query_time_limit)
                 .map_err(|_| "--query-time-limit must be a number of seconds, 0 or more")?;
             let limit = (!limit.is_zero()).then_some(limit);
-            (data, host, port, token_file, allow_private_imports, false, limit, max_import_bytes)
+            (data, host, port, token_file, allow_private_imports, false, limit, max_import_bytes, snapshot_every_mb)
         }
         Command::Explorer {
             data,
             port,
             allow_private_imports,
             max_import_bytes,
+            snapshot_every_mb,
         } => (
             data,
             IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -300,6 +314,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             // The explorer is one person's local database; nothing to share.
             None,
             max_import_bytes,
+            snapshot_every_mb,
         ),
     };
     let token = token_file.map(std::fs::read_to_string).transpose()?;
@@ -314,7 +329,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // append independent graph histories to one WAL.
     let _data_lock = lock_data(&data)?;
     let path = data.to_str().ok_or("data path must be UTF-8")?;
-    let mut db = Zega::open(path).allow_private_imports(allow_private);
+    let snapshot_every = snapshot_every_mb
+        .checked_mul(1 << 20)
+        .ok_or("--snapshot-every-mb is too large")?;
+    let mut db = Zega::open(path)
+        .allow_private_imports(allow_private)
+        .snapshot_every(snapshot_every);
     if let Some(limit) = time_limit {
         db = db.query_time_limit(limit);
     }

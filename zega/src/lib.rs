@@ -2,16 +2,20 @@ pub mod location;
 pub mod vector;
 mod vector_view;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use crate::graph::Graph;
 pub use crate::value::Value;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::wal::{restore, snapshot};
+use crate::wal::restore;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::wal::Operation;
 use crate::wal::Wal;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod checkpoint;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod checkpoint_tests;
 mod graph;
 pub mod graph_file;
 mod index;
@@ -26,6 +30,8 @@ mod wal;
 #[cfg(test)]
 mod wal_order_tests;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::checkpoint::{Checkpoint, CheckpointCounts, DEFAULT_SNAPSHOT_EVERY_BYTES};
 pub use crate::lang::{diagnose, fmt};
 pub use crate::validation::{Diagnostic, Pane, Report, Severity};
 
@@ -63,8 +69,8 @@ fn seconds(limit: std::time::Duration) -> String {
 pub type Result<T> = std::result::Result<T, ZegaError>;
 
 pub struct Zega {
-    graph: Mutex<Graph>,
-    wal: Wal,
+    graph: Arc<Mutex<Graph>>,
+    wal: Arc<Wal>,
     #[cfg(not(target_arch = "wasm32"))]
     path: PathBuf,
     in_memory: bool,
@@ -75,7 +81,17 @@ pub struct Zega {
     /// and the cleanup of earlier imports, so two concurrent imports never
     /// delete each other's files.
     #[cfg(not(target_arch = "wasm32"))]
-    import_lock: Mutex<()>,
+    import_lock: Arc<Mutex<()>>,
+    /// The size of the `.graph` file the WAL starts from (0 without one):
+    /// the WAL must outgrow it before the next checkpoint.
+    #[cfg(not(target_arch = "wasm32"))]
+    base_bytes: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(not(target_arch = "wasm32"))]
+    checkpoint_counts: Arc<checkpoint::Counts>,
+    /// Takes a checkpoint whenever the WAL is due; `None` in memory or when
+    /// the builder turned automatic checkpoints off.
+    #[cfg(not(target_arch = "wasm32"))]
+    checkpointer: Option<checkpoint::Checkpointer>,
 }
 
 pub struct ZegaBuilder {
@@ -87,6 +103,8 @@ pub struct ZegaBuilder {
     traversal_work_budget: usize,
     query_time_limit: Option<std::time::Duration>,
     allow_private_imports: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    snapshot_every: u64,
 }
 
 const DEFAULT_TRAVERSAL_WORK_BUDGET: usize = 1_000_000;
@@ -129,6 +147,15 @@ impl ZegaBuilder {
         self
     }
 
+    /// Checkpoint a disk database ([`Zega::snapshot`]) on its own once its
+    /// WAL reaches `bytes`, and the size of the graph it starts from. 0 turns
+    /// automatic checkpoints off. Default [`DEFAULT_SNAPSHOT_EVERY_BYTES`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn snapshot_every(mut self, bytes: u64) -> Self {
+        self.snapshot_every = bytes;
+        self
+    }
+
     pub fn build(self) -> Result<Zega> {
         Zega::open_with_builder(self)
     }
@@ -145,6 +172,8 @@ impl Zega {
             traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
             query_time_limit: None,
             allow_private_imports: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshot_every: DEFAULT_SNAPSHOT_EVERY_BYTES,
         }
     }
 
@@ -158,6 +187,8 @@ impl Zega {
             traversal_work_budget: DEFAULT_TRAVERSAL_WORK_BUDGET,
             query_time_limit: None,
             allow_private_imports: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshot_every: DEFAULT_SNAPSHOT_EVERY_BYTES,
         }
     }
 
@@ -175,8 +206,14 @@ impl Zega {
         let graph = Graph::new();
 
         #[cfg(not(target_arch = "wasm32"))]
-        let snapshot_path = path.join("snapshot.bin");
+        let snapshot_path = path.join(SNAPSHOT_FILE);
         let wal_path = path.join("wal.bin");
+
+        // A rotation a crash interrupted is settled before the log is opened.
+        #[cfg(not(target_arch = "wasm32"))]
+        if !builder.in_memory {
+            crate::wal::settle_rotation(&wal_path)?;
+        }
 
         // Replay WAL
         #[cfg(not(target_arch = "wasm32"))]
@@ -193,6 +230,8 @@ impl Zega {
         #[cfg(target_arch = "wasm32")]
         let wal = Wal::in_memory();
         #[cfg(not(target_arch = "wasm32"))]
+        let mut base_bytes = 0;
+        #[cfg(not(target_arch = "wasm32"))]
         if !builder.in_memory {
             let ops = if wal_path.exists() { wal.iter()? } else { Vec::new() };
             // The last import replaces everything before it, snapshot
@@ -200,6 +239,9 @@ impl Zega {
             let last_import = ops
                 .iter()
                 .rposition(|op| matches!(op, Operation::ReplaceGraph { .. }));
+            if ops.is_empty() {
+                refuse_lost_log(&path)?;
+            }
             if last_import.is_none() && snapshot_path.exists() {
                 restore(&mut graph, &snapshot_path)?;
             }
@@ -213,11 +255,18 @@ impl Zega {
             // Best effort: garbage that can't be deleted now is retried at
             // the next open, and never stops this one.
             let _ = remove_stale_imports(&path, keep);
+            if let Some(keep) = keep {
+                base_bytes = std::fs::metadata(path.join(keep)).map_or(0, |meta| meta.len());
+                // Replay starts at an import or checkpoint from now on.
+                let _ = std::fs::remove_file(&snapshot_path);
+            }
         }
 
-        Ok(Zega {
-            graph: Mutex::new(graph),
-            wal,
+        // Only a native disk database gets a checkpoint thread below.
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+        let mut zega = Zega {
+            graph: Arc::new(Mutex::new(graph)),
+            wal: Arc::new(wal),
             #[cfg(not(target_arch = "wasm32"))]
             path,
             in_memory: builder.in_memory,
@@ -225,29 +274,67 @@ impl Zega {
             query_time_limit: builder.query_time_limit,
             allow_private_imports: builder.allow_private_imports,
             #[cfg(not(target_arch = "wasm32"))]
-            import_lock: Mutex::new(()),
-        })
+            import_lock: Arc::new(Mutex::new(())),
+            #[cfg(not(target_arch = "wasm32"))]
+            base_bytes: Arc::new(std::sync::atomic::AtomicU64::new(base_bytes)),
+            #[cfg(not(target_arch = "wasm32"))]
+            checkpoint_counts: Arc::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            checkpointer: None,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if !zega.in_memory && builder.snapshot_every > 0 {
+            zega.checkpointer = Some(checkpoint::Checkpointer::spawn(
+                zega.store(),
+                builder.snapshot_every,
+            )?);
+        }
+        Ok(zega)
     }
 
+    /// Checkpoint a disk database: write the graph as a `.graph` file in
+    /// `graphs/` and start the WAL over from it, so a restart reads that file
+    /// and replays only what came after. The graph lock is held while the
+    /// graph is encoded (one pass, into memory up to 256 MiB of `.graph`
+    /// file), so reads and writes both wait that long: under 0.1 s for
+    /// 100,000 nodes, about 1 s for 1,000,000 on an iMac. Writing the file,
+    /// syncing it and rotating the WAL run without the lock. A no-op in
+    /// memory. A disk
+    /// database also does this on its own ([`ZegaBuilder::snapshot_every`]).
     pub fn snapshot(&self) -> Result<()> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            Ok(())
-        }
-
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            if self.in_memory {
-                return Ok(());
-            }
-            let graph = self
-                .graph
-                .lock()
-                .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-            let snapshot_path = self.path.join("snapshot.bin");
-            snapshot(&graph, &snapshot_path)?;
-            Ok(())
+        self.checkpoint()?;
+        Ok(())
+    }
+
+    /// [`Zega::snapshot`], saying what it wrote; `None` in memory.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn checkpoint(&self) -> Result<Option<Checkpoint>> {
+        if self.in_memory {
+            return Ok(None);
         }
+        self.store().checkpoint().map(Some)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn store(&self) -> checkpoint::Store {
+        checkpoint::Store {
+            graph: Arc::clone(&self.graph),
+            wal: Arc::clone(&self.wal),
+            path: self.path.clone(),
+            import_lock: Arc::clone(&self.import_lock),
+            base_bytes: Arc::clone(&self.base_bytes),
+            counts: Arc::clone(&self.checkpoint_counts),
+        }
+    }
+
+    /// How many checkpoints this database has taken and failed since it
+    /// opened, its own and [`Zega::snapshot`]'s. A failed one only means the
+    /// WAL keeps every write until the next succeeds; each failure is also
+    /// printed to stderr.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn checkpoint_counts(&self) -> CheckpointCounts {
+        self.checkpoint_counts.get()
     }
 
     /// Whether the graph holds no node and no relationship.
@@ -390,22 +477,7 @@ impl Zega {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn create_staging(&self, purpose: &str) -> Result<(std::fs::File, std::path::PathBuf)> {
-        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let dir = self.path.join(IMPORTS_DIR);
-        if !dir.exists() {
-            std::fs::create_dir_all(&dir)?;
-            // The new directory entry is durable before anything in it is.
-            sync_dir(&self.path)?;
-        }
-        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = dir.join(format!(".{purpose}-{}-{sequence}.tmp", std::process::id()));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        // Staging files become the database's copies of its imports: owner
-        // only, like the WAL's contents deserve.
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        Ok((options.open(&path)?, path))
+        create_staging(&self.path, purpose)
     }
 
     /// Make a fully checked staging file the database's copy of an import,
@@ -423,9 +495,13 @@ impl Zega {
             .import_lock
             .lock()
             .map_err(|_| ZegaError::Execution("import lock poisoned".to_string()))?;
+        let bytes = file.metadata()?.len();
         crate::wal::persist_replacement(file, staging, &self.path.join(&name))?;
         self.wal.mark_imports()?;
         self.install(graph, Some(Operation::ReplaceGraph { file: name.clone() }))?;
+        // The WAL starts from this file now: the next checkpoint waits for
+        // the log to outgrow it.
+        self.base_bytes.store(bytes, std::sync::atomic::Ordering::Relaxed);
         // Replay starts at this import, so no earlier imported file is read
         // again. Staging files may belong to requests in flight: kept. The
         // import is committed: a file that can't be deleted now (held open
@@ -494,6 +570,15 @@ impl Zega {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+impl Drop for Zega {
+    /// Stop the checkpoint thread (after the checkpoint it may be taking)
+    /// before the WAL closes, so a reopen right after finds the files settled.
+    fn drop(&mut self) {
+        self.checkpointer.take();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn apply_op_to_memory(graph: &mut Graph, op: &Operation, data: &std::path::Path) -> Result<()> {
     match op {
         Operation::InsertNode { id, labels, props } => {
@@ -556,6 +641,54 @@ fn read_imported_graph(data: &std::path::Path, file: &str) -> Result<Graph> {
     Ok(graph)
 }
 
+/// A new, empty staging file in `data`'s `graphs/` directory, and its path.
+/// Open deletes any a crash leaves behind.
+#[cfg(not(target_arch = "wasm32"))]
+fn create_staging(data: &std::path::Path, purpose: &str) -> Result<(std::fs::File, std::path::PathBuf)> {
+    create_in_imports(data, &format!(".{purpose}-{{}}.tmp"))
+}
+
+/// A new, empty file for a checkpoint's `.graph` file in `data`'s `graphs/`
+/// directory: `checkpoint-<pid>-<n>.partial`. A name apart from staging
+/// files (`.<purpose>-…tmp`) and from `.graph` files, so nothing that
+/// cleans up either (a transfer deleting its staging file, an import
+/// deleting the `.graph` files it supersedes) ever matches one in flight.
+/// Open deletes any a crash leaves behind.
+#[cfg(not(target_arch = "wasm32"))]
+fn create_checkpoint_file(data: &std::path::Path) -> Result<(std::fs::File, std::path::PathBuf)> {
+    create_in_imports(data, &format!("{CHECKPOINT_PREFIX}{{}}{CHECKPOINT_SUFFIX}"))
+}
+
+/// What a checkpoint's file in `graphs/` is called until it is renamed to
+/// `<sha256>.graph`.
+#[cfg(not(target_arch = "wasm32"))]
+const CHECKPOINT_PREFIX: &str = "checkpoint-";
+#[cfg(not(target_arch = "wasm32"))]
+const CHECKPOINT_SUFFIX: &str = ".partial";
+
+/// Create `graphs/<pattern>`, `{}` standing for `<pid>-<n>`, new and owner-only.
+#[cfg(not(target_arch = "wasm32"))]
+fn create_in_imports(data: &std::path::Path, pattern: &str) -> Result<(std::fs::File, std::path::PathBuf)> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = data.join(IMPORTS_DIR);
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)?;
+        // The new directory entry is durable before anything in it is.
+        sync_dir(data)?;
+    }
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let unique = format!("{}-{sequence}", std::process::id());
+    let path = dir.join(pattern.replacen("{}", &unique, 1));
+    let mut options = std::fs::OpenOptions::new();
+    // Read too: a checkpoint reads its file back for its digests.
+    options.read(true).write(true).create_new(true);
+    // Staging files become the database's copies of its imports: owner
+    // only, like the WAL's contents deserve.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    Ok((options.open(&path)?, path))
+}
+
 /// Make a new entry in `dir` durable. Windows can't open a directory as a
 /// file (`File::open` fails with "Access is denied"); NTFS journals the
 /// directory change itself, which is what `persist_replacement` relies on
@@ -576,8 +709,49 @@ fn sync_dir(dir: &std::path::Path) -> std::io::Result<()> {
 fn remove_stale_imports(data: &std::path::Path, keep: Option<&str>) -> Result<()> {
     remove_in_imports(data, |name| {
         let staging = name.starts_with('.') && name.ends_with(".tmp");
-        staging || (name.ends_with(".graph") && Some(name) != keep.and_then(file_name))
+        let checkpoint = name.starts_with(CHECKPOINT_PREFIX) && name.ends_with(CHECKPOINT_SUFFIX);
+        // Only a log that names the graph it starts from says which files
+        // are superseded. Without one, a `.graph` file is either the leftover
+        // of an import or checkpoint that never committed (the log holds
+        // every write, and the next checkpoint deletes it) or the only copy
+        // of the graph ([`refuse_lost_log`]): never deleted here.
+        let superseded = keep.and_then(file_name).is_some_and(|keep| name != keep);
+        staging || checkpoint || (name.ends_with(".graph") && superseded)
     })
+}
+
+/// A log with no entries, next to `.graph` files in `graphs/`: the log that
+/// named one of them is gone (deleted, or truncated to nothing), and the
+/// graph is in that file. Opening would start an empty database; refuse, and
+/// say how to get the graph back.
+#[cfg(not(target_arch = "wasm32"))]
+fn refuse_lost_log(data: &std::path::Path) -> Result<()> {
+    let mut files: Vec<String> = match std::fs::read_dir(data.join(IMPORTS_DIR)) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| !name.starts_with('.') && name.ends_with(".graph"))
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if files.is_empty() {
+        return Ok(());
+    }
+    files.sort();
+    let files: Vec<String> = files.iter().map(|name| format!("{IMPORTS_DIR}/{name}")).collect();
+    Err(ZegaError::Execution(format!(
+        "{} holds no writes, but {} holds {}: the database's graph is in {} and the log \
+         that named it is missing or empty. Refusing to open this as an empty database. \
+         To recover, move {} out of {}, then run `zega import <file> --data {}` with it. \
+         A file left by an import that never finished can be deleted instead",
+        data.join("wal.bin").display(),
+        data.join(IMPORTS_DIR).display(),
+        files.join(", "),
+        if files.len() == 1 { "that file" } else { "one of these files" },
+        if files.len() == 1 { "it" } else { "them" },
+        data.join(IMPORTS_DIR).display(),
+        data.display(),
+    )))
 }
 
 /// Delete every imported file but `keep`.
@@ -613,3 +787,9 @@ fn remove_in_imports(data: &std::path::Path, stale: impl Fn(&str) -> bool) -> Re
 /// the SHA-256 of their bytes. The WAL entry of each import names its file.
 #[cfg(not(target_arch = "wasm32"))]
 const IMPORTS_DIR: &str = "graphs";
+
+/// A snapshot from before checkpoints (zega#52): the graph with no WAL
+/// position, the whole WAL replayed over it. Still read when the WAL holds no
+/// import or checkpoint; deleted once it does.
+#[cfg(not(target_arch = "wasm32"))]
+const SNAPSHOT_FILE: &str = "snapshot.bin";
