@@ -218,10 +218,19 @@ export function renderGlobe(container, { countries, codes, places, rels = [], cr
   // MapLibre keeps at the pane's centre; padding below moves that point up
   // by half of it, so the planet itself sits in the middle. On the flat map
   // there is no planet to frame.
-  let fitted = camera.zoom, settling = false, pending = false;
+  //
+  // The camera belongs to the reader once they touch it (zega#101): this
+  // fit, and the padding that keeps the planet centred, run only up to that
+  // point — on first load, and while a resize keeps it converging (a pane
+  // too small still needs its zoom pulled in). `userMoved` flips true on the
+  // first real drag, scroll-zoom, pinch or tilt (an `originalEvent` marks a
+  // reader gesture; our own `map.setZoom` below carries none) and locks the
+  // camera as it stands from then on. A resize after that still resizes the
+  // canvas, but never nudges centre, zoom, pitch or bearing back.
+  let fitted = camera.zoom, settling = false, pending = false, userMoved = false;
   const frame = () => {
     pending = false;
-    if (!container._map) return;
+    if (!container._map || userMoved) return;
     const planet = arcs.planetCenter(), radius = arcs.planetRadius();
     const pane = { width: canvas.clientWidth, height: canvas.clientHeight };
     // A region's camera is exactly the schema's: no fit, and no padding.
@@ -244,12 +253,23 @@ export function renderGlobe(container, { countries, codes, places, rels = [], cr
     if (bottom !== map.getPadding().bottom) map.setPadding({ top: 0, left: 0, right: 0, bottom });
   };
   const centrePlanet = () => {
-    if (settling || pending) return;
+    if (settling || pending || userMoved) return;
     pending = true;
     map.once('render', frame);
   };
   centrePlanet();
-  for (const event of ['pitchend', 'zoomend']) map.on(event, centrePlanet);
+  for (const event of ['dragstart', 'zoomstart', 'pitchstart', 'rotatestart']) {
+    map.on(event, (event) => { if (event.originalEvent) userMoved = true; });
+  }
+  // zoomend/pitchend fire for the reader's own scroll, pinch and drag too,
+  // and re-fitting on those is what snapped the camera back under them
+  // (zega#101). But they also fire for this module's own programmatic
+  // zoom/pitch changes (an `originalEvent`-less event), which still need a
+  // render to re-converge the fit against — so only skip the ones a reader
+  // caused, and only before the reader has taken the camera at all.
+  for (const event of ['zoomend', 'pitchend']) {
+    map.on(event, (event) => { if (!event.originalEvent && !userMoved) centrePlanet(); });
+  }
   map.on('style.load', () => { if (!map.getLayer(arcs.id)) map.addLayer(arcs, 'zega-nodes'); });
 
   // Auto-spin: the preview's slow eastward turn, slowing as the map zooms in
