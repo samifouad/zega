@@ -140,15 +140,20 @@ unique_count × { type: str, field: str }
              sorted by (type, field)
 ```
 
-- **Index declarations** are the indexes the graph has declared (the
-  `index { }` blocks and `unique` fields of the schema last run against
-  it). An importer declares them again and rebuilds them from the nodes.
-  Index *contents* are never stored: they derive from the data.
 - **Schema source** is ZQL text the exporter chose to include (the CLI's
   `--schema`, `exportGraph(schema)`). A zega database does not store a
   schema; it takes one with every query. So an import hands the text back to
   the caller rather than keeping it, and a plain export writes
   `has_source = 0`.
+- **Index declarations** are the indexes that schema declares, as the engine
+  reads it: its `index { }` blocks, plus the range index every orderable
+  `unique` field gets. An importer declares them and builds them from the
+  nodes, so the graph is indexed as soon as it lands. Index *contents* are
+  never stored, because they derive from the data. The indexes a running
+  database has declared are not written: they follow whichever schema the
+  last query ran with, and a restart forgets them. So they're session
+  state, and the same graph must export the same bytes before and after a
+  restart.
 - **Unique constraints** are the `unique { }` blocks of that source, listed
   so a reader without a ZQL parser can see them. The writer derives them from
   the source with the same parser the engine uses, so the two cannot

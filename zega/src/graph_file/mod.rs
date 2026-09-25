@@ -410,6 +410,28 @@ fn put_relationship(
     put_props(sink, names, &rel.props)
 }
 
+/// `unique` `(type, field)` pairs and index declarations.
+type Declarations = (Vec<(String, String)>, Vec<IndexSpec>);
+
+/// The `unique` fields and the indexes a schema declares, sorted as the file
+/// stores them. The indexes are the engine's own reading of the schema
+/// (`index` blocks plus the range index every orderable `unique` field
+/// gets), so a file declares exactly what running that schema would.
+fn declarations(source: &str) -> Result<Declarations, Error> {
+    let unparsable = |error: crate::lang::Error| {
+        Error::Unexportable(format!("the schema does not parse: {error}"))
+    };
+    let schema = crate::lang::parse_schema(source).map_err(unparsable)?;
+    let mut uniques = crate::lang::parse_uniques(source).map_err(unparsable)?;
+    let indexes = crate::lang::parse_indexes(source).map_err(unparsable)?;
+    let mut indexes = crate::lang::effective_indexes(&schema, &uniques, &indexes);
+    uniques.sort();
+    uniques.dedup();
+    indexes.sort_by(|a, b| (&a.type_name, &a.field, a.kind).cmp(&(&b.type_name, &b.field, b.kind)));
+    indexes.dedup();
+    Ok((uniques, indexes))
+}
+
 /// Write `graph` as a `.graph` file to `out`. `created_by` names the writer
 /// in the manifest (`zega 0.2.0`).
 pub(crate) fn write<W: Write>(
@@ -419,17 +441,9 @@ pub(crate) fn write<W: Write>(
     out: W,
 ) -> Result<ExportSummary, Error> {
     let names = Names::collect(graph)?;
-    let indexes = graph.declared_indexes();
-    let uniques = match &options.schema {
-        Some(source) => {
-            let mut uniques = crate::lang::parse_uniques(source).map_err(|error| {
-                Error::Unexportable(format!("the schema does not parse: {error}"))
-            })?;
-            uniques.sort();
-            uniques.dedup();
-            uniques
-        }
-        None => Vec::new(),
+    let (uniques, indexes) = match &options.schema {
+        Some(source) => declarations(source)?,
+        None => (Vec::new(), Vec::new()),
     };
     let (next_node, next_rel) = graph.next_ids();
     let node_count = graph.all_nodes().len() as u64;

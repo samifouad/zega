@@ -102,19 +102,18 @@ fn golden_graph() -> Graph {
     );
     graph.restore_relationship(3, "NEAR".into(), 1, 1, HashMap::new());
     graph.reset_next_ids((7, 9));
-    graph.sync_indexes(&[
-        IndexSpec {
-            kind: IndexKind::Range,
-            type_name: "City".into(),
-            field: "population".into(),
-        },
-        IndexSpec {
-            kind: IndexKind::Text,
-            type_name: "City".into(),
-            field: "name".into(),
-        },
-    ]);
+    // What the golden schema declares, which an import declares again.
+    graph.sync_indexes(&golden_indexes());
     graph
+}
+
+fn golden_indexes() -> Vec<IndexSpec> {
+    let spec = |kind, field: &str| IndexSpec { kind, type_name: "City".into(), field: field.into() };
+    vec![
+        spec(IndexKind::Range, "name"),
+        spec(IndexKind::Text, "name"),
+        spec(IndexKind::Range, "population"),
+    ]
 }
 
 fn golden_options() -> ExportOptions {
@@ -153,13 +152,11 @@ fn golden_v1_reads_back_as_the_graph_it_was_written_from() {
     assert_eq!(summary.schema, golden_options().schema);
     assert_eq!(summary.meta, golden_options().meta);
     assert_eq!(summary.uniques, vec![("City".to_string(), "name".to_string())]);
-    assert_eq!(
-        summary.indexes,
-        vec![
-            IndexDeclaration { kind: "text", type_name: "City".into(), field: "name".into() },
-            IndexDeclaration { kind: "range", type_name: "City".into(), field: "population".into() },
-        ]
-    );
+    let declared: Vec<_> = golden_indexes()
+        .into_iter()
+        .map(|spec| IndexDeclaration { kind: spec.kind.as_str(), type_name: spec.type_name, field: spec.field })
+        .collect();
+    assert_eq!(summary.indexes, declared);
 }
 
 /// The version 1 writer still produces the fixture byte for byte. When the
@@ -186,6 +183,28 @@ fn the_content_digest_ignores_who_wrote_the_file() {
     assert_ne!(a, c);
     assert_eq!(first.content_sha256, third.content_sha256);
     assert_ne!(first.content_sha256, second.content_sha256);
+}
+
+/// Declared indexes follow the schema a query last ran with, and a restart
+/// forgets them: they are not durable graph state, so they do not change
+/// the bytes. A file declares the indexes of the schema it carries.
+#[test]
+fn index_declarations_come_from_the_carried_schema_not_the_session() {
+    let mut graph = golden_graph();
+    let with_indexes = export(&graph);
+    graph.sync_indexes(&[]);
+    assert_eq!(export(&graph), with_indexes);
+    let (imported, summary) = read(&with_indexes[..]).unwrap();
+    assert!(summary.indexes.is_empty());
+    assert!(imported.declared_indexes().is_empty());
+
+    let bytes = export_with(&graph, &golden_options(), "zega test");
+    let (imported, _) = read(&bytes[..]).unwrap();
+    assert_eq!(imported.declared_indexes(), golden_indexes());
+
+    let bad = ExportOptions { schema: Some("type {".into()), ..Default::default() };
+    let error = write(&graph, &bad, "t", &mut Vec::new()).unwrap_err();
+    assert!(error.to_string().starts_with("cannot export this graph as .graph: the schema does not parse"), "{error}");
 }
 
 #[test]
@@ -329,7 +348,6 @@ struct GraphSpec {
     nodes: Vec<NodeSpec>,
     rels: Vec<RelSpec>,
     next_ahead: (u64, u64),
-    indexes: Vec<IndexSpec>,
 }
 
 fn graph_spec() -> impl Strategy<Value = GraphSpec> {
@@ -338,18 +356,8 @@ fn graph_spec() -> impl Strategy<Value = GraphSpec> {
         let n = nodes.len().max(1);
         let rel = (id_gap(), name(), 0..n, 0..n, properties());
         let rels = prop::collection::vec(rel, 0..if nodes.is_empty() { 1 } else { 24 });
-        let index = (any::<bool>(), name(), name()).prop_map(|(text, type_name, field)| IndexSpec {
-            kind: if text { IndexKind::Text } else { IndexKind::Range },
-            type_name,
-            field,
-        });
-        (
-            Just(nodes),
-            rels,
-            (0u64..5, 0u64..5),
-            prop::collection::vec(index, 0..4),
-        )
-            .prop_map(|(nodes, rels, next_ahead, indexes)| {
+        (Just(nodes), rels, (0u64..5, 0u64..5))
+            .prop_map(|(nodes, rels, next_ahead)| {
                 let mut id = 0;
                 let nodes = nodes
                     .into_iter()
@@ -366,7 +374,7 @@ fn graph_spec() -> impl Strategy<Value = GraphSpec> {
                         (id, kind, from, to, props)
                     })
                     .collect();
-                GraphSpec { nodes, rels, next_ahead, indexes }
+                GraphSpec { nodes, rels, next_ahead }
             })
     })
 }
@@ -390,7 +398,6 @@ fn build(spec: &GraphSpec, reverse: bool) -> Graph {
     }
     let (node, rel) = graph.next_ids();
     graph.reset_next_ids((node + spec.next_ahead.0, rel + spec.next_ahead.1));
-    graph.sync_indexes(&spec.indexes);
     graph
 }
 

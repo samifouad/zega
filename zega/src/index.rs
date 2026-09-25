@@ -298,6 +298,7 @@ impl DeclaredIndexes {
     }
 
     /// Every declared index, in no particular order.
+    #[cfg(test)]
     pub fn specs(&self) -> Vec<IndexSpec> {
         let range = self.range.keys().map(|(type_name, field)| IndexSpec {
             kind: IndexKind::Range,

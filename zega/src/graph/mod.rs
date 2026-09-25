@@ -98,6 +98,7 @@ impl Graph {
     }
 
     /// The declared indexes, sorted by type, field, then kind.
+    #[cfg(test)]
     pub fn declared_indexes(&self) -> Vec<IndexSpec> {
         let mut specs = self.declared.specs();
         specs.sort_by(|a, b| {
