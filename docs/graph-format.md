@@ -279,7 +279,7 @@ nests lists and maps more than 128 deep`. Tested: every hostile file of up
 to 4 KB in `zega/tests/graph_file_hostile.rs` (claimed counts of 2^32−1,
 lengths of 2^62, 400-deep nesting, 20,000 mutated golden files) is refused
 with under 4 MiB of heap. `zega start` also caps an upload's size
-(`--max-import-bytes`, default 1 GiB).
+(`--max-import-bytes`, default 64 MiB: decoding takes 12–22× a file's size).
 
 ### Compatibility
 
@@ -304,7 +304,7 @@ with under 4 MiB of heap. `zega start` also caps an upload's size
 |---|---|---|
 | Rust | `Zega::export(&mut impl Write)`, `Zega::export_with(out, &ExportOptions)` | `Zega::import(impl Read) -> ImportSummary` |
 | CLI | `zega export g.graph [--schema s.zql] [--meta k=v]…` (`-` = stdout) | `zega import g.graph [--replace]` (`-` = stdin) |
-| HTTP (`zega start`) | `GET /graph` serves the file; a client that prefers `application/json` (by `Accept` q-values) gets the explorer's JSON view instead. Responses carry `Vary: Accept`; `406` if neither is acceptable | `PUT /graph` with the file as the body; answers `{ "ok": true, "result": <summary> }`. `413` over `--max-import-bytes` (default 1 GiB), `408` after 30 s without data |
+| HTTP (`zega start`) | `GET /graph` serves the file; a client that prefers `application/json` (by `Accept` q-values) gets the explorer's JSON view instead. Responses carry `Vary: Accept`; `406` if neither is acceptable | `PUT /graph` with the file as the body; answers `{ "ok": true, "result": <summary> }`. `413` over `--max-import-bytes` (default 64 MiB, refused up front when `Content-Length` says so), `408` after 30 s without data. `DELETE /graph` replaces the graph with an empty one, dropping what an import carried |
 | wasm | `db.exportGraph(schema?, metaJson?)` returns a `Uint8Array` | `db.importGraph(bytes)` returns the summary as JSON |
 
 - **Export streams.** It holds the database's lock while it writes, so
@@ -312,7 +312,9 @@ with under 4 MiB of heap. `zega start` also caps an upload's size
   start` writes the export to a staging file under the lock and releases it
   before sending a byte, and spools an upload to a staging file before
   taking the lock. A slow or stalled client costs disk space, never the
-  database. Beyond
+  database, and not for long: a transfer that makes no progress for 30 s
+  is dropped with its staging file, and at most 16 transfers hold staging
+  files at once (more get `503`). Beyond
   the graph it uses the name dictionary and a 64 KiB buffer (a dense id range
   is walked in order; a sparse one sorts a copy of its ids). Measured on
   1M nodes and 1M relationships: 0.06 MiB of heap beyond the graph, against
@@ -332,7 +334,10 @@ with under 4 MiB of heap. `zega start` also caps an upload's size
   before it, so opening a database reads only the last imported file and
   the WAL entries after it, whatever came earlier. The previous import's
   file is deleted as soon as the next import commits, and opening deletes
-  any unreferenced `graphs/*.graph` and staging files a crash left. (The
+  any unreferenced `graphs/*.graph` and staging files a crash left.
+  Imports into one database commit one at a time, so concurrent imports
+  never delete each other's files. Staging and imported files are created
+  owner-only (mode 0600). (The
   WAL itself still holds the earlier entries until WAL compaction, #52.)
 - **Downgrading is a one-way door.** Before its first `ReplaceGraph` entry,
   zega marks the WAL header version 3. A zega that predates `.graph` refuses

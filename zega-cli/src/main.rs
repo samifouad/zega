@@ -316,7 +316,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
     let db = db.build().map_err(io::Error::other)?;
     let state = AppState::new(db, token)
-        .with_import_limits(max_import, zega_server::DEFAULT_IMPORT_IDLE_TIMEOUT);
+        .with_import_limits(max_import, zega_server::DEFAULT_TRANSFER_IDLE_TIMEOUT);
     let listener = TcpListener::bind((host, port)).await?;
     let address = listener.local_addr()?;
     println!("http://{address}");

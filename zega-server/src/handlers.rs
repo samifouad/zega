@@ -228,6 +228,9 @@ pub async fn graph(State(state): State<AppState>, headers: HeaderMap) -> Respons
         return with_vary(execute(state, Zega::graph_json).await);
     }
     let (send, mut receive) = tokio::sync::mpsc::channel::<Chunk>(CHUNKS_IN_FLIGHT);
+    let Some(slot) = transfer_slot(&state) else {
+        return with_vary(busy());
+    };
     let gate = state.zega.clone();
     let spooled = tokio::task::spawn_blocking(move || -> Result<Option<(Staged, u64)>, ZegaError> {
         let db = gate
@@ -267,28 +270,50 @@ pub async fn graph(State(state): State<AppState>, headers: HeaderMap) -> Respons
         Ok(Err(cause)) => return with_vary(error(StatusCode::INTERNAL_SERVER_ERROR, cause.to_string())),
         Err(_) => return with_vary(error(StatusCode::INTERNAL_SERVER_ERROR, "database worker failed")),
     };
-    tokio::task::spawn_blocking(move || {
-        use std::io::Read;
-        let result = (|| {
-            let mut file = std::fs::File::open(&staged.0)?;
+    let idle = state.transfer_idle_timeout;
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let _slot = slot;
+        let result: io::Result<()> = async {
+            let mut file = tokio::fs::File::open(&staged.0).await?;
             let mut buf = vec![0u8; CHUNK];
             loop {
-                let n = file.read(&mut buf)?;
+                let n = file.read(&mut buf).await?;
                 if n == 0 {
                     return Ok(());
                 }
-                if send.blocking_send(Ok(Bytes::copy_from_slice(&buf[..n]))).is_err() {
-                    return Ok(()); // the client went away
+                let chunk = Ok(Bytes::copy_from_slice(&buf[..n]));
+                match tokio::time::timeout(idle, send.send(chunk)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => return Ok(()), // the client went away
+                    Err(_) => {
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "the download stalled"))
+                    }
                 }
             }
-        })();
-        if let Err(error) = result {
-            let _ = send.blocking_send(Err(error));
         }
+        .await;
+        if let Err(error) = result {
+            let _ = send.try_send(Err(error));
+        }
+        // The file is closed by now; `staged` deletes it.
         drop(staged);
     });
     let body = futures_util::stream::poll_fn(move |context| receive.poll_recv(context));
     with_vary(graph_response(Body::from_stream(body), Some(length)))
+}
+
+/// A transfer slot, if one is free.
+fn transfer_slot(state: &AppState) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    state.transfers.clone().try_acquire_owned().ok()
+}
+
+/// The answer when no transfer slot is free.
+fn busy() -> Response {
+    error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "too many .graph transfers are in progress; try again shortly",
+    )
 }
 
 fn graph_response(body: Body, length: Option<u64>) -> Response {
@@ -302,11 +327,21 @@ fn graph_response(body: Body, length: Option<u64>) -> Response {
         .body(body)
         .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "response failed"))
 }
+fn too_large(state: &AppState) -> Response {
+    error(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        format!(
+            "the upload is larger than this server's {} byte limit (zega start --max-import-bytes)",
+            state.max_import_bytes
+        ),
+    )
+}
+
 /// `PUT /graph`: replace the whole graph with the `.graph` file in the body.
 /// Nothing changes unless all of it is a valid file.
 ///
 /// The body is spooled to a staging file without the gate, capped at
-/// `max_import_bytes` (413) and given up on after `import_idle_timeout`
+/// `max_import_bytes` (413) and given up on after `transfer_idle_timeout`
 /// without data (408). Only then is the gate taken, to import the file from
 /// disk. In memory the body is collected under the same limits instead.
 pub async fn import_graph(State(state): State<AppState>, headers: HeaderMap, body: Body) -> Response {
@@ -314,6 +349,16 @@ pub async fn import_graph(State(state): State<AppState>, headers: HeaderMap, bod
     if !authorized(&headers, &state) {
         return error(StatusCode::UNAUTHORIZED, "unauthorized");
     }
+    let declared = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if declared.is_some_and(|length| length > state.max_import_bytes) {
+        return too_large(&state);
+    }
+    let Some(_slot) = transfer_slot(&state) else {
+        return busy();
+    };
     let gate = state.zega.clone();
     let staging = match tokio::task::spawn_blocking(move || match gate.lock() {
         Ok(db) => db.staging_file("upload"),
@@ -332,13 +377,13 @@ pub async fn import_graph(State(state): State<AppState>, headers: HeaderMap, bod
     let mut body = body.into_data_stream();
     let mut received: u64 = 0;
     loop {
-        let chunk = match tokio::time::timeout(state.import_idle_timeout, body.next()).await {
+        let chunk = match tokio::time::timeout(state.transfer_idle_timeout, body.next()).await {
             Err(_) => {
                 return error(
                     StatusCode::REQUEST_TIMEOUT,
                     format!(
                         "the upload stalled: no data for {} s",
-                        state.import_idle_timeout.as_secs_f64()
+                        state.transfer_idle_timeout.as_secs_f64()
                     ),
                 )
             }
@@ -348,13 +393,7 @@ pub async fn import_graph(State(state): State<AppState>, headers: HeaderMap, bod
         };
         received += chunk.len() as u64;
         if received > state.max_import_bytes {
-            return error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!(
-                    "the upload is larger than this server's {} byte limit (zega start --max-import-bytes)",
-                    state.max_import_bytes
-                ),
-            );
+            return too_large(&state);
         }
         let written = match (&mut file, &mut memory) {
             (Some(file), _) => file.write_all(&chunk).await,
@@ -391,17 +430,15 @@ pub async fn import_graph(State(state): State<AppState>, headers: HeaderMap, bod
     }
 }
 
+/// `DELETE /graph`: replace the graph with an empty one, durably and as one
+/// WAL entry. What an import carried (schema text, declarations, metadata)
+/// goes too, so a later export cannot claim the old licence or source.
 pub async fn clear(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &state) {
         return error(StatusCode::UNAUTHORIZED, "unauthorized");
     }
     execute(state, |db| {
-        let graph = db.graph_json()?;
-        for node in graph["nodes"].as_array().into_iter().flatten() {
-            if let Some(id) = node["id"].as_u64() {
-                db.delete_node(id)?;
-            }
-        }
+        db.clear()?;
         Ok(Value::Null)
     })
     .await

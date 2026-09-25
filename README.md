@@ -113,9 +113,12 @@ and put the document in `query` (no separate schema needed).
 prefers `application/json` in its `Accept` header gets the JSON view the
 explorer draws. `PUT /graph` replaces the graph with the `.graph` file in the
 request body, all or nothing, and answers with what the file carried; uploads
-over `--max-import-bytes` (default 1 GiB) get `413`, and one that stalls for
+over `--max-import-bytes` (default 64 MiB) get `413`, and one that stalls for
 30 s gets `408`. Both spool through a staging file in the data directory, so
-a slow client never holds the database. `DELETE /graph` clears it. The
+a slow client never holds the database; a download that stops reading for
+30 s is dropped, and past 16 concurrent transfers the server answers `503`.
+`DELETE /graph` replaces the graph with an empty one, dropping the schema and
+metadata an import carried. The
 explorer also uses the authenticated graph edit routes.
 Requests execute on the blocking pool under a shared database gate; slow native
 loads do not block the HTTP health worker. See [data loading](docs/data-loading.md)

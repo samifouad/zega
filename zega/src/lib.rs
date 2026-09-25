@@ -71,6 +71,10 @@ pub struct Zega {
     traversal_work_budget: usize,
     query_time_limit: Option<std::time::Duration>,
     allow_private_imports: bool,
+    /// Held from an import's rename into `graphs/` through its WAL entry
+    /// and the cleanup of earlier imports, so two concurrent imports never
+    /// delete each other's files.
+    import_lock: Mutex<()>,
 }
 
 pub struct ZegaBuilder {
@@ -217,6 +221,7 @@ impl Zega {
             traversal_work_budget,
             query_time_limit: builder.query_time_limit,
             allow_private_imports: builder.allow_private_imports,
+            import_lock: Mutex::new(()),
         })
     }
 
@@ -380,7 +385,13 @@ impl Zega {
         }
         let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = dir.join(format!(".{purpose}-{}-{sequence}.tmp", std::process::id()));
-        Ok((std::fs::File::create(&path)?, path))
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Staging files become the database's copies of its imports: owner
+        // only, like the WAL's contents deserve.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        Ok((options.open(&path)?, path))
     }
 
     /// Make a fully checked staging file the database's copy of an import,
@@ -394,6 +405,10 @@ impl Zega {
         graph: Graph,
     ) -> Result<()> {
         let name = format!("{IMPORTS_DIR}/{}.graph", graph_file::hex(sha256));
+        let _one_import_at_a_time = self
+            .import_lock
+            .lock()
+            .map_err(|_| ZegaError::Execution("import lock poisoned".to_string()))?;
         crate::wal::persist_replacement(file, staging, &self.path.join(&name))?;
         self.wal.mark_imports()?;
         self.install(graph, Some(Operation::ReplaceGraph { file: name.clone() }))?;
@@ -410,6 +425,19 @@ impl Zega {
         }
         replacement.inherit_statistics(&graph);
         *graph = replacement;
+        Ok(())
+    }
+
+    /// Replace the graph with an empty one, durably, as one WAL entry (an
+    /// import of an empty graph). What an earlier import carried (schema
+    /// text, declarations, metadata) goes with it; the id counters stay, so
+    /// no id is ever given out twice.
+    pub fn clear(&self) -> Result<()> {
+        let mut empty = Graph::new();
+        empty.reset_next_ids(self.lock_graph()?.next_ids());
+        let mut bytes = Vec::new();
+        graph_file::write(&empty, &graph_file::ExportOptions::default(), CREATED_BY, &mut bytes)?;
+        self.import(&bytes[..])?;
         Ok(())
     }
 

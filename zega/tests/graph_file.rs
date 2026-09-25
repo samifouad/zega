@@ -389,3 +389,75 @@ fn the_spec_s_empty_graph_is_what_zega_writes() {
         .collect();
     assert_eq!(bytes, export(&Zega::in_memory().build().unwrap()));
 }
+
+/// Two imports racing on one disk database: each commits its own file, and
+/// cleanup after one never deletes the other's before its WAL entry is in.
+/// The database always reopens, as one of the two graphs.
+#[test]
+fn concurrent_imports_leave_a_database_that_reopens() {
+    let golden = golden();
+    let empty = export(&Zega::in_memory().build().unwrap());
+    for round in 0..40 {
+        let dir = tempfile::tempdir().unwrap();
+        let zega = std::sync::Arc::new(open(dir.path()));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let threads: Vec<_> = [golden.clone(), empty.clone()]
+            .into_iter()
+            .map(|bytes| {
+                let (zega, barrier) = (zega.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    zega.import(&bytes[..]).unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let live = export(&zega);
+        drop(zega);
+        let reopened = Zega::open(dir.path().to_str().unwrap())
+            .build()
+            .unwrap_or_else(|error| panic!("round {round}: reopen failed: {error}"));
+        assert_eq!(export(&reopened), live, "round {round}");
+        assert!(live == golden || live == empty, "round {round}");
+    }
+}
+
+/// Clearing is a durable replace-with-empty: the graph and everything an
+/// import carried go, the id counters stay, and a reopen agrees.
+#[test]
+fn clear_drops_what_an_import_carried_and_survives_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let zega = open(dir.path());
+    zega.import(&golden()[..]).unwrap();
+    zega.clear().unwrap();
+    assert!(zega.is_empty().unwrap());
+    let cleared = export(&zega);
+    let summary = Zega::in_memory().build().unwrap().import(&cleared[..]).unwrap();
+    assert_eq!(summary.schema, None);
+    assert!(summary.meta.is_empty(), "{:?}", summary.meta);
+    assert!(summary.indexes.is_empty() && summary.uniques.is_empty());
+    zega.run_lang(PEOPLE, r#"mutation { Person(name: "after" && age: 1) { name } }"#).unwrap();
+    // The golden graph's next node id was 7: cleared ids are not reused.
+    assert_eq!(zega.graph_json().unwrap()["nodes"][0]["id"], 7);
+    let written = export(&zega);
+    drop(zega);
+    assert_eq!(export(&open(dir.path())), written);
+}
+
+/// A database's copies of its imports are readable by its owner only.
+#[cfg(unix)]
+#[test]
+fn imported_files_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let zega = open(dir.path());
+    zega.import(&golden()[..]).unwrap();
+    for entry in std::fs::read_dir(dir.path().join("graphs")).unwrap() {
+        let mode = entry.unwrap().metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    let (_, staging) = zega.staging_file("test").unwrap().unwrap();
+    assert_eq!(std::fs::metadata(&staging).unwrap().permissions().mode() & 0o777, 0o600);
+}
