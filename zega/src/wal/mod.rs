@@ -25,6 +25,7 @@ const WAL_VERSION: u16 = 2;
 /// before the entry is written, so a zega that predates imports refuses it
 /// with "unsupported WAL version 3" instead of a decoding error at some
 /// byte. This zega reads both.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const WAL_VERSION_IMPORTS: u16 = 3;
 const WAL_FILE_HEADER: &[u8; 6] = b"ZWAL\x02\x00";
 const WAL_FILE_HEADER_LEN: u64 = WAL_FILE_HEADER.len() as u64;
@@ -315,7 +316,9 @@ impl Wal {
     }
 
     /// Mark the log as holding `.graph` imports (version 3), durably,
-    /// before the first [`Operation::ReplaceGraph`] entry goes in.
+    /// before the first [`Operation::ReplaceGraph`] entry goes in. Only
+    /// the native, file-backed path imports durably.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn mark_imports(&self) -> Result<(), WalError> {
         #[cfg(target_arch = "wasm32")]
         {

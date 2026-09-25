@@ -74,6 +74,7 @@ pub struct Zega {
     /// Held from an import's rename into `graphs/` through its WAL entry
     /// and the cleanup of earlier imports, so two concurrent imports never
     /// delete each other's files.
+    #[cfg(not(target_arch = "wasm32"))]
     import_lock: Mutex<()>,
 }
 
@@ -221,6 +222,7 @@ impl Zega {
             traversal_work_budget,
             query_time_limit: builder.query_time_limit,
             allow_private_imports: builder.allow_private_imports,
+            #[cfg(not(target_arch = "wasm32"))]
             import_lock: Mutex::new(()),
         })
     }
