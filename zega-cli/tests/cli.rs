@@ -409,3 +409,153 @@ fn export_and_import_respect_a_running_server_s_lock() {
     }
     assert!(!dir.join("x.graph").exists());
 }
+
+/// The schema of the kill -9 test: a note big enough to grow the WAL fast.
+const LOAD_SCHEMA: &str = "type Player { name: String salary: Int note: String }";
+
+/// POST one ZQL statement; `None` when the server did not answer it (it was
+/// killed), so the write was never acknowledged.
+fn try_zql(url: &str, query: &str) -> Option<Value> {
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .proxy(None)
+        .build()
+        .new_agent();
+    let body = serde_json::to_vec(&json!({"schema": LOAD_SCHEMA, "query": query})).unwrap();
+    let request = ureq::http::Request::builder()
+        .method("POST")
+        .uri(format!("{url}/zql"))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .unwrap();
+    let mut response = agent.run(request).ok()?;
+    let body = response.body_mut().read_to_vec().ok()?;
+    let body: Value = serde_json::from_slice(&body).ok()?;
+    (response.status().as_u16() == 200 && body["ok"] == json!(true)).then(|| body["result"].clone())
+}
+
+/// What the writers of the kill -9 test were told, and what they tried.
+#[derive(Default)]
+struct Load {
+    /// Nodes created and acknowledged / attempted.
+    created: std::collections::BTreeSet<String>,
+    tried: std::collections::BTreeSet<String>,
+    /// Per writer: the last `salary` its counter node was acknowledged at,
+    /// and the last one it tried.
+    counter_acked: std::collections::BTreeMap<usize, i64>,
+    counter_tried: std::collections::BTreeMap<usize, i64>,
+}
+
+/// zega#52: `kill -9` a real `zega start` while four writers keep it busy
+/// and it checkpoints (every MiB here), six times over one data directory.
+/// Half the writes create nodes, half rewrite one big node per writer, so
+/// the WAL grows much faster than the graph and checkpoints come often.
+/// After every restart each acknowledged write is there (a created node
+/// exists; a counter is at least its last acknowledged value), nothing
+/// that was never written is, and the server reopened.
+#[test]
+fn kill_9_under_write_load_loses_no_acknowledged_write_and_always_reopens() {
+    use std::sync::{Arc, Mutex};
+
+    const WRITERS: usize = 4;
+    let directory = tempfile::tempdir().unwrap();
+    let args = ["--snapshot-every-mb", "1"];
+    let pad = "x".repeat(96 * 1024);
+    let load = Arc::new(Mutex::new(Load::default()));
+    {
+        let server = Running::start("start", directory.path(), &args);
+        for writer in 0..WRITERS {
+            try_zql(&server.url, &format!(r#"mutation {{ Player(name: "c{writer}" && salary: 0 && note: "") {{ name }} }}"#))
+                .expect("counter node");
+        }
+    }
+    let mut killed_mid_checkpoint = 0;
+    for (round, run_for) in [1_700u64, 2_300, 1_100, 2_900, 1_500, 2_000].into_iter().enumerate() {
+        let mut server = Running::start("start", directory.path(), &args);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|writer| {
+                let (url, pad, stop, load) =
+                    (server.url.clone(), pad.clone(), Arc::clone(&stop), Arc::clone(&load));
+                thread::spawn(move || {
+                    for i in 0.. {
+                        if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                            return;
+                        }
+                        if i % 2 == 0 {
+                            let name = format!("r{round}-w{writer}-{i}");
+                            load.lock().unwrap().tried.insert(name.clone());
+                            let query = format!(r#"mutation {{ Player(name: "{name}" && salary: {i} && note: "") {{ name }} }}"#);
+                            if try_zql(&url, &query).is_none() {
+                                return;
+                            }
+                            load.lock().unwrap().created.insert(name);
+                        } else {
+                            let value = (round as i64) * 1_000_000 + i;
+                            load.lock().unwrap().counter_tried.insert(writer, value);
+                            let query = format!(r#"mutation {{ Player(name: "c{writer}") set salary: {value}, note: "{pad}" }}"#);
+                            if try_zql(&url, &query).is_none() {
+                                return;
+                            }
+                            load.lock().unwrap().counter_acked.insert(writer, value);
+                        }
+                    }
+                })
+            })
+            .collect();
+        thread::sleep(Duration::from_millis(run_for));
+        server.child.kill().unwrap(); // SIGKILL
+        server.child.wait().unwrap();
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        drop(server);
+        let data = directory.path().join("db");
+        let mid_checkpoint = data.join("wal.rotate.tmp").exists()
+            || std::fs::read_dir(data.join("graphs")).is_ok_and(|mut dir| {
+                dir.any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".checkpoint"))
+            });
+        killed_mid_checkpoint += usize::from(mid_checkpoint);
+
+        let server = Running::start("start", directory.path(), &args);
+        let rows = server.zql("{ Player { name salary } }");
+        let rows = rows.as_array().unwrap();
+        let load = load.lock().unwrap();
+        let present: std::collections::BTreeSet<String> = rows
+            .iter()
+            .map(|row| row["name"].as_str().unwrap().to_string())
+            .filter(|name| !name.starts_with('c'))
+            .collect();
+        let lost: Vec<_> = load.created.difference(&present).collect();
+        assert!(lost.is_empty(), "round {round}: {} acknowledged creates lost: {lost:?}", lost.len());
+        assert!(present.is_subset(&load.tried), "round {round}: a node nobody created");
+        for writer in 0..WRITERS {
+            let name = format!("c{writer}");
+            let counters: Vec<i64> = rows
+                .iter()
+                .filter(|row| row["name"] == json!(name))
+                .map(|row| row["salary"].as_i64().unwrap())
+                .collect();
+            let acked = load.counter_acked.get(&writer).copied().unwrap_or(0);
+            let tried = load.counter_tried.get(&writer).copied().unwrap_or(0);
+            assert!(
+                counters.len() == 1 && (acked..=tried).contains(&counters[0]),
+                "round {round}: counter {writer} is {counters:?}, acknowledged at {acked}, tried up to {tried}"
+            );
+        }
+        assert!(load.created.len() > 20 * (round + 1), "round {round}: too little load to test anything");
+        println!(
+            "round {round}: killed after {run_for} ms{}; {} creates acknowledged so far; wal.bin {} bytes",
+            if mid_checkpoint { " mid-checkpoint" } else { "" },
+            load.created.len(),
+            std::fs::metadata(data.join("wal.bin")).unwrap().len(),
+        );
+    }
+    println!("{killed_mid_checkpoint} of 6 kills landed mid-checkpoint");
+    // Checkpoints happened: the WAL starts from one (its first entry is a
+    // `ReplaceGraph`, variant 6) and is bounded, not every write.
+    let wal = std::fs::read(directory.path().join("db").join("wal.bin")).unwrap();
+    assert_eq!(wal[18..22], 6u32.to_le_bytes(), "the WAL does not start from a checkpoint");
+}

@@ -338,6 +338,130 @@ impl Wal {
         }
     }
 
+    /// The log's length in bytes: where the next entry will start. Under
+    /// the graph lock this is exactly the history the graph holds, since
+    /// every write appends (and waits for durability) under it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn end(&self) -> Result<u64, WalError> {
+        let mut state = self
+            .group
+            .state
+            .lock()
+            .map_err(|_| WalError::Durability("group commit lock poisoned".to_string()))?;
+        if let Some(error) = &state.durability_error {
+            return Err(WalError::Durability(error.clone()));
+        }
+        match state.file.as_mut() {
+            Some(file) => Ok(file.seek_end()?),
+            None => Ok(0),
+        }
+    }
+
+    /// Replace the log with one that starts with `head` (a checkpoint's
+    /// [`Operation::ReplaceGraph`]) and continues with every entry from byte
+    /// `from` of this one: the writes made since the checkpoint's graph was
+    /// taken. Appends wait while it runs, and every entry they were waiting
+    /// on is made durable first, so none is left behind in the old file.
+    ///
+    /// The rename is the commit: a crash before it leaves the old log, after
+    /// it the new one, and both open to the same graph. A failure before the
+    /// rename leaves the log as it was; one after it poisons the log until
+    /// reopen, because which of the two a power cut would leave is unknown.
+    /// Returns the new log's length.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn rotate(&self, from: u64, head: &Operation) -> Result<u64, WalError> {
+        use crate::checkpoint::{crash_point, Step};
+
+        let payload = bincode::serialize(head)?;
+        let mut state = self
+            .group
+            .state
+            .lock()
+            .map_err(|_| WalError::Durability("group commit lock poisoned".to_string()))?;
+        if let Some(error) = &state.durability_error {
+            return Err(WalError::Durability(error.clone()));
+        }
+        let Some(file) = state.file.as_mut() else {
+            return Ok(0);
+        };
+        let end = file.seek_end()?;
+        if from < WAL_FILE_HEADER_LEN || from > end {
+            return Err(WalError::Durability(format!(
+                "checkpoint position {from} is outside the log (length {end})"
+            )));
+        }
+        sync_pending(&mut state)?;
+        self.group.wake.notify_all();
+
+        let next = rotation_path(&self.path);
+        let written = (|| -> Result<(File, u64), WalError> {
+            let mut out = File::create(&next)?;
+            out.write_all(WAL_MAGIC)?;
+            out.write_all(&WAL_VERSION_IMPORTS.to_le_bytes())?;
+            out.write_all(&(payload.len() as u64).to_le_bytes())?;
+            out.write_all(&crc32fast::hash(&payload).to_le_bytes())?;
+            out.write_all(&payload)?;
+            crash_point(Step::WalNextPartial);
+            let mut old = File::open(&self.path)?;
+            old.seek(SeekFrom::Start(from))?;
+            let copied = io::copy(&mut old.take(end - from), &mut out)?;
+            if copied != end - from {
+                return Err(WalError::Durability(format!(
+                    "the log ended at byte {} while copying it up to byte {end}",
+                    from + copied
+                )));
+            }
+            crash_point(Step::WalNextWritten);
+            out.sync_all()?;
+            let len = out.metadata()?.len();
+            Ok((out, len))
+        })();
+        let (out, len) = match written {
+            Ok(written) => written,
+            Err(error) => {
+                let _ = std::fs::remove_file(&next);
+                return Err(error);
+            }
+        };
+        drop(out);
+        crash_point(Step::WalNextSynced);
+        // Windows refuses to replace a file that is still open.
+        state.file = None;
+        if let Err(error) = rename_into_place(&next, &self.path) {
+            let _ = std::fs::remove_file(&next);
+            // Not renamed: the old log is whole and still the log.
+            return match open_wal_writer(&self.path) {
+                Ok(file) => {
+                    state.file = Some(Box::new(file));
+                    Err(error.into())
+                }
+                Err(reopen) => Err(poison(
+                    &mut state,
+                    format!(
+                        "WAL rotation failed ({error}) and the log could not be reopened \
+                         ({reopen}); the WAL refuses writes until the store is reopened"
+                    ),
+                )),
+            };
+        }
+        crash_point(Step::WalRenamed);
+        let durable = sync_parent(&self.path).and_then(|()| open_wal_writer(&self.path));
+        crash_point(Step::WalDurable);
+        match durable {
+            Ok(file) => {
+                state.file = Some(Box::new(file));
+                Ok(len)
+            }
+            Err(error) => Err(poison(
+                &mut state,
+                format!(
+                    "the rotated WAL could not be made durable ({error}); \
+                     the WAL refuses writes until the store is reopened"
+                ),
+            )),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn flush(&self) -> Result<(), WalError> {
         #[cfg(target_arch = "wasm32")]
@@ -550,6 +674,15 @@ fn migrate_legacy_wal(path: &Path, file: File, file_len: u64) -> Result<(), WalE
 pub(crate) fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), WalError> {
     file.sync_all()?;
     drop(file);
+    rename_into_place(tmp_path, path)?;
+    sync_parent(path)?;
+    Ok(())
+}
+
+/// Rename `tmp_path` over `path`. Durable once [`sync_parent`] of `path`
+/// has returned; on Windows the rename itself is written through.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn rename_into_place(tmp_path: &Path, path: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
@@ -596,18 +729,29 @@ pub(crate) fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> R
             )
         } == 0
         {
-            return Err(io::Error::last_os_error().into());
+            return Err(io::Error::last_os_error());
         }
+        Ok(())
     }
     #[cfg(not(windows))]
+    std::fs::rename(tmp_path, path)
+}
+
+/// Make a rename into `path`'s directory durable. Windows can't open a
+/// directory as a file; its renames are written through instead
+/// ([`rename_into_place`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
+    #[cfg(not(windows))]
     {
-        std::fs::rename(tmp_path, path)?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         File::open(parent)?.sync_all()?;
     }
+    #[cfg(windows)]
+    let _ = path;
     Ok(())
 }
 
@@ -739,6 +883,20 @@ fn sync_pending(state: &mut WalState) -> Result<(), WalError> {
     Ok(())
 }
 
+/// Refuse every later append with `message`, until the store is reopened.
+#[cfg(not(target_arch = "wasm32"))]
+fn poison(state: &mut WalState, message: String) -> WalError {
+    state.durability_error = Some(message.clone());
+    WalError::Durability(message)
+}
+
+/// Where [`Wal::rotate`] writes the next log before renaming it over the
+/// current one. One left by a crash is never the log; open deletes it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn rotation_path(path: &Path) -> PathBuf {
+    path.with_extension("rotate.tmp")
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn truncate_tail(file: &File, valid_end: u64) -> Result<(), WalError> {
     file.set_len(valid_end)?;
@@ -779,25 +937,16 @@ fn group_commit_worker(group: Arc<GroupCommit>) {
     }
 }
 
-// `Zega::open`/`Zega::snapshot` only call this on the native, file-backed
-// path (see the `cfg(not(target_arch = "wasm32"))` call sites in lib.rs);
-// the wasm32 build persists through `encode_snapshot`/`restore_bytes` instead.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Write a `snapshot.bin` as zega wrote them before checkpoints (zega#52):
+/// the tests make the files an older database has with it.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub fn snapshot(graph: &Graph, path: &Path) -> Result<(), WalError> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (graph, path);
-        Ok(())
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let bytes = encode_snapshot(graph)?;
-        let tmp_path = path.with_extension("bin.tmp");
-        let mut file = File::create(&tmp_path)?;
-        file.write_all(&bytes)?;
-        file.flush()?;
-        persist_replacement(file, &tmp_path, path)
-    }
+    let bytes = encode_snapshot(graph)?;
+    let tmp_path = path.with_extension("bin.tmp");
+    let mut file = File::create(&tmp_path)?;
+    file.write_all(&bytes)?;
+    file.flush()?;
+    persist_replacement(file, &tmp_path, path)
 }
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]

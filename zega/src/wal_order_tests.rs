@@ -20,13 +20,15 @@ struct Store {
 impl Store {
     fn open() -> Self {
         let dir = tempfile::tempdir().unwrap();
+        // No checkpoint thread: it would keep the WAL this test replaces.
         let mut zega = Zega::open(dir.path().to_str().unwrap())
             .wal_flush_every_write()
+            .snapshot_every(0)
             .build()
             .unwrap();
         // Same file, same flush-every settings; only the append target can fail.
         let (wal, switch) = switchable_wal(&dir.path().join("wal.bin"));
-        zega.wal = wal;
+        zega.wal = std::sync::Arc::new(wal);
         Store { zega, switch, dir }
     }
 

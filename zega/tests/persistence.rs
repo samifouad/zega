@@ -107,13 +107,21 @@ fn snapshot_then_reopen_restores_graph() {
         zega.run_lang(PEOPLE, r#"mutation { Person(name: "Alice") }"#).unwrap();
         zega.snapshot().unwrap();
     }
-    // `snapshot` does not truncate the WAL, which alone would restore Alice;
-    // without it, only the snapshot can.
-    std::fs::remove_file(dir.path().join("wal.bin")).unwrap();
+    // zega#52: `snapshot` is a checkpoint. The WAL is started over from the
+    // graph file it wrote (a header and one small entry naming that file),
+    // so the file, not a replay of the write, restores Alice.
+    assert!(std::fs::metadata(dir.path().join("wal.bin")).unwrap().len() < 128);
     {
         let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
         assert_eq!(people(&zega), [json!({ "name": "Alice" })]);
     }
+    let graphs: Vec<_> = std::fs::read_dir(dir.path().join("graphs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(graphs.len(), 1, "{graphs:?}");
+    std::fs::remove_file(&graphs[0]).unwrap();
+    assert!(Zega::open(path).build().is_err(), "the WAL alone restored Alice");
 }
 
 #[test]

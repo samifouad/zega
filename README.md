@@ -283,11 +283,18 @@ for it. A statement is all-or-nothing: its writes go to the WAL as one entry,
 and until the WAL accepts that entry no reader sees them; if the statement
 fails or the WAL refuses it, nothing of it stays in memory or on disk.
 Torn writes and bad checksums are detected and truncated on replay.
-`Zega::snapshot()` writes a full `snapshot.bin`; the next open restores the
-snapshot and replays only the WAL after it. Legacy WAL versions are migrated
-automatically. `Zega::import` keeps the imported `.graph` file in `graphs/` and
-commits it with one WAL entry naming it, so a crash leaves the old graph or
-the new one, never a mix.
+`Zega::import` keeps the imported `.graph` file in `graphs/` and commits it
+with one WAL entry naming it, so a crash leaves the old graph or the new one,
+never a mix. A checkpoint is the same thing for the database's own graph: it
+writes the graph as a `.graph` file in `graphs/` and starts the WAL over with
+one entry naming it plus the writes made since, so a restart reads that file
+and replays only the WAL after it. A disk database checkpoints on its own once
+the WAL reaches 16 MiB and the size of the graph it starts from (`zega start
+--snapshot-every-mb`, `ZegaBuilder::snapshot_every`; 0 turns it off), and
+`Zega::snapshot()` takes one now. Writes wait only while the graph is written
+out, not while it is synced. A crash at any point of a checkpoint reopens to
+every acknowledged write. Legacy WAL versions and `snapshot.bin` files are read
+and migrated automatically.
 
 ## Benchmarks
 
