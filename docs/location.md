@@ -84,7 +84,8 @@ query {
 ```
 
 Spatial predicates combine with `&&` and `||`. `order by @distance(...)` sorts
-ascending, breaking equal distances by node ID. Missing Points are excluded
+nearest first, or farthest first with `desc`, breaking equal distances by node
+ID, and a second key after a comma breaks them instead. Missing Points are excluded
 from distance ordering. `limit` is a non-negative integer, after `order by`
 when both occur, and before the selected fields. These clauses also work on
 relationship selections. Ordering or limiting produces an array at the query

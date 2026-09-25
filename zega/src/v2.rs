@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use crate::graph::{Graph, Node, NodeId, RelId};
 use crate::index::{IndexKind, Interval, TextPattern};
 use crate::lang::{
-    BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, Pred, Schema, Selection, Span,
-    Statement,
+    BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, OrderBy, OrderKey, Pred, Schema,
+    Selection, Span, Statement,
 };
 use crate::value::Value;
 use crate::journal::{atomically, Journal};
@@ -333,7 +333,10 @@ fn prepare(schema: &Schema, statement: &Statement) -> Result<(), LangError> {
         Statement::Load { template, .. } => (template.root.as_ref(), true),
     };
     if let Some(root) = root {
-        crate::lang::check(schema, root, mutation)?;
+        match statement {
+            Statement::Run(_) => crate::lang::check(schema, root, mutation)?,
+            Statement::Load { .. } => crate::lang::check_template(schema, root)?,
+        }
     }
     Ok(())
 }
@@ -700,7 +703,11 @@ fn read(
     context: &mut ReadContext<'_>,
 ) -> Result<Json, LangError> {
     let mut ids = candidates(graph, root, context.work)?;
-    retain_matches(graph, &mut ids, root.condition.as_ref(), context.work)?;
+    // Candidates are in ascending id order, which is also the result order,
+    // so without a ranking (`near`, `order by`) the first `limit` matches are
+    // the answer and the rest need not be tested (zegadb/zega#82).
+    let enough = root.limit.filter(|_| root.near.is_none() && root.order.is_empty());
+    retain_first_matches(graph, &mut ids, root.condition.as_ref(), enough, context.work)?;
     order_limit(graph, root, &mut ids, |id| *id, context.work)?;
     if equality_lookup(root) {
         return match ids.len() {
@@ -728,7 +735,66 @@ fn mutate(
     uniques: &[(String, String)],
     work: &mut Work,
 ) -> Result<Json, LangError> {
+    if root.delete.is_some() {
+        return delete_nodes(graph, journal, root, work);
+    }
     apply_node(graph, journal, schema, root, None, uniques, work)
+}
+
+/// `delete Type(condition) { @detach @id field }`: every matching row goes.
+/// Without `@detach`, a row that still has relationships refuses the whole
+/// statement, which is one transaction (APS 10), so nothing is deleted.
+/// Projected values are read before anything is deleted.
+fn delete_nodes(
+    graph: &mut Graph,
+    journal: &mut Journal,
+    sel: &Selection,
+    work: &mut Work,
+) -> Result<Json, LangError> {
+    // The checker requires a condition; a delete never matches everything by default.
+    let Some(condition) = sel.condition.as_ref() else {
+        return Err(LangError::at(sel.type_span, format!("delete needs a condition: which {} rows?", sel.type_name)));
+    };
+    let mut ids = candidates(graph, sel, work)?;
+    retain_matches(graph, &mut ids, Some(condition), work)?;
+    let detach = sel.items.iter().any(|item| matches!(item, Item::Detach(_)));
+    let mut rows = Vec::new();
+    for &id in &ids {
+        work.step()?;
+        let node = graph
+            .get_node(id)
+            .ok_or_else(|| LangError::bare(format!("missing node {id}")))?;
+        let attached = graph.node_relationship_ids(id).len();
+        if attached > 0 && !detach {
+            let plural = if attached == 1 { "relationship" } else { "relationships" };
+            return Err(LangError::at(
+                sel.type_span,
+                format!("{} {id} has {attached} {plural}", sel.type_name),
+            )
+            .with_help("add `@detach` to remove them with it; nothing was deleted"));
+        }
+        let mut row = serde_json::Map::new();
+        for item in &sel.items {
+            match item {
+                Item::Id(alias) => { row.insert(alias.clone(), json!(id)); }
+                Item::Prop(name, _) => { row.insert(name.clone(), prop_json(node, name)); }
+                // The checker allows nothing else in a delete.
+                _ => {}
+            }
+        }
+        if !row.is_empty() {
+            rows.push(Json::Object(row));
+        }
+    }
+    for &id in &ids {
+        journal.delete_node(graph, id);
+    }
+    let mut out = serde_json::Map::new();
+    out.insert("deleted".into(), json!(ids.len()));
+    if sel.items.iter().any(|item| matches!(item, Item::Id(_) | Item::Prop(_, _))) {
+        out.insert("rows".into(), Json::Array(rows));
+    }
+    Ok(Json::Object(out))
 }
 
 /// Writes or finds this selection and returns only the rows this statement touched.
@@ -803,6 +869,8 @@ fn apply_node(
                 object.insert(name.clone(), prop_json(&node, name));
             }
             Item::Id(alias) => { object.insert(alias.clone(), json!(node.id)); }
+            // Only a delete reads @detach; the checker refuses it anywhere else.
+            Item::Detach(_) => {}
             Item::Score(alias, _) => { object.insert(alias.clone(), score_json(&node, sel)); }
             Item::Similarity(alias, sim) => { object.insert(alias.clone(), similarity_json(&node, sim)); }
             Item::Distance(alias, distance) => {
@@ -1006,6 +1074,9 @@ fn insert_node(
     let mut props = HashMap::new();
     if let Some(expr) = &sel.condition {
         assign_props(expr, sel, schema, &mut props)?;
+    }
+    if let Some(error) = crate::lang::missing_fields(schema, sel, false).into_iter().next() {
+        return Err(error);
     }
     let labels: Vec<String> = std::iter::once(sel.type_name.clone())
         .chain(sel.also.iter().cloned())
@@ -1252,6 +1323,7 @@ fn project(
                 object.insert(name.clone(), prop_json(node, name));
             }
             Item::Id(alias) => { object.insert(alias.clone(), json!(node.id)); }
+            Item::Detach(_) => {}
             Item::Score(alias, _) => { object.insert(alias.clone(), score_json(node, sel)); }
             Item::Similarity(alias, sim) => { object.insert(alias.clone(), similarity_json(node, sim)); }
             Item::Distance(alias, distance) => {
@@ -1747,21 +1819,42 @@ fn retain_matches(
     condition: Option<&BoolExpr>,
     work: &mut Work,
 ) -> Result<(), LangError> {
+    retain_first_matches(graph, ids, condition, None, work)
+}
+
+/// Like `retain_matches`, but stop once `enough` rows match: the rows after
+/// that are neither tested nor kept, nor counted as examined.
+fn retain_first_matches(
+    graph: &Graph,
+    ids: &mut Vec<NodeId>,
+    condition: Option<&BoolExpr>,
+    enough: Option<usize>,
+    work: &mut Work,
+) -> Result<(), LangError> {
+    let enough = enough.unwrap_or(usize::MAX);
     if condition.is_none() {
+        ids.truncate(enough);
         return Ok(());
     }
-    graph.note_examined(ids.len());
+    let mut kept = 0;
+    let mut tested = 0;
     let mut stopped = Ok(());
-    ids.retain(|id| {
-        if stopped.is_err() {
-            return false;
+    for i in 0..ids.len() {
+        if kept == enough {
+            break;
         }
         if let Err(error) = work.step() {
             stopped = Err(error);
-            return false;
+            break;
         }
-        node_matches(graph, *id, condition)
-    });
+        tested += 1;
+        if node_matches(graph, ids[i], condition) {
+            ids[kept] = ids[i];
+            kept += 1;
+        }
+    }
+    graph.note_examined(tested);
+    ids.truncate(kept);
     stopped
 }
 
@@ -1882,7 +1975,9 @@ fn candidates(graph: &Graph, sel: &Selection, work: &mut Work) -> Result<Vec<Nod
         .and_then(|expr| index_filter(graph, &types, expr));
     // Expand a geodesic circle until k qualifying points are inside. Every
     // point outside is farther than the kth match, so early stopping is exact.
-    if let Some(order) = &sel.order {
+    // Only when the first key is the nearest distance first: a later key
+    // breaks ties among rows that are all inside the circle.
+    if let Some(OrderKey { by: OrderBy::Distance(order), desc: false, .. }) = sel.order.first() {
         if sel.limit == Some(0) {
             return Ok(Vec::new());
         }
@@ -1950,17 +2045,28 @@ fn order_limit<T>(
         ids.retain(|row| ranks.contains_key(&id(row)));
         ids.sort_by_key(|row| ranks[&id(row)]);
     }
-    if let Some(order) = &sel.order {
-        // Each distance is computed once, as a step of work, rather than twice
-        // per comparison inside a sort that cannot be stopped part way.
+    if !sel.order.is_empty() {
+        // Each key is read once per row, as a step of work, rather than inside
+        // a sort that cannot be stopped part way.
         let mut keyed = Vec::with_capacity(ids.len());
-        for row in ids.drain(..) {
+        'rows: for row in ids.drain(..) {
             work.step()?;
-            if let Some(distance) = node_distance(graph, id(&row), order) {
-                keyed.push((distance, row));
+            let node = graph.get_node(id(&row));
+            let mut values = Vec::with_capacity(sel.order.len());
+            for key in &sel.order {
+                values.push(match &key.by {
+                    OrderBy::Distance(distance) => match node_distance(graph, id(&row), distance) {
+                        Some(d) => SortValue::Float(d),
+                        // No location, no distance: such a row is not in a distance order.
+                        None => continue 'rows,
+                    },
+                    OrderBy::Field(field) => SortValue::of(node.and_then(|n| n.props.get(field))),
+                });
             }
+            keyed.push((values, row));
         }
-        keyed.sort_by(|(a, x), (b, y)| a.total_cmp(b).then(id(x).cmp(&id(y))));
+        // Ties keep creation order.
+        keyed.sort_by(|(a, x), (b, y)| compare_keys(&sel.order, a, b).then(id(x).cmp(&id(y))));
         ids.extend(keyed.into_iter().map(|(_, row)| row));
     }
     if let Some(limit) = sel.limit {
@@ -1968,6 +2074,64 @@ fn order_limit<T>(
     }
     Ok(())
 }
+/// One `order by` value. A row without the value sorts after every row with
+/// one, in either direction. Values of different kinds (a union type whose
+/// types disagree) sort bool, then number, then string.
+#[derive(Debug)]
+enum SortValue {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(String),
+    Missing,
+}
+
+impl SortValue {
+    fn of(value: Option<&Value>) -> Self {
+        match value {
+            Some(Value::Bool(b)) => SortValue::Bool(*b),
+            Some(Value::Int(i)) => SortValue::Int(*i),
+            Some(Value::Float(bits)) => SortValue::Float(f64::from_bits(*bits)),
+            Some(Value::String(text)) => SortValue::Text(text.clone()),
+            // Null, and kinds the checker refuses to order (Point, Vector, lists).
+            _ => SortValue::Missing,
+        }
+    }
+
+    fn rank(&self) -> u8 {
+        match self {
+            SortValue::Bool(_) => 0,
+            SortValue::Int(_) | SortValue::Float(_) => 1,
+            SortValue::Text(_) => 2,
+            SortValue::Missing => 3,
+        }
+    }
+}
+
+fn compare_keys(keys: &[OrderKey], a: &[SortValue], b: &[SortValue]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    for ((key, x), y) in keys.iter().zip(a).zip(b) {
+        let order = match (x, y) {
+            (SortValue::Missing, SortValue::Missing) => Ordering::Equal,
+            // Missing is last whatever the direction, so it is not reversed.
+            (SortValue::Missing, _) => return Ordering::Greater,
+            (_, SortValue::Missing) => return Ordering::Less,
+            (SortValue::Bool(x), SortValue::Bool(y)) => x.cmp(y),
+            (SortValue::Int(x), SortValue::Int(y)) => x.cmp(y),
+            (SortValue::Int(x), SortValue::Float(y)) => (*x as f64).total_cmp(y),
+            (SortValue::Float(x), SortValue::Int(y)) => x.total_cmp(&(*y as f64)),
+            (SortValue::Float(x), SortValue::Float(y)) => x.total_cmp(y),
+            (SortValue::Text(x), SortValue::Text(y)) => x.cmp(y),
+            (x, y) => x.rank().cmp(&y.rank()),
+        };
+        let order = if key.desc { order.reverse() } else { order };
+        if order != Ordering::Equal {
+            return order;
+        }
+    }
+    Ordering::Equal
+}
+
 fn require_points(schema: &Schema, sel: &Selection) -> Result<(), LangError> {
     let tests = sel
         .condition
@@ -2103,7 +2267,7 @@ fn cmp_value(left: &Json, right: &Json) -> Option<std::cmp::Ordering> {
 }
 
 fn equality_lookup(sel: &Selection) -> bool {
-    sel.near.is_none() && sel.order.is_none()
+    sel.near.is_none() && sel.order.is_empty()
         && sel.limit.is_none()
         && sel
             .condition
@@ -2404,7 +2568,7 @@ mod tests {
             .unwrap();
         zega.run_lang(
             SCHEMA,
-            r#"mutation { Book(title: "The Dispossessed") { title } }"#,
+            r#"mutation { Book(title: "The Dispossessed" && pages: 387) { title } }"#,
         )
         .unwrap();
         let graph = zega.graph_json().unwrap();
@@ -2540,6 +2704,90 @@ mod tests {
             .unwrap();
         assert_eq!(read["playsFor"]["name"], "Oilers");
         assert_eq!(read["playsFor"]["years"], 10);
+    }
+
+    #[test]
+    fn required_node_field_rejects_a_create_without_it() {
+        let schema = r#"
+            type Team {
+              name: String
+              founded: Int
+              city?: String
+              plays -> Team[]
+            }
+        "#;
+        let zega = Zega::in_memory().build().unwrap();
+        // The editor and the database report the same thing at the same place.
+        let query = r#"mutation { Team(name: "Flames") { name founded } }"#;
+        let report = crate::diagnose(schema, query);
+        assert_eq!(report.diagnostics.len(), 1, "{}", report.text);
+        let diag = &report.diagnostics[0];
+        assert_eq!(diag.message, "Team requires founded");
+        assert_eq!(
+            diag.help.as_deref(),
+            Some("write `founded: …` when creating a Team, or declare it `founded?: Int`")
+        );
+        assert_eq!((diag.line, diag.column, diag.underline_length), (1, 12, 4));
+        let missing = zega.run_lang(schema, query).unwrap_err().to_string();
+        assert!(missing.contains(&report.text), "{missing}\n---\n{}", report.text);
+        // A null is not a value for a required field.
+        let null = zega
+            .run_lang(schema, r#"mutation { Team(name: "Flames" && founded: null) { name } }"#)
+            .unwrap_err();
+        assert!(null.to_string().contains("Team requires founded"), "{null}");
+        assert!(null.to_string().contains("so it cannot be null"), "{null}");
+        // A condition that is not `field: value` is reported as that first.
+        let shape = zega
+            .run_lang(schema, r#"mutation { Team(founded > 1900) { name } }"#)
+            .unwrap_err();
+        assert!(shape.to_string().contains("creating a Team only accepts field: value"), "{shape}");
+        // A nested create is a create too.
+        let nested = zega
+            .run_lang(
+                schema,
+                r#"mutation { Team(name: "Flames" && founded: 1980) { plays -> Team(name: "Oilers") { name } } }"#,
+            )
+            .unwrap_err();
+        assert!(nested.to_string().contains("Team requires founded"), "{nested}");
+        assert!(zega.graph_json().unwrap()["nodes"].as_array().unwrap().is_empty());
+        // Optional fields may be left out, and `set` and `link` create nothing.
+        zega.run_lang(schema, r#"mutation { Team(name: "Flames" && founded: 1980) { name } }"#)
+            .unwrap();
+        zega.run_lang(schema, r#"mutation { Team(name: "Oilers" && founded: 1972) { name } }"#)
+            .unwrap();
+        zega.run_lang(schema, r#"mutation { Team(name: "Flames") set city: "Calgary" { name } }"#)
+            .unwrap();
+        zega.run_lang(
+            schema,
+            r#"mutation { Team(name: "Flames") { plays -> link Team(name: "Oilers") { name } } }"#,
+        )
+        .unwrap();
+        let read = zega
+            .run_lang(schema, r#"{ Team(name = "Flames") { founded city plays -> Team { founded } } }"#)
+            .unwrap();
+        assert_eq!(read["founded"], 1980);
+        assert_eq!(read["city"], "Calgary");
+        assert_eq!(read["plays"][0]["founded"], 1972);
+    }
+
+    #[test]
+    fn required_node_field_rejects_a_load_row_without_it() {
+        let source = r#"
+            schema { type Team { name: String founded: Int } }
+            mutation csv "teams.csv" { Team(name: $name && founded: $founded) { name } }
+        "#;
+        // The template names every field, so it checks clean before any row.
+        let template = crate::diagnose("type Team { name: String founded: Int }", r#"mutation csv "teams.csv" { Team(name: $name && founded: $founded) { name } }"#);
+        assert!(template.diagnostics.is_empty(), "{}", template.text);
+        let zega = Zega::in_memory().build().unwrap();
+        let sources = HashMap::from([(
+            "teams.csv".to_string(),
+            "name,founded\nFlames,1980\nOilers,\n".to_string(),
+        )]);
+        let error = zega.apply_zql_with_sources(source, &sources).unwrap_err();
+        assert!(error.to_string().contains("Team requires founded"), "{error}");
+        // The statement is all or nothing: the good row is not kept either.
+        assert!(zega.graph_json().unwrap()["nodes"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -2693,9 +2941,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
         let zega = Zega::open(path).wal_flush_every_write().build().unwrap();
-        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#)
             .unwrap();
-        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+        zega.run_lang(SCHEMA, r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#)
             .unwrap();
         let missing_author = zega.run_lang(
             SCHEMA,
@@ -2754,7 +3002,7 @@ mod tests {
             .filter(|node| node["title"] == "Twin")
             .collect();
         assert_eq!(books.len(), 2);
-        assert!(books.iter().all(|book| book["pages"].is_null()));
+        assert!(books.iter().all(|book| book["pages"] == 100));
         let before = zega.graph_json().unwrap();
         drop(zega);
         let reopened = Zega::open(path).wal_flush_every_write().build().unwrap();
@@ -2792,7 +3040,7 @@ mod tests {
             .to_string()
             .contains("no Book matched"));
         plain
-            .run_lang(SCHEMA, r#"mutation { Book(title: "Twin") { title } }"#)
+            .run_lang(SCHEMA, r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#)
             .unwrap();
         assert_eq!(
             plain
@@ -2836,7 +3084,7 @@ mod tests {
         unique
             .run_lang(
                 UNIQUE_SCHEMA,
-                r#"mutation { Book(title: "Twin") { title } }"#,
+                r#"mutation { Book(title: "Twin" && pages: 100) { title } }"#,
             )
             .unwrap();
         assert_eq!(

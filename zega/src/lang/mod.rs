@@ -284,9 +284,27 @@ pub struct Selection {
     pub condition: Option<BoolExpr>,
     pub sets: Vec<(String, Json, Span)>,
     pub near: Option<Near>,
-    pub order: Option<Distance>,
+    /// `order by salary desc, name`: the keys in order, empty when unordered.
+    pub order: Vec<OrderKey>,
     pub limit: Option<usize>,
     pub items: Vec<Item>,
+    /// `delete Type(…)`: the root of a mutation that deletes the rows it matches.
+    /// The span is the `delete` word.
+    pub delete: Option<Span>,
+}
+
+/// One key of `order by`: a field or `@distance(…)`, ascending unless `desc`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrderKey {
+    pub by: OrderBy,
+    pub desc: bool,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum OrderBy {
+    Field(String),
+    Distance(Distance),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -309,6 +327,8 @@ pub enum Item {
     Prop(String, Span),
     Hops(String),
     Id(String),
+    /// `@detach` in a delete: remove the deleted nodes' relationships too.
+    Detach(Span),
     EdgeProp(String, Span),
     /// `&year: 1974` on a mutation stores `year` on the edge that arrived here.
     EdgeSet(String, Json, Span),
@@ -1027,6 +1047,12 @@ impl<'a> Parser<'a> {
         self.columns = true;
         let template = self.parse_braced(true)?;
         self.columns = false;
+        // An empty cell drops its term from a row's condition, so a delete
+        // template could widen to rows nobody named, or to every row.
+        if let Some(span) = template.root.as_ref().and_then(|root| root.delete) {
+            return Err(Error::at(span, "a load inserts rows; it cannot delete them")
+                .with_help("write the delete as its own `mutation { delete Type(…) }`"));
+        }
         Ok(Statement::Load {
             format,
             locations,
@@ -1474,6 +1500,9 @@ impl<'a> Parser<'a> {
                 Ok(Item::Hops(alias))
             }
             "id" => Ok(Item::Id(alias)),
+            "detach" if alias == name => Ok(Item::Detach(span)),
+            "detach" => Err(self.err_at(span, "@detach removes relationships; it has no value to name")
+                .with_help("write `@detach` on its own line in the delete")),
             "score" => Ok(Item::Score(alias, span)),
             "distance" => { self.i = start; Ok(Item::Distance(alias, self.distance()?)) }
             "similarity" => { self.i = start; Ok(Item::Similarity(alias, self.similarity()?)) }
@@ -1761,6 +1790,14 @@ impl<'a> Parser<'a> {
     fn selection_head(&mut self) -> Result<Selection> {
         self.skip();
         self.reject_discovery_literal()?;
+        // `delete Player(…)`: the word, then a type name. A type named `delete`
+        // is still a type: `delete(…)` and `delete {` never start a delete.
+        let delete = if self.starts_delete() {
+            let (_, span) = self.ident()?;
+            Some(span)
+        } else {
+            None
+        };
         let mut also = Vec::new();
         let mut also_spans = Vec::new();
         let (type_name, type_span) = if self.eat("(") {
@@ -1800,9 +1837,9 @@ impl<'a> Parser<'a> {
         } else { None };
         let order = if self.eat_word("order") {
             self.expect_word("by")?;
-            Some(self.distance()?)
+            self.order_keys()?
         } else {
-            None
+            Vec::new()
         };
         let limit = if self.eat_word("limit") {
             self.skip();
@@ -1840,7 +1877,44 @@ impl<'a> Parser<'a> {
             order,
             limit,
             items: Vec::new(),
+            delete,
         })
+    }
+
+    fn starts_delete(&self) -> bool {
+        let mut lookahead = self.fork();
+        if !lookahead.eat_word("delete") {
+            return false;
+        }
+        lookahead.skip();
+        lookahead.src[lookahead.i..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
+    }
+
+    /// `salary desc, @distance(at, @point(…)), name`: one or more keys.
+    fn order_keys(&mut self) -> Result<Vec<OrderKey>> {
+        let mut keys = Vec::new();
+        loop {
+            self.skip();
+            let start = self.i;
+            let by = if self.starts_call("distance", "(") {
+                OrderBy::Distance(self.distance()?)
+            } else {
+                OrderBy::Field(self.ident()?.0)
+            };
+            let desc = if self.eat_word("desc") {
+                true
+            } else {
+                let _ = self.eat_word("asc");
+                false
+            };
+            keys.push(OrderKey { by, desc, span: self.span_bytes(start, self.i) });
+            if !self.eat(",") {
+                return Ok(keys);
+            }
+        }
     }
 
     /// One item. A walk's target recurses; everything else is read by
@@ -2561,6 +2635,7 @@ fn bind_selection(
         order: sel.order.clone(),
         limit: sel.limit,
         items,
+        delete: sel.delete,
     }))
 }
 
@@ -2882,6 +2957,7 @@ fn note_statement(schema: &Schema, statement: &Statement, pane: Pane, out: &mut 
         Check {
             schema,
             mutation,
+            template: matches!(statement, Statement::Load { .. }),
             pane,
             out,
         }
@@ -2943,12 +3019,100 @@ pub fn diagnose(schema_src: &str, query_src: &str) -> Report {
     Report::new(schema_src, query_src, out)
 }
 
+/// Whether a mutation selection creates its node. `set` and `link` find one
+/// existing row instead, and so does the node a `link` walk lands on; a
+/// `delete` never creates one either, and required fields do not apply to
+/// the rows it removes.
+pub fn creates(sel: &Selection, linked: bool) -> bool {
+    !linked
+        && sel.delete.is_none()
+        && sel.sets.is_empty()
+        && !sel
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Walk { link: true, .. }))
+}
+
+/// The required fields a new node leaves out: every field declared without
+/// `?` on each of its types that the create does not write, or writes as
+/// null. The checker and the runtime both call this, so a create the editor
+/// accepts is a create the database accepts.
+///
+/// A load template is checked before its rows are bound. Its Point and
+/// Vector fields can still come from columns then (`bind_points` fills
+/// them and reports its own error), so `template` leaves those to the
+/// bound row, which is checked again.
+pub fn missing_fields(schema: &Schema, sel: &Selection, template: bool) -> Vec<Error> {
+    // `Person(age > 30)` or `||` is not a create at all. The runtime says so
+    // (`assign_props`); a missing field is not the first problem to report.
+    if sel.condition.as_ref().is_some_and(|expr| !expr.is_equality_and()) {
+        return Vec::new();
+    }
+    // `Some(true)` when the create writes the field as null.
+    let written = |name: &str| {
+        sel.condition.as_ref().and_then(|expr| {
+            and_eqs(expr)
+                .into_iter()
+                .find(|(field, _)| *field == name)
+                .map(|(_, value)| value.is_null())
+        })
+    };
+    let mut out = Vec::new();
+    let mut named = std::collections::HashSet::new();
+    for ty in selection_types(sel) {
+        let Ok(def) = schema.get(ty) else { continue };
+        for field in &def.fields {
+            let Field::Prop { name, ty: field_ty, optional: false, .. } = field else {
+                continue;
+            };
+            if template && (field_ty == "Point" || VectorSpec::parse(field_ty).is_some()) {
+                continue;
+            }
+            // `(Book | Movie)` shares `title`: one report for the field.
+            let null = match written(name) {
+                Some(false) => continue,
+                Some(true) => true,
+                None => false,
+            };
+            if !named.insert(name.as_str()) {
+                continue;
+            }
+            let help = if null {
+                format!("`{name}` is required, so it cannot be null; declare it `{name}?: {field_ty}` to allow null")
+            } else {
+                format!("write `{name}: …` when creating a {}, or declare it `{name}?: {field_ty}`", def.name)
+            };
+            out.push(Error::at(sel.type_span, format!("{} requires {name}", def.name)).with_help(help));
+        }
+    }
+    out
+}
+
+/// The `field = value` terms a create writes: the equalities joined by `&&`.
+fn and_eqs(expr: &BoolExpr) -> Vec<(&str, &Json)> {
+    match expr {
+        BoolExpr::Test(Pred::Eq(field, value, _)) => vec![(field.as_str(), value)],
+        BoolExpr::And(terms) => terms.iter().flat_map(and_eqs).collect(),
+        BoolExpr::Test(_) | BoolExpr::Or(_) => Vec::new(),
+    }
+}
+
 /// The same check the editor uses. Execution stops on the first problem.
 pub fn check(schema: &Schema, sel: &Selection, mutation: bool) -> Result<()> {
+    check_with(schema, sel, mutation, false)
+}
+
+/// [`check`] for a load template, before its rows are bound.
+pub fn check_template(schema: &Schema, sel: &Selection) -> Result<()> {
+    check_with(schema, sel, true, true)
+}
+
+fn check_with(schema: &Schema, sel: &Selection, mutation: bool, template: bool) -> Result<()> {
     let mut out = Vec::new();
     Check {
         schema,
         mutation,
+        template,
         pane: Pane::Query,
         out: &mut out,
     }
@@ -2969,6 +3133,8 @@ pub fn check(schema: &Schema, sel: &Selection, mutation: bool) -> Result<()> {
 struct Check<'a> {
     schema: &'a Schema,
     mutation: bool,
+    /// A load template, checked before its rows are bound.
+    template: bool,
     pane: Pane,
     out: &'a mut Vec<Diagnostic>,
 }
@@ -2987,10 +3153,10 @@ impl Check<'_> {
     }
 
     fn selection(&mut self, sel: &Selection, root: bool) {
-        self.visit(sel, root, None);
+        self.visit(sel, root, None, false);
     }
 
-    fn visit(&mut self, sel: &Selection, _root: bool, arrived: Option<(&str, &str)>) {
+    fn visit(&mut self, sel: &Selection, _root: bool, arrived: Option<(&str, &str)>, linked: bool) {
         let known = self.schema.types.iter().any(|ty| ty.name == sel.type_name);
         if !known {
             self.push(
@@ -3031,12 +3197,18 @@ impl Check<'_> {
         }
         if let Some(near) = &sel.near {
             self.ensure_vector(sel, &near.similarity);
-            if sel.order.is_some() { self.push(sel.type_span, "near already orders by similarity", None); }
+            if !sel.order.is_empty() { self.push(sel.type_span, "near already orders by similarity", None); }
         }
-        if let Some(order) = &sel.order {
-            self.ensure_point(sel, &order.field, order.span);
+        for key in &sel.order {
+            match &key.by {
+                OrderBy::Distance(distance) => self.ensure_point(sel, &distance.field, distance.span),
+                OrderBy::Field(field) => self.ensure_orderable(sel, field, key.span),
+            }
         }
-        if self.mutation && (sel.near.is_some() || sel.order.is_some() || sel.limit.is_some()) {
+        if sel.delete.is_some() {
+            self.delete(sel, arrived);
+        }
+        if self.mutation && (sel.near.is_some() || !sel.order.is_empty() || sel.limit.is_some()) {
             self.push(
                 sel.type_span,
                 "order and limit are only valid in queries",
@@ -3064,6 +3236,15 @@ impl Check<'_> {
                     self.ensure_point(sel, &distance.field, distance.span)
                 }
                 Item::Hops(_) | Item::Id(_) => {}
+                Item::Detach(span) => {
+                    if sel.delete.is_none() {
+                        self.push(
+                            *span,
+                            "@detach belongs in a delete",
+                            Some("write `mutation { delete Type(…) { @detach } }`".into()),
+                        );
+                    }
+                }
                 Item::EdgeProp(name, span) => {
                     self.edge_field(arrived, name, *span, None);
                 }
@@ -3087,7 +3268,7 @@ impl Check<'_> {
                     path,
                     direction,
                     target,
-                    ..
+                    link,
                 } => {
                     if let Some(path) = path {
                         self.path(sel, field, *span, *direction, path, target);
@@ -3103,8 +3284,14 @@ impl Check<'_> {
                     if self.mutation {
                         self.require_edge_fields(sel, field, *span, target);
                     }
-                    self.visit(target, false, Some((sel.type_name.as_str(), field)));
+                    self.visit(target, false, Some((sel.type_name.as_str(), field)), *link);
                 }
+            }
+        }
+        // Last, so a statement that cannot run at all says why first.
+        if self.mutation && creates(sel, linked) {
+            for error in missing_fields(self.schema, sel, self.template) {
+                self.push(sel.type_span, error.message, error.help);
             }
         }
     }
@@ -3275,7 +3462,7 @@ impl Check<'_> {
                 Some("a path reads rows that are already stored; use `query`".into()),
             );
         }
-        if target.near.is_some() || target.order.is_some() || target.limit.is_some() {
+        if target.near.is_some() || !target.order.is_empty() || target.limit.is_some() {
             self.push(
                 target.type_span,
                 "a path target takes a condition, not near, order or limit",
@@ -3411,6 +3598,70 @@ impl Check<'_> {
                 Some(spec) if spec.dimensions == sim.query.dimensions() => {},
                 Some(spec) => self.push(sim.span, format!("Vector<{}> query needs exactly {} numbers, got {}", spec.dimensions, spec.dimensions, sim.query.dimensions()), None),
                 None => self.push(sim.span, format!("{name}.{} must be Vector for a similarity query", sim.field), None),
+            }
+        }
+    }
+
+    /// `order by name`: a stored number, string or bool. A location is
+    /// ordered by `@distance`, and a vector or a relationship not at all.
+    fn ensure_orderable(&mut self, sel: &Selection, name: &str, span: Span) {
+        let declared = selection_types(sel).into_iter().find_map(|ty| match self.schema.prop(ty, name) {
+            Ok(Field::Prop { ty: field_ty, .. }) => Some((ty, field_ty.clone())),
+            _ => None,
+        });
+        let Some((ty, field_ty)) = declared else {
+            self.ensure_prop(sel, name, span);
+            return;
+        };
+        if field_ty == "Point" {
+            self.push(
+                span,
+                format!("{ty}.{name} is a Point; order it by distance"),
+                Some(format!("write `order by @distance({name}, @point(lat, lon))`")),
+            );
+        } else if VectorSpec::parse(&field_ty).is_some() {
+            self.push(
+                span,
+                format!("{ty}.{name} is a {field_ty} and cannot be ordered"),
+                Some(format!("rank by similarity with `@near({name}, @vector[…], k)`")),
+            );
+        }
+    }
+
+    /// `delete Type(condition) { @detach @id field }`, the root of a mutation.
+    fn delete(&mut self, sel: &Selection, arrived: Option<(&str, &str)>) {
+        let at = sel.delete.unwrap_or(sel.type_span);
+        if !self.mutation {
+            self.push(at, "`delete` removes rows", Some("wrap it in `mutation { }`".into()));
+        }
+        if arrived.is_some() {
+            self.push(at, "a delete starts a mutation; it cannot follow an arrow", None);
+        }
+        if sel.condition.is_none() {
+            self.push(
+                sel.type_span,
+                format!("delete needs a condition: which {} rows?", sel.type_name),
+                Some(format!("e.g. `delete {}(name = \"…\")`", sel.type_name)),
+            );
+        }
+        if let Some(span) = sel.also_spans.first() {
+            self.push(*span, "a delete names one type", None);
+        }
+        if let Some((_, _, span)) = sel.sets.first() {
+            self.push(*span, "a delete cannot set fields", Some("delete the rows, or `set` them in their own mutation".into()));
+        }
+        for item in &sel.items {
+            let refused = match item {
+                Item::Detach(_) | Item::Id(_) | Item::Prop(_, _) => None,
+                Item::Walk { span, .. } => Some((*span, "a delete removes nodes, not relationships")),
+                Item::EdgeProp(_, span) | Item::EdgeSet(_, _, span) => Some((*span, "a deleted row was not reached by an edge")),
+                Item::Score(_, span) => Some((*span, "a delete returns only `@id` and fields")),
+                Item::Similarity(_, sim) => Some((sim.span, "a delete returns only `@id` and fields")),
+                Item::Distance(_, distance) => Some((distance.span, "a delete returns only `@id` and fields")),
+                Item::Hops(_) => Some((sel.type_span, "a delete returns only `@id` and fields")),
+            };
+            if let Some((span, message)) = refused {
+                self.push(span, message, Some("list `@detach`, `@id` or fields".into()));
             }
         }
     }
