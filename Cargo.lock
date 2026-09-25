@@ -2451,7 +2451,11 @@ dependencies = [
 name = "zega-bench"
 version = "0.2.0"
 dependencies = [
+ "bincode",
+ "libc",
  "neo4rs",
+ "serde",
+ "serde_json",
  "tokio",
  "zega",
 ]

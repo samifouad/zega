@@ -8,7 +8,17 @@ edition = "2021"
 zega = { path = "../zega" }
 neo4rs = "0.8"
 tokio = { version = "1", features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+libc = "0.2"
 
 [[bin]]
 name = "zega-bench"
 path = "src/main.rs"
+
+# Bytes per node and per relationship, with query timings (zegadb/zega#100).
+# A separate binary because it installs a counting global allocator.
+[[bin]]
+name = "zega-mem"
+path = "src/mem.rs"
