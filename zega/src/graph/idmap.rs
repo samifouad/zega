@@ -1,58 +1,81 @@
-//! Records by id, stored densely (zegadb/zega#100).
+//! Records by id, in slots (zegadb/zega#100).
 //!
-//! Ids come from counters, so they are dense: a slot array indexed by id
-//! costs the record and nothing else, where a `HashMap` adds the key, a
+//! Ids come from counters, so they are mostly dense: a slot array indexed by
+//! id costs the record and nothing else, where a `HashMap` adds the key, a
 //! control byte and up to half its table empty (a million entries sit in a
-//! table of two million). Ids an import or a restore brings may have gaps
-//! or arrive in any order, so an id past the dense range waits in an
-//! ordered overflow map instead of stretching the array: the array only
-//! covers as many slots as twice the entries (plus one chunk), and a
-//! hostile id like `2^40` costs one map entry. Whenever the array may grow,
-//! it takes in the overflow entries it can now cover, so ids that arrive
-//! out of order still end up in slots.
+//! table of two million).
 //!
-//! The slots live in fixed chunks, so growing never copies the whole array
-//! and never leaves more than one chunk unused at the end.
+//! The slots come in chunks of [`CHUNK`] ids, allocated only where there are
+//! entries. A chunk is allocated only while the allocated slots stay at most
+//! twice the entries plus one chunk, and only within a directory span of
+//! [`SPAN`] chunks per allocated chunk. An id that does not qualify waits in
+//! an ordered overflow map, so a hostile id like `2^40` costs one map entry,
+//! and scattered ids cost what a map costs. A chunk whose last entry goes is
+//! freed and the directory trimmed, so a graph whose ids climb while old ones
+//! are deleted (churn) keeps only the chunks that still hold entries. As the
+//! entry count grows, overflow entries within reach move into chunks, so ids
+//! that arrived out of order (a restore listing them descending) end up in
+//! slots.
+//!
+//! What slots cannot give back: a chunk with some entries left keeps all its
+//! slots, so deleting most of the ids at random leaves chunks partly empty.
+//! A `HashMap` keeps its whole table after deletes too.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 const CHUNK_BITS: u32 = 10;
 const CHUNK: usize = 1 << CHUNK_BITS;
+/// Directory entries allowed per allocated chunk (plus the same again), so
+/// the directory costs a few percent of the slots at most.
+const SPAN: u64 = 64;
+
+struct Chunk<T> {
+    live: usize,
+    slots: Box<[Option<T>]>,
+}
 
 pub(crate) struct IdMap<T> {
-    chunks: Vec<Box<[Option<T>]>>,
-    /// Ids past the dense range. Every key here is at least
-    /// `self.dense_end()`.
+    /// The chunk number of `chunks[0]`.
+    base: u64,
+    /// `None` where a chunk is not allocated; never `None` at either end.
+    chunks: VecDeque<Option<Chunk<T>>>,
+    /// Every entry whose chunk is not allocated.
     sparse: BTreeMap<u64, T>,
     len: usize,
+    allocated: usize,
+    /// The overflow map's size after the last [`IdMap::rebuild`].
+    settled: usize,
 }
 
 impl<T> Default for IdMap<T> {
     fn default() -> Self {
         IdMap {
-            chunks: Vec::new(),
+            base: 0,
+            chunks: VecDeque::new(),
             sparse: BTreeMap::new(),
             len: 0,
+            allocated: 0,
+            settled: 0,
         }
     }
 }
 
-fn split(id: u64) -> (usize, usize) {
-    ((id >> CHUNK_BITS) as usize, (id as usize) & (CHUNK - 1))
+/// The number of the chunk that holds `u64::MAX`.
+const LAST_CHUNK: u64 = u64::MAX >> CHUNK_BITS;
+
+/// The first and last id of chunk `number` (at most [`LAST_CHUNK`]). The
+/// last id of the last chunk is `u64::MAX`, so a range over a chunk is
+/// inclusive: one past its end does not exist.
+fn chunk_ids(number: u64) -> (u64, u64) {
+    let first = number << CHUNK_BITS;
+    (first, first | (CHUNK as u64 - 1))
+}
+
+fn split(id: u64) -> (u64, usize) {
+    (id >> CHUNK_BITS, (id as usize) & (CHUNK - 1))
 }
 
 impl<T> IdMap<T> {
-    /// The first id past the dense range.
-    fn dense_end(&self) -> u64 {
-        (self.chunks.len() as u64) << CHUNK_BITS
-    }
-
-    /// The most chunks the slots may span: twice the entries plus one chunk.
-    /// In u64: on wasm32 a far id's chunk number does not fit a usize.
-    fn allowed_chunks(&self) -> u64 {
-        ((self.len as u64 + 1).saturating_mul(2) + CHUNK as u64) >> CHUNK_BITS
-    }
-
     pub fn len(&self) -> usize {
         self.len
     }
@@ -61,55 +84,80 @@ impl<T> IdMap<T> {
         self.len == 0
     }
 
+    fn chunk(&self, number: u64) -> Option<&Chunk<T>> {
+        let at = number.checked_sub(self.base)?;
+        self.chunks.get(usize::try_from(at).ok()?)?.as_ref()
+    }
+
+    fn chunk_mut(&mut self, number: u64) -> Option<&mut Chunk<T>> {
+        let at = number.checked_sub(self.base)?;
+        self.chunks.get_mut(usize::try_from(at).ok()?)?.as_mut()
+    }
+
     pub fn get(&self, id: u64) -> Option<&T> {
-        if id < self.dense_end() {
-            let (chunk, slot) = split(id);
-            self.chunks[chunk][slot].as_ref()
-        } else {
-            self.sparse.get(&id)
+        let (number, slot) = split(id);
+        match self.chunk(number) {
+            Some(chunk) => chunk.slots[slot].as_ref(),
+            None => self.sparse.get(&id),
         }
     }
 
     pub fn get_mut(&mut self, id: u64) -> Option<&mut T> {
-        if id < self.dense_end() {
-            let (chunk, slot) = split(id);
-            self.chunks[chunk][slot].as_mut()
-        } else {
-            self.sparse.get_mut(&id)
+        let (number, slot) = split(id);
+        if self.chunk(number).is_some() {
+            return self.chunk_mut(number).and_then(|chunk| chunk.slots[slot].as_mut());
         }
+        self.sparse.get_mut(&id)
     }
 
     /// Store `value` at `id`, returning what was there.
     pub fn insert(&mut self, id: u64, value: T) -> Option<T> {
-        if id >= self.dense_end() && (id >> CHUNK_BITS) < self.allowed_chunks() {
-            self.grow((id >> CHUNK_BITS) + 1);
+        let (number, slot) = split(id);
+        if self.chunk(number).is_none() && self.may_allocate(number) {
+            self.allocate(number);
         }
-        let previous = if id < self.dense_end() {
-            let (chunk, slot) = split(id);
-            self.chunks[chunk][slot].replace(value)
-        } else {
-            self.sparse.insert(id, value)
+        let previous = match self.chunk_mut(number) {
+            Some(chunk) => {
+                let previous = chunk.slots[slot].replace(value);
+                if previous.is_none() {
+                    chunk.live += 1;
+                }
+                previous
+            }
+            None => self.sparse.insert(id, value),
         };
         if previous.is_none() {
             self.len += 1;
             // Every chunk's worth of entries raises the allowance by two
             // chunks: take in the overflow entries that now fit.
             if self.len.is_multiple_of(CHUNK) && !self.sparse.is_empty() {
-                self.grow(0);
+                if self.sparse.len() > 2 * self.settled + CHUNK && self.sparse.len() * 2 > self.len {
+                    self.rebuild();
+                } else {
+                    self.absorb();
+                }
             }
         }
         previous
     }
 
     pub fn remove(&mut self, id: u64) -> Option<T> {
-        let removed = if id < self.dense_end() {
-            let (chunk, slot) = split(id);
-            self.chunks[chunk][slot].take()
-        } else {
-            self.sparse.remove(&id)
+        let (number, slot) = split(id);
+        let Some(chunk) = self.chunk_mut(number) else {
+            let removed = self.sparse.remove(&id);
+            if removed.is_some() {
+                self.len -= 1;
+            }
+            return removed;
         };
+        let removed = chunk.slots[slot].take();
         if removed.is_some() {
+            chunk.live -= 1;
+            let empty = chunk.live == 0;
             self.len -= 1;
+            if empty {
+                self.free(number);
+            }
         }
         removed
     }
@@ -125,42 +173,154 @@ impl<T> IdMap<T> {
         self.get_mut(id).expect("inserted just now")
     }
 
-    /// Extend the slots to at least `chunks` chunks (within the allowance),
-    /// and on while the next overflow entry fits, moving each entry the
-    /// slots now cover into its slot.
-    fn grow(&mut self, chunks: u64) {
-        let allowed = self.allowed_chunks();
-        let mut target = chunks.min(allowed);
-        while let Some((&first, _)) = self.sparse.first_key_value() {
-            let needed = (first >> CHUNK_BITS) + 1;
-            if needed > allowed {
-                break;
+    /// Whether chunk `number` may be allocated: within the slot allowance
+    /// and the directory span.
+    fn may_allocate(&self, number: u64) -> bool {
+        let slots = (self.allocated as u64 + 1) * CHUNK as u64;
+        if slots > (self.len as u64 + 1).saturating_mul(2) + CHUNK as u64 {
+            return false;
+        }
+        let (low, high) = if self.chunks.is_empty() {
+            (number, number)
+        } else {
+            let end = self.base + self.chunks.len() as u64 - 1;
+            (self.base.min(number), end.max(number))
+        };
+        high - low < SPAN * (self.allocated as u64 + 1)
+    }
+
+    /// Allocate chunk `number` and move the overflow entries it covers in.
+    fn allocate(&mut self, number: u64) {
+        if self.chunks.is_empty() {
+            self.base = number;
+        }
+        while number < self.base {
+            self.chunks.push_front(None);
+            self.base -= 1;
+        }
+        while number >= self.base + self.chunks.len() as u64 {
+            self.chunks.push_back(None);
+        }
+        let mut chunk = Chunk {
+            live: 0,
+            slots: (0..CHUNK).map(|_| None).collect(),
+        };
+        // Inclusive: the last chunk ends at u64::MAX; one past it overflows.
+        let (first, last) = chunk_ids(number);
+        let covered: Vec<u64> = self.sparse.range(first..=last).map(|(id, _)| *id).collect();
+        for id in covered {
+            let value = self.sparse.remove(&id).expect("listed just now");
+            chunk.slots[split(id).1] = Some(value);
+            chunk.live += 1;
+        }
+        self.chunks[(number - self.base) as usize] = Some(chunk);
+        self.allocated += 1;
+    }
+
+    /// Free empty chunk `number` and trim the directory's empty ends.
+    fn free(&mut self, number: u64) {
+        self.chunks[(number - self.base) as usize] = None;
+        self.allocated -= 1;
+        while matches!(self.chunks.front(), Some(None)) {
+            self.chunks.pop_front();
+            self.base += 1;
+        }
+        while matches!(self.chunks.back(), Some(None)) {
+            self.chunks.pop_back();
+        }
+    }
+
+    /// Move overflow entries into chunks while the allowance lasts, lowest
+    /// ids first, looking only within the span a chunk could be allocated in.
+    fn absorb(&mut self) {
+        let reach = SPAN * (self.allocated as u64 + 2);
+        let (low, high) = if self.chunks.is_empty() {
+            let first = self.sparse.keys().next().map_or(0, |id| split(*id).0);
+            (first, first.saturating_add(reach))
+        } else {
+            (self.base.saturating_sub(reach), (self.base + self.chunks.len() as u64).saturating_add(reach))
+        };
+        let mut next = chunk_ids(low.min(LAST_CHUNK)).0;
+        let limit = chunk_ids(high.min(LAST_CHUNK)).1;
+        while let Some((&id, _)) = self.sparse.range(next..=limit).next() {
+            let number = split(id).0;
+            if self.may_allocate(number) {
+                self.allocate(number);
+            } else if (self.allocated as u64 + 1) * CHUNK as u64
+                > (self.len as u64 + 1).saturating_mul(2) + CHUNK as u64
+            {
+                return;
             }
-            target = target.max(needed);
-            while (self.chunks.len() as u64) < target {
-                self.chunks.push((0..CHUNK).map(|_| None).collect());
+            if number >= LAST_CHUNK {
+                return;
             }
-            let rest = self.sparse.split_off(&self.dense_end());
-            for (id, value) in std::mem::replace(&mut self.sparse, rest) {
-                let (chunk, slot) = split(id);
-                self.chunks[chunk][slot] = Some(value);
+            next = chunk_ids(number + 1).0;
+        }
+    }
+
+    /// Choose the chunks again from scratch, densest first. Most entries
+    /// are in the overflow map, so the allocated chunks are in the wrong
+    /// place: the first ids seen were far from where the graph lives (a far
+    /// id before the dense ones). Runs only when the overflow map has at
+    /// least doubled since the last time, so its cost amortises.
+    fn rebuild(&mut self) {
+        let base = self.base;
+        for (at, chunk) in std::mem::take(&mut self.chunks).into_iter().enumerate() {
+            let Some(chunk) = chunk else { continue };
+            let start = chunk_ids(base + at as u64).0;
+            for (slot, value) in chunk.slots.into_vec().into_iter().enumerate() {
+                if let Some(value) = value {
+                    self.sparse.insert(start + slot as u64, value);
+                }
             }
         }
-        while (self.chunks.len() as u64) < target {
-            self.chunks.push((0..CHUNK).map(|_| None).collect());
+        self.allocated = 0;
+        self.base = 0;
+        let mut counts: Vec<(u64, usize)> = Vec::new();
+        for id in self.sparse.keys() {
+            let number = split(*id).0;
+            match counts.last_mut() {
+                Some((last, count)) if *last == number => *count += 1,
+                _ => counts.push((number, 1)),
+            }
         }
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        for (number, _) in counts {
+            if self.may_allocate(number) {
+                self.allocate(number);
+            }
+        }
+        self.settled = self.sparse.len();
     }
 
     /// Every entry, ascending by id.
     pub fn iter(&self) -> impl Iterator<Item = (u64, &T)> + '_ {
-        let dense = self.chunks.iter().enumerate().flat_map(|(chunk, slots)| {
-            let base = (chunk as u64) << CHUNK_BITS;
-            slots
-                .iter()
-                .enumerate()
-                .filter_map(move |(slot, value)| Some((base + slot as u64, value.as_ref()?)))
-        });
-        dense.chain(self.sparse.iter().map(|(id, value)| (*id, value)))
+        let base = self.base;
+        let mut dense = self
+            .chunks
+            .iter()
+            .enumerate()
+            .filter_map(move |(at, chunk)| Some((base + at as u64, chunk.as_ref()?)))
+            .flat_map(|(number, chunk)| {
+                let start = chunk_ids(number).0;
+                chunk
+                    .slots
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(slot, value)| Some((start + slot as u64, value.as_ref()?)))
+            })
+            .peekable();
+        let mut sparse = self.sparse.iter().map(|(id, value)| (*id, value)).peekable();
+        std::iter::from_fn(move || match (dense.peek(), sparse.peek()) {
+            (Some(d), Some(s)) if s.0 < d.0 => sparse.next(),
+            (Some(_), _) => dense.next(),
+            (None, _) => sparse.next(),
+        })
+    }
+
+    #[cfg(test)]
+    fn allocated_chunks(&self) -> usize {
+        self.allocated
     }
 }
 
@@ -208,11 +368,12 @@ mod tests {
         let mut map = IdMap::default();
         map.insert(1 << 40, "far");
         map.insert(u64::MAX, "last");
-        assert!(map.chunks.is_empty());
+        assert_eq!(map.allocated_chunks(), 1, "the first id gets a chunk");
         for id in 0..5_000 {
             map.insert(id, "near");
         }
-        assert_eq!(map.chunks.len(), 5_000usize.div_ceil(CHUNK));
+        assert!(map.allocated_chunks() <= 5_000usize.div_ceil(CHUNK));
+        assert_eq!(map.sparse.len(), 2, "the far ids moved to the overflow map");
         assert_eq!(map.get(1 << 40), Some(&"far"));
         assert_eq!(map.get(u64::MAX), Some(&"last"));
         assert_eq!(map.iter().last(), Some((u64::MAX, &"last")));
@@ -228,15 +389,83 @@ mod tests {
         }
         assert_eq!(map.len(), 50_000);
         assert!(map.sparse.is_empty());
-        assert_eq!(map.chunks.len(), 50_000usize.div_ceil(CHUNK));
+        assert_eq!(map.allocated_chunks(), 50_000usize.div_ceil(CHUNK));
         assert!(map.iter().map(|(id, v)| (id, *v)).eq((0..50_000).map(|id| (id, id))));
+    }
+
+    /// Review M1 of #113: ids climb while old ones are deleted. The chunks
+    /// the deletes empty are freed, so what stays allocated follows the
+    /// live entries, not every id ever used.
+    #[test]
+    fn churn_frees_the_chunks_it_empties() {
+        let mut map = IdMap::default();
+        let window = 10_000u64;
+        for id in 0..window {
+            map.insert(id, id);
+        }
+        for id in window..window * 50 {
+            map.insert(id, id);
+            assert_eq!(map.remove(id - window), Some(id - window));
+        }
+        assert_eq!(map.len(), window as usize);
+        assert!(map.allocated_chunks() <= window as usize / CHUNK + 2, "{}", map.allocated_chunks());
+        assert!(map.chunks.len() <= window as usize / CHUNK + 2);
+        assert!(map.sparse.is_empty());
+        assert!(map.iter().map(|(id, v)| (id, *v)).eq((window * 49..window * 50).map(|id| (id, id))));
+    }
+
+    /// Ids one chunk apart would each take a chunk for one entry; past the
+    /// allowance they stay in the overflow map instead.
+    #[test]
+    fn scattered_ids_do_not_each_take_a_chunk() {
+        let mut map = IdMap::default();
+        for k in 0..1_000u64 {
+            map.insert(k * CHUNK as u64, k);
+        }
+        assert!(map.allocated_chunks() <= 2);
+        assert_eq!(map.len(), 1_000);
+        assert!(map.iter().map(|(id, v)| (id, *v)).eq((0..1_000).map(|k| (k * CHUNK as u64, k))));
+    }
+
+    /// Review H1 of #114: the chunk that ends at `u64::MAX` has no id one
+    /// past its end. Its first id may be the first one seen, it may take in
+    /// overflow entries, and a rebuild may choose it.
+    #[test]
+    fn the_last_chunk_holds_ids_up_to_u64_max() {
+        let mut map = IdMap::default();
+        map.insert(u64::MAX - 1, 1u8);
+        assert_eq!(map.get(u64::MAX - 1), Some(&1));
+        map.insert(u64::MAX, 2);
+        assert_eq!(map.get(u64::MAX), Some(&2));
+        assert_eq!(map.iter().map(|(id, _)| id).collect::<Vec<_>>(), vec![u64::MAX - 1, u64::MAX]);
+        assert_eq!(map.remove(u64::MAX), Some(2));
+        assert_eq!(map.remove(u64::MAX - 1), Some(1));
+        assert!(map.is_empty());
+
+        // A low id first, then two chunks' worth at the top: the top ids
+        // start in the overflow map, and a rebuild moves them into the last
+        // two chunks.
+        let mut map = IdMap::default();
+        map.insert(5, 0u64);
+        let top: Vec<u64> = (u64::MAX - 2 * CHUNK as u64 + 1..=u64::MAX).collect();
+        for &id in &top {
+            map.insert(id, id);
+        }
+        assert_eq!(map.len(), top.len() + 1);
+        assert!(map.allocated_chunks() >= 2);
+        let want: Vec<u64> = std::iter::once(5).chain(top.iter().copied()).collect();
+        assert_eq!(map.iter().map(|(id, _)| id).collect::<Vec<_>>(), want);
+        for &id in &top {
+            assert_eq!(map.remove(id), Some(id));
+        }
+        assert_eq!(map.len(), 1);
     }
 
     #[test]
     fn ids_inserted_before_the_range_reached_them_move_into_slots() {
         let mut map = IdMap::default();
         map.insert(1_500, 'b');
-        assert!(map.chunks.len() <= 2);
+        assert!(map.allocated_chunks() <= 2);
         for id in 0..3_000 {
             if id != 1_500 {
                 map.insert(id, 'a');

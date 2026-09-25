@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasher, BuildHasherDefault, Hasher, RandomState};
 use std::sync::atomic::{AtomicU64, Ordering};
 use crate::idset::IdSet;
 use crate::index::{DeclaredIndexes, IndexKind, IndexSpec, Interval, TextPattern};
@@ -7,9 +6,11 @@ use crate::value::Value;
 
 mod idmap;
 mod names;
+mod unique;
 
 use idmap::IdMap;
 use names::{Names, Shape, ShapeId, Shapes, Sym};
+use unique::UniqueIndexes;
 
 pub type NodeId = u64;
 pub type RelId = u64;
@@ -239,25 +240,6 @@ fn intern(
     (shapes.intern(Shape { labels, keys }), values)
 }
 
-/// A hasher for keys that are already hashes: the property index is keyed
-/// by a keyed hash of (property key, value), so hashing it again is waste.
-#[derive(Default)]
-struct PreHashed(u64);
-
-impl Hasher for PreHashed {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 = (self.0 << 8) | u64::from(*byte);
-        }
-    }
-    fn write_u64(&mut self, value: u64) {
-        self.0 = value;
-    }
-}
-
 /// The relationships that leave and enter one node. A node has an entry
 /// only while it has a relationship.
 #[derive(Default)]
@@ -266,20 +248,21 @@ struct Adjacency {
     inc: IdSet,
 }
 
+/// What stored node `id` holds in `field`.
+fn stored_value<'g>(nodes: &'g IdMap<NodeRecord>, shapes: &Shapes, id: NodeId, field: Sym) -> Option<&'g Value> {
+    let record = nodes.get(id)?;
+    let at = shapes.get(record.shape).keys.binary_search(&field).ok()?;
+    record.values.get(at)
+}
+
 pub struct Graph {
     names: Names,
     shapes: Shapes,
     nodes: IdMap<NodeRecord>,
     relationships: IdMap<RelRecord>,
     label_index: HashMap<Sym, IdSet>,
-    /// Nodes by a hash of (property key, value), for `unique` checks and
-    /// lookups. It stores no key or value: [`Graph::nodes_by_property`]
-    /// checks each candidate's stored value, so a collision costs a
-    /// comparison, never a wrong answer.
-    property_index: HashMap<u64, IdSet, BuildHasherDefault<PreHashed>>,
-    /// Keys the property-index hash, per graph, so no one can choose values
-    /// that collide.
-    property_hasher: RandomState,
+    /// `unique { }` declarations of the schema last run against this graph.
+    uniques: UniqueIndexes,
     spatial_index: crate::location::SpatialIndex,
     vector_index: crate::vector::VectorIndex,
     /// `index { }` declarations of the schema last run against this graph.
@@ -313,8 +296,7 @@ impl Graph {
             nodes: IdMap::default(),
             relationships: IdMap::default(),
             label_index: HashMap::new(),
-            property_index: HashMap::default(),
-            property_hasher: RandomState::new(),
+            uniques: UniqueIndexes::default(),
             spatial_index: Default::default(),
             vector_index: Default::default(),
             declared: Default::default(),
@@ -485,10 +467,11 @@ impl Graph {
             self.label_index.entry(*label).or_default().insert(id);
         }
         self.add_prop_indexes(id);
-        self.next_node_id.fetch_max(id + 1, Ordering::SeqCst);
+        // Saturating: a restored id of u64::MAX leaves no id after it.
+        self.next_node_id.fetch_max(id.saturating_add(1), Ordering::SeqCst);
     }
 
-    /// Index every property of stored node `id`, and add it to the declared
+    /// Add stored node `id` to the spatial, vector, unique and declared
     /// indexes. Labels are indexed by the caller.
     fn add_prop_indexes(&mut self, id: NodeId) {
         let Some(record) = self.nodes.get(id) else {
@@ -505,14 +488,15 @@ impl Graph {
                     self.vector_index.insert(name, v, id);
                 }
             }
-            let hash = self.property_hasher.hash_one((key, value));
-            self.property_index.entry(hash).or_default().insert(id);
         }
+        let (nodes, shapes) = (&self.nodes, &self.shapes);
+        let stored = |other: NodeId, field: Sym| stored_value(nodes, shapes, other, field);
+        self.uniques.insert(id, node.shape, node.values, &stored);
         self.declared.insert(&node);
     }
 
-    /// Take stored node `id` (whose record is `record`) out of every property
-    /// index and the declared indexes. Labels are left to the caller.
+    /// Take stored node `id` (whose record is `record`) out of the spatial,
+    /// vector, unique and declared indexes. Labels are left to the caller.
     fn remove_prop_indexes(&mut self, id: NodeId, record: &NodeRecord) {
         let node = node_ref(&self.names, &self.shapes, id, record);
         self.declared.remove(&node);
@@ -524,14 +508,8 @@ impl Graph {
             if let Value::Vector(v) = value {
                 self.vector_index.remove(name, v, id);
             }
-            let hash = self.property_hasher.hash_one((key, value));
-            if let Some(set) = self.property_index.get_mut(&hash) {
-                set.remove(id);
-                if set.is_empty() {
-                    self.property_index.remove(&hash);
-                }
-            }
         }
+        self.uniques.remove(id, node.shape, node.values);
     }
 
     pub fn update_node(&mut self, id: NodeId, props: HashMap<String, Value>) {
@@ -624,7 +602,7 @@ impl Graph {
         }
         self.adjacency.get_or_default(from).out.insert(id);
         self.adjacency.get_or_default(to).inc.insert(id);
-        self.next_rel_id.fetch_max(id + 1, Ordering::SeqCst);
+        self.next_rel_id.fetch_max(id.saturating_add(1), Ordering::SeqCst);
     }
 
     fn remove_relationship_indexes(&mut self, id: RelId, rel: &RelRecord) {
@@ -663,22 +641,59 @@ impl Graph {
         self.label_index.get(&self.names.get(label)?)
     }
 
-    /// The nodes whose `key` is `value`, ascending by id.
-    pub fn nodes_by_property(&self, key: &str, value: &Value) -> Vec<NodeId> {
-        let Some(sym) = self.names.get(key) else {
-            return Vec::new();
-        };
-        let hash = self.property_hasher.hash_one((sym, value));
-        let Some(set) = self.property_index.get(&hash) else {
-            return Vec::new();
-        };
-        let mut ids: Vec<NodeId> = set
+    /// Make the unique indexes exactly `uniques` (type, field pairs): drop
+    /// the rest and build any new one from the nodes already stored. Writes
+    /// keep them current after.
+    pub fn sync_uniques(&mut self, uniques: &[(String, String)]) {
+        let pairs: Vec<(Sym, Sym)> = uniques
             .iter()
-            .copied()
-            .filter(|id| self.get_node(*id).and_then(|node| node.prop(key)) == Some(value))
+            .map(|(ty, field)| (self.names.intern(ty), self.names.intern(field)))
             .collect();
+        self.uniques.retain(&pairs);
+        for &(ty, field) in &pairs {
+            if self.uniques.contains(ty, field) {
+                continue;
+            }
+            self.uniques.add(ty, field);
+            let ids: Vec<NodeId> = self.label_index.get(&ty).map(|set| set.iter().copied().collect()).unwrap_or_default();
+            let (nodes, shapes) = (&self.nodes, &self.shapes);
+            let stored = |other: NodeId, field: Sym| stored_value(nodes, shapes, other, field);
+            for id in ids {
+                if let Some(record) = nodes.get(id) {
+                    self.uniques.insert(id, shapes.get(record.shape), &record.values, &stored);
+                }
+            }
+        }
+    }
+
+    /// The nodes with label `ty` whose `field` is `value` (by `Value`
+    /// equality), ascending by id. A declared `unique` answers from its
+    /// index; any other pair scans the nodes of the type, with the same
+    /// answer.
+    pub fn unique_matches(&self, ty: &str, field: &str, value: &Value) -> Vec<NodeId> {
+        let (Some(ty_sym), Some(field_sym)) = (self.names.get(ty), self.names.get(field)) else {
+            return Vec::new();
+        };
+        let holds = |id: &NodeId| {
+            self.get_node(*id)
+                .is_some_and(|node| node.has_label(ty) && node.prop(field) == Some(value))
+        };
+        let mut ids: Vec<NodeId> = match self.uniques.candidates(ty_sym, field_sym, value) {
+            Some(candidates) => candidates.into_iter().filter(holds).collect(),
+            None => self.label_index.get(&ty_sym).into_iter().flat_map(IdSet::iter).copied().filter(holds).collect(),
+        };
         ids.sort_unstable();
         ids
+    }
+
+    /// The nodes whose `key` is `value`, ascending by id, by a scan: only
+    /// the tests ask this of any field.
+    #[cfg(test)]
+    pub fn nodes_by_property(&self, key: &str, value: &Value) -> Vec<NodeId> {
+        self.nodes()
+            .filter(|node| node.prop(key) == Some(value))
+            .map(|node| node.id)
+            .collect()
     }
 
     /// Whether the graph holds no node and no relationship.
@@ -823,22 +838,55 @@ mod tests {
         assert_eq!(g.nodes_by_property("a", &Value::Int(3)), vec![id]);
     }
 
-    /// A map hashes by its length, so these two share a property-index
+    /// A map hashes by its length, so these two share a unique-index
     /// bucket: the lookup must check the stored value, not trust the hash.
     #[test]
-    fn a_property_lookup_checks_values_that_share_a_hash() {
+    fn a_unique_lookup_checks_values_that_share_a_hash() {
         let mut g = Graph::new();
+        g.sync_uniques(&[("T".into(), "m".into()), ("T".into(), "n".into())]);
         let map = |k: &str| Value::Map(Box::new(HashMap::from([(k.to_string(), Value::Int(1))])));
         let a = g.create_node(vec!["T".into()], HashMap::from([("m".to_string(), map("a"))]));
         let b = g.create_node(vec!["T".into()], HashMap::from([("m".to_string(), map("b"))]));
-        assert_eq!(g.nodes_by_property("m", &map("a")), vec![a]);
-        assert_eq!(g.nodes_by_property("m", &map("b")), vec![b]);
-        assert!(g.nodes_by_property("m", &map("c")).is_empty());
-        assert!(g.nodes_by_property("other", &map("a")).is_empty());
-        // Int 1 and Float 1.0 are different values.
+        assert_eq!(g.unique_matches("T", "m", &map("a")), vec![a]);
+        assert_eq!(g.unique_matches("T", "m", &map("b")), vec![b]);
+        assert!(g.unique_matches("T", "m", &map("c")).is_empty());
+        assert!(g.unique_matches("T", "other", &map("a")).is_empty());
+        assert!(g.unique_matches("U", "m", &map("a")).is_empty());
+        // Int 1 and Float 1.0 are different values; so are 0.0 and -0.0,
+        // and two NaNs are equal only with the same bits.
         let int = g.create_node(vec!["T".into()], HashMap::from([("n".to_string(), Value::Int(1))]));
-        assert_eq!(g.nodes_by_property("n", &Value::Int(1)), vec![int]);
-        assert!(g.nodes_by_property("n", &Value::from_f64(1.0)).is_empty());
+        let zero = g.create_node(vec!["T".into()], HashMap::from([("n".to_string(), Value::from_f64(0.0))]));
+        let nan = g.create_node(vec!["T".into()], HashMap::from([("n".to_string(), Value::from_f64(f64::NAN))]));
+        assert_eq!(g.unique_matches("T", "n", &Value::Int(1)), vec![int]);
+        assert!(g.unique_matches("T", "n", &Value::from_f64(1.0)).is_empty());
+        assert_eq!(g.unique_matches("T", "n", &Value::from_f64(0.0)), vec![zero]);
+        assert!(g.unique_matches("T", "n", &Value::from_f64(-0.0)).is_empty());
+        assert_eq!(g.unique_matches("T", "n", &Value::from_f64(f64::NAN)), vec![nan]);
+        assert!(g.unique_matches("T", "n", &Value::Float(0x7ff8_0000_0000_0001)).is_empty());
+    }
+
+    /// A declared unique answers exactly as the scan an undeclared pair
+    /// gets, through label changes, updates and deletes.
+    #[test]
+    fn a_unique_index_follows_labels_updates_and_deletes() {
+        let mut g = Graph::new();
+        let a = g.create_node(vec!["T".into()], HashMap::from([("k".to_string(), Value::Int(1))]));
+        g.sync_uniques(&[("T".into(), "k".into())]);
+        let b = g.create_node(vec!["U".into()], HashMap::from([("k".to_string(), Value::Int(1))]));
+        assert_eq!(g.unique_matches("T", "k", &Value::Int(1)), vec![a]);
+        g.restore_node(b, vec!["T".into()], HashMap::from([("k".to_string(), Value::Int(1))]));
+        assert_eq!(g.unique_matches("T", "k", &Value::Int(1)), vec![a, b]);
+        g.restore_node(a, vec!["U".into()], HashMap::from([("k".to_string(), Value::Int(1))]));
+        assert_eq!(g.unique_matches("T", "k", &Value::Int(1)), vec![b]);
+        g.update_node(b, HashMap::from([("k".to_string(), Value::Int(2))]));
+        assert!(g.unique_matches("T", "k", &Value::Int(1)).is_empty());
+        assert_eq!(g.unique_matches("T", "k", &Value::Int(2)), vec![b]);
+        assert_eq!(g.uniques.entries(), 1, "an update replaces the node's entry");
+        g.delete_node(b);
+        assert!(g.unique_matches("T", "k", &Value::Int(2)).is_empty());
+        assert_eq!(g.uniques.entries(), 0, "a delete leaves nothing behind");
+        g.sync_uniques(&[]);
+        assert!(g.uniques.candidates(g.names.get("T").unwrap(), g.names.get("k").unwrap(), &Value::Int(1)).is_none());
     }
 
     #[test]
@@ -857,4 +905,8 @@ mod tests {
 }
 
 #[cfg(test)]
+mod differential_tests;
+#[cfg(test)]
 mod exhaustive_tests;
+#[cfg(test)]
+mod review_114_tests;
