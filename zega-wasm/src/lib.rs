@@ -135,8 +135,38 @@ impl ZegaWasm {
         serde_json::to_string(&value).map_err(to_js_error)
     }
 
+    /// The whole graph as a `.graph` file (docs/graph-format.md): a
+    /// `Uint8Array` to download, upload or `new Blob([bytes])`. `schema` is
+    /// ZQL schema text to carry along; `meta` is a JSON object of string
+    /// manifest metadata such as `{"licence": "CC0-1.0"}`.
+    #[wasm_bindgen(js_name = exportGraph)]
+    pub fn export_graph(&self, schema: Option<String>, meta: Option<String>) -> Result<Vec<u8>, JsValue> {
+        let meta = match meta {
+            Some(meta) => serde_json::from_str(&meta).map_err(to_js_error)?,
+            None => Default::default(),
+        };
+        let options = zega::graph_file::ExportOptions { schema, meta };
+        let mut bytes = Vec::new();
+        self.inner.export_with(&mut bytes, &options).map_err(to_js_error)?;
+        Ok(bytes)
+    }
+
+    /// Replace the whole graph with a `.graph` file's bytes. All or nothing:
+    /// a damaged file throws and changes nothing. Returns what the file
+    /// carried besides the graph (counts, schema text, metadata) as JSON.
+    #[wasm_bindgen(js_name = importGraph)]
+    pub fn import_graph(&self, bytes: &[u8]) -> Result<String, JsValue> {
+        let summary = self.inner.import(bytes).map_err(to_js_error)?;
+        serde_json::to_string(&summary).map_err(to_js_error)
+    }
+
     /// Serialize the whole graph database to a base64 string, so the
     /// browser build can persist it across reloads.
+    ///
+    /// Deprecated for anything that leaves this browser: the bytes are the
+    /// engine's internal snapshot, with no version contract. Use
+    /// `exportGraph`. Kept, unchanged, because the explorer's saved
+    /// sessions (localStorage) are in this encoding.
     pub fn export_base64(&self) -> Result<String, JsValue> {
         use base64::Engine;
         let bytes = self.inner.snapshot_bytes().map_err(to_js_error)?;
@@ -144,7 +174,7 @@ impl ZegaWasm {
     }
 
     /// Restore a database previously produced by `export_base64`, replacing
-    /// current state.
+    /// current state. Deprecated like `export_base64`; use `importGraph`.
     pub fn import_base64(&self, data: String) -> Result<(), JsValue> {
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD

@@ -18,14 +18,23 @@ impl Drop for TestServer {
     }
 }
 async fn start_server() -> TestServer {
+    start_server_with(zega_server::DEFAULT_MAX_IMPORT_BYTES, zega_server::DEFAULT_TRANSFER_IDLE_TIMEOUT).await
+}
+
+async fn start_server_with(max_import_bytes: u64, idle: std::time::Duration) -> TestServer {
+    start_server_full(max_import_bytes, idle, zega_server::DEFAULT_TRANSFER_SLOTS).await
+}
+
+async fn start_server_full(max_import_bytes: u64, idle: std::time::Duration, slots: usize) -> TestServer {
     let data = tempfile::tempdir().unwrap();
     let zega = Zega::open(data.path().to_str().unwrap()).build().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let state = AppState::new(zega, Some(TOKEN))
+        .with_import_limits(max_import_bytes, idle)
+        .with_transfer_slots(slots);
     let task = tokio::spawn(async move {
-        server::serve(listener, AppState::new(zega, Some(TOKEN)))
-            .await
-            .unwrap();
+        server::serve(listener, state).await.unwrap();
     });
     TestServer {
         base_url: format!("http://{address}"),
@@ -134,6 +143,7 @@ async fn raw_import_uses_the_engine_and_graph_edits_use_wal_paths() {
     assert_eq!(body["result"], json!([{"name":"Ada","age":37}]));
     let graph: Value = client
         .get(format!("{}/graph", server.base_url))
+        .header("accept", "application/json")
         .bearer_auth(TOKEN)
         .send()
         .await
@@ -170,6 +180,7 @@ async fn every_database_route_requires_the_bearer() {
         (reqwest::Method::POST, "/zql"),
         (reqwest::Method::POST, "/vector-view"),
         (reqwest::Method::GET, "/graph"),
+        (reqwest::Method::PUT, "/graph"),
         (reqwest::Method::DELETE, "/graph"),
         (reqwest::Method::DELETE, "/graph/nodes/1"),
         (reqwest::Method::DELETE, "/graph/relationships/1"),
@@ -512,4 +523,384 @@ async fn a_query_inside_the_limit_is_not_affected() {
         .await
         .unwrap();
     assert_eq!(body["ok"], true, "{body}");
+}
+
+// ---------------------------------------------------------------------------
+// `.graph` over HTTP: `GET /graph` streams it, `PUT /graph` imports it.
+
+const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../zega/tests/fixtures/golden-v1.graph");
+
+async fn download(client: &Client, server: &TestServer) -> Vec<u8> {
+    let response = client
+        .get(format!("{}/graph", server.base_url))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["content-type"],
+        zega::graph_file::MEDIA_TYPE
+    );
+    response.bytes().await.unwrap().to_vec()
+}
+
+async fn upload(client: &Client, server: &TestServer, bytes: Vec<u8>) -> (StatusCode, Value) {
+    let response = client
+        .put(format!("{}/graph", server.base_url))
+        .bearer_auth(TOKEN)
+        .header("content-type", zega::graph_file::MEDIA_TYPE)
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    (response.status(), response.json().await.unwrap())
+}
+
+
+
+#[tokio::test]
+async fn get_graph_streams_the_graph_file_the_engine_exports() {
+    let server = start_server().await;
+    let client = Client::new();
+    post(&client, &server)
+        .json(&json!({"schema":SCHEMA,"query":"mutation { Person(name: \"Ada\" && age: 37) { name } }"}))
+        .send()
+        .await
+        .unwrap();
+    let bytes = download(&client, &server).await;
+    assert!(bytes.starts_with(&zega::graph_file::MAGIC));
+    let local = Zega::in_memory().build().unwrap();
+    let summary = local.import(&bytes[..]).unwrap();
+    assert_eq!((summary.nodes, summary.relationships), (1, 0));
+    let mut again = Vec::new();
+    local.export(&mut again).unwrap();
+    assert_eq!(again, bytes, "the download is exactly what the engine exports");
+}
+
+#[tokio::test]
+async fn put_graph_replaces_the_graph_and_get_returns_it() {
+    let server = start_server().await;
+    let client = Client::new();
+    let golden = std::fs::read(GOLDEN).unwrap();
+    let (status, body) = upload(&client, &server, golden.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"]["nodes"], 3);
+    assert_eq!(body["result"]["relationships"], 2);
+    assert_eq!(body["result"]["meta"]["licence"], "CC0-1.0");
+    // Import then export is the same file, schema and metadata included.
+    assert_eq!(download(&client, &server).await, golden);
+}
+
+#[tokio::test]
+async fn put_graph_refuses_a_damaged_file_and_changes_nothing() {
+    let server = start_server().await;
+    let client = Client::new();
+    post(&client, &server)
+        .json(&json!({"schema":SCHEMA,"query":"mutation { Person(name: \"Ada\" && age: 37) { name } }"}))
+        .send()
+        .await
+        .unwrap();
+    let before = download(&client, &server).await;
+    let golden = std::fs::read(GOLDEN).unwrap();
+    let mut flipped = golden.clone();
+    let at = flipped.len() / 2;
+    flipped[at] ^= 0x01;
+    for (bytes, message) in [
+        (golden[..golden.len() - 1].to_vec(), "truncated .graph file"),
+        (flipped, "corrupt .graph file"),
+        (b"not a graph".to_vec(), "not a .graph file"),
+    ] {
+        let (status, body) = upload(&client, &server, bytes).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].as_str().unwrap().starts_with(message), "{body}");
+        assert_eq!(download(&client, &server).await, before);
+    }
+}
+
+/// `PUT /graph` streams: a file past the 16 MB JSON body limit imports.
+#[tokio::test]
+async fn put_graph_accepts_a_file_larger_than_the_json_body_limit() {
+    let source = Zega::in_memory().build().unwrap();
+    let big = "x".repeat(1_000_000);
+    for _ in 0..18 {
+        source
+            .run_lang(SCHEMA, &format!("mutation {{ Person(name: \"{big}\") {{ name }} }}"))
+            .unwrap();
+    }
+    let mut bytes = Vec::new();
+    source.export(&mut bytes).unwrap();
+    assert!(bytes.len() > 16_000_000);
+    let server = start_server().await;
+    let client = Client::new();
+    let (status, body) = upload(&client, &server, bytes.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(download(&client, &server).await, bytes);
+}
+
+#[tokio::test]
+async fn get_graph_negotiates_on_accept_with_q_values_and_says_it_varies() {
+    let server = start_server().await;
+    let client = Client::new();
+    for (accept, expected) in [
+        (None, Some("application/vnd.zega.graph")),
+        (Some("*/*"), Some("application/vnd.zega.graph")),
+        (Some("application/json"), Some("application/json")),
+        (Some("application/json, */*;q=0.1"), Some("application/json")),
+        (Some("application/json;q=0.5, application/vnd.zega.graph"), Some("application/vnd.zega.graph")),
+        (Some("application/vnd.zega.graph;q=0.2, application/*;q=0.9"), Some("application/json")),
+        (Some("application/json;q=0, */*"), Some("application/vnd.zega.graph")),
+        (Some("text/html"), None),
+    ] {
+        let request = client.get(format!("{}/graph", server.base_url)).bearer_auth(TOKEN);
+        let request = match accept {
+            Some(accept) => request.header("accept", accept),
+            None => request,
+        };
+        let response = request.send().await.unwrap();
+        assert_eq!(response.headers()["vary"], "accept", "{accept:?}");
+        match expected {
+            Some(kind) => {
+                assert_eq!(response.status(), StatusCode::OK, "{accept:?}");
+                assert!(response.headers()["content-type"].to_str().unwrap().starts_with(kind), "{accept:?}");
+            }
+            None => assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE, "{accept:?}"),
+        }
+    }
+}
+
+/// Send the start of a request on a raw socket and keep the socket open
+/// without sending (or reading) anything more: a stalled client.
+async fn stalled(server: &TestServer, head: String, body: &[u8]) -> tokio::net::TcpStream {
+    use tokio::io::AsyncWriteExt;
+    let address = server.base_url.trim_start_matches("http://");
+    let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+    socket.write_all(head.as_bytes()).await.unwrap();
+    socket.write_all(body).await.unwrap();
+    socket
+}
+
+async fn quick_query(client: &Client, server: &TestServer) -> std::time::Duration {
+    let start = std::time::Instant::now();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        // A query that needs the database gate but reads nothing.
+        post(client, server).json(&json!({"schema":"type Other { name: String }","query":"{ Other { name } }"})).send(),
+    )
+    .await
+    .expect("a query waited behind a stalled .graph transfer")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    start.elapsed()
+}
+
+/// A graph whose file is far larger than every socket and channel buffer
+/// between the server and a client that stops reading.
+async fn big_graph(client: &Client, server: &TestServer) {
+    let big = "x".repeat(1_000_000);
+    for _ in 0..40 {
+        post(client, server)
+            .json(&json!({"schema":SCHEMA,"query":format!("mutation {{ Person(name: \"{big}\") {{ name }} }}")}))
+            .send()
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_download_nobody_reads_does_not_block_queries() {
+    let server = start_server().await;
+    let client = Client::new();
+    big_graph(&client, &server).await;
+    let mut reader = stalled(
+        &server,
+        format!("GET /graph HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"),
+        b"",
+    )
+    .await;
+    // Read the response head (the export is written by then), then stop
+    // reading: 40 MB of body back up behind this client.
+    use tokio::io::AsyncReadExt;
+    let mut head = [0u8; 12];
+    reader.read_exact(&mut head).await.unwrap();
+    assert_eq!(&head, b"HTTP/1.1 200");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let took = quick_query(&client, &server).await;
+    assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+}
+
+#[tokio::test]
+async fn a_stalled_upload_does_not_block_queries_and_times_out() {
+    let server = start_server_with(1 << 30, std::time::Duration::from_secs(2)).await;
+    let client = Client::new();
+    post(&client, &server)
+        .json(&json!({"schema":SCHEMA,"query":"mutation { Person(name: \"Ada\") { name } }"}))
+        .send()
+        .await
+        .unwrap();
+    let before = download(&client, &server).await;
+    let golden = std::fs::read(GOLDEN).unwrap();
+    let mut socket = stalled(
+        &server,
+        format!(
+            "PUT /graph HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {}\r\n\r\n",
+            golden.len()
+        ),
+        &golden[..100],
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let took = quick_query(&client, &server).await;
+    assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+    // After the idle timeout the upload is refused and nothing changed.
+    use tokio::io::AsyncReadExt;
+    let mut response = Vec::new();
+    tokio::time::timeout(std::time::Duration::from_secs(10), socket.read_to_end(&mut response))
+        .await
+        .expect("the stalled upload was never answered")
+        .unwrap();
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+    assert!(response.contains("the upload stalled"), "{response}");
+    assert_eq!(download(&client, &server).await, before);
+}
+
+#[tokio::test]
+async fn an_upload_over_the_size_limit_is_refused() {
+    let golden = std::fs::read(GOLDEN).unwrap();
+    let server = start_server_with(golden.len() as u64 - 1, zega_server::DEFAULT_TRANSFER_IDLE_TIMEOUT).await;
+    let client = Client::new();
+    let (status, body) = upload(&client, &server, golden.clone()).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("--max-import-bytes"), "{body}");
+    let server = start_server_with(golden.len() as u64, zega_server::DEFAULT_TRANSFER_IDLE_TIMEOUT).await;
+    let (status, body) = upload(&client, &server, golden).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn transfers_leave_no_staging_files() {
+    let server = start_server().await;
+    let client = Client::new();
+    let golden = std::fs::read(GOLDEN).unwrap();
+    upload(&client, &server, golden.clone()).await;
+    upload(&client, &server, golden[..50].to_vec()).await;
+    download(&client, &server).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let mut names: Vec<String> = std::fs::read_dir(server._data.path().join("graphs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(names[0].ends_with(".graph") && !names[0].starts_with('.'), "{names:?}");
+}
+
+fn staging_files(server: &TestServer) -> Vec<String> {
+    match std::fs::read_dir(server._data.path().join("graphs")) {
+        Ok(entries) => entries
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with('.'))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn delete_graph_drops_what_an_import_carried() {
+    let server = start_server().await;
+    let client = Client::new();
+    let (status, _) = upload(&client, &server, std::fs::read(GOLDEN).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    let response = client
+        .delete(format!("{}/graph", server.base_url))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let local = Zega::in_memory().build().unwrap();
+    let summary = local.import(&download(&client, &server).await[..]).unwrap();
+    assert_eq!((summary.nodes, summary.relationships), (0, 0));
+    assert_eq!(summary.schema, None);
+    assert!(summary.meta.is_empty(), "the old licence survived: {:?}", summary.meta);
+}
+
+/// A client that stops reading a download is dropped after the idle
+/// timeout, and its staging file goes with it.
+#[tokio::test]
+async fn a_stalled_download_is_dropped_and_its_staging_file_deleted() {
+    let server = start_server_with(zega_server::DEFAULT_MAX_IMPORT_BYTES, std::time::Duration::from_secs(1)).await;
+    let client = Client::new();
+    big_graph(&client, &server).await;
+    let mut reader = stalled(
+        &server,
+        format!("GET /graph HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"),
+        b"",
+    )
+    .await;
+    use tokio::io::AsyncReadExt;
+    let mut head = [0u8; 12];
+    reader.read_exact(&mut head).await.unwrap();
+    assert_eq!(&head, b"HTTP/1.1 200");
+    assert_eq!(staging_files(&server).len(), 1, "the export is staged while it is sent");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !staging_files(&server).is_empty() {
+        assert!(std::time::Instant::now() < deadline, "the stalled download kept {:?}", staging_files(&server));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    drop(reader);
+}
+
+/// Transfers take a slot each; with none free the server says 503 rather
+/// than stage another file, and a slot comes back when its transfer ends.
+#[tokio::test]
+async fn transfers_beyond_the_slots_get_503() {
+    let server = start_server_full(zega_server::DEFAULT_MAX_IMPORT_BYTES, std::time::Duration::from_secs(1), 1).await;
+    let client = Client::new();
+    let golden = std::fs::read(GOLDEN).unwrap();
+    let mut socket = stalled(
+        &server,
+        format!(
+            "PUT /graph HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {}\r\n\r\n",
+            golden.len()
+        ),
+        &golden[..100],
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let (status, body) = upload(&client, &server, golden.clone()).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let busy = client.get(format!("{}/graph", server.base_url)).bearer_auth(TOKEN).send().await.unwrap();
+    assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    use tokio::io::AsyncReadExt;
+    let mut response = Vec::new();
+    socket.read_to_end(&mut response).await.unwrap();
+    assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 408"));
+    let (status, body) = upload(&client, &server, golden).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// A declared length over the cap is refused before any of the body is
+/// read or staged.
+#[tokio::test]
+async fn an_oversized_content_length_is_refused_up_front() {
+    let server = start_server().await;
+    let too_big = zega_server::DEFAULT_MAX_IMPORT_BYTES + 1;
+    let mut socket = stalled(
+        &server,
+        format!("PUT /graph HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {too_big}\r\n\r\n"),
+        b"",
+    )
+    .await;
+    use tokio::io::AsyncReadExt;
+    let mut head = [0u8; 12];
+    tokio::time::timeout(std::time::Duration::from_secs(3), socket.read_exact(&mut head))
+        .await
+        .expect("no early answer")
+        .unwrap();
+    assert_eq!(&head, b"HTTP/1.1 413");
+    assert!(staging_files(&server).is_empty());
+    assert_eq!(zega_server::DEFAULT_MAX_IMPORT_BYTES, 64 * 1024 * 1024);
 }

@@ -796,7 +796,7 @@ fn set_state_rebuilds_indexes_and_adjacency() {
             props: HashMap::new(),
         },
     );
-    g.set_state(nodes, rels);
+    g.set_state(nodes, rels, Default::default());
 
     assert_eq!(g.all_nodes().len(), 2);
     assert_eq!(g.all_relationships().len(), 1);
@@ -811,7 +811,7 @@ fn set_state_rebuilds_indexes_and_adjacency() {
 fn set_state_replaces_prior_contents() {
     let mut g = Graph::new();
     g.create_node(labels(&["Old"]), HashMap::new());
-    g.set_state(HashMap::new(), HashMap::new());
+    g.set_state(HashMap::new(), HashMap::new(), Default::default());
     assert!(g.all_nodes().is_empty());
     assert!(g.all_relationships().is_empty());
     // Old label index entry must no longer match.
@@ -837,7 +837,7 @@ fn set_state_sets_counters_above_max_ids() {
             props: HashMap::new(),
         },
     );
-    g.set_state(nodes, rels);
+    g.set_state(nodes, rels, Default::default());
     assert_eq!(g.create_node(vec![], HashMap::new()), 31);
     assert_eq!(g.create_relationship("R".to_string(), 30, 30, HashMap::new()), 16);
 }
@@ -847,7 +847,7 @@ fn set_state_empty_resets_counters_to_one() {
     let mut g = Graph::new();
     g.create_node(vec![], HashMap::new());
     g.create_node(vec![], HashMap::new());
-    g.set_state(HashMap::new(), HashMap::new());
+    g.set_state(HashMap::new(), HashMap::new(), Default::default());
     // With empty maps, max id is 0, so next ids restart at 1.
     assert_eq!(g.create_node(vec![], HashMap::new()), 1);
     assert_eq!(g.create_relationship("R".to_string(), 1, 1, HashMap::new()), 1);
@@ -1711,7 +1711,7 @@ fn create_after_set_state_continues_from_high_water_mark() {
     let mut g = Graph::new();
     let mut nodes = HashMap::new();
     nodes.insert(7u64, Node { id: 7, labels: vec![], props: HashMap::new() });
-    g.set_state(nodes, HashMap::new());
+    g.set_state(nodes, HashMap::new(), Default::default());
     let a = g.create_node(vec![], HashMap::new());
     assert_eq!(a, 8);
     // A restore of a much higher id then bumps the counter again.
@@ -1735,7 +1735,7 @@ fn set_state_with_dangling_relationship_endpoints() {
             props: HashMap::new(),
         },
     );
-    g.set_state(HashMap::new(), rels);
+    g.set_state(HashMap::new(), rels, Default::default());
     assert!(g.all_nodes().is_empty());
     assert_eq!(g.all_relationships().len(), 1);
     assert!(g.outgoing_rels(50).unwrap().contains(&3));
@@ -1755,7 +1755,7 @@ fn set_state_overwrites_indexes_not_merges() {
         1u64,
         Node { id: 1, labels: labels(&["Gone"]), props: props(&[("k", s("v"))]) },
     );
-    g.set_state(first, HashMap::new());
+    g.set_state(first, HashMap::new(), Default::default());
     assert!(g.nodes_by_label("Gone").unwrap().contains(&1));
 
     let mut second = HashMap::new();
@@ -1763,7 +1763,7 @@ fn set_state_overwrites_indexes_not_merges() {
         2u64,
         Node { id: 2, labels: labels(&["Here"]), props: HashMap::new() },
     );
-    g.set_state(second, HashMap::new());
+    g.set_state(second, HashMap::new(), Default::default());
     assert!(g.get_node(1).is_none());
     assert!(g.get_node(2).is_some());
     assert!(g.nodes_by_label("Gone").is_none_or(|s| !s.contains(&1)));
@@ -1783,7 +1783,7 @@ fn set_state_node_with_many_labels_and_props_fully_indexed() {
             props: props(&[("x", Value::Int(1)), ("y", s("two"))]),
         },
     );
-    g.set_state(nodes, HashMap::new());
+    g.set_state(nodes, HashMap::new(), Default::default());
     assert!(g.nodes_by_label("A").unwrap().contains(&1));
     assert!(g.nodes_by_label("B").unwrap().contains(&1));
     assert!(g.nodes_by_label("C").unwrap().contains(&1));
@@ -1909,7 +1909,7 @@ fn set_state_from_serde_roundtripped_snapshot() {
     let rels: HashMap<RelId, Relationship> = serde_json::from_str(&rels_json).expect("de rels");
 
     let mut g2 = Graph::new();
-    g2.set_state(nodes, rels);
+    g2.set_state(nodes, rels, Default::default());
     assert_eq!(g2.all_nodes().len(), 2);
     assert!(g2.nodes_by_label("Person").unwrap().contains(&a));
     assert!(g2.nodes_by_property("name", &s("Ada")).unwrap().contains(&a));

@@ -22,8 +22,20 @@ export class ZegaWasm {
     delete_node(id: number): void;
     delete_relationship(id: number): void;
     /**
+     * The whole graph as a `.graph` file (docs/graph-format.md): a
+     * `Uint8Array` to download, upload or `new Blob([bytes])`. `schema` is
+     * ZQL schema text to carry along; `meta` is a JSON object of string
+     * manifest metadata such as `{"licence": "CC0-1.0"}`.
+     */
+    exportGraph(schema?: string | null, meta?: string | null): Uint8Array;
+    /**
      * Serialize the whole graph database to a base64 string, so the
      * browser build can persist it across reloads.
+     *
+     * Deprecated for anything that leaves this browser: the bytes are the
+     * engine's internal snapshot, with no version contract. Use
+     * `exportGraph`. Kept, unchanged, because the explorer's saved
+     * sessions (localStorage) are in this encoding.
      */
     export_base64(): string;
     /**
@@ -31,8 +43,14 @@ export class ZegaWasm {
      */
     graph(): string;
     /**
+     * Replace the whole graph with a `.graph` file's bytes. All or nothing:
+     * a damaged file throws and changes nothing. Returns what the file
+     * carried besides the graph (counts, schema text, metadata) as JSON.
+     */
+    importGraph(bytes: Uint8Array): string;
+    /**
      * Restore a database previously produced by `export_base64`, replacing
-     * current state.
+     * current state. Deprecated like `export_base64`; use `importGraph`.
      */
     import_base64(data: string): void;
     load_locations(source: string, document: boolean): string;
@@ -89,8 +107,10 @@ export interface InitOutput {
     readonly zegawasm_connect: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly zegawasm_delete_node: (a: number, b: number) => [number, number];
     readonly zegawasm_delete_relationship: (a: number, b: number) => [number, number];
+    readonly zegawasm_exportGraph: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly zegawasm_export_base64: (a: number) => [number, number, number, number];
     readonly zegawasm_graph: (a: number) => [number, number, number, number];
+    readonly zegawasm_importGraph: (a: number, b: number, c: number) => [number, number, number, number];
     readonly zegawasm_import_base64: (a: number, b: number, c: number) => [number, number];
     readonly zegawasm_load_locations: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly zegawasm_new: () => [number, number, number];

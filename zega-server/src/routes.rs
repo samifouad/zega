@@ -1,6 +1,7 @@
 use crate::{handlers, AppState};
 use axum::{
     extract::DefaultBodyLimit,
+    handler::Handler,
     routing::{delete, get, post},
     Router,
 };
@@ -10,7 +11,14 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(handlers::health))
         .route("/zql", post(handlers::zql))
         .route("/vector-view", post(handlers::vector_view))
-        .route("/graph", get(handlers::graph).delete(handlers::clear))
+        // A `.graph` upload streams into the engine, so the JSON body limit
+        // below does not apply to it.
+        .route(
+            "/graph",
+            get(handlers::graph)
+                .put(handlers::import_graph.layer(DefaultBodyLimit::disable()))
+                .delete(handlers::clear),
+        )
         .route("/graph/nodes/:id", delete(handlers::delete_node))
         .route(
             "/graph/relationships/:id",
