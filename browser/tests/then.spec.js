@@ -13,9 +13,9 @@ test('native WASM API carries stages, typed evidence, skip and chaining', async 
     const db = new ZegaWasm();
     try {
       db.apply(source);
-      const expressions = ['common { Person { country } }', 'similar { &v > 0.9 }', 'near { &at <= 0 m }', 'regex { "^(Alice|Bob)$" }', 'findWithout { "Carol" }', 'startsWith { "A" } || endsWith { "ob" }'];
+      const expressions = ['common { Person { country } }', 'similar { &v > 0.9 }', 'near { &at <= 0 m }', 'regex { "^(Alice|Bob)$" }', 'findWithout { "Carol" }', 'startsExact { "A" } || endsExact { "ob" }'];
       const stages = expressions.map(expr => JSON.parse(db.run(source, `query { Person { name } } display { skip } then { ${expr} }`)));
-      const chained = JSON.parse(db.run(source, 'query { Person } display { skip } then { findWith { "Alice" } } display { skip } then { findWith { "Bob" } }'));
+      const chained = JSON.parse(db.run(source, 'query { Person } display { skip } then { findExact { "Alice" } } display { skip } then { findExact { "Bob" } }'));
       const diagnostic = JSON.parse(db.check(source, 'query { Person } then { near { &name < 1 km } }'));
       return { stages, chained, diagnostic };
     } finally { db.free(); }
@@ -41,10 +41,10 @@ test('WASM rejects misplaced discovery and unsupported regex, keeps infix filter
     const db = new ZegaWasm();
     try {
       db.apply(source);
-      const errors = ['then { findWith { "Alice" } }', 'query { findWith { "Alice" } }', 'query { Person } then { findWith "Alice" }', 'query { Person } then { regex { "(?=Alice)" } }'].map(query => {
+      const errors = ['then { findExact { "Alice" } }', 'query { findExact { "Alice" } }', 'query { Person } then { findExact "Alice" }', 'query { Person } then { regex { "(?=Alice)" } }'].map(query => {
         try { db.run(source, query); return null; } catch (error) { return String(error); }
       });
-      return { errors, infix: JSON.parse(db.run(source, 'query { Person(name findWith "lic") { name } }')) };
+      return { errors, infix: JSON.parse(db.run(source, 'query { Person(name findExact "lic") { name } }')) };
     } finally { db.free(); }
   }, source);
   expect(result.errors[0]).toContain('preceding query');

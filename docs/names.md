@@ -62,10 +62,13 @@ measured depth `1` at B. Bare `hops` would return B's stored node value `21`.
 Aliases let stored and built-in values appear in the same result. Default JSON
 result keys remain `id`, `hops`, `score`, `distance`, and `similarity`.
 
-String filters are `startsWith`, `endsWith`, and `findWith` (substring matching).
-They are infix operators, so they have no `@`. They remain case sensitive and
-use the same text indexes. `findWith` does not conflict with another ZQL
-operator or function. These names are also available as user property names.
+String filters are `startsExact`, `endsExact`, and `findExact` (byte-exact),
+and `startsLike`, `endsLike`, and `findLike` (case- and accent-insensitive,
+zegadb/zega#98). They are infix operators, so they have no `@`. The `…Exact`
+forms use the same text indexes; `…Like` always scans. `findExact` does not
+conflict with another ZQL operator or function. These names, and the retired
+`findWith`/`startsWith`/`endsWith` spelling, are also available as user
+property names.
 
 Block and positional keywords retain their spelling: `schema`, `type`, `query`,
 `mutation`, `display`, `unique`, `index`, `graph`, `table`, `map`, `globe`, `timeline`,

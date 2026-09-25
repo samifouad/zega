@@ -559,10 +559,13 @@ impl<'a> Printer<'a> {
                         span: _,
                     } => {
                         match op {
-                            TextOp::FindWith
+                            TextOp::FindExact
                             | TextOp::FindWithout
-                            | TextOp::StartsWith
-                            | TextOp::EndsWith
+                            | TextOp::StartsExact
+                            | TextOp::EndsExact
+                            | TextOp::FindLike
+                            | TextOp::StartsLike
+                            | TextOp::EndsLike
                             | TextOp::Regex => {}
                         }
                         if fields.is_empty() {
@@ -769,9 +772,12 @@ fn condition_forms(expr: &BoolExpr) {
             Pred::Box(_, _, _)
             | Pred::Eq(_, _, _)
             | Pred::Ne(_, _, _)
-            | Pred::Contains(_, _, _)
-            | Pred::StartsWith(_, _, _)
-            | Pred::EndsWith(_, _, _) => {}
+            | Pred::FindExact(_, _, _)
+            | Pred::StartsExact(_, _, _)
+            | Pred::EndsExact(_, _, _)
+            | Pred::FindLike(_, _, _)
+            | Pred::StartsLike(_, _, _)
+            | Pred::EndsLike(_, _, _) => {}
         },
     }
 }

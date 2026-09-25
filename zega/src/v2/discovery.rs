@@ -170,10 +170,13 @@ fn primitive_matches(
                         continue;
                     }
                     let pattern_kind = match op {
-                        TextOp::FindWith | TextOp::FindWithout => Some(TextPattern::Contains(text)),
-                        TextOp::StartsWith => Some(TextPattern::StartsWith(text)),
-                        TextOp::EndsWith => Some(TextPattern::EndsWith(text)),
-                        TextOp::Regex => None,
+                        TextOp::FindExact | TextOp::FindWithout => Some(TextPattern::Contains(text)),
+                        TextOp::StartsExact => Some(TextPattern::StartsWith(text)),
+                        TextOp::EndsExact => Some(TextPattern::EndsWith(text)),
+                        // `…Like` folds case and accents; the byte-exact text
+                        // index cannot serve it, so it always falls back to a
+                        // full scan below (zegadb/zega#98).
+                        TextOp::FindLike | TextOp::StartsLike | TextOp::EndsLike | TextOp::Regex => None,
                     };
                     let indexed =
                         pattern_kind.and_then(|p| graph.text_candidates(&[&ty.name], name, p));
@@ -192,9 +195,12 @@ fn primitive_matches(
                         work.charge(1)?;
                         graph.note_examined(1);
                         let yes = match op {
-                            TextOp::FindWith | TextOp::FindWithout => value.contains(text),
-                            TextOp::StartsWith => value.starts_with(text),
-                            TextOp::EndsWith => value.ends_with(text),
+                            TextOp::FindExact | TextOp::FindWithout => value.contains(text),
+                            TextOp::StartsExact => value.starts_with(text),
+                            TextOp::EndsExact => value.ends_with(text),
+                            TextOp::FindLike => crate::text_fold::contains(value, text),
+                            TextOp::StartsLike => crate::text_fold::starts_with(value, text),
+                            TextOp::EndsLike => crate::text_fold::ends_with(value, text),
                             TextOp::Regex => {
                                 pattern.as_ref().expect("compiled regex").0.is_match(value)
                             }

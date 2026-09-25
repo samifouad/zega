@@ -125,12 +125,12 @@ query {
 
 ## Text
 
-`findWith` finds text anywhere in a field, and `startsWith` and `endsWith`
-match its start and end. All three are case-sensitive.
+`findExact` finds text anywhere in a field, and `startsExact` and `endsExact`
+match its start and end. All three compare bytes exactly, the same as `=`.
 
 ```zql
 query {
-  Player(bio findWith "20") { name bio }
+  Player(bio findExact "20") { name bio }
 }
 ```
 
@@ -143,7 +143,7 @@ query {
 
 ```zql
 query {
-  Player(name startsWith "C" || name endsWith "b") { name }
+  Player(name startsExact "C" || name endsExact "b") { name }
 }
 ```
 
@@ -153,6 +153,42 @@ query {
   { "name": "Cara" }
 ]
 ```
+
+`findLike`, `startsLike` and `endsLike` are the same three tests, but they fold
+case and accents first, so `"alice"` finds `"Alice"`:
+
+```zql
+query {
+  Player(name findLike "alice") { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" }
+]
+```
+
+```zql
+mutation {
+  Player(name: "Zoë" && position: "RW" && salary: 800000 && rookie: true)
+}
+```
+
+```zql
+query {
+  Player(name findLike "zoe") { name }
+}
+```
+
+```json
+[
+  { "name": "Zoë" }
+]
+```
+
+`…Like` takes plain text, not a SQL wildcard: `findLike "50%"` matches only the
+literal characters `50%`, never an arbitrary run before it.
 
 A node without an optional field does not match a text test on it: Bob has no
 `bio`, so he is not in the first list. It does match `!=`, because a missing
@@ -167,7 +203,8 @@ query {
 ```json
 [
   { "name": "Alice" },
-  { "name": "Bob" }
+  { "name": "Bob" },
+  { "name": "Zoë" }
 ]
 ```
 

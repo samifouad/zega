@@ -11,7 +11,7 @@ fn url_writes_updates_and_string_operations() {
     assert_eq!(
         db.run_lang(
             SCHEMA,
-            r#"query { Document(scan startsWith "https://") { name scan backup } }"#
+            r#"query { Document(scan startsExact "https://") { name scan backup } }"#
         )
         .unwrap(),
         json!([{"name":"A","scan":"https://example.com/a?x=1#page","backup":null}])
@@ -125,7 +125,7 @@ fn url_fields_keep_string_indexes_and_do_not_validate_search_fragments() {
     let source = r#"schema { type Page { scan: String<url> } }
         index { text Page { scan } }
         mutation { Page(scan: "https://example.org/one") }
-        query { Page(scan findWith "example") { scan } }"#;
+        query { Page(scan findExact "example") { scan } }"#;
     assert_eq!(
         db.apply_zql(source).unwrap(),
         json!([{"scan":"https://example.org/one"}])

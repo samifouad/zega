@@ -429,9 +429,15 @@ pub enum Pred {
     Eq(String, Json, Span),
     Ne(String, Json, Span),
     Cmp(String, Cmp, Json, Span),
-    Contains(String, String, Span),
-    StartsWith(String, String, Span),
-    EndsWith(String, String, Span),
+    /// Byte-exact substring/prefix/suffix (`findExact`/`startsExact`/`endsExact`).
+    FindExact(String, String, Span),
+    StartsExact(String, String, Span),
+    EndsExact(String, String, Span),
+    /// Case- and accent-insensitive (`findLike`/`startsLike`/`endsLike`), via
+    /// [`crate::text_fold`].
+    FindLike(String, String, Span),
+    StartsLike(String, String, Span),
+    EndsLike(String, String, Span),
 }
 
 /// A condition, read like the test in an `if`.
@@ -495,9 +501,12 @@ impl Pred {
             Pred::Eq(field, _, _)
             | Pred::Ne(field, _, _)
             | Pred::Cmp(field, _, _, _)
-            | Pred::Contains(field, _, _)
-            | Pred::StartsWith(field, _, _)
-            | Pred::EndsWith(field, _, _) => field,
+            | Pred::FindExact(field, _, _)
+            | Pred::StartsExact(field, _, _)
+            | Pred::EndsExact(field, _, _)
+            | Pred::FindLike(field, _, _)
+            | Pred::StartsLike(field, _, _)
+            | Pred::EndsLike(field, _, _) => field,
         }
     }
 
@@ -509,9 +518,12 @@ impl Pred {
             Pred::Eq(_, _, span)
             | Pred::Ne(_, _, span)
             | Pred::Cmp(_, _, _, span)
-            | Pred::Contains(_, _, span)
-            | Pred::StartsWith(_, _, span)
-            | Pred::EndsWith(_, _, span) => *span,
+            | Pred::FindExact(_, _, span)
+            | Pred::StartsExact(_, _, span)
+            | Pred::EndsExact(_, _, span)
+            | Pred::FindLike(_, _, span)
+            | Pred::StartsLike(_, _, span)
+            | Pred::EndsLike(_, _, span) => *span,
         }
     }
 }
@@ -1200,7 +1212,7 @@ impl<'a> Parser<'a> {
                                 field_span,
                                 format!("text index needs a String field; {type_name}.{field} is {field_ty}"),
                             )
-                            .with_help("`text` speeds findWith, startsWith and endsWith on a String"));
+                            .with_help("`text` speeds findExact, startsExact and endsExact on a String (not the `…Like` forms)"));
                     }
                     IndexKind::Range if !orderable(field_ty) => {
                         return Err(self
@@ -2271,7 +2283,7 @@ impl<'a> Parser<'a> {
         if self.eat("<") {
             return Ok(Pred::Cmp(field, Cmp::Lt, self.parse_value()?, span));
         }
-        for (old, new) in [("CONTAINS", "findWith"), ("STARTS", "startsWith"), ("ENDS", "endsWith")] {
+        for (old, new) in [("CONTAINS", "findExact"), ("STARTS", "startsExact"), ("ENDS", "endsExact")] {
             let start = self.i;
             if self.eat_word(old) {
                 let mut end = self.i;
@@ -2280,19 +2292,43 @@ impl<'a> Parser<'a> {
                 return Err(self.err_at(self.span_bytes(start, end), format!("`{spelling}` was renamed: write `{new}`")));
             }
         }
-        if self.eat_word("findWith") {
-            return Ok(Pred::Contains(field, self.string()?, span));
+        // zegadb/zega#98: the old byte-exact-only names were split into an
+        // explicit exact/like pair. No alias: pre-1.0, no users.
+        for (old, exact, like) in [
+            ("findWith", "findExact", "findLike"),
+            ("startsWith", "startsExact", "startsLike"),
+            ("endsWith", "endsExact", "endsLike"),
+        ] {
+            let start = self.i;
+            if self.eat_word(old) {
+                let end = self.i;
+                return Err(self
+                    .err_at(self.span_bytes(start, end), format!("`{old}` was renamed `{exact}`"))
+                    .with_help(format!("use `{exact}` for byte-exact matching, or `{like}` to ignore case and accents")));
+            }
         }
-        if self.eat_word("startsWith") {
-            return Ok(Pred::StartsWith(field, self.string()?, span));
+        if self.eat_word("findExact") {
+            return Ok(Pred::FindExact(field, self.string()?, span));
         }
-        if self.eat_word("endsWith") {
-            return Ok(Pred::EndsWith(field, self.string()?, span));
+        if self.eat_word("startsExact") {
+            return Ok(Pred::StartsExact(field, self.string()?, span));
+        }
+        if self.eat_word("endsExact") {
+            return Ok(Pred::EndsExact(field, self.string()?, span));
+        }
+        if self.eat_word("findLike") {
+            return Ok(Pred::FindLike(field, self.string()?, span));
+        }
+        if self.eat_word("startsLike") {
+            return Ok(Pred::StartsLike(field, self.string()?, span));
+        }
+        if self.eat_word("endsLike") {
+            return Ok(Pred::EndsLike(field, self.string()?, span));
         }
         Err(self
             .err(format!("expected a comparison after {field}"))
             .with_help(
-            "use `=`, `!=`, `>`, `<`, `>=`, `<=`, `<>`, `findWith`, `startsWith`, or `endsWith`",
+            "use `=`, `!=`, `>`, `<`, `>=`, `<=`, `<>`, `findExact`, `findLike`, `startsExact`, `startsLike`, `endsExact`, or `endsLike`",
         ))
     }
 
