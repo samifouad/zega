@@ -14,7 +14,7 @@ pub type RelId = u64;
 
 /// A node as it is written down: in the WAL, a snapshot, a rollback journal.
 /// The graph itself stores the compact [`NodeRef`] form.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub labels: Vec<String>,
@@ -22,7 +22,7 @@ pub struct Node {
 }
 
 /// A relationship as it is written down; see [`Node`].
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Relationship {
     pub id: RelId,
     pub kind: String,
@@ -264,6 +264,23 @@ struct Adjacency {
     inc: IdSet,
 }
 
+/// The entries of `map` in ascending id order, without sorting a copy of
+/// the ids when they are dense (the usual case): walk `0..=max` and look
+/// each up.
+fn ascending<T>(map: &HashMap<u64, T>) -> Box<dyn Iterator<Item = (u64, &T)> + '_> {
+    let Some(&max) = map.keys().max() else {
+        return Box::new(std::iter::empty());
+    };
+    let dense = max <= (map.len() as u64).saturating_mul(2).saturating_add(1024);
+    if dense {
+        Box::new((0..=max).filter_map(move |id| Some((id, map.get(&id)?))))
+    } else {
+        let mut ids: Vec<u64> = map.keys().copied().collect();
+        ids.sort_unstable();
+        Box::new(ids.into_iter().map(move |id| (id, &map[&id])))
+    }
+}
+
 pub struct Graph {
     names: Names,
     shapes: Shapes,
@@ -290,6 +307,8 @@ pub struct Graph {
     examined: AtomicU64,
     /// Nodes a ZQL path search has expanded. A* lowers it.
     expanded: AtomicU64,
+    /// Schema text, declarations and metadata from the last `.graph` import.
+    carried: crate::graph_file::Carried,
 }
 
 impl Default for Graph {
@@ -316,7 +335,16 @@ impl Graph {
             next_rel_id: AtomicU64::new(1),
             examined: AtomicU64::new(0),
             expanded: AtomicU64::new(0),
+            carried: Default::default(),
         }
+    }
+
+    pub(crate) fn carried(&self) -> &crate::graph_file::Carried {
+        &self.carried
+    }
+
+    pub(crate) fn set_carried(&mut self, carried: crate::graph_file::Carried) {
+        self.carried = carried;
     }
 
     /// Conservative Morton-range candidates. Apply an exact predicate afterwards.
@@ -349,6 +377,23 @@ impl Graph {
                 .filter_map(|id| all.get(id).map(|node| node_ref(names, shapes, *id, node)));
             self.declared.build(spec, nodes);
         }
+    }
+
+    /// The declared indexes, sorted by type, field, then kind.
+    #[cfg(test)]
+    pub fn declared_indexes(&self) -> Vec<IndexSpec> {
+        let mut specs = self.declared.specs();
+        specs.sort_by(|a, b| {
+            (&a.type_name, &a.field, a.kind).cmp(&(&b.type_name, &b.field, b.kind))
+        });
+        specs
+    }
+
+    /// Keep the since-open statistics (`rows_examined`, `nodes_expanded`)
+    /// of `previous` when this graph replaces it wholesale (an import).
+    pub fn inherit_statistics(&mut self, previous: &Graph) {
+        self.examined.store(previous.examined(), Ordering::Relaxed);
+        self.expanded.store(previous.expanded(), Ordering::Relaxed);
     }
 
     pub fn has_index(&self, kind: IndexKind, types: &[&str], field: &str) -> bool {
@@ -622,11 +667,26 @@ impl Graph {
         ids
     }
 
+    /// Whether the graph holds no node and no relationship.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.relationships.is_empty()
+    }
+
     /// Every node, in no particular order.
     pub fn nodes(&self) -> impl ExactSizeIterator<Item = NodeRef<'_>> {
         self.nodes
             .iter()
             .map(|(id, node)| node_ref(&self.names, &self.shapes, *id, node))
+    }
+
+    /// Every node, ascending by id.
+    pub fn nodes_ascending(&self) -> impl Iterator<Item = NodeRef<'_>> {
+        ascending(&self.nodes).map(|(id, node)| node_ref(&self.names, &self.shapes, id, node))
+    }
+
+    /// Every relationship, ascending by id.
+    pub fn relationships_ascending(&self) -> impl Iterator<Item = RelRef<'_>> {
+        ascending(&self.relationships).map(|(id, rel)| rel_ref(&self.names, &self.shapes, id, rel))
     }
 
     /// Every relationship, in no particular order.
@@ -646,9 +706,15 @@ impl Graph {
         Some(&self.adjacency.get(&node_id)?.inc).filter(|rels| !rels.is_empty())
     }
 
-    pub fn set_state(&mut self, nodes: HashMap<NodeId, Node>, rels: HashMap<RelId, Relationship>) {
+    pub fn set_state(
+        &mut self,
+        nodes: HashMap<NodeId, Node>,
+        rels: HashMap<RelId, Relationship>,
+        carried: crate::graph_file::Carried,
+    ) {
         // Snapshots and WAL replay use the same index-maintenance paths.
         *self = Self::new();
+        self.carried = carried;
         let mut nodes: Vec<_> = nodes.into_iter().collect();
         nodes.sort_by_key(|(id, _)| *id);
         for (id, node) in nodes {

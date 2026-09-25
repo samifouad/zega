@@ -21,6 +21,12 @@ use crate::value::Value;
 
 const WAL_MAGIC: &[u8; 4] = b"ZWAL";
 const WAL_VERSION: u16 = 2;
+/// A WAL that holds a [`Operation::ReplaceGraph`] entry is marked version 3
+/// before the entry is written, so a zega that predates imports refuses it
+/// with "unsupported WAL version 3" instead of a decoding error at some
+/// byte. This zega reads both.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const WAL_VERSION_IMPORTS: u16 = 3;
 const WAL_FILE_HEADER: &[u8; 6] = b"ZWAL\x02\x00";
 const WAL_FILE_HEADER_LEN: u64 = WAL_FILE_HEADER.len() as u64;
 const ENTRY_HEADER_LEN: u64 = 12;
@@ -69,6 +75,12 @@ pub enum Operation {
     /// New variants go last so entries written before them still decode.
     Statement {
         ops: Vec<Operation>,
+    },
+    /// Replace the whole graph with the `.graph` file `file` (a path inside
+    /// the data directory). One small entry commits an import of any size:
+    /// the file is written and synced first, and replay reads it back.
+    ReplaceGraph {
+        file: String,
     },
 }
 
@@ -303,6 +315,29 @@ impl Wal {
         }
     }
 
+    /// Mark the log as holding `.graph` imports (version 3), durably,
+    /// before the first [`Operation::ReplaceGraph`] entry goes in. Only
+    /// the native, file-backed path imports durably.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn mark_imports(&self) -> Result<(), WalError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut state = self
+                .group
+                .state
+                .lock()
+                .map_err(|_| WalError::Durability("group commit lock poisoned".to_string()))?;
+            if let Some(file) = state.file.as_mut() {
+                file.set_version(WAL_VERSION_IMPORTS)?;
+            }
+            Ok(())
+        }
+    }
+
     #[allow(dead_code)]
     pub fn flush(&self) -> Result<(), WalError> {
         #[cfg(target_arch = "wasm32")]
@@ -337,7 +372,8 @@ impl Wal {
             let mut ops = Vec::new();
             let mut header = [0u8; WAL_FILE_HEADER.len()];
             reader.read_exact(&mut header)?;
-            if &header != WAL_FILE_HEADER {
+            let version = u16::from_le_bytes([header[4], header[5]]);
+            if header[..4] != WAL_MAGIC[..] || !matches!(version, WAL_VERSION | WAL_VERSION_IMPORTS) {
                 return Err(WalError::Corruption {
                     offset: 0,
                     reason: "invalid WAL header".to_string(),
@@ -440,7 +476,7 @@ fn prepare_wal(path: &Path) -> Result<(), WalError> {
                 reason: "truncated WAL header".to_string(),
             })?;
         let version = u16::from_le_bytes(version);
-        if version != WAL_VERSION {
+        if !matches!(version, WAL_VERSION | WAL_VERSION_IMPORTS) {
             return Err(WalError::Corruption {
                 offset: 0,
                 reason: format!("unsupported WAL version {version}"),
@@ -511,7 +547,7 @@ fn migrate_legacy_wal(path: &Path, file: File, file_len: u64) -> Result<(), WalE
 // handles before entering here. Never remove the destination before replacing
 // it: a failed rename must leave the last durable version available.
 #[cfg(not(target_arch = "wasm32"))]
-fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), WalError> {
+pub(crate) fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), WalError> {
     file.sync_all()?;
     drop(file);
     #[cfg(windows)]
@@ -590,6 +626,10 @@ trait AppendTarget: Write {
     /// length. A truncate changes no directory entry, so no platform needs
     /// the parent directory synced for it (unlike `persist_replacement`).
     fn sync(&mut self) -> io::Result<()>;
+    /// Rewrite the header's version and make it durable.
+    fn set_version(&mut self, _version: u16) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -606,6 +646,12 @@ impl AppendTarget for File {
     // which is metadata. On Windows this is FlushFileBuffers, which needs
     // the write access open_wal_writer already requests.
     fn sync(&mut self) -> io::Result<()> {
+        self.sync_all()
+    }
+
+    fn set_version(&mut self, version: u16) -> io::Result<()> {
+        self.seek(SeekFrom::Start(WAL_MAGIC.len() as u64))?;
+        self.write_all(&version.to_le_bytes())?;
         self.sync_all()
     }
 }
@@ -778,19 +824,12 @@ pub fn encode_snapshot(graph: &Graph) -> Result<Vec<u8>, WalError> {
     let snapshot = SnapshotRef {
         nodes: StoredNodes(graph),
         relationships: StoredRelationships(graph),
+        next_ids: graph.next_ids(),
+        carried: graph.carried(),
     };
     let mut bytes = Vec::new();
     serialize_into(&mut bytes, &snapshot)?;
     Ok(bytes)
-}
-
-/// [`Snapshot`], written straight from the graph: each node and
-/// relationship is expanded to its written-down form one at a time, so a
-/// snapshot never holds a second copy of the whole graph.
-#[derive(Serialize)]
-struct SnapshotRef<'g> {
-    nodes: StoredNodes<'g>,
-    relationships: StoredRelationships<'g>,
 }
 
 struct StoredNodes<'g>(&'g Graph);
@@ -809,18 +848,56 @@ impl Serialize for StoredRelationships<'_> {
     }
 }
 
-/// Restore the full graph state from [`encode_snapshot`] bytes.
+/// Restore the full graph state from [`encode_snapshot`] bytes, or from a
+/// snapshot written before snapshots carried `.graph` import state.
 pub fn restore_bytes(graph: &mut Graph, bytes: &[u8]) -> Result<(), WalError> {
-    let snapshot: Snapshot = decode_exact(bytes).map_err(|error| WalError::Corruption {
-        offset: 0,
-        reason: format!("invalid snapshot: {error}"),
-    })?;
-    graph.set_state(snapshot.nodes, snapshot.relationships);
+    let (nodes, relationships, next_ids, carried) = match decode_exact::<Snapshot>(bytes) {
+        Ok(snapshot) => (
+            snapshot.nodes,
+            snapshot.relationships,
+            Some(snapshot.next_ids),
+            snapshot.carried,
+        ),
+        Err(_) => {
+            let legacy: LegacySnapshot = decode_exact(bytes).map_err(|error| WalError::Corruption {
+                offset: 0,
+                reason: format!("invalid snapshot: {error}"),
+            })?;
+            (legacy.nodes, legacy.relationships, None, Default::default())
+        }
+    };
+    graph.set_state(nodes, relationships, carried);
+    if let Some(next_ids) = next_ids {
+        graph.reset_next_ids(next_ids);
+    }
     Ok(())
 }
 
-#[derive(Serialize, Deserialize)]
+/// A snapshot: the graph, its id counters, and what its last `.graph`
+/// import carried. The new fields come last, so a snapshot from before
+/// them is exactly a [`LegacySnapshot`] (and never decodes as this: its
+/// bytes end too soon).
+#[derive(Deserialize)]
 struct Snapshot {
+    nodes: HashMap<NodeId, Node>,
+    relationships: HashMap<RelId, Relationship>,
+    next_ids: (NodeId, RelId),
+    carried: crate::graph_file::Carried,
+}
+
+/// [`Snapshot`], written straight from the graph: each node and
+/// relationship is expanded to its written-down form one at a time, so a
+/// snapshot never holds a second copy of the whole graph.
+#[derive(Serialize)]
+struct SnapshotRef<'a> {
+    nodes: StoredNodes<'a>,
+    relationships: StoredRelationships<'a>,
+    next_ids: (NodeId, RelId),
+    carried: &'a crate::graph_file::Carried,
+}
+
+#[derive(Deserialize)]
+struct LegacySnapshot {
     nodes: HashMap<NodeId, Node>,
     relationships: HashMap<RelId, Relationship>,
 }

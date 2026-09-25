@@ -24,6 +24,8 @@ crc32fast = { workspace = true }
 libm = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+# `.graph` content digest and imported-file names (docs/graph-format.md).
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 # `…Like` text matching (zegadb/zega#98): NFD decomposition to drop combining
 # marks before case-folding. Pure Rust, no_std-friendly, wasm32-safe.
@@ -39,6 +41,7 @@ js-sys = "0.3"
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+proptest = "1"
 tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 serde_json = { workspace = true }

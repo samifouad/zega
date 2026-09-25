@@ -25,7 +25,7 @@ use crate::graph::{NodeId, NodeView};
 use crate::idset::IdSet;
 use crate::value::Value;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum IndexKind {
     Range,
     Text,
@@ -41,7 +41,7 @@ impl IndexKind {
 }
 
 /// One index on one field of one type.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct IndexSpec {
     pub kind: IndexKind,
     pub type_name: String,
@@ -292,6 +292,22 @@ pub(crate) struct DeclaredIndexes {
 impl DeclaredIndexes {
     fn is_empty(&self) -> bool {
         self.range.is_empty() && self.text.is_empty()
+    }
+
+    /// Every declared index, in no particular order.
+    #[cfg(test)]
+    pub fn specs(&self) -> Vec<IndexSpec> {
+        let range = self.range.keys().map(|(type_name, field)| IndexSpec {
+            kind: IndexKind::Range,
+            type_name: type_name.clone(),
+            field: field.clone(),
+        });
+        let text = self.text.keys().map(|(type_name, field)| IndexSpec {
+            kind: IndexKind::Text,
+            type_name: type_name.clone(),
+            field: field.clone(),
+        });
+        range.chain(text).collect()
     }
 
     pub fn contains(&self, spec: &IndexSpec) -> bool {
