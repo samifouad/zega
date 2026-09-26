@@ -1,13 +1,34 @@
 name: Explorer explorer
 
-on: [push, pull_request]
+# Playwright suite for the browser explorer. It only exercises browser/**
+# (JS, tests, and the vendored WASM at browser/pkg — the engine is not
+# rebuilt from Rust source here, see browser/scripts/build.mjs and
+# scripts/rebuild-wasm.mjs). A PR that only touches Rust source elsewhere in
+# the workspace cannot change what this suite proves, unless it also updates
+# the vendored browser/pkg/*.wasm, which is itself a browser/** change and so
+# still matches the filter below.
+#
+# Path-filtered at the trigger level (not with an in-workflow job) so that a
+# workflow which never ran is exactly what it reports to GitHub: skipped, not
+# pending, so it can never block a merge on its own.
+on:
+  pull_request:
+    paths:
+      - 'browser/**'
+      - '.github/workflows/explorer.yml'
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: public-ci
     timeout-minutes: 25
     env:

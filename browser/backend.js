@@ -20,6 +20,43 @@ export async function connectDatabase(parser) {
 export const REMOTE_API = 'https://api.zega.dev';
 /** The router's `/g/<id>/` pattern (zegadb/cloud src/app.ts). Ids are opaque: old and new shapes both match. */
 export const GRAPH_ID = /^[a-z0-9-]{1,40}$/;
+const BAD_ID = 'A graph id is lowercase letters, digits and dashes.';
+/** A graph's own hostname (cloud#10): exactly one label under zegadb.com. */
+const GRAPH_HOST = /^([^.]+)\.zegadb\.com$/;
+
+/**
+ * The graph id in what someone pasted into "Graph id or URL": a bare id, a
+ * router URL (`api.zega.dev/g/<id>/…`, with or without a scheme, path, query
+ * or hash), or the graph's own hostname (`<id>.zegadb.com`). Only the id is
+ * kept: the explorer always connects to REMOTE_API, so the key never goes to
+ * the pasted host, and any other host is refused rather than guessed at.
+ */
+export function parseGraphTarget(input) {
+  const text = String(input ?? '').trim();
+  if (GRAPH_ID.test(text)) return text;
+  if (!/[./:]/.test(text)) throw new Error(BAD_ID);
+  let url;
+  try {
+    url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
+  } catch {
+    throw new Error('That is not a graph id or a graph URL.');
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('A graph URL starts with https://.');
+  if (url.username || url.password || url.port) throw new Error(`Only api.zega.dev/g/<id> or <id>.zegadb.com URLs can be used, not ${url.host}.`);
+  let id;
+  if (url.hostname === 'api.zega.dev') {
+    const match = /^\/g\/([^/]+)(?:\/.*)?$/.exec(url.pathname);
+    if (!match) throw new Error('An api.zega.dev URL names its graph as /g/<id>.');
+    try { id = decodeURIComponent(match[1]); } catch { throw new Error(BAD_ID); }
+  } else if (GRAPH_HOST.test(url.hostname)) {
+    id = GRAPH_HOST.exec(url.hostname)[1];
+  } else {
+    throw new Error(`Only api.zega.dev/g/<id> or <id>.zegadb.com URLs can be used, not ${url.hostname}.`);
+  }
+  if (!GRAPH_ID.test(id)) throw new Error(BAD_ID);
+  return id;
+}
+
 /** A graph API key (zegadb/cloud src/keys.ts bearerKey). */
 export const API_KEY = /^zk_[a-z2-7]{32}$/;
 
@@ -102,7 +139,7 @@ export class RemoteDatabase extends HttpDatabase {
   resolvesSources = false;
   #key;
   constructor(parser, graphId, key) {
-    if (!GRAPH_ID.test(graphId)) throw new Error('A graph id is lowercase letters, digits and dashes.');
+    if (!GRAPH_ID.test(graphId)) throw new Error(BAD_ID);
     if (!API_KEY.test(key)) throw new Error('An API key is zk_ followed by 32 characters.');
     super(parser, `${REMOTE_API}/g/${graphId}`);
     this.graphId = graphId;

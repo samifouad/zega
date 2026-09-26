@@ -25,7 +25,7 @@ env:
 jobs:
   publish:
     name: publish to the explorer
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     # Where the bucket credentials live. They are scoped to the cqx bucket and
     # to nothing else.
     environment: release

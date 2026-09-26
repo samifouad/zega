@@ -16,6 +16,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   # So each finding lands on its own line in Files changed, rather than in a
@@ -25,7 +29,8 @@ permissions:
 jobs:
   score:
     name: score
-    runs-on: ubuntu-latest
+    # Light: a checkout and a scan, no compilation.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: public-ci
     steps:
       # Deep enough to reach the base of the pull request without a second

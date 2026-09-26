@@ -12,12 +12,17 @@ on:
     branches: [codex/channels]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
   integrity-proof:
-    runs-on: ubuntu-latest
+    # Light: cargo metadata + unittest, no build.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: public-ci
     steps:
       - uses: actions/checkout@v5
@@ -40,7 +45,7 @@ jobs:
   promote:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'zegadb/zega'
     needs: integrity-proof
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release
     permissions:
       contents: write
@@ -75,7 +80,7 @@ jobs:
     # Sami configures trust, then Ava removes this literal hard stop in a PR.
     if: ${{ false }}
     needs: promote
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release
     permissions:
       contents: read
@@ -95,7 +100,7 @@ jobs:
   crates:
     # Stable only: a crates.io version can never be replaced, so canaries never go there.
     needs: promote
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release
     permissions:
       contents: read

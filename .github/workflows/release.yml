@@ -1,10 +1,18 @@
 name: Release (canary)
 
+# Push-to-main is deliberately not a trigger here: tag-canary.yml tags every
+# main commit right after it lands, and that tag push already runs this
+# workflow with the full matrix. Adding push:branches:[main] as well would
+# build the same commit twice.
 on:
   workflow_dispatch: {}
   push:
     tags: ['v*-canary-*']
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -16,11 +24,13 @@ env:
 
 jobs:
   resolve:
-    runs-on: ubuntu-latest
+    # Light: ref/version bookkeeping, no compilation.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: public-ci
     outputs:
       tag: ${{ steps.ref.outputs.tag }}
       npm_version: ${{ steps.ref.outputs.npm_version }}
+      full_matrix: ${{ steps.scope.outputs.full_matrix }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -37,15 +47,136 @@ jobs:
           if [ "$REF_TYPE" = tag ] || [ "$EVENT_NAME" = workflow_dispatch ]; then
             python3 scripts/channels.py resolve "$GITHUB_REF_NAME"
           fi
+      # A PR only ever proves the branch builds (see above); a tag push or a
+      # manual dispatch is the real release path and always gets every
+      # platform plus the packaging job.
+      - name: Decide whether this run owes the full native matrix
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            echo "full_matrix=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "full_matrix=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Which PR changes touch platform-sensitive code, i.e. code where
+  # linux-only CI has previously shipped a Windows/macOS-only bug:
+  #   - zega/src/wal/**, zega/src/checkpoint.rs, zega/src/journal.rs:
+  #     durability/WAL rollback (3033c47 "Fix durable storage replacement and
+  #     WAL rollback on Windows").
+  #   - zega/src/lib.rs, zega/src/graph_file/**, zega-server/src/handlers.rs,
+  #     zega-cli/src/main.rs: the disk-import path (0bb1ad0 "Fix disk imports
+  #     on Windows: no directory handle, close before cleanup").
+  #   - zega-bench/src/mem.rs: process/RSS reporting (e235ae0 "zega-mem: no
+  #     spawning, RSS only on unix").
+  #   - .gitattributes: line-ending handling that broke a vendored binary on
+  #     Windows checkout (4f38288 "Preserve vendored wasm package bytes on
+  #     Windows").
+  #   - Cargo.toml/Cargo.lock, .github/workflows/release.yml,
+  #     .github/actions/**: dependency and CI-definition changes can move
+  #     every platform at once and get no other signal.
+  changes:
+    if: github.event_name == 'pull_request'
+    # Light: a file-list diff, no checkout, no compilation.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    environment: public-ci
+    # dorny/paths-filter fetches the PR's changed files from the REST API on
+    # a pull_request event (no checkout needed), which needs this scope.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      platform: ${{ steps.filter.outputs.platform }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - 'scripts/**'
+              - 'npm/**'
+              - 'browser/**'
+              - '.github/workflows/release.yml'
+              - '.github/actions/**'
+            platform:
+              - 'zega/src/wal/**'
+              - 'zega/src/graph_file/**'
+              - 'zega/src/lib.rs'
+              - 'zega/src/checkpoint.rs'
+              - 'zega/src/journal.rs'
+              - 'zega-server/src/handlers.rs'
+              - 'zega-cli/src/main.rs'
+              - 'zega-bench/src/mem.rs'
+              - '.gitattributes'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/release.yml'
+              - '.github/actions/**'
+
+  # Job-level `if:` cannot see the matrix context (only steps and
+  # `runs-on`/`container`/`services` can), so which native legs run is
+  # decided here, as a job output, rather than inside `native`'s own `if:`.
+  plan:
+    needs: [resolve, changes]
+    # `changes` only runs for pull_request (see its own `if:`); a skipped
+    # need otherwise cascades into skipping this job too, which would silence
+    # the native matrix on every tag push and dispatch. `always()` plus an
+    # explicit check on `resolve` keeps this running whenever resolve itself
+    # didn't fail.
+    if: always() && needs.resolve.result == 'success'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    environment: public-ci
+    outputs:
+      run_native: ${{ steps.plan.outputs.run_native }}
+      native_matrix: ${{ steps.plan.outputs.native_matrix }}
+    steps:
+      - id: plan
+        env:
+          FULL_MATRIX: ${{ needs.resolve.outputs.full_matrix }}
+          CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          PLATFORM_CHANGED: ${{ needs.changes.outputs.platform }}
+        run: |
+          set -euo pipefail
+          full='[
+            {"platform":"linux-x64","runner":"blacksmith-4vcpu-ubuntu-2404","sccache_bucket":"zega-sccache-linux-x64","extension":""},
+            {"platform":"darwin-arm64","runner":"blacksmith-6vcpu-macos-15","sccache_bucket":"zega-sccache-darwin-arm64","extension":""},
+            {"platform":"darwin-x64","runner":"blacksmith-6vcpu-macos-15","sccache_bucket":"zega-sccache-darwin-x64","extension":""},
+            {"platform":"windows-x64","runner":"blacksmith-4vcpu-windows-2025","sccache_bucket":"zega-sccache-windows-x64","extension":".exe"}
+          ]'
+          linux_only='[
+            {"platform":"linux-x64","runner":"blacksmith-4vcpu-ubuntu-2404","sccache_bucket":"zega-sccache-linux-x64","extension":""}
+          ]'
+          if [ "$FULL_MATRIX" = true ]; then
+            run_native=true; matrix="$full"
+          elif [ "$CODE_CHANGED" = true ] && [ "$PLATFORM_CHANGED" = true ]; then
+            run_native=true; matrix="$full"
+          elif [ "$CODE_CHANGED" = true ]; then
+            run_native=true; matrix="$linux_only"
+          else
+            run_native=false; matrix='[]'
+          fi
+          echo "run_native=$run_native" >> "$GITHUB_OUTPUT"
+          echo "native_matrix=$(echo "$matrix" | jq -c '{include:.}')" >> "$GITHUB_OUTPUT"
 
   package:
     needs: resolve
+    # Packaging only proves anything new on the branch that ships: main (via
+    # its canary tag) and manual dispatches. Every PR that reaches main
+    # crosses this job on the tag push right after merge, so skipping it on
+    # the PR itself does not skip the check, only when it runs.
+    if: needs.resolve.outputs.full_matrix == 'true'
     runs-on: ${{ matrix.runner }}
     environment: public-ci
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: blacksmith-4vcpu-ubuntu-2404
             sccache_bucket: zega-sccache-linux-x64
     env:
       RUSTC_WRAPPER: sccache
@@ -76,8 +207,19 @@ jobs:
           path: artifacts/npm-package/
           if-no-files-found: error
 
+  # Deliberately does not `need` `changes` directly: that job is skipped
+  # outside pull_request, and an unqualified `if:` here would let a skipped
+  # need cascade into skipping this job too (see `plan`, which already
+  # guards against exactly that and is the only thing `native` reads).
   native:
-    needs: resolve
+    needs: [resolve, plan]
+    # On a PR: linux-x64 always (it is the cheap, always-on correctness
+    # gate); macOS/Windows only when the diff touches platform-sensitive
+    # paths (see the `changes` job) or nothing code-shaped changed at all
+    # skips even linux-x64 (docs/markdown-only PRs). On a tag push or manual
+    # dispatch: every platform, unconditionally. See the `plan` job: which
+    # legs run is a job output, since matrix isn't visible from a job `if:`.
+    if: needs.plan.outputs.run_native == 'true'
     runs-on: ${{ matrix.runner }}
     environment: public-ci
     defaults:
@@ -85,24 +227,7 @@ jobs:
         shell: bash
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux-x64
-            runner: ubuntu-latest
-            sccache_bucket: zega-sccache-linux-x64
-            extension: ''
-          - platform: darwin-arm64
-            runner: macos-14
-            sccache_bucket: zega-sccache-darwin-arm64
-            extension: ''
-          - platform: darwin-x64
-            runner: macos-15-intel
-            sccache_bucket: zega-sccache-darwin-x64
-            extension: ''
-          - platform: windows-x64
-            runner: windows-latest
-            sccache_bucket: zega-sccache-windows-x64
-            extension: .exe
+      matrix: ${{ fromJson(needs.plan.outputs.native_matrix) }}
     env:
       RUSTC_WRAPPER: sccache
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -178,10 +303,36 @@ jobs:
           path: artifacts/native/
           if-no-files-found: error
 
+  # A single, stable name for branch protection to require, regardless of
+  # which native legs actually ran for a given PR. Runs unconditionally
+  # (needs' own skips would otherwise cascade and skip this too) and fails
+  # only on a real failure upstream, never on a leg that was correctly
+  # skipped by path filtering.
+  release-required:
+    name: Release required checks
+    if: always()
+    needs: [resolve, changes, plan, package, native]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    environment: public-ci
+    steps:
+      - name: No upstream failures
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        run: |
+          python3 -c "
+          import json, os, sys
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          bad = {k: v['result'] for k, v in needs.items() if v['result'] not in ('success', 'skipped')}
+          if bad:
+              print('failed upstream jobs:', bad)
+              sys.exit(1)
+          print('ok:', {k: v['result'] for k, v in needs.items()})
+          "
+
   publish:
     if: needs.resolve.outputs.tag != '' && github.repository == 'zegadb/zega'
     needs: [resolve, package, native]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release
     concurrency:
       group: zega-channel-writes
@@ -212,7 +363,7 @@ jobs:
     # Sami configures trust, then Ava removes this literal hard stop in a PR.
     if: ${{ false }}
     needs: publish
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release
     permissions:
       contents: read

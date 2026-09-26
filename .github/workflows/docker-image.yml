@@ -28,12 +28,16 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/docker-image.yml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: public-ci
     steps:
       - uses: actions/checkout@v5
