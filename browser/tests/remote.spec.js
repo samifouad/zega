@@ -460,6 +460,9 @@ test('on a remote graph, the vector view asks /vector-view only for a result, on
   await page.getByLabel('API key').fill(KEY);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.locator('.conn')).toHaveText(`connected to ${GRAPH}`);
+  // Connecting reads the schema, then redraws the vector view: wait for both before counting.
+  await expect.poll(() => router.seen.slice(from).some((r) => r.method === 'GET' && r.url === `/g/${GRAPH}/schema`)).toBe(true);
+  await expect(page.locator('#graph canvas')).toBeVisible();
   await settle();
   expect(vectorCalls(from), 'connecting draws the vector view without a result: no call').toBe(0);
 
