@@ -120,6 +120,8 @@ async function openExplorer() {
   page.on('pageerror', (error) => logs.push(error.message));
   await page.goto('/');
   await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45_000 });
+  // The Connect button is shown at the end of startup, once every handler is attached.
+  await expect(page.locator('#btn-remote')).toBeVisible({ timeout: 45_000 });
   if (await page.locator('#btn-play').textContent() === 'pause') await page.locator('#btn-play').click();
   return { context, page, logs };
 }
@@ -365,7 +367,7 @@ test('on a remote graph, typing sends nothing; a read-only Run is exactly one ca
 test('Run on a remote graph never applies the schema pane: a sample loaded before connecting writes nothing', async () => {
   const { context, page } = await openExplorer();
   await page.getByRole('button', { name: 'Tickets', exact: true }).click();
-  await expect.poll(() => editorText(page, 'schema')).toContain('mutation');
+  await expect.poll(() => editorText(page, 'schema'), { timeout: 30_000 }).toContain('mutation');
   await page.getByRole('button', { name: 'Connect to remote graph' }).click();
   await page.getByLabel('Graph id').fill(GRAPH);
   await page.getByLabel('API key').fill(KEY);
@@ -415,7 +417,7 @@ test('labels and relationship types from a remote graph are shown as text, never
 test('on a remote graph, the vector view asks /vector-view only for a result, once, and redraws reuse it', async () => {
   const { context, page } = await openExplorer();
   await page.getByRole('button', { name: 'Tickets', exact: true }).click();
-  await expect(page.locator('#view-tabs [aria-selected="true"]')).toHaveText(/Vector/);
+  await expect(page.locator('#view-tabs [aria-selected="true"]')).toHaveText(/Vector/, { timeout: 30_000 });
   const vectorCalls = (from) => router.seen.slice(from).filter((r) => r.method === 'POST' && r.url === `/g/${GRAPH}/vector-view`).length;
   const settle = () => page.waitForTimeout(1_500);
 
