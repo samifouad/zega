@@ -13,7 +13,7 @@ compiles to WebAssembly for the browser.
 
 No separate database server to install unless you want one. The server is a
 single binary that speaks HTTP/JSON. But you can absolutely run it in the browser, 
-just like [cqx](https://cqx.bio) does for running queries without a server:
+just like [cqx](https://cqx.dev) does for running queries without a server:
 
 <p align="left">
   <img src="cqx-zega-deka.png" alt="zega in the browser!" width="70%">
