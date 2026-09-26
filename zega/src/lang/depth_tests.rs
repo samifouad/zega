@@ -57,6 +57,17 @@ fn selections(depth: usize) -> String {
     )
 }
 
+/// `Item(has links(((…(key: "s1")…))))`: a chain's test, `depth` levels
+/// with its own parentheses (zegadb/zega#86). Chains never nest; their tests
+/// count toward the one limit.
+fn walks(depth: usize) -> String {
+    format!(
+        "{{ Item(has links{}key: \"s1\"{}) {{ key }} }}",
+        "(".repeat(depth),
+        ")".repeat(depth)
+    )
+}
+
 /// A create mutation `depth` walks deep, every level a new node.
 fn creates(depth: usize) -> String {
     let mut out = String::from("mutation { Item(key: \"s0\") { ");
@@ -89,8 +100,9 @@ fn discovery_chain(terms: usize) -> String {
 }
 
 type Shape = fn(usize) -> String;
-const SHAPES: [(&str, Shape); 4] = [
+const SHAPES: [(&str, Shape); 5] = [
     ("brackets", brackets),
+    ("walks", walks),
     ("selections", selections),
     ("creates", creates),
     ("discovery", discovery),
@@ -187,6 +199,8 @@ fn input_at_the_limit_runs_checks_and_formats() {
         let read = db.run_lang(SCHEMA, &brackets(MAX_NESTING)).unwrap();
         assert_eq!(read, serde_json::json!({ "key": "s1" }));
         db.run_lang(SCHEMA, &selections(MAX_NESTING)).unwrap();
+        // s0 links to s1, and every other item links onward from s1.
+        assert_eq!(db.run_lang(SCHEMA, &walks(MAX_NESTING)).unwrap(), serde_json::json!([{ "key": "s0" }]));
         db.run_lang(SCHEMA, &discovery(MAX_NESTING)).unwrap();
 
         for (name, shape) in SHAPES {

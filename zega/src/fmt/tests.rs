@@ -75,6 +75,21 @@ fn ast(source: &str) -> Result<Parsed> {
                 | Pred::FindLike(_, _, s)
                 | Pred::StartsLike(_, _, s)
                 | Pred::EndsLike(_, _, s) => span(s),
+                Pred::Chain(chain) => {
+                    span(&mut chain.span);
+                    if let Some(same) = &mut chain.from {
+                        span(&mut same.span);
+                        if let Some(test) = &mut same.test {
+                            expr(test);
+                        }
+                    }
+                    for hop in &mut chain.hops {
+                        span(&mut hop.span);
+                        if let Some(test) = &mut hop.test {
+                            expr(test);
+                        }
+                    }
+                }
             },
         }
     }
@@ -94,8 +109,9 @@ fn ast(source: &str) -> Result<Parsed> {
         }
         for key in &mut sel.order {
             span(&mut key.span);
-            if let OrderBy::Distance(distance) = &mut key.by {
-                span(&mut distance.span);
+            match &mut key.by {
+                OrderBy::Distance(distance) => span(&mut distance.span),
+                OrderBy::Field(_) => {}
             }
         }
         if let Some(s) = &mut sel.delete {
@@ -287,7 +303,7 @@ fn syntax_goldens() {
         invariant(&source, &path.display().to_string());
         count += 1;
     }
-    assert_eq!(count, 24);
+    assert_eq!(count, 25);
 }
 
 /// CRLF input (a Windows editor, or a checkout with core.autocrlf) formats to
@@ -310,7 +326,7 @@ fn crlf_input_emits_lf() {
         invariant(&source, &path.display().to_string());
         count += 1;
     }
-    assert_eq!(count, 24);
+    assert_eq!(count, 25);
     let literal = "query { A(name = \"one\r\ntwo\") { name } }";
     let output = format_zql(literal).unwrap();
     assert!(output.contains("\"one\r\ntwo\""), "{output:?}");

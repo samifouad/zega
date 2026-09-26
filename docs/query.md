@@ -133,7 +133,9 @@ null
 
 If more than one node matches, the query fails instead of guessing; see
 [errors](errors.md). Any other filter, such as a comparison, gives a list, which
-may be empty. [Conditions](conditions.md) lists every test a filter can use.
+may be empty. [Conditions](conditions.md) lists every test a filter can use, and
+a filter can walk the graph too: `Team(has players(position = "C"))`; see
+[walks in a filter](relationships.md#walks-in-a-filter).
 
 ```zql
 query {

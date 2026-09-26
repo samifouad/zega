@@ -5,6 +5,9 @@
 //! or `set`. Writes go through the same node, relationship, and WAL operations
 //! as the existing executor.
 
+mod chain;
+#[cfg(test)]
+mod chain_model_tests;
 mod discovery;
 
 use crate::location::{Bounds, Point, EARTH_RADIUS};
@@ -700,12 +703,12 @@ fn read(
     root: &Selection,
     context: &mut ReadContext<'_>,
 ) -> Result<Json, LangError> {
-    let mut ids = candidates(graph, root, context.work)?;
+    let mut ids = candidates(graph, schema, root, context.work)?;
     // Candidates are in ascending id order, which is also the result order,
     // so without a ranking (`near`, `order by`) the first `limit` matches are
     // the answer and the rest need not be tested (zegadb/zega#82).
     let enough = root.limit.filter(|_| root.near.is_none() && root.order.is_empty());
-    retain_first_matches(graph, &mut ids, root.condition.as_ref(), enough, context.work)?;
+    retain_first_matches(graph, schema, &mut ids, root.condition.as_ref(), enough, context.work)?;
     order_limit(graph, root, &mut ids, |id| *id, context.work)?;
     if equality_lookup(root) {
         return match ids.len() {
@@ -734,7 +737,7 @@ fn mutate(
     work: &mut Work,
 ) -> Result<Json, LangError> {
     if root.delete.is_some() {
-        return delete_nodes(graph, journal, root, work);
+        return delete_nodes(graph, journal, schema, root, work);
     }
     apply_node(graph, journal, schema, root, None, uniques, work)
 }
@@ -746,6 +749,7 @@ fn mutate(
 fn delete_nodes(
     graph: &mut Graph,
     journal: &mut Journal,
+    schema: &Schema,
     sel: &Selection,
     work: &mut Work,
 ) -> Result<Json, LangError> {
@@ -753,8 +757,8 @@ fn delete_nodes(
     let Some(condition) = sel.condition.as_ref() else {
         return Err(LangError::at(sel.type_span, format!("delete needs a condition: which {} rows?", sel.type_name)));
     };
-    let mut ids = candidates(graph, sel, work)?;
-    retain_matches(graph, &mut ids, Some(condition), work)?;
+    let mut ids = candidates(graph, schema, sel, work)?;
+    retain_matches(graph, schema, &mut ids, Some(condition), work)?;
     let detach = sel.items.iter().any(|item| matches!(item, Item::Detach(_)));
     let mut rows = Vec::new();
     for &id in &ids {
@@ -808,7 +812,7 @@ fn apply_node(
     work.step()?;
     let lookup = !sel.sets.is_empty() || has_link(sel);
     let id = if lookup {
-        lookup_one(graph, sel, uniques, work)?
+        lookup_one(graph, schema, sel, uniques, work)?
     } else {
         require_points(schema, sel)?;
         insert_node(graph, journal, schema, sel, uniques)?
@@ -917,7 +921,7 @@ fn apply_node(
                     )));
                 }
                 let child = if *link {
-                    let child_id = lookup_one(graph, target, uniques, work)?;
+                    let child_id = lookup_one(graph, schema, target, uniques, work)?;
                     let props = edge_sets(target)?;
                     let props_span = target
                         .items
@@ -993,15 +997,16 @@ fn apply_node(
 
 fn lookup_one(
     graph: &Graph,
+    schema: &Schema,
     sel: &Selection,
     uniques: &[(String, String)],
     work: &mut Work,
 ) -> Result<NodeId, LangError> {
     let mut ids = match unique_candidates(graph, sel, uniques) {
         Some(ids) => ids,
-        None => candidates(graph, sel, work)?,
+        None => candidates(graph, schema, sel, work)?,
     };
-    retain_matches(graph, &mut ids, sel.condition.as_ref(), work)?;
+    retain_matches(graph, schema, &mut ids, sel.condition.as_ref(), work)?;
     match ids.len() {
         1 => Ok(ids[0]),
         0 => Err(
@@ -1387,6 +1392,7 @@ fn project(
                 let reached = if let Some((min, max)) = range {
                     walk_range(
                         graph,
+                        schema,
                         id,
                         WalkSpec {
                             rel,
@@ -1410,8 +1416,13 @@ fn project(
                         .map(|(next, rel_id)| (next, 1usize, rel_id))
                         .collect()
                 };
-                let mut reached = reached;
-                reached.retain(|(next, ..)| node_matches(graph, *next, target.condition.as_ref()));
+                let mut kept = Vec::with_capacity(reached.len());
+                for row in reached {
+                    if node_matches(graph, schema, row.0, target.condition.as_ref(), context.work)? {
+                        kept.push(row);
+                    }
+                }
+                let mut reached = kept;
                 order_limit(graph, target, &mut reached, |(id, ..)| *id, context.work)?;
                 let mut rows = Vec::new();
                 for (next, depth, rel_id) in reached {
@@ -1515,8 +1526,8 @@ fn route(
     use crate::path::{cheapest, fewest_edges, Limit, Step};
 
     let PathWalk { field, rel, direction, targets, span, path, target, weight_ty, weight_unit } = walk;
-    let mut goals = candidates(graph, target, context.work)?;
-    retain_matches(graph, &mut goals, target.condition.as_ref(), context.work)?;
+    let mut goals = candidates(graph, schema, target, context.work)?;
+    retain_matches(graph, schema, &mut goals, target.condition.as_ref(), context.work)?;
     let goal_set: HashSet<NodeId> = goals.iter().copied().collect();
     let is_goal = |id: NodeId| goal_set.contains(&id);
     let describe = |id: NodeId| {
@@ -1720,6 +1731,7 @@ struct WalkSpec<'a> {
 
 fn walk_range(
     graph: &Graph,
+    schema: &Schema,
     start: NodeId,
     spec: WalkSpec<'_>,
     work: &mut Work,
@@ -1747,8 +1759,9 @@ fn walk_range(
         if depth == max {
             continue;
         }
-        for (next, rel_id) in neighbors(graph, node, rel, direction) {
-            work.charge(1)?;
+        // The step a chain's `N hops` takes: `field` as each node's own type
+        // declares it, to the types it reaches (zegadb/zega#86).
+        for (next, rel_id) in chain::step_edges(graph, schema, node, field, work)? {
             if seen.insert(next) {
                 queue.push_back((next, depth + 1, rel_id));
             }
@@ -1794,17 +1807,19 @@ fn neighbors(
 /// is where a query spends its time, so each row tested is a step of work.
 fn retain_matches(
     graph: &Graph,
+    schema: &Schema,
     ids: &mut Vec<NodeId>,
     condition: Option<&BoolExpr>,
     work: &mut Work,
 ) -> Result<(), LangError> {
-    retain_first_matches(graph, ids, condition, None, work)
+    retain_first_matches(graph, schema, ids, condition, None, work)
 }
 
 /// Like `retain_matches`, but stop once `enough` rows match: the rows after
 /// that are neither tested nor kept, nor counted as examined.
 fn retain_first_matches(
     graph: &Graph,
+    schema: &Schema,
     ids: &mut Vec<NodeId>,
     condition: Option<&BoolExpr>,
     enough: Option<usize>,
@@ -1827,9 +1842,16 @@ fn retain_first_matches(
             break;
         }
         tested += 1;
-        if node_matches(graph, ids[i], condition) {
-            ids[kept] = ids[i];
-            kept += 1;
+        match node_matches(graph, schema, ids[i], condition, work) {
+            Ok(true) => {
+                ids[kept] = ids[i];
+                kept += 1;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                stopped = Err(error);
+                break;
+            }
         }
     }
     graph.note_examined(tested);
@@ -1870,11 +1892,18 @@ fn intersect(found: Option<HashSet<NodeId>>, next: HashSet<NodeId>) -> Option<Ha
     })
 }
 
-/// Candidates from the spatial index and the declared `index { }` block.
+/// Candidates from the spatial index and the declared `index { }` block, and
+/// from a walk in the condition whose target has one (zegadb/zega#86).
 /// Every row the condition accepts is in the set; the caller still tests each
 /// one. None means no index applies and the caller scans the types.
-fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSet<NodeId>> {
-    match expr {
+fn index_filter(
+    graph: &Graph,
+    schema: &Schema,
+    types: &[&str],
+    expr: &BoolExpr,
+    work: &mut Work,
+) -> Result<Option<HashSet<NodeId>>, LangError> {
+    Ok(match expr {
         BoolExpr::Test(Pred::Box(field, bounds, _)) => {
             Some(graph.spatial_candidates(field, *bounds))
         }
@@ -1894,8 +1923,11 @@ fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSe
         // it cannot serve these without a second, folded index (zegadb/zega#98
         // left that for later). They always fall through to a full scan below.
         BoolExpr::Test(Pred::FindLike(..) | Pred::StartsLike(..) | Pred::EndsLike(..)) => None,
+        BoolExpr::Test(Pred::Chain(chain)) => return chain::candidates(graph, schema, types, chain, work),
         BoolExpr::Test(pred) => {
-            let (field, interval) = range_interval(pred)?;
+            let Some((field, interval)) = range_interval(pred) else {
+                return Ok(None);
+            };
             graph.range_candidates(types, field, &interval)
         }
         BoolExpr::And(_) => {
@@ -1904,8 +1936,13 @@ fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSe
             and_terms(expr, &mut terms);
             let mut ranges: Vec<(&str, Interval)> = Vec::new();
             let mut found = None;
+            let mut walks = Vec::new();
             for term in terms {
                 if let BoolExpr::Test(pred) = term {
+                    if let Pred::Chain(walk) = pred {
+                        walks.push(walk);
+                        continue;
+                    }
                     if let Some((field, interval)) = range_interval(pred) {
                         if graph.has_index(IndexKind::Range, types, field) {
                             match ranges.iter_mut().find(|(name, _)| *name == field) {
@@ -1919,7 +1956,7 @@ fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSe
                         }
                     }
                 }
-                if let Some(set) = index_filter(graph, types, term) {
+                if let Some(set) = index_filter(graph, schema, types, term, work)? {
                     found = intersect(found, set);
                 }
             }
@@ -1928,33 +1965,59 @@ fn index_filter(graph: &Graph, types: &[&str], expr: &BoolExpr) -> Option<HashSe
                     found = intersect(found, set);
                 }
             }
+            // When the row's own fields already narrowed it, walking forward
+            // from those few rows is cheaper than finding every matching
+            // target first; so is walking from the rows one walk found.
+            for walk in walks {
+                if found.is_some() {
+                    break;
+                }
+                if let Some(set) = chain::candidates(graph, schema, types, walk, work)? {
+                    found = Some(set);
+                }
+            }
             found
         }
         BoolExpr::Or(terms) => {
             // A branch with no index may match anywhere.
             let mut found = HashSet::new();
             for term in terms {
-                found.extend(index_filter(graph, types, term)?);
+                match index_filter(graph, schema, types, term, work)? {
+                    Some(set) => found.extend(set),
+                    None => return Ok(None),
+                }
             }
             Some(found)
         }
-    }
+    })
 }
 
-fn candidates(graph: &Graph, sel: &Selection, work: &mut Work) -> Result<Vec<NodeId>, LangError> {
-    let has_label = |id: &NodeId| {
-        graph.get_node(*id).is_some_and(|node| {
-            node.labels()
-                .any(|label| label == sel.type_name || sel.also.iter().any(|also| also == label))
-        })
-    };
-    let types: Vec<&str> = std::iter::once(sel.type_name.as_str())
+fn selection_types(sel: &Selection) -> Vec<&str> {
+    std::iter::once(sel.type_name.as_str())
         .chain(sel.also.iter().map(String::as_str))
-        .collect();
-    let indexed = sel
-        .condition
-        .as_ref()
-        .and_then(|expr| index_filter(graph, &types, expr));
+        .collect()
+}
+
+/// Whether `id` is one of the types `sel` names.
+fn in_selection(graph: &Graph, id: NodeId, sel: &Selection) -> bool {
+    graph.get_node(id).is_some_and(|node| {
+        node.labels()
+            .any(|label| label == sel.type_name || sel.also.iter().any(|also| also == label))
+    })
+}
+
+fn candidates(
+    graph: &Graph,
+    schema: &Schema,
+    sel: &Selection,
+    work: &mut Work,
+) -> Result<Vec<NodeId>, LangError> {
+    let has_label = |id: &NodeId| in_selection(graph, *id, sel);
+    let types = selection_types(sel);
+    let indexed = match &sel.condition {
+        Some(expr) => index_filter(graph, schema, &types, expr, work)?,
+        None => None,
+    };
     // Expand a geodesic circle until k qualifying points are inside. Every
     // point outside is farther than the kth match, so early stopping is exact.
     // Only when the first key is the nearest distance first: a later key
@@ -1972,7 +2035,7 @@ fn candidates(graph: &Graph, sel: &Selection, work: &mut Work) -> Result<Vec<Nod
                 .filter(has_label)
                 .filter(|id| indexed.as_ref().is_none_or(|set| set.contains(id)))
                 .collect();
-            retain_matches(graph, &mut ids, sel.condition.as_ref(), work)?;
+            retain_matches(graph, schema, &mut ids, sel.condition.as_ref(), work)?;
             let mut ids: Vec<_> = ids
                 .into_iter()
                 .filter(|id| node_distance(graph, *id, order).is_some_and(|d| d <= radius))
@@ -2152,18 +2215,45 @@ fn node_has_any_label(graph: &Graph, id: NodeId, labels: &[String]) -> bool {
     })
 }
 
-fn node_matches(graph: &Graph, id: NodeId, condition: Option<&BoolExpr>) -> bool {
+fn node_matches(
+    graph: &Graph,
+    schema: &Schema,
+    id: NodeId,
+    condition: Option<&BoolExpr>,
+    work: &mut Work,
+) -> Result<bool, LangError> {
     match condition {
-        None => true,
-        Some(expr) => eval_expr(graph, id, expr),
+        None => Ok(true),
+        Some(expr) => eval_expr(graph, schema, id, expr, work),
     }
 }
 
-fn eval_expr(graph: &Graph, id: NodeId, expr: &BoolExpr) -> bool {
+fn eval_expr(
+    graph: &Graph,
+    schema: &Schema,
+    id: NodeId,
+    expr: &BoolExpr,
+    work: &mut Work,
+) -> Result<bool, LangError> {
     match expr {
-        BoolExpr::Test(pred) => pred_matches(graph, id, pred),
-        BoolExpr::And(terms) => terms.iter().all(|term| eval_expr(graph, id, term)),
-        BoolExpr::Or(terms) => terms.iter().any(|term| eval_expr(graph, id, term)),
+        BoolExpr::Test(pred) => pred_matches(graph, schema, id, pred, work),
+        BoolExpr::And(terms) if chain::correlated(terms) => chain::and_group(graph, schema, id, terms, work),
+        BoolExpr::And(terms) => {
+            for term in terms {
+                if !eval_expr(graph, schema, id, term, work)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        BoolExpr::Or(terms) => {
+            for term in terms {
+                if eval_expr(graph, schema, id, term, work)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
     }
 }
 
@@ -2193,11 +2283,18 @@ fn assign_props(
     }
 }
 
-fn pred_matches(graph: &Graph, id: NodeId, pred: &Pred) -> bool {
+fn pred_matches(
+    graph: &Graph,
+    schema: &Schema,
+    id: NodeId,
+    pred: &Pred,
+    work: &mut Work,
+) -> Result<bool, LangError> {
     let Some(node) = graph.get_node(id) else {
-        return false;
+        return Ok(false);
     };
-    match pred {
+    Ok(match pred {
+        Pred::Chain(walk) => return chain::holds(graph, schema, id, walk, work),
         Pred::Similarity(sim, op, threshold) => node_similarity(node, sim).is_some_and(|s| cmp_json(&json!(s), *op, &json!(threshold))),
         Pred::Distance(distance, op, metres) => {
             point_prop(node, &distance.field).is_some_and(|point| {
@@ -2228,7 +2325,7 @@ fn pred_matches(graph: &Graph, id: NodeId, pred: &Pred) -> bool {
         Pred::EndsLike(field, needle, _) => prop_json(node, field)
             .as_str()
             .is_some_and(|text| crate::text_fold::ends_with(text, needle)),
-    }
+    })
 }
 
 fn cmp_json(left: &Json, op: Cmp, right: &Json) -> bool {
@@ -2350,7 +2447,14 @@ fn json_to_value(value: &Json) -> Result<Value, LangError> {
 pub(crate) struct Work {
     left: usize,
     deadline: Option<Deadline>,
+    /// For a chain's `within N hops`, the end nodes an index pinned: by
+    /// chain, hop and start type, computed once for the statement.
+    pins: HashMap<PinKey, Option<std::rc::Rc<HashSet<NodeId>>>>,
 }
+
+/// A pinned end set's key: the chain (by address, fixed for the statement),
+/// the hop, and the type the walk started from.
+type PinKey = (usize, usize, String);
 
 struct Deadline {
     at: Instant,
@@ -2371,6 +2475,7 @@ impl Work {
                 steps: 0,
                 expired: false,
             }),
+            pins: HashMap::new(),
         }
     }
 
@@ -2910,15 +3015,18 @@ mod tests {
                 };
                 let selection = query.root.unwrap();
                 let mut work = Work::new(usize::MAX, None);
-                let mut scan = candidates(&graph, &selection, &mut work).unwrap();
-                scan.retain(|id| node_matches(&graph, *id, selection.condition.as_ref()));
+                let schema = crate::lang::parse_schema("type Person { name: String age: Int }").unwrap();
+                let mut scan = candidates(&graph, &schema, &selection, &mut work).unwrap();
+                scan.retain(|id| {
+                    node_matches(&graph, &schema, *id, selection.condition.as_ref(), &mut work).unwrap()
+                });
                 assert_eq!(scan, vec![expected]);
                 assert_eq!(
                     unique_candidates(&graph, &selection, &uniques),
                     Some(scan.clone())
                 );
                 assert_eq!(
-                    lookup_one(&graph, &selection, &uniques, &mut work).unwrap(),
+                    lookup_one(&graph, &schema, &selection, &uniques, &mut work).unwrap(),
                     scan[0]
                 );
             }
