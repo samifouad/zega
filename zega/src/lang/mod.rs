@@ -345,26 +345,26 @@ pub struct Hop {
     pub test: Option<BoolExpr>,
 }
 
-/// `flights 2 hops` or `flights within 3 hops`: one relationship repeated,
-/// the English form of `*2..2` and `*1..3`. A node is reached at its
-/// shortest distance and never twice, and the start is never reached again.
+/// One relationship repeated, as a band of shortest distances: `2 hops` and
+/// `exactly 2 hops` are 2..2, `max 3 hops` and `within 3 hops` 1..3,
+/// `min 2 hops` 2..6, `min 2 max 4 hops` 2..4. The English form of
+/// `*min..max`: a node counts at its shortest distance and never twice, and
+/// the start is never reached again. "Any path of exactly N legs" is N
+/// explicit hops instead: `route in route`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Repeat {
-    Exactly(usize),
-    Within(usize),
+pub struct Repeat {
+    pub min: usize,
+    pub max: usize,
 }
 
 impl Repeat {
     /// The fewest and most hops, as a `*min..max` range.
     pub fn range(self) -> (usize, usize) {
-        match self {
-            Repeat::Exactly(n) => (n, n),
-            Repeat::Within(n) => (1, n),
-        }
+        (self.min, self.max)
     }
 }
 
-/// The most hops `N hops` and `within N hops` may repeat.
+/// The most hops a band (`N hops`, `max N hops`, `min N hops`) may reach.
 pub const MAX_HOPS: usize = 6;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2088,35 +2088,18 @@ impl<'a> Parser<'a> {
             return self.builtin_item(Some(field)).map(ItemHead::Done);
         }
         let mut path = None;
-        // `mentors 2 hops ->` and `mentors within 3 hops ->`: English for
-        // `*2..2` and `*1..3`, as in a filter's chain.
-        self.skip();
-        if self.peek_digit() || (self.starts_word("within") && {
-            let mut lookahead = self.fork();
-            lookahead.eat_word("within");
-            lookahead.skip();
-            lookahead.peek_digit()
-        }) {
-            let within = self.eat_word("within");
-            self.skip();
-            let number_start = self.i;
-            let n = self.integer()?;
-            let number = self.span_bytes(number_start, self.i);
-            self.expect_word("hops")?;
-            let n = usize::try_from(n).ok().filter(|n| (1..=MAX_HOPS).contains(n)).ok_or_else(|| {
-                self.err_at(number, format!("a relationship repeats 1 to {MAX_HOPS} hops"))
-                    .with_help("for more, write `*min..max`")
-            })?;
+        // `mentors 2 hops ->`, `mentors max 3 hops ->`: English for `*2..2`
+        // and `*1..3`, as in a filter's chain.
+        if let Some(band) = self.hop_band(&field)? {
             let (end_line, end_column) = self.loc(self.i);
             span.end_line = end_line;
             span.end_column = end_column;
-            let range = if within { (1, n) } else { (n, n) };
             if !self.starts_with_arrow() {
                 return Err(self
                     .err_at(span, format!("{field} has hops but no arrow"))
-                    .with_help(format!("write `{field} {} hops -> Type`", if within { format!("within {n}") } else { n.to_string() })));
+                    .with_help(format!("write `{field} … hops -> Type`")));
             }
-            return Ok(ItemHead::Walk { field, span, range: Some(range), path: None });
+            return Ok(ItemHead::Walk { field, span, range: Some(band.range()), path: None });
         }
         let star = self.eat("*");
         let range = if star && self.starts_word("path") {
@@ -2465,31 +2448,79 @@ impl<'a> Parser<'a> {
         if self.starts_related_arrow() {
             return Err(self.walk_with_type(&field, start));
         }
-        self.skip();
-        let repeat = if self.peek_digit() || self.starts_word("within") {
-            let within = self.eat_word("within");
-            self.skip();
-            let number_start = self.i;
-            let n = self.integer()?;
-            if !self.eat_word("hops") {
-                return Err(self
-                    .err("expected `hops`")
-                    .with_help(format!("write `{field} {} hops`", if within { format!("within {n}") } else { n.to_string() })));
-            }
-            let span = self.span_bytes(number_start, self.i);
-            let n = usize::try_from(n).ok().filter(|n| (1..=MAX_HOPS).contains(n)).ok_or_else(|| {
-                self.err_at(span, format!("a relationship repeats 1 to {MAX_HOPS} hops"))
-                    .with_help("the query time limit bounds a walk; more hops reach most of a graph")
-            })?;
-            Some(if within { Repeat::Within(n) } else { Repeat::Exactly(n) })
-        } else {
-            None
-        };
+        let repeat = self.hop_band(&field)?;
         if same && repeat.is_some() {
             return Err(self.err_at(span, "a join takes one hop").with_help(format!("write `in same {field}`")));
         }
         let test = self.hop_condition()?;
         Ok(Hop { field, span, repeat, same, test })
+    }
+
+    /// Whether a band starts here: a number, or `exactly`, `within`, `max` or
+    /// `min` right before one. Those words are keywords only there, so a
+    /// field called `max` still works.
+    fn starts_band(&self) -> bool {
+        let mut lookahead = self.fork();
+        lookahead.skip();
+        if lookahead.peek_digit() {
+            return true;
+        }
+        ["exactly", "within", "max", "min"].iter().any(|word| {
+            let mut lookahead = self.fork();
+            lookahead.eat_word(word) && {
+                lookahead.skip();
+                lookahead.peek_digit()
+            }
+        })
+    }
+
+    /// `2 hops`, `exactly 2 hops`, `max 3 hops`, `within 3 hops`,
+    /// `min 2 hops`, `min 2 max 4 hops`: see [`Repeat`].
+    fn hop_band(&mut self, field: &str) -> Result<Option<Repeat>> {
+        if !self.starts_band() {
+            return Ok(None);
+        }
+        self.skip();
+        let start = self.i;
+        let (min, max) = if self.eat_word("exactly") {
+            let n = self.hop_number()?;
+            (n, n)
+        } else if self.eat_word("within") || self.eat_word("max") {
+            (1, self.hop_number()?)
+        } else if self.eat_word("min") {
+            let low = self.hop_number()?;
+            if self.eat_word("max") {
+                (low, self.hop_number()?)
+            } else {
+                (low, MAX_HOPS as i64)
+            }
+        } else {
+            let n = self.hop_number()?;
+            (n, n)
+        };
+        if !self.eat_word("hops") {
+            return Err(self.err("expected `hops`").with_help(format!(
+                "write `{field} 2 hops`, `{field} max 3 hops`, `{field} min 2 hops` or `{field} min 2 max 4 hops`"
+            )));
+        }
+        let span = self.span_bytes(start, self.i);
+        let bound = |n: i64| usize::try_from(n).ok().filter(|n| (1..=MAX_HOPS).contains(n));
+        let (Some(min), Some(max)) = (bound(min), bound(max)) else {
+            return Err(self
+                .err_at(span, format!("a relationship repeats 1 to {MAX_HOPS} hops"))
+                .with_help("the query time limit bounds a walk; more hops reach most of a graph"));
+        };
+        if min > max {
+            return Err(self
+                .err_at(span, format!("min {min} is more than max {max}"))
+                .with_help(format!("write `min {max} max {min} hops`")));
+        }
+        Ok(Some(Repeat { min, max }))
+    }
+
+    fn hop_number(&mut self) -> Result<i64> {
+        self.skip();
+        self.integer()
     }
 
     /// `(…)` right after a hop: a test on the node it reached, no walks.

@@ -137,15 +137,15 @@ fn walks(
         // Nothing after here is named or joined: reaching the pinned end set
         // is the whole answer, found from both ends at once.
         if let Some(pinned) = pinned(graph, schema, id, chain, k, wanted, work)? {
-            if frontier.iter().try_fold(false, |hit, &from| -> Result<bool, LangError> {
-                Ok(hit || meet(graph, schema, from, &hop.field, hop.repeat.map_or((1, 1), Repeat::range).1, &pinned, work)?)
-            })? {
-                out.push(binding);
-                if any {
-                    break;
+            if let Some(hit) = reaches(graph, schema, &frontier, hop, &pinned, work)? {
+                if hit {
+                    out.push(binding);
+                    if any {
+                        break;
+                    }
                 }
+                continue;
             }
-            continue;
         }
         let mut next = advance(graph, schema, &frontier, hop, work)?;
         if hop.same {
@@ -236,7 +236,7 @@ fn pinned(
     work: &mut Work,
 ) -> Result<Option<Rc<HashSet<NodeId>>>, LangError> {
     let hop = &chain.hops[k];
-    if !matches!(hop.repeat, Some(Repeat::Within(_))) || chain.from.is_some() {
+    if hop.repeat.is_none() || chain.from.is_some() {
         return Ok(None);
     }
     let rest = &chain.hops[k + 1..];
@@ -364,14 +364,45 @@ fn pin(graph: &Graph, schema: &Schema, start: &str, chain: &Chain, k: usize, wor
     Ok(Some(set))
 }
 
-/// Whether some node of `ends`, other than `from`, is at most `most` hops of
-/// `field` from `from`: a breadth-first search from both sides, each step
-/// expanding the smaller frontier, so two searches of half the depth meet
-/// in the middle instead of one searching the whole depth.
-fn meet(graph: &Graph, schema: &Schema, from: NodeId, field: &str, most: usize, ends: &HashSet<NodeId>, work: &mut Work) -> Result<bool, LangError> {
+/// Whether a band hop from `frontier` reaches `ends` at a shortest distance
+/// in its band, searched from both ends. `max N` (and `exactly 1`) asks for the
+/// nearest of `ends`; a band with a `min` above 1 needs each end's own
+/// distance, so it searches per end when there are few, and says None, for
+/// the caller to walk forward, when there are many.
+fn reaches(graph: &Graph, schema: &Schema, frontier: &[NodeId], hop: &Hop, ends: &HashSet<NodeId>, work: &mut Work) -> Result<Option<bool>, LangError> {
+    /// Ends searched one at a time for a band with a `min`.
+    const EACH_END: usize = 32;
+    let Some(Repeat { min, max }) = hop.repeat else {
+        return Ok(None);
+    };
+    if min > 1 && ends.len() > EACH_END {
+        return Ok(None);
+    }
+    for &from in frontier {
+        if min == 1 {
+            if distance(graph, schema, from, &hop.field, max, ends, work)?.is_some() {
+                return Ok(Some(true));
+            }
+            continue;
+        }
+        for &end in ends {
+            let one = HashSet::from([end]);
+            if distance(graph, schema, from, &hop.field, max, &one, work)?.is_some_and(|d| d >= min) {
+                return Ok(Some(true));
+            }
+        }
+    }
+    Ok(Some(false))
+}
+
+/// The shortest distance along `field` from `from` to any node of `ends`
+/// other than `from`, when it is at most `most`: a breadth-first search from
+/// both sides, each step expanding the smaller frontier, so two searches of
+/// half the depth meet in the middle instead of one searching the whole depth.
+fn distance(graph: &Graph, schema: &Schema, from: NodeId, field: &str, most: usize, ends: &HashSet<NodeId>, work: &mut Work) -> Result<Option<usize>, LangError> {
     let targets: HashSet<NodeId> = ends.iter().copied().filter(|id| *id != from).collect();
     if targets.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
     let types: Vec<String> = graph
         .get_node(from)
@@ -388,8 +419,8 @@ fn meet(graph: &Graph, schema: &Schema, from: NodeId, field: &str, most: usize, 
         }
     }
     let kinds = kinds_of(schema, &all_types, field);
-    let mut ahead: HashSet<NodeId> = HashSet::from([from]);
-    let mut behind: HashSet<NodeId> = targets.clone();
+    let mut ahead: HashMap<NodeId, usize> = HashMap::from([(from, 0)]);
+    let mut behind: HashMap<NodeId, usize> = targets.iter().map(|id| (*id, 0)).collect();
     let mut front = vec![from];
     let mut rear: Vec<NodeId> = targets.into_iter().collect();
     let (mut depth_ahead, mut depth_behind) = (0, 0);
@@ -402,6 +433,8 @@ fn meet(graph: &Graph, schema: &Schema, from: NodeId, field: &str, most: usize, 
         };
         *depth += 1;
         let mut next = Vec::new();
+        // The whole layer, then the nearest meeting in it: the shortest.
+        let mut met: Option<usize> = None;
         for id in layer.drain(..) {
             for (kind, direction) in &kinds {
                 let direction = match (forward, direction) {
@@ -412,18 +445,23 @@ fn meet(graph: &Graph, schema: &Schema, from: NodeId, field: &str, most: usize, 
                 let reached = neighbors(graph, id, kind, direction);
                 work.charge(reached.len())?;
                 for (node, _) in reached {
-                    if theirs.contains(&node) {
-                        return Ok(true);
+                    if let Some(other) = theirs.get(&node) {
+                        let total = *depth + other;
+                        met = Some(met.map_or(total, |best| best.min(total)));
                     }
-                    if mine.insert(node) {
+                    if let std::collections::hash_map::Entry::Vacant(slot) = mine.entry(node) {
+                        slot.insert(*depth);
                         next.push(node);
                     }
                 }
             }
         }
+        if let Some(total) = met {
+            return Ok((total <= most).then_some(total));
+        }
         *layer = next;
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// Candidates for a `has` chain whose last hop's test an index answers: that

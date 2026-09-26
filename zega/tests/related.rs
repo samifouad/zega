@@ -347,6 +347,79 @@ fn within_hops_to_an_indexed_end_meets_in_the_middle() {
 }
 
 // ---------------------------------------------------------------------------
+// Hop-count bands: `exactly`, `max`, `min`, `min … max` (locked on #86).
+
+const LEGS: &str = "schema { type Airport { code: String route: ROUTE -> Airport[] inbound: ROUTE <- Airport[] } } unique { Airport { code } }";
+
+/// YYC -> NRT directly, YYC -> YVR -> NRT, and YVR -> KIX.
+fn legs() -> Zega {
+    let db = Zega::in_memory().build().unwrap();
+    for code in ["YYC", "NRT", "YVR", "KIX"] {
+        ask(&db, LEGS, &format!(r#"mutation {{ Airport(code: "{code}") }}"#));
+    }
+    for (from, to) in [("YYC", "NRT"), ("YYC", "YVR"), ("YVR", "NRT"), ("YVR", "KIX")] {
+        ask(&db, LEGS, &format!(r#"mutation {{ Airport(code: "{from}") {{ route -> link Airport(code: "{to}") }} }}"#));
+    }
+    db
+}
+
+fn codes_of(result: &Json) -> Vec<String> {
+    column(result, "code").into_iter().map(String::from).collect()
+}
+
+#[test]
+fn a_band_is_a_range_of_shortest_distances_in_a_selection() {
+    let db = legs();
+    let from_yyc = |band: &str| codes_of(&ask(&db, LEGS, &format!(r#"{{ Airport(code: "YYC") {{ route {band} -> Airport {{ code }} }} }}"#))["route"]);
+    assert_eq!(from_yyc("exactly 2 hops"), ["KIX"]);
+    assert_eq!(from_yyc("2 hops"), ["KIX"]);
+    assert_eq!(from_yyc("max 2 hops"), ["NRT", "YVR", "KIX"]);
+    assert_eq!(from_yyc("within 2 hops"), ["NRT", "YVR", "KIX"]);
+    assert_eq!(from_yyc("min 2 hops"), ["KIX"]);
+    assert_eq!(from_yyc("min 1 max 2 hops"), ["NRT", "YVR", "KIX"]);
+    assert_eq!(from_yyc("min 2 max 2 hops"), ["KIX"]);
+}
+
+#[test]
+fn a_band_in_a_filter_and_explicit_hops_for_any_path() {
+    let db = legs();
+    let reached = |test: &str| codes_of(&ask(&db, LEGS, &format!("{{ Airport({test}) {{ code }} }}")));
+    // What YYC reaches, asked from the far end. `code` is unique, so YYC is
+    // pinned and found from both ends.
+    assert_eq!(reached(r#"has inbound exactly 2 hops(code = "YYC")"#), ["KIX"]);
+    assert_eq!(reached(r#"has inbound max 2 hops(code = "YYC")"#), ["NRT", "YVR", "KIX"]);
+    assert_eq!(reached(r#"has inbound min 2 hops(code = "YYC")"#), ["KIX"]);
+    // Any path of exactly two legs: NRT too, through YVR.
+    assert_eq!(reached(r#"has inbound in inbound(code = "YYC")"#), ["NRT", "KIX"]);
+    // From YYC's side: NRT is one hop away, so never exactly two.
+    assert_eq!(reached(r#"has route exactly 2 hops(code = "NRT")"#), Vec::<String>::new());
+    assert_eq!(reached(r#"has route in route(code = "NRT")"#), ["YYC"]);
+    // A band with a min and no index: walked forward.
+    assert_eq!(reached(r#"has route min 2 hops(code startsExact "KI")"#), ["YYC"]);
+}
+
+#[test]
+fn min_max_and_exactly_are_keywords_only_before_n_hops() {
+    let schema = "type Box { min: Int max?: Int exactly?: Int next -> Box[] }";
+    let db = Zega::in_memory().build().unwrap();
+    ask(&db, schema, "mutation { Box(min: 1) }");
+    ask(&db, schema, "mutation { Box(min: 2 && max: 2 && exactly: 2) }");
+    ask(&db, schema, "mutation { Box(min: 1) { next -> link Box(min: 2) } }");
+    assert_eq!(
+        ask(&db, schema, "{ Box(min = 1 && has next min 1 max 2 hops(max = 2 && exactly >= 2)) { min } }"),
+        json!([{ "min": 1 }])
+    );
+    for (query, message) in [
+        ("{ Box(has next min 3 max 2 hops) { min } }", "min 3 is more than max 2"),
+        ("{ Box(has next min 7 hops) { min } }", "a relationship repeats 1 to 6 hops"),
+        ("{ Box(has next max 2) { min } }", "expected `hops`"),
+    ] {
+        let got = error(schema, query);
+        assert!(got.contains(message), "{query}\n{got}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Writes and loads find rows through a chain.
 
 #[test]
