@@ -12,7 +12,7 @@ use crate::vector::{Vector, VectorSpec, Metric};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::graph::{Graph, Node, NodeId, RelId};
+use crate::graph::{Graph, NodeId, NodeRef, NodeView, RelId, RelRef};
 use crate::index::{IndexKind, Interval, TextPattern};
 use crate::lang::{
     BoolExpr, Cmp, Count, Direction, Error as LangError, Item, LoadFormat, OrderBy, OrderKey, Pred,
@@ -160,22 +160,19 @@ impl Zega {
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
         let from = graph
             .get_node(from_id)
-            .cloned()
             .ok_or_else(|| ZegaError::Execution(format!("missing node {from_id}")))?;
         let to = graph
             .get_node(to_id)
-            .cloned()
             .ok_or_else(|| ZegaError::Execution(format!("missing node {to_id}")))?;
         let label = from
-            .labels
-            .first()
-            .cloned()
+            .first_label()
+            .map(str::to_string)
             .ok_or_else(|| ZegaError::Execution(format!("node {from_id} has no type")))?;
         let edge = schema.edge(&label, field).map_err(|error| {
             ZegaError::Execution(format!("{label} has no relationship {field}: {}", error))
         })?;
         let (_, rel, direction, targets, many) = edge.as_edge().unwrap();
-        let target_label = to.labels.first().map(String::as_str).unwrap_or("");
+        let target_label = to.first_label().unwrap_or("");
         if !targets.iter().any(|target| target == target_label) {
             return Err(ZegaError::Execution(format!(
                 "{label}.{field} does not reach {target_label}"
@@ -289,6 +286,7 @@ impl Zega {
             declared.uniques,
             declared.indexes,
         ));
+        graph.sync_uniques(declared.uniques);
         let mut work = Work::new(self.traversal_work_budget, self.query_time_limit);
         // A read logs nothing. A mutation or load is one statement: every row
         // and nested selection is applied, or (on a validation error, a
@@ -309,9 +307,9 @@ impl Zega {
             .graph
             .lock()
             .map_err(|_| ZegaError::Execution("lock poisoned".to_string()))?;
-        let mut nodes: Vec<Json> = graph.all_nodes().values().map(node_json).collect();
+        let mut nodes: Vec<Json> = graph.nodes().map(node_json).collect();
         nodes.sort_by_key(|node| node["id"].as_u64().unwrap_or(0));
-        let mut rels: Vec<Json> = graph.all_relationships().values().map(rel_json).collect();
+        let mut rels: Vec<Json> = graph.relationships().map(rel_json).collect();
         rels.sort_by_key(|rel| rel["id"].as_u64().unwrap_or(0));
         Ok(json!({ "nodes": nodes, "rels": rels }))
     }
@@ -822,9 +820,9 @@ fn apply_node(
             .iter()
             .map(|(key, value, _)| Ok((key.clone(), json_to_prop(schema, sel, key, value)?)))
             .collect::<Result<HashMap<_, _>, LangError>>()?;
-        let labels = graph
+        let labels: Vec<String> = graph
             .get_node(id)
-            .map(|node| node.labels.clone())
+            .map(|node| node.labels().map(str::to_string).collect())
             .unwrap_or_default();
         if let Some((ty, field)) = find_duplicate(graph, &labels, &props, uniques, Some(id)) {
             let span = sel
@@ -861,7 +859,7 @@ fn apply_node(
     let node = graph
         .get_node(id)
         .ok_or_else(|| LangError::bare(format!("missing node {id}")))?
-        .clone();
+        .to_node();
     let mut object = serde_json::Map::new();
     let mut lists: HashMap<String, Vec<Json>> = HashMap::new();
     for item in &sel.items {
@@ -944,7 +942,7 @@ fn apply_node(
                         RelationshipSpec { field, kind: rel, many, span: *span },
                         props,
                     )?;
-                    let saved = graph.get_node(child_id).unwrap().clone();
+                    let saved = graph.get_node(child_id).unwrap().to_node();
                     let mut child_object = serde_json::Map::new();
                     for child_item in &target.items {
                         match child_item {
@@ -1039,18 +1037,7 @@ fn unique_candidates(
         {
             if value.is_array() { return None; }
             let value = json_to_value(value).ok()?;
-            let mut ids: Vec<_> = graph
-                .nodes_by_property(field, &value)
-                .into_iter()
-                .flat_map(|ids| ids.iter().copied())
-                .filter(|id| {
-                    graph
-                        .get_node(*id)
-                        .is_some_and(|node| node.labels.iter().any(|label| label == ty))
-                })
-                .collect();
-            ids.sort_unstable();
-            return Some(ids);
+            return Some(graph.unique_matches(ty, field, &value));
         }
     }
     None
@@ -1118,17 +1105,10 @@ fn find_duplicate(
             if matches!(value, Value::Null) {
                 continue;
             }
-            let Some(ids) = graph.nodes_by_property(field, value) else {
-                continue;
-            };
-            let taken = ids.iter().any(|id| {
-                if except == Some(*id) {
-                    return false;
-                }
-                graph
-                    .get_node(*id)
-                    .is_some_and(|node| node.labels.iter().any(|has| has == label))
-            });
+            let taken = graph
+                .unique_matches(label, field, value)
+                .iter()
+                .any(|id| except != Some(*id));
             if taken {
                 return Some((ty.clone(), field.clone()));
             }
@@ -1239,8 +1219,7 @@ fn connect(
                 .unwrap_or_else(|| format!("node {parent}"));
             let source_type = graph
                 .get_node(parent)
-                .and_then(|node| node.labels.first())
-                .map(String::as_str)
+                .and_then(|node| node.first_label())
                 .unwrap_or("node");
             let first = graph
                 .get_node(*current)
@@ -1264,9 +1243,9 @@ fn connect(
     Ok(journal.create_relationship(graph, kind.to_string(), from, to, props))
 }
 
-fn node_description(node: &Node) -> String {
-    let ty = node.labels.first().map(String::as_str).unwrap_or("node");
-    format!("{ty}#{}", node.id)
+fn node_description(node: impl NodeView) -> String {
+    let ty = node.first_label().unwrap_or("node");
+    format!("{ty}#{}", node.id())
 }
 
 fn ensure_single_valued(
@@ -1297,7 +1276,7 @@ fn ensure_single_valued(
         span,
         format!(
             "single-valued relationship {}.{field} on {} connects both {first} and {second}",
-            node.labels.first().map(String::as_str).unwrap_or("node"),
+            node.first_label().unwrap_or("node"),
             node_description(node)
         ),
     )
@@ -1358,7 +1337,7 @@ fn project(
                 })?;
                 let value = graph
                     .get_relationship(rel_id)
-                    .and_then(|rel| rel.props.get(name))
+                    .and_then(|rel| rel.prop(name))
                     .map(value_to_json)
                     .unwrap_or(Json::Null);
                 object.insert(name.clone(), value);
@@ -1474,18 +1453,18 @@ fn project(
     Ok(Json::Object(object))
 }
 
-fn node_type<'a>(node: &'a Node, sel: &'a Selection) -> Result<&'a str, LangError> {
-    if node.labels.iter().any(|label| label == &sel.type_name) {
+fn node_type(node: impl NodeView, sel: &Selection) -> Result<&str, LangError> {
+    if node.has_label(&sel.type_name) {
         return Ok(sel.type_name.as_str());
     }
     for extra in &sel.also {
-        if node.labels.iter().any(|label| label == extra) {
+        if node.has_label(extra) {
             return Ok(extra.as_str());
         }
     }
     Err(LangError::bare(format!(
         "node {} is not a {}",
-        node.id, sel.type_name
+        node.id(), sel.type_name
     )))
 }
 
@@ -1504,10 +1483,10 @@ fn ensure_prop(schema: &Schema, sel: &Selection, name: &str) -> Result<(), LangE
 }
 
 /// A relationship as the explorer draws it: the shape of `graph_json`'s rels.
-fn rel_json(rel: &crate::graph::Relationship) -> Json {
+fn rel_json(rel: RelRef<'_>) -> Json {
     let mut props = serde_json::Map::new();
-    for (key, value) in &rel.props {
-        props.insert(key.clone(), value_to_json(value));
+    for (key, value) in rel.props() {
+        props.insert(key.to_string(), value_to_json(value));
     }
     json!({
         "id": rel.id,
@@ -1648,7 +1627,7 @@ fn route(
                 let mut out = Vec::new();
                 for (to, rel_id) in next(node, work)? {
                     let edge = || format!("{field}#{rel_id} from {} to {}", describe(node), describe(to));
-                    let stored = graph.get_relationship(rel_id).and_then(|r| r.props.get(weight));
+                    let stored = graph.get_relationship(rel_id).and_then(|r| r.prop(weight));
                     let weight_value = match stored {
                         Some(Value::Int(n)) => *n as f64,
                         Some(Value::Float(bits)) => f64::from_bits(*bits),
@@ -1808,7 +1787,7 @@ fn neighbors(
     let Some(ids) = ids else {
         return out;
     };
-    for rel_id in ids {
+    for rel_id in ids.iter() {
         let Some(rel) = graph.get_relationship(*rel_id) else {
             continue;
         };
@@ -2075,9 +2054,8 @@ fn selection_types(sel: &Selection) -> Vec<&str> {
 /// Whether `id` is one of the types `sel` names.
 fn in_selection(graph: &Graph, id: NodeId, sel: &Selection) -> bool {
     graph.get_node(id).is_some_and(|node| {
-        node.labels
-            .iter()
-            .any(|label| label == &sel.type_name || sel.also.contains(label))
+        node.labels()
+            .any(|label| label == sel.type_name || sel.also.iter().any(|also| also == label))
     })
 }
 
@@ -2135,8 +2113,8 @@ fn candidates(
     ids.dedup();
     Ok(ids)
 }
-fn point_prop(node: &Node, field: &str) -> Option<Point> {
-    match node.props.get(field) {
+fn point_prop(node: impl NodeView, field: &str) -> Option<Point> {
+    match node.prop(field) {
         Some(Value::Point(point)) => Some(*point),
         _ => None,
     }
@@ -2181,7 +2159,7 @@ fn order_limit<T>(
                         // No location, no distance: such a row is not in a distance order.
                         None => continue 'rows,
                     },
-                    OrderBy::Field(field) => SortValue::of(node.and_then(|n| n.props.get(field))),
+                    OrderBy::Field(field) => SortValue::of(node.and_then(|n| n.prop(field))),
                     OrderBy::Count(count) => SortValue::Int(
                         i64::try_from(count_related(graph, schema, id(&row), count, None, work)?)
                             .unwrap_or(i64::MAX),
@@ -2217,7 +2195,7 @@ impl SortValue {
             Some(Value::Bool(b)) => SortValue::Bool(*b),
             Some(Value::Int(i)) => SortValue::Int(*i),
             Some(Value::Float(bits)) => SortValue::Float(f64::from_bits(*bits)),
-            Some(Value::String(text)) => SortValue::Text(text.clone()),
+            Some(Value::String(text)) => SortValue::Text(text.to_string()),
             // Null, and kinds the checker refuses to order (Point, Vector, lists).
             _ => SortValue::Missing,
         }
@@ -2290,8 +2268,7 @@ fn require_points(schema: &Schema, sel: &Selection) -> Result<(), LangError> {
 
 fn node_has_any_label(graph: &Graph, id: NodeId, labels: &[String]) -> bool {
     graph.get_node(id).is_some_and(|node| {
-        node.labels
-            .iter()
+        node.labels()
             .any(|label| labels.iter().any(|wanted| wanted == label))
     })
 }
@@ -2340,10 +2317,10 @@ fn eval_expr(
 /// The stored kind, direction and target types of `field` on `node`'s type.
 fn relationship_of<'a>(
     schema: &'a Schema,
-    node: &Node,
+    node: NodeRef<'_>,
     field: &str,
 ) -> Option<(&'a str, Direction, &'a [String])> {
-    node.labels.iter().find_map(|label| {
+    node.labels().find_map(|label| {
         let (_, kind, direction, targets, _) = schema.edge(label, field).ok()?.as_edge()?;
         Some((kind, direction, targets))
     })
@@ -2529,32 +2506,31 @@ fn equality_lookup(sel: &Selection) -> bool {
             .is_some_and(|expr| expr.is_equality_and())
 }
 
-fn prop_json(node: &Node, name: &str) -> Json {
+fn prop_json(node: impl NodeView, name: &str) -> Json {
     if name == "@id" {
-        return json!(node.id);
+        return json!(node.id());
     }
-    node.props
-        .get(name)
+    node.prop(name)
         .map(value_to_json)
         .unwrap_or(Json::Null)
 }
 
-fn node_json(node: &Node) -> Json {
+fn node_json(node: NodeRef<'_>) -> Json {
     let mut object = serde_json::Map::new();
     object.insert("id".into(), json!(node.id));
     object.insert(
         "labels".into(),
-        Json::Array(node.labels.iter().cloned().map(Json::String).collect()),
+        Json::Array(node.labels().map(|label| Json::String(label.to_string())).collect()),
     );
-    for (key, value) in &node.props {
-        object.insert(key.clone(), value_to_json(value));
+    for (key, value) in node.props() {
+        object.insert(key.to_string(), value_to_json(value));
     }
     Json::Object(object)
 }
 
 fn value_to_json(value: &Value) -> Json {
     match value {
-        Value::String(value) => Json::String(value.clone()),
+        Value::String(value) => Json::String(value.to_string()),
         Value::Int(value) => json!(value),
         Value::Float(bits) => json!(f64::from_bits(*bits)),
         Value::Bool(value) => Json::Bool(*value),
@@ -2564,7 +2540,7 @@ fn value_to_json(value: &Value) -> Json {
         Value::Vector(v) => v.to_json(),
         Value::Map(values) => {
             let mut object = serde_json::Map::new();
-            for (key, value) in values {
+            for (key, value) in values.iter() {
                 object.insert(key.clone(), value_to_json(value));
             }
             Json::Object(object)
@@ -2572,22 +2548,22 @@ fn value_to_json(value: &Value) -> Json {
     }
 }
 
-fn node_similarity(node: &Node, sim: &crate::lang::Similarity) -> Option<f64> {
-    match node.props.get(&sim.field) { Some(Value::Vector(v)) => v.score(&sim.query), _ => None }
+fn node_similarity(node: impl NodeView, sim: &crate::lang::Similarity) -> Option<f64> {
+    match node.prop(&sim.field) { Some(Value::Vector(v)) => v.score(&sim.query), _ => None }
 }
-fn similarity_json(node: &Node, sim: &crate::lang::Similarity) -> Json { node_similarity(node,sim).map_or(Json::Null, |s| json!(s)) }
-fn score_json(node: &Node, sel: &Selection) -> Json { sel.near.as_ref().map_or(Json::Null, |n| similarity_json(node,&n.similarity)) }
+fn similarity_json(node: impl NodeView, sim: &crate::lang::Similarity) -> Json { node_similarity(node,sim).map_or(Json::Null, |s| json!(s)) }
+fn score_json(node: impl NodeView, sel: &Selection) -> Json { sel.near.as_ref().map_or(Json::Null, |n| similarity_json(node,&n.similarity)) }
 fn json_to_prop(schema: &Schema, sel: &Selection, field: &str, value: &Json) -> Result<Value, LangError> {
     if !value.is_null() {
         if let Ok(crate::lang::Field::Prop { ty, .. }) = schema.prop(&sel.type_name, field) {
-            if let Some(spec) = VectorSpec::parse(ty) { return spec.value(value).map(Value::Vector).map_err(|m| LangError::at(sel.type_span,m)); }
+            if let Some(spec) = VectorSpec::parse(ty) { return spec.value(value).map(|v| Value::Vector(Box::new(v))).map_err(|m| LangError::at(sel.type_span,m)); }
         }
     }
     json_to_value(value)
 }
 fn json_to_value(value: &Json) -> Result<Value, LangError> {
     match value {
-        Json::String(value) => Ok(Value::String(value.clone())),
+        Json::String(value) => Ok(Value::from(value.clone())),
         Json::Number(value) => {
             if let Some(value) = value.as_i64() {
                 Ok(Value::Int(value))
@@ -2602,7 +2578,7 @@ fn json_to_value(value: &Json) -> Result<Value, LangError> {
         Json::Object(_) => Point::from_json(value)
             .map(Value::Point)
             .map_err(LangError::bare),
-        Json::Array(_) => Vector::from_json(value, Metric::Cosine).map(Value::Vector).map_err(LangError::bare),
+        Json::Array(_) => Vector::from_json(value, Metric::Cosine).map(|v| Value::Vector(Box::new(v))).map_err(LangError::bare),
     }
 }
 
@@ -3158,7 +3134,7 @@ mod tests {
                 let id = graph.create_node(
                     vec!["Person".into()],
                     HashMap::from([
-                        ("name".into(), Value::String(name.clone())),
+                        ("name".into(), Value::from(name.clone())),
                         ("age".into(), Value::Int(age)),
                     ]),
                 );

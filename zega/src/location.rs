@@ -1,5 +1,6 @@
 //! WGS84 points and a fixed 16-bit-per-axis Morton (Z-order) index.
 use crate::graph::NodeId;
+use crate::idset::IdSet;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -146,7 +147,7 @@ impl Bounds {
 
 #[derive(Clone, Default)]
 pub(crate) struct SpatialIndex {
-    fields: HashMap<String, BTreeMap<u32, HashSet<NodeId>>>,
+    fields: HashMap<String, BTreeMap<u32, IdSet>>,
 }
 fn grid(value: f64, low: f64, width: f64) -> u32 {
     (((value - low) / width * 65536.0).floor() as u32).min(65535)
@@ -174,7 +175,7 @@ impl SpatialIndex {
         if let Some(tree) = self.fields.get_mut(field) {
             let key = key(point);
             if let Some(ids) = tree.get_mut(&key) {
-                ids.remove(&id);
+                ids.remove(id);
                 if ids.is_empty() {
                     tree.remove(&key);
                 }
@@ -207,7 +208,7 @@ impl SpatialIndex {
         let mut ids = HashSet::new();
         for (low, high) in intervals {
             for (_, bucket) in tree.range(low..=high) {
-                ids.extend(bucket);
+                ids.extend(bucket.iter());
             }
         }
         ids

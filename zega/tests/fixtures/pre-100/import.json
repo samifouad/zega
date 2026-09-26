@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    {
+      "area": 454.0,
+      "at": { "lat": 59.9139, "lon": 10.7522 },
+      "capital": true,
+      "emb": [1.0, 2.0, 3.0],
+      "id": 1,
+      "labels": ["City"],
+      "name": "Oslo",
+      "pop": 709037
+    },
+    {
+      "area": 465.0,
+      "at": { "lat": 60.39, "lon": 5.32 },
+      "capital": false,
+      "emb": [3.0, 2.0, 1.0],
+      "id": 2,
+      "labels": ["City"],
+      "name": "Bergen",
+      "pop": 291940
+    }
+  ],
+  "rels": [
+    {
+      "from": 2,
+      "id": 1,
+      "props": { "km": 463.0 },
+      "to": 1,
+      "type": "ROAD"
+    }
+  ]
+}

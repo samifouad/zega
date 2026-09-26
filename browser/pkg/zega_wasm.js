@@ -123,8 +123,35 @@ export class ZegaWasm {
         }
     }
     /**
+     * The whole graph as a `.graph` file (docs/graph-format.md): a
+     * `Uint8Array` to download, upload or `new Blob([bytes])`. `schema` is
+     * ZQL schema text to carry along; `meta` is a JSON object of string
+     * manifest metadata such as `{"licence": "CC0-1.0"}`.
+     * @param {string | null} [schema]
+     * @param {string | null} [meta]
+     * @returns {Uint8Array}
+     */
+    exportGraph(schema, meta) {
+        var ptr0 = isLikeNone(schema) ? 0 : passStringToWasm0(schema, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(meta) ? 0 : passStringToWasm0(meta, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.zegawasm_exportGraph(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v3;
+    }
+    /**
      * Serialize the whole graph database to a base64 string, so the
      * browser build can persist it across reloads.
+     *
+     * Deprecated for anything that leaves this browser: the bytes are the
+     * engine's internal snapshot, with no version contract. Use
+     * `exportGraph`. Kept, unchanged, because the explorer's saved
+     * sessions (localStorage) are in this encoding.
      * @returns {string}
      */
     export_base64() {
@@ -168,8 +195,35 @@ export class ZegaWasm {
         }
     }
     /**
+     * Replace the whole graph with a `.graph` file's bytes. All or nothing:
+     * a damaged file throws and changes nothing. Returns what the file
+     * carried besides the graph (counts, schema text, metadata) as JSON.
+     * @param {Uint8Array} bytes
+     * @returns {string}
+     */
+    importGraph(bytes) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.zegawasm_importGraph(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Restore a database previously produced by `export_base64`, replacing
-     * current state.
+     * current state. Deprecated like `export_base64`; use `importGraph`.
      * @param {string} data
      */
     import_base64(data) {
@@ -459,6 +513,11 @@ const ZegaWasmFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_zegawasm_free(ptr, 1));
 
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
 function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
 }
@@ -473,6 +532,13 @@ function getUint8ArrayMemory0() {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {

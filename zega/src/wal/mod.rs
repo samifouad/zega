@@ -21,6 +21,12 @@ use crate::value::Value;
 
 const WAL_MAGIC: &[u8; 4] = b"ZWAL";
 const WAL_VERSION: u16 = 2;
+/// A WAL that holds a [`Operation::ReplaceGraph`] entry is marked version 3
+/// before the entry is written, so a zega that predates imports refuses it
+/// with "unsupported WAL version 3" instead of a decoding error at some
+/// byte. This zega reads both.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const WAL_VERSION_IMPORTS: u16 = 3;
 const WAL_FILE_HEADER: &[u8; 6] = b"ZWAL\x02\x00";
 const WAL_FILE_HEADER_LEN: u64 = WAL_FILE_HEADER.len() as u64;
 const ENTRY_HEADER_LEN: u64 = 12;
@@ -69,6 +75,12 @@ pub enum Operation {
     /// New variants go last so entries written before them still decode.
     Statement {
         ops: Vec<Operation>,
+    },
+    /// Replace the whole graph with the `.graph` file `file` (a path inside
+    /// the data directory). One small entry commits an import of any size:
+    /// the file is written and synced first, and replay reads it back.
+    ReplaceGraph {
+        file: String,
     },
 }
 
@@ -303,6 +315,153 @@ impl Wal {
         }
     }
 
+    /// Mark the log as holding `.graph` imports (version 3), durably,
+    /// before the first [`Operation::ReplaceGraph`] entry goes in. Only
+    /// the native, file-backed path imports durably.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn mark_imports(&self) -> Result<(), WalError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut state = self
+                .group
+                .state
+                .lock()
+                .map_err(|_| WalError::Durability("group commit lock poisoned".to_string()))?;
+            if let Some(file) = state.file.as_mut() {
+                file.set_version(WAL_VERSION_IMPORTS)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// The log's length in bytes: where the next entry will start. Under
+    /// the graph lock this is exactly the history the graph holds, since
+    /// every write appends (and waits for durability) under it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn end(&self) -> Result<u64, WalError> {
+        let mut state = self
+            .group
+            .state
+            .lock()
+            .map_err(|_| WalError::Durability("group commit lock poisoned".to_string()))?;
+        if let Some(error) = &state.durability_error {
+            return Err(WalError::Durability(error.clone()));
+        }
+        match state.file.as_mut() {
+            Some(file) => Ok(file.seek_end()?),
+            None => Ok(0),
+        }
+    }
+
+    /// Replace the log with one that starts with `head` (a checkpoint's
+    /// [`Operation::ReplaceGraph`]) and continues with every entry from byte
+    /// `from` of this one: the writes made since the checkpoint's graph was
+    /// taken. Appends wait while it runs, and every entry they were waiting
+    /// on is made durable first, so none is left behind in the old file.
+    ///
+    /// The rename is the commit: a crash before it leaves the old log, after
+    /// it the new one, and both open to the same graph. A failure before the
+    /// rename leaves the log as it was; one after it poisons the log until
+    /// reopen, because which of the two a power cut would leave is unknown.
+    /// Returns the new log's length.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn rotate(&self, from: u64, head: &Operation) -> Result<u64, WalError> {
+        use crate::checkpoint::{crash_point, Step};
+
+        let payload = bincode::serialize(head)?;
+        let mut state = self
+            .group
+            .state
+            .lock()
+            .map_err(|_| WalError::Durability("group commit lock poisoned".to_string()))?;
+        if let Some(error) = &state.durability_error {
+            return Err(WalError::Durability(error.clone()));
+        }
+        let Some(file) = state.file.as_mut() else {
+            return Ok(0);
+        };
+        let end = file.seek_end()?;
+        if from < WAL_FILE_HEADER_LEN || from > end {
+            return Err(WalError::Durability(format!(
+                "checkpoint position {from} is outside the log (length {end})"
+            )));
+        }
+        sync_pending(&mut state)?;
+        self.group.wake.notify_all();
+
+        let next = rotation_path(&self.path);
+        let written = (|| -> Result<(File, u64), WalError> {
+            let mut out = File::create(&next)?;
+            out.write_all(WAL_MAGIC)?;
+            out.write_all(&WAL_VERSION_IMPORTS.to_le_bytes())?;
+            out.write_all(&(payload.len() as u64).to_le_bytes())?;
+            out.write_all(&crc32fast::hash(&payload).to_le_bytes())?;
+            out.write_all(&payload)?;
+            crash_point(Step::WalNextPartial);
+            let mut old = File::open(&self.path)?;
+            old.seek(SeekFrom::Start(from))?;
+            let copied = io::copy(&mut old.take(end - from), &mut out)?;
+            if copied != end - from {
+                return Err(WalError::Durability(format!(
+                    "the log ended at byte {} while copying it up to byte {end}",
+                    from + copied
+                )));
+            }
+            crash_point(Step::WalNextWritten);
+            out.sync_all()?;
+            let len = out.metadata()?.len();
+            Ok((out, len))
+        })();
+        let (out, len) = match written {
+            Ok(written) => written,
+            Err(error) => {
+                let _ = std::fs::remove_file(&next);
+                return Err(error);
+            }
+        };
+        drop(out);
+        crash_point(Step::WalNextSynced);
+        // Windows refuses to replace a file that is still open.
+        state.file = None;
+        if let Err(error) = rename_into_place(&next, &self.path) {
+            let _ = std::fs::remove_file(&next);
+            // Not renamed: the old log is whole and still the log.
+            return match open_wal_writer(&self.path) {
+                Ok(file) => {
+                    state.file = Some(Box::new(file));
+                    Err(error.into())
+                }
+                Err(reopen) => Err(poison(
+                    &mut state,
+                    format!(
+                        "WAL rotation failed ({error}) and the log could not be reopened \
+                         ({reopen}); the WAL refuses writes until the store is reopened"
+                    ),
+                )),
+            };
+        }
+        crash_point(Step::WalRenamed);
+        let durable = sync_parent(&self.path).and_then(|()| open_wal_writer(&self.path));
+        crash_point(Step::WalDurable);
+        match durable {
+            Ok(file) => {
+                state.file = Some(Box::new(file));
+                Ok(len)
+            }
+            Err(error) => Err(poison(
+                &mut state,
+                format!(
+                    "the rotated WAL could not be made durable ({error}); \
+                     the WAL refuses writes until the store is reopened"
+                ),
+            )),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn flush(&self) -> Result<(), WalError> {
         #[cfg(target_arch = "wasm32")]
@@ -337,7 +496,8 @@ impl Wal {
             let mut ops = Vec::new();
             let mut header = [0u8; WAL_FILE_HEADER.len()];
             reader.read_exact(&mut header)?;
-            if &header != WAL_FILE_HEADER {
+            let version = u16::from_le_bytes([header[4], header[5]]);
+            if header[..4] != WAL_MAGIC[..] || !matches!(version, WAL_VERSION | WAL_VERSION_IMPORTS) {
                 return Err(WalError::Corruption {
                     offset: 0,
                     reason: "invalid WAL header".to_string(),
@@ -407,12 +567,17 @@ impl Wal {
 /// nothing left over, and no length prefix allowed to claim more than `bytes`
 /// holds. WAL entries, legacy WAL entries and snapshots all decode here, so a
 /// frame that is not exactly one value is corruption wherever it is read.
+#[cfg(not(target_arch = "wasm32"))]
 fn decode_exact<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, bincode::Error> {
+    exact(bytes).deserialize(bytes)
+}
+
+/// The options [`decode_exact`] and [`decode_snapshot`] read with.
+fn exact(bytes: &[u8]) -> impl Options {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .reject_trailing_bytes()
         .with_limit(bytes.len() as u64)
-        .deserialize(bytes)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -440,7 +605,7 @@ fn prepare_wal(path: &Path) -> Result<(), WalError> {
                 reason: "truncated WAL header".to_string(),
             })?;
         let version = u16::from_le_bytes(version);
-        if version != WAL_VERSION {
+        if !matches!(version, WAL_VERSION | WAL_VERSION_IMPORTS) {
             return Err(WalError::Corruption {
                 offset: 0,
                 reason: format!("unsupported WAL version {version}"),
@@ -511,9 +676,18 @@ fn migrate_legacy_wal(path: &Path, file: File, file_len: u64) -> Result<(), WalE
 // handles before entering here. Never remove the destination before replacing
 // it: a failed rename must leave the last durable version available.
 #[cfg(not(target_arch = "wasm32"))]
-fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), WalError> {
+pub(crate) fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), WalError> {
     file.sync_all()?;
     drop(file);
+    rename_into_place(tmp_path, path)?;
+    sync_parent(path)?;
+    Ok(())
+}
+
+/// Rename `tmp_path` over `path`. Durable once [`sync_parent`] of `path`
+/// has returned; on Windows the rename itself is written through.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn rename_into_place(tmp_path: &Path, path: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
@@ -560,18 +734,29 @@ fn persist_replacement(file: File, tmp_path: &Path, path: &Path) -> Result<(), W
             )
         } == 0
         {
-            return Err(io::Error::last_os_error().into());
+            return Err(io::Error::last_os_error());
         }
+        Ok(())
     }
     #[cfg(not(windows))]
+    std::fs::rename(tmp_path, path)
+}
+
+/// Make a rename into `path`'s directory durable. Windows can't open a
+/// directory as a file; its renames are written through instead
+/// ([`rename_into_place`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
+    #[cfg(not(windows))]
     {
-        std::fs::rename(tmp_path, path)?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         File::open(parent)?.sync_all()?;
     }
+    #[cfg(windows)]
+    let _ = path;
     Ok(())
 }
 
@@ -590,6 +775,10 @@ trait AppendTarget: Write {
     /// length. A truncate changes no directory entry, so no platform needs
     /// the parent directory synced for it (unlike `persist_replacement`).
     fn sync(&mut self) -> io::Result<()>;
+    /// Rewrite the header's version and make it durable.
+    fn set_version(&mut self, _version: u16) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -606,6 +795,12 @@ impl AppendTarget for File {
     // which is metadata. On Windows this is FlushFileBuffers, which needs
     // the write access open_wal_writer already requests.
     fn sync(&mut self) -> io::Result<()> {
+        self.sync_all()
+    }
+
+    fn set_version(&mut self, version: u16) -> io::Result<()> {
+        self.seek(SeekFrom::Start(WAL_MAGIC.len() as u64))?;
+        self.write_all(&version.to_le_bytes())?;
         self.sync_all()
     }
 }
@@ -693,6 +888,95 @@ fn sync_pending(state: &mut WalState) -> Result<(), WalError> {
     Ok(())
 }
 
+/// Settle a rotation a crash interrupted, before the log is opened.
+///
+/// [`Wal::rotate`] writes the next log to [`rotation_path`] and renames it
+/// over the log. A next log next to a log with entries was never committed
+/// (the rename is the commit), so it is deleted. One with no log beside it,
+/// or a log with no entries, is a rename that did not finish, or a log that
+/// was lost: it is promoted to the log if every entry in it checks out, and
+/// otherwise the open is refused. It is never deleted unread.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn settle_rotation(path: &Path) -> Result<(), WalError> {
+    let next = rotation_path(path);
+    if !next.exists() {
+        return Ok(());
+    }
+    let log_len = match std::fs::metadata(path) {
+        Ok(meta) => meta.len(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error.into()),
+    };
+    if log_len > WAL_FILE_HEADER_LEN {
+        std::fs::remove_file(&next)?;
+        return Ok(());
+    }
+    check_log(&next).map_err(|error| WalError::Corruption {
+        offset: 0,
+        reason: format!(
+            "{} has no entries and {} is not a complete log ({error}); refusing to open \
+             rather than start empty. Move {} aside to open an empty database",
+            path.display(),
+            next.display(),
+            next.display()
+        ),
+    })?;
+    rename_into_place(&next, path)?;
+    sync_parent(path)?;
+    Ok(())
+}
+
+/// Every entry of the log at `path` is whole, checksummed and decodes, and
+/// nothing follows the last one.
+#[cfg(not(target_arch = "wasm32"))]
+fn check_log(path: &Path) -> Result<(), WalError> {
+    let bytes = std::fs::read(path)?;
+    let corrupt = |offset: usize, reason: &str| WalError::Corruption {
+        offset: offset as u64,
+        reason: reason.to_string(),
+    };
+    if bytes.len() < WAL_FILE_HEADER.len() || bytes[..4] != WAL_MAGIC[..] {
+        return Err(corrupt(0, "invalid WAL header"));
+    }
+    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    if !matches!(version, WAL_VERSION | WAL_VERSION_IMPORTS) {
+        return Err(corrupt(0, "unsupported WAL version"));
+    }
+    let mut at = WAL_FILE_HEADER.len();
+    while at < bytes.len() {
+        let header = bytes
+            .get(at..at + ENTRY_HEADER_LEN as usize)
+            .ok_or_else(|| corrupt(at, "torn entry header"))?;
+        let len = u64::from_le_bytes(header[..8].try_into().expect("8 bytes"));
+        let crc = u32::from_le_bytes(header[8..12].try_into().expect("4 bytes"));
+        let start = at + ENTRY_HEADER_LEN as usize;
+        let payload = usize::try_from(len)
+            .ok()
+            .and_then(|len| bytes.get(start..start.checked_add(len)?))
+            .ok_or_else(|| corrupt(at, "torn entry"))?;
+        if crc32fast::hash(payload) != crc {
+            return Err(corrupt(at, "checksum mismatch"));
+        }
+        decode_exact::<Operation>(payload).map_err(|_| corrupt(at, "invalid operation payload"))?;
+        at = start + payload.len();
+    }
+    Ok(())
+}
+
+/// Refuse every later append with `message`, until the store is reopened.
+#[cfg(not(target_arch = "wasm32"))]
+fn poison(state: &mut WalState, message: String) -> WalError {
+    state.durability_error = Some(message.clone());
+    WalError::Durability(message)
+}
+
+/// Where [`Wal::rotate`] writes the next log before renaming it over the
+/// current one. One left by a crash is never the log; open deletes it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn rotation_path(path: &Path) -> PathBuf {
+    path.with_extension("rotate.tmp")
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn truncate_tail(file: &File, valid_end: u64) -> Result<(), WalError> {
     file.set_len(valid_end)?;
@@ -733,25 +1017,16 @@ fn group_commit_worker(group: Arc<GroupCommit>) {
     }
 }
 
-// `Zega::open`/`Zega::snapshot` only call this on the native, file-backed
-// path (see the `cfg(not(target_arch = "wasm32"))` call sites in lib.rs);
-// the wasm32 build persists through `encode_snapshot`/`restore_bytes` instead.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Write a `snapshot.bin` as zega wrote them before checkpoints (zega#52):
+/// the tests make the files an older database has with it.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub fn snapshot(graph: &Graph, path: &Path) -> Result<(), WalError> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (graph, path);
-        Ok(())
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let bytes = encode_snapshot(graph)?;
-        let tmp_path = path.with_extension("bin.tmp");
-        let mut file = File::create(&tmp_path)?;
-        file.write_all(&bytes)?;
-        file.flush()?;
-        persist_replacement(file, &tmp_path, path)
-    }
+    let bytes = encode_snapshot(graph)?;
+    let tmp_path = path.with_extension("bin.tmp");
+    let mut file = File::create(&tmp_path)?;
+    file.write_all(&bytes)?;
+    file.flush()?;
+    persist_replacement(file, &tmp_path, path)
 }
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -775,29 +1050,180 @@ pub fn restore(graph: &mut Graph, path: &Path) -> Result<bool, WalError> {
 /// Serialize the full graph state to bytes (platform-independent; the
 /// basis for the file-based snapshot and for wasm export/import).
 pub fn encode_snapshot(graph: &Graph) -> Result<Vec<u8>, WalError> {
-    let snapshot = Snapshot {
-        nodes: graph.all_nodes().clone(),
-        relationships: graph.all_relationships().clone(),
+    let snapshot = SnapshotRef {
+        nodes: StoredNodes(graph),
+        relationships: StoredRelationships(graph),
+        next_ids: graph.next_ids(),
+        carried: graph.carried(),
     };
     let mut bytes = Vec::new();
     serialize_into(&mut bytes, &snapshot)?;
     Ok(bytes)
 }
 
-/// Restore the full graph state from [`encode_snapshot`] bytes.
+struct StoredNodes<'g>(&'g Graph);
+
+impl Serialize for StoredNodes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.node_count()))?;
+        for node in self.0.nodes() {
+            map.serialize_entry(&node.id, &node.to_node())?;
+        }
+        map.end()
+    }
+}
+
+struct StoredRelationships<'g>(&'g Graph);
+
+impl Serialize for StoredRelationships<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.relationship_count()))?;
+        for rel in self.0.relationships() {
+            map.serialize_entry(&rel.id, &rel.to_relationship())?;
+        }
+        map.end()
+    }
+}
+
+/// Restore the full graph state from [`encode_snapshot`] bytes, or from a
+/// snapshot written before snapshots carried `.graph` import state.
+///
+/// Each node and relationship goes into a new graph as it is decoded
+/// (zegadb/zega#100), so a restore holds the graph once, not the graph plus a
+/// decoded copy of every record: a restart's peak memory is what the graph
+/// needs. `graph` is replaced only when the whole snapshot decodes.
 pub fn restore_bytes(graph: &mut Graph, bytes: &[u8]) -> Result<(), WalError> {
-    let snapshot: Snapshot = decode_exact(bytes).map_err(|error| WalError::Corruption {
-        offset: 0,
-        reason: format!("invalid snapshot: {error}"),
-    })?;
-    graph.set_state(snapshot.nodes, snapshot.relationships);
+    let restored = match decode_snapshot(bytes, SnapshotFormat::Current) {
+        Ok(restored) => restored,
+        Err(_) => decode_snapshot(bytes, SnapshotFormat::Legacy).map_err(|error| {
+            WalError::Corruption {
+                offset: 0,
+                reason: format!("invalid snapshot: {error}"),
+            }
+        })?,
+    };
+    *graph = restored;
     Ok(())
 }
 
-#[derive(Serialize, Deserialize)]
-struct Snapshot {
-    nodes: HashMap<NodeId, Node>,
-    relationships: HashMap<RelId, Relationship>,
+/// A snapshot is the graph, its id counters, and what its last `.graph`
+/// import carried. The new fields come last, so a snapshot from before them
+/// (`Legacy`) is the first two alone, and never decodes as `Current`: its
+/// bytes end too soon.
+#[derive(Clone, Copy, PartialEq)]
+enum SnapshotFormat {
+    Current,
+    Legacy,
+}
+
+/// Decode `bytes` the way [`decode_exact`] decodes any file (fixint, nothing
+/// left over, no length beyond the input) straight into a new graph.
+fn decode_snapshot(bytes: &[u8], format: SnapshotFormat) -> Result<Graph, bincode::Error> {
+    let mut graph = Graph::new();
+    graph.defer_vectors();
+    exact(bytes).deserialize_seed(SnapshotSeed { graph: &mut graph, format }, bytes)?;
+    graph.index_deferred_vectors();
+    Ok(graph)
+}
+
+struct SnapshotSeed<'g> {
+    graph: &'g mut Graph,
+    format: SnapshotFormat,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for SnapshotSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        let fields = match self.format {
+            SnapshotFormat::Current => 4,
+            SnapshotFormat::Legacy => 2,
+        };
+        deserializer.deserialize_tuple(fields, self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for SnapshotSeed<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a snapshot")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        use serde::de::Error;
+        let missing = |what: &str| A::Error::custom(format!("snapshot ends before its {what}"));
+        seq.next_element_seed(Records { graph: &mut *self.graph, kind: RecordKind::Nodes })?
+            .ok_or_else(|| missing("nodes"))?;
+        seq.next_element_seed(Records { graph: &mut *self.graph, kind: RecordKind::Relationships })?
+            .ok_or_else(|| missing("relationships"))?;
+        if self.format == SnapshotFormat::Current {
+            let next_ids: (NodeId, RelId) = seq.next_element()?.ok_or_else(|| missing("id counters"))?;
+            let carried: crate::graph_file::Carried =
+                seq.next_element()?.ok_or_else(|| missing("import state"))?;
+            self.graph.set_carried(carried);
+            self.graph.reset_next_ids(next_ids);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RecordKind {
+    Nodes,
+    Relationships,
+}
+
+/// One of a snapshot's two maps, each record restored as it is read.
+struct Records<'g> {
+    graph: &'g mut Graph,
+    kind: RecordKind,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for Records<'_> {
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for Records<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a map of records by id")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        match self.kind {
+            RecordKind::Nodes => {
+                while let Some((id, node)) = map.next_entry::<NodeId, Node>()? {
+                    self.graph.restore_node(id, node.labels, node.props);
+                }
+            }
+            RecordKind::Relationships => {
+                while let Some((id, rel)) = map.next_entry::<RelId, Relationship>()? {
+                    self.graph
+                        .restore_relationship(id, rel.kind, rel.from, rel.to, rel.props);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// [`SnapshotFormat::Current`], written straight from the graph: each node
+/// and relationship is expanded to its written-down form one at a time, so
+/// a snapshot never holds a second copy of the whole graph.
+#[derive(Serialize)]
+struct SnapshotRef<'a> {
+    nodes: StoredNodes<'a>,
+    relationships: StoredRelationships<'a>,
+    next_ids: (NodeId, RelId),
+    carried: &'a crate::graph_file::Carried,
 }
 
 #[cfg(test)]
@@ -831,7 +1257,7 @@ pub(crate) mod tests {
         let wal_path = dir.path().join("wal.bin");
         let wal = Wal::new(&wal_path, true).unwrap();
         let mut props = HashMap::new();
-        props.insert("name".to_string(), Value::String("Alice".to_string()));
+        props.insert("name".to_string(), Value::from("Alice"));
         wal.append(&Operation::InsertNode {
             id: 1,
             labels: vec!["Person".to_string()],
@@ -1507,13 +1933,49 @@ pub(crate) mod tests {
         }
     }
 
+    /// A snapshot written by an engine that kept nodes in a HashMap lists
+    /// them in any order. The restore still builds each vector index in
+    /// ascending id order, as restoring through sorted records always did,
+    /// so the HNSW graph (which depends on insertion order) is the same.
+    #[test]
+    fn a_snapshot_in_any_order_builds_vector_indexes_in_id_order() {
+        let vector = |i: u64| {
+            let values = [(i % 7) as f32 - 3.0, (i % 5) as f32 + 0.5, (i % 3) as f32 - 1.0];
+            Value::Vector(Box::new(crate::vector::Vector::new(&values, crate::vector::Metric::Cosine).unwrap()))
+        };
+        let records: Vec<(NodeId, Node)> = (1..=200)
+            .map(|id| {
+                let props = HashMap::from([("emb".to_string(), vector(id)), ("n".to_string(), Value::Int(id as i64))]);
+                (id, Node { id, labels: vec!["V".into()], props })
+            })
+            .collect();
+        // The legacy layout, written out by hand with the nodes descending.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(records.len() as u64).to_le_bytes());
+        for (id, node) in records.iter().rev() {
+            serialize_into(&mut bytes, id).unwrap();
+            serialize_into(&mut bytes, node).unwrap();
+        }
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+
+        let mut restored = Graph::new();
+        restore_bytes(&mut restored, &bytes).unwrap();
+        let mut sorted = Graph::new();
+        sorted.set_state(records.into_iter().collect(), HashMap::new(), Default::default());
+
+        let order = restored.vector_insertion_order();
+        assert_eq!(order, sorted.vector_insertion_order());
+        assert_eq!(order[0].1, (1..=200).collect::<Vec<NodeId>>());
+        assert_eq!(restored.all_nodes(), sorted.all_nodes());
+    }
+
     #[test]
     fn test_snapshot_restore() {
         let dir = tempdir().unwrap();
         let snap_path = dir.path().join("snapshot.bin");
         let mut graph = Graph::new();
         let mut props = HashMap::new();
-        props.insert("name".to_string(), Value::String("Alice".to_string()));
+        props.insert("name".to_string(), Value::from("Alice"));
         graph.create_node(vec!["Person".to_string()], props);
 
         snapshot(&graph, &snap_path).unwrap();

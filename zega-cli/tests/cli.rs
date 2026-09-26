@@ -270,6 +270,7 @@ fn help_version_and_defaults_are_available_without_starting_a_server() {
                 help.contains("9342")
                     && help.contains("127.0.0.1")
                     && help.contains("--token-file")
+                    && help.contains("--max-import-bytes")
             );
         }
         if args[0] == "explorer" {
@@ -293,4 +294,283 @@ fn only_one_cli_process_owns_a_data_directory() {
     }
     let server = Running::start("explorer", directory.path(), &[]);
     assert_eq!(server.request("GET", "/health", None, None).0, 200);
+}
+
+// ---------------------------------------------------------------------------
+// `zega export` / `zega import`: the .graph file on the command line.
+
+const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../zega/tests/fixtures/golden-v1.graph");
+
+fn zega(args: &[&str], directory: &Path) -> std::process::Output {
+    Command::new(BIN)
+        .args(args)
+        .current_dir(directory)
+        .output()
+        .unwrap()
+}
+
+fn succeeds(args: &[&str], directory: &Path) -> std::process::Output {
+    let output = zega(args, directory);
+    assert!(
+        output.status.success(),
+        "zega {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+#[test]
+fn import_then_export_round_trips_and_every_later_export_is_identical() {
+    let directory = tempfile::tempdir().unwrap();
+    let dir = directory.path();
+    let output = succeeds(&["import", GOLDEN, "--data", "a"], dir);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        format!("imported 3 nodes and 2 relationships from {GOLDEN} (.graph format 1, written by zega 0.2.0)")
+    );
+    let output = succeeds(&["export", "a.graph", "--data", "a"], dir);
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("wrote 3 nodes and 2 relationships to a.graph"));
+    assert!(!dir.join("a.graph.partial").exists());
+    // Through a second store and back out: the same bytes.
+    succeeds(&["import", "a.graph", "--data", "b"], dir);
+    succeeds(&["export", "b.graph", "--data", "b"], dir);
+    let a = std::fs::read(dir.join("a.graph")).unwrap();
+    // Import then export is the same file, schema and metadata included.
+    assert_eq!(a, std::fs::read(GOLDEN).unwrap());
+    assert_eq!(std::fs::read(dir.join("b.graph")).unwrap(), a);
+    // `-` is stdout.
+    assert_eq!(succeeds(&["export", "-", "--data", "b"], dir).stdout, a);
+    // A server on the imported store serves the same bytes.
+    std::fs::rename(dir.join("b"), dir.join("db")).unwrap();
+    let server = Running::start("start", dir, &[]);
+    let (status, body, mime) = server.request("GET", "/graph", None, None);
+    assert_eq!((status, mime.as_str()), (200, "application/vnd.zega.graph"));
+    assert_eq!(body, a);
+}
+
+#[test]
+fn export_carries_a_schema_and_metadata() {
+    let directory = tempfile::tempdir().unwrap();
+    let dir = directory.path();
+    std::fs::write(dir.join("schema.zql"), "type City { name: String }\nunique { City { name } }\n").unwrap();
+    succeeds(&["import", GOLDEN, "--data", "a"], dir);
+    succeeds(
+        &["export", "a.graph", "--data", "a", "--schema", "schema.zql", "--meta", "licence=CC0-1.0", "--meta", "title=Cities"],
+        dir,
+    );
+    let summary = zega::Zega::in_memory()
+        .build()
+        .unwrap()
+        .import(std::fs::File::open(dir.join("a.graph")).unwrap())
+        .unwrap();
+    assert_eq!(summary.schema.as_deref(), Some("type City { name: String }\nunique { City { name } }\n"));
+    assert_eq!(summary.uniques, vec![("City".to_string(), "name".to_string())]);
+    assert_eq!(summary.meta["licence"], "CC0-1.0");
+    assert_eq!(summary.meta["title"], "Cities");
+    let output = zega(&["export", "b.graph", "--data", "a", "--meta", "no-equals"], dir);
+    assert!(!output.status.success());
+    assert!(!dir.join("b.graph").exists());
+}
+
+#[test]
+fn import_refuses_to_overwrite_without_replace_and_a_damaged_file_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let dir = directory.path();
+    {
+        let server = Running::start("start", dir, &[]);
+        server.zql("mutation { Player(name: \"Ada\" && salary: 1) { name } }");
+    }
+    let before = succeeds(&["export", "-", "--data", "db"], dir).stdout;
+
+    let output = zega(&["import", GOLDEN, "--data", "db"], dir);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("pass --replace"), "{output:?}");
+
+    let golden = std::fs::read(GOLDEN).unwrap();
+    std::fs::write(dir.join("cut.graph"), &golden[..golden.len() / 2]).unwrap();
+    let output = zega(&["import", "cut.graph", "--data", "db", "--replace"], dir);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("zega import: truncated .graph file"), "{output:?}");
+    assert_eq!(succeeds(&["export", "-", "--data", "db"], dir).stdout, before);
+
+    succeeds(&["import", GOLDEN, "--data", "db", "--replace"], dir);
+    assert_ne!(succeeds(&["export", "-", "--data", "db"], dir).stdout, before);
+}
+
+#[test]
+fn export_and_import_respect_a_running_server_s_lock() {
+    let directory = tempfile::tempdir().unwrap();
+    let dir = directory.path();
+    let _server = Running::start("start", dir, &[]);
+    for args in [["export", "x.graph", "--data", "db"], ["import", GOLDEN, "--data", "db"]] {
+        let output = zega(&args, dir);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("already in use"), "{output:?}");
+    }
+    assert!(!dir.join("x.graph").exists());
+}
+
+/// The schema of the kill -9 test: a note big enough to grow the WAL fast.
+const LOAD_SCHEMA: &str = "type Player { name: String salary: Int note: String }";
+
+/// POST one ZQL statement; `None` when the server did not answer it (it was
+/// killed), so the write was never acknowledged.
+fn try_zql(url: &str, query: &str) -> Option<Value> {
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .proxy(None)
+        .build()
+        .new_agent();
+    let body = serde_json::to_vec(&json!({"schema": LOAD_SCHEMA, "query": query})).unwrap();
+    let request = ureq::http::Request::builder()
+        .method("POST")
+        .uri(format!("{url}/zql"))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .unwrap();
+    let mut response = agent.run(request).ok()?;
+    let body = response.body_mut().read_to_vec().ok()?;
+    let body: Value = serde_json::from_slice(&body).ok()?;
+    (response.status().as_u16() == 200 && body["ok"] == json!(true)).then(|| body["result"].clone())
+}
+
+/// What the writers of the kill -9 test were told, and what they tried.
+#[derive(Default)]
+struct Load {
+    /// Nodes created and acknowledged / attempted.
+    created: std::collections::BTreeSet<String>,
+    tried: std::collections::BTreeSet<String>,
+    /// Per writer: the last `salary` its counter node was acknowledged at,
+    /// and the last one it tried.
+    counter_acked: std::collections::BTreeMap<usize, i64>,
+    counter_tried: std::collections::BTreeMap<usize, i64>,
+}
+
+/// zega#52: `kill -9` a real `zega start` while four writers keep it busy
+/// and it checkpoints (every MiB here), six times over one data directory.
+/// Half the writes create nodes, half rewrite one big node per writer, so
+/// the WAL grows much faster than the graph and checkpoints come often.
+/// After every restart each acknowledged write is there (a created node
+/// exists; a counter is at least its last acknowledged value), nothing
+/// that was never written is, and the server reopened.
+#[test]
+fn kill_9_under_write_load_loses_no_acknowledged_write_and_always_reopens() {
+    use std::sync::{Arc, Mutex};
+
+    const WRITERS: usize = 4;
+    let directory = tempfile::tempdir().unwrap();
+    let args = ["--snapshot-every-mb", "1"];
+    let pad = "x".repeat(96 * 1024);
+    let load = Arc::new(Mutex::new(Load::default()));
+    {
+        let server = Running::start("start", directory.path(), &args);
+        for writer in 0..WRITERS {
+            try_zql(&server.url, &format!(r#"mutation {{ Player(name: "c{writer}" && salary: 0 && note: "") {{ name }} }}"#))
+                .expect("counter node");
+        }
+    }
+    let mut killed_mid_checkpoint = 0;
+    // Each round runs until its writers have had enough writes acknowledged
+    // (however fast the machine), then a little longer, varied so the kill
+    // lands at different points of a checkpoint.
+    const PER_ROUND: usize = 30;
+    for (round, extra) in [300u64, 900, 0, 1_500, 600, 1_100].into_iter().enumerate() {
+        let mut server = Running::start("start", directory.path(), &args);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|writer| {
+                let (url, pad, stop, load) =
+                    (server.url.clone(), pad.clone(), Arc::clone(&stop), Arc::clone(&load));
+                thread::spawn(move || {
+                    for i in 0.. {
+                        if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                            return;
+                        }
+                        if i % 2 == 0 {
+                            let name = format!("r{round}-w{writer}-{i}");
+                            load.lock().unwrap().tried.insert(name.clone());
+                            let query = format!(r#"mutation {{ Player(name: "{name}" && salary: {i} && note: "") {{ name }} }}"#);
+                            if try_zql(&url, &query).is_none() {
+                                return;
+                            }
+                            load.lock().unwrap().created.insert(name);
+                        } else {
+                            let value = (round as i64) * 1_000_000 + i;
+                            load.lock().unwrap().counter_tried.insert(writer, value);
+                            let query = format!(r#"mutation {{ Player(name: "c{writer}") set salary: {value}, note: "{pad}" }}"#);
+                            if try_zql(&url, &query).is_none() {
+                                return;
+                            }
+                            load.lock().unwrap().counter_acked.insert(writer, value);
+                        }
+                    }
+                })
+            })
+            .collect();
+        let target = PER_ROUND * (round + 1);
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
+        while load.lock().unwrap().created.len() < target {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "round {round}: {} of {target} creates acknowledged in 180 s",
+                load.lock().unwrap().created.len()
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(extra));
+        server.child.kill().unwrap(); // SIGKILL
+        server.child.wait().unwrap();
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        drop(server);
+        let data = directory.path().join("db");
+        let mid_checkpoint = data.join("wal.rotate.tmp").exists()
+            || std::fs::read_dir(data.join("graphs")).is_ok_and(|mut dir| {
+                dir.any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".partial"))
+            });
+        killed_mid_checkpoint += usize::from(mid_checkpoint);
+
+        let server = Running::start("start", directory.path(), &args);
+        let rows = server.zql("{ Player { name salary } }");
+        let rows = rows.as_array().unwrap();
+        let load = load.lock().unwrap();
+        let present: std::collections::BTreeSet<String> = rows
+            .iter()
+            .map(|row| row["name"].as_str().unwrap().to_string())
+            .filter(|name| !name.starts_with('c'))
+            .collect();
+        let lost: Vec<_> = load.created.difference(&present).collect();
+        assert!(lost.is_empty(), "round {round}: {} acknowledged creates lost: {lost:?}", lost.len());
+        assert!(present.is_subset(&load.tried), "round {round}: a node nobody created");
+        for writer in 0..WRITERS {
+            let name = format!("c{writer}");
+            let counters: Vec<i64> = rows
+                .iter()
+                .filter(|row| row["name"] == json!(name))
+                .map(|row| row["salary"].as_i64().unwrap())
+                .collect();
+            let acked = load.counter_acked.get(&writer).copied().unwrap_or(0);
+            let tried = load.counter_tried.get(&writer).copied().unwrap_or(0);
+            assert!(
+                counters.len() == 1 && (acked..=tried).contains(&counters[0]),
+                "round {round}: counter {writer} is {counters:?}, acknowledged at {acked}, tried up to {tried}"
+            );
+        }
+        assert!(load.created.len() >= PER_ROUND * (round + 1), "round {round}: too little load to test anything");
+        println!(
+            "round {round}: killed {extra} ms after {} creates{}; {} creates acknowledged so far; wal.bin {} bytes",
+            PER_ROUND * (round + 1),
+            if mid_checkpoint { " mid-checkpoint" } else { "" },
+            load.created.len(),
+            std::fs::metadata(data.join("wal.bin")).unwrap().len(),
+        );
+    }
+    println!("{killed_mid_checkpoint} of 6 kills landed mid-checkpoint");
+    // Checkpoints happened: the WAL starts from one (its first entry is a
+    // `ReplaceGraph`, variant 6) and is bounded, not every write.
+    let wal = std::fs::read(directory.path().join("db").join("wal.bin")).unwrap();
+    assert_eq!(wal[18..22], 6u32.to_le_bytes(), "the WAL does not start from a checkpoint");
 }

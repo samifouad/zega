@@ -54,6 +54,23 @@ pub struct Vector {
     pub metric: Metric,
 }
 impl Vector {
+    /// The float32 components as stored: canonical bits (no `-0.0`, all
+    /// finite). The `.graph` writer encodes exactly these.
+    pub(crate) fn bits(&self) -> &[u32] {
+        &self.bits
+    }
+
+    /// Rebuild a vector from stored bits, accepting only what [`Vector::new`]
+    /// itself produces, so every stored vector has one encoding.
+    pub(crate) fn from_bits(bits: Vec<u32>, metric: Metric) -> Result<Self, String> {
+        let values: Vec<f32> = bits.iter().map(|&bits| f32::from_bits(bits)).collect();
+        let vector = Self::new(&values, metric)?;
+        if vector.bits != bits {
+            return Err("Vector component -0.0 must be stored as 0.0".into());
+        }
+        Ok(vector)
+    }
+
     pub fn new(values: &[f32], metric: Metric) -> Result<Self, String> {
         if !(1..=4096).contains(&values.len()) {
             return Err("Vector dimension must be in 1..=4096".into());
@@ -680,6 +697,21 @@ pub(crate) struct VectorIndex {
     fields: HashMap<(String, usize, Metric), Hnsw>,
 }
 impl VectorIndex {
+    /// Each index's node ids in the order they were inserted, which with
+    /// the ids fixes the whole HNSW graph.
+    #[cfg(test)]
+    pub fn insertion_order(&self) -> Vec<(String, Vec<NodeId>)> {
+        let mut out: Vec<_> = self
+            .fields
+            .iter()
+            .map(|((field, dims, metric), index)| {
+                (format!("{field}/{dims}/{metric:?}"), index.entries.iter().map(|e| e.id).collect())
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
     pub fn insert(&mut self, field: &str, v: &Vector, id: NodeId) {
         self.fields
             .entry((field.into(), v.dimensions(), v.metric))

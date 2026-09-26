@@ -109,7 +109,7 @@ impl Journal {
         id: NodeId,
         props: HashMap<String, Value>,
     ) {
-        let Some(before) = graph.get_node(id).cloned() else {
+        let Some(before) = graph.get_node(id).map(|node| node.to_node()) else {
             return;
         };
         graph.update_node(id, props.clone());
@@ -119,7 +119,7 @@ impl Journal {
 
     /// Delete a node and every relationship still attached to it.
     pub(crate) fn delete_node(&mut self, graph: &mut Graph, id: NodeId) {
-        let Some(before) = graph.get_node(id).cloned() else {
+        let Some(before) = graph.get_node(id).map(|node| node.to_node()) else {
             return;
         };
         for rel in graph.node_relationship_ids(id) {
@@ -151,7 +151,7 @@ impl Journal {
     }
 
     pub(crate) fn delete_relationship(&mut self, graph: &mut Graph, id: RelId) {
-        let Some(before) = graph.get_relationship(id).cloned() else {
+        let Some(before) = graph.get_relationship(id).map(|rel| rel.to_relationship()) else {
             return;
         };
         graph.delete_relationship(id);
