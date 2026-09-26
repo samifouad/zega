@@ -1,3 +1,4 @@
+import { escapeHtml } from './csv.js';
 import { drawNode, nodeContent, nodeGeometry, previewNode } from './node-display.js';
 import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide, forceX, forceY } from './vendor/d3-force.js';
 
@@ -82,12 +83,12 @@ function overviewChips(graph) {
     html += '<span class="overview-label">Nodes</span>';
     for (const [label, count] of [...labelCounts.entries()].sort((a, b) => b[1] - a[1])) {
       const color = labelColor(label.split(':')[0]);
-      html += `<span class="chip" style="background:${color}33;border-color:${color}88">${label} (${count})</span>`;
+      html += `<span class="chip" style="background:${color}33;border-color:${color}88">${escapeHtml(label)} (${count})</span>`;
     }
   }
   if (relCounts.size) {
     html += '<span class="overview-label" style="margin-left:8px">Relationships</span>';
-    for (const [type, count] of relCounts) html += `<span class="chip rel">${type} (${count})</span>`;
+    for (const [type, count] of relCounts) html += `<span class="chip rel">${escapeHtml(type)} (${count})</span>`;
   }
   el.innerHTML = html;
   return el;

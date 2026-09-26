@@ -20,7 +20,8 @@
     </svg>
     <span class="brand-word">zega</span>
   </a>
-  <span class="conn"><span class="conn-dot"></span> local · wasm</span>
+  <span class="conn" role="status"><span class="conn-dot"></span> <span id="conn-label">local · wasm</span></span>
+  <button id="btn-remote" type="button" hidden>Connect to remote graph</button>
   <span class="spacer"></span>
   <a class="btn-link green" href="https://zega.dev">back to zega.dev</a>
   <button id="btn-flights">Flights</button>
@@ -62,6 +63,19 @@
     </section>
   </div>
 </div>
+<dialog id="remote-dialog" aria-labelledby="remote-title">
+  <form id="remote-form" method="dialog" autocomplete="off">
+    <h2 id="remote-title">Connect to remote graph</h2>
+    <p class="remote-note">A Zega Cloud graph, over api.zega.dev. The key stays in this tab's memory: it is never saved, and a reload or Disconnect forgets it.</p>
+    <label>Graph id <input id="remote-id" autocomplete="off" autocapitalize="off" spellcheck="false" required placeholder="u7bgg2k9q4xmh3ne5t"></label>
+    <label>API key <input id="remote-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required placeholder="zk_…" data-1p-ignore data-lpignore="true"></label>
+    <p id="remote-error" class="remote-error" role="alert" hidden></p>
+    <div class="remote-actions">
+      <button type="button" id="remote-cancel">Cancel</button>
+      <button type="submit" id="remote-connect" class="primary">Connect</button>
+    </div>
+  </form>
+</dialog>
 <div id="tour">
   <button id="btn-play" class="primary">pause</button>
   <div id="tour-queries"></div>
