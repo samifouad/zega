@@ -840,7 +840,7 @@ function blockedHost(host) {
   return false;
 }
 
-function escapeHtml(value) {
+export function escapeHtml(value) {
   return String(value).replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
 }
 

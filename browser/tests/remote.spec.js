@@ -55,6 +55,7 @@ function serveMonaco(request, response) {
 /** The cloud router, as far as the explorer can see it (zegadb/cloud src/router.ts). */
 function fakeRouter(tls) {
   const seen = [];
+  const state = { snapshot: SNAPSHOT };
   const server = createServer(tls, (request, response) => {
     if (request.headers.host?.startsWith('cdn.jsdelivr.net')) return serveMonaco(request, response);
     let body = '';
@@ -78,7 +79,7 @@ function fakeRouter(tls) {
       if (!auth) return send(401, { ok: false, code: 'missing_key', error: 'Send the graph API key as "Authorization: Bearer zk_…".' });
       if (auth !== `Bearer ${KEY}`) return send(401, { ok: false, code: 'invalid_key', error: 'This API key is not valid. It may have been revoked.' });
       if (match[1] !== GRAPH) return send(403, { ok: false, code: 'key_not_for_graph', error: `This API key belongs to a different graph, not "${match[1]}".` });
-      if (request.method === 'GET' && match[2] === 'graph') return send(200, { ok: true, result: SNAPSHOT });
+      if (request.method === 'GET' && match[2] === 'graph') return send(200, { ok: true, result: state.snapshot });
       if (request.method === 'POST' && match[2] === 'zql') {
         const { query } = JSON.parse(body);
         return send(200, { ok: true, result: { remote: true, echo: query, name: 'Ada Remote' } });
@@ -86,7 +87,7 @@ function fakeRouter(tls) {
       return send(404, { ok: false, code: 'not_found', error: 'Not served.' });
     });
   });
-  return { server, seen };
+  return { server, seen, state };
 }
 
 let browser, router, port;
@@ -377,4 +378,29 @@ test('Run on a remote graph never applies the schema pane: a sample loaded befor
   }
   expect(router.seen.slice(from).some((r) => r.method === 'DELETE')).toBe(false);
   await context.close();
+});
+
+test('labels and relationship types from a remote graph are shown as text, never as HTML', async () => {
+  const evil = '<img src=x onerror="window.__xss=(window.__xss||0)+1">';
+  router.state.snapshot = {
+    // The graph view draws nodes carrying a schema type; a second label rides along into the chip.
+    nodes: [{ id: 1, labels: ['Country', evil], name: 'a', flag: '' }, { id: 2, labels: ['Player'], name: 'b' }],
+    rels: [{ id: 1, type: `${evil}rel`, from: 1, to: 2, props: {} }],
+  };
+  try {
+    const { context, page } = await openExplorer();
+    await page.getByRole('button', { name: 'Connect to remote graph' }).click();
+    await page.getByLabel('Graph id').fill(GRAPH);
+    await page.getByLabel('API key').fill(KEY);
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.locator('.conn')).toHaveText(`connected to ${GRAPH}`);
+    const chips = page.locator('#graph .chip');
+    await expect(chips.filter({ hasText: '<img src=x' })).toHaveCount(2);
+    await expect(page.locator('#graph .chip img')).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => window.__xss)).toBeUndefined();
+    await context.close();
+  } finally {
+    router.state.snapshot = SNAPSHOT;
+  }
 });
