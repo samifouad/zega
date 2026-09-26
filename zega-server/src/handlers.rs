@@ -31,6 +31,15 @@ pub async fn health(State(state): State<AppState>, headers: HeaderMap) -> Respon
     Json(json!({"ok": true})).into_response()
 }
 
+/// `GET /stats`: the graph's node and relationship counts, for Zega Cloud's
+/// dashboard (a graph's size against its plan). Cheap: two map lengths.
+pub async fn stats(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &state) {
+        return error(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    execute(state, |db| db.counts().map(|c| json!({"nodes": c.nodes, "relationships": c.relationships}))).await
+}
+
 async fn execute(
     state: AppState,
     action: impl FnOnce(&Zega) -> Result<Value, ZegaError> + Send + 'static,

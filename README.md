@@ -90,7 +90,9 @@ route have been removed.
 
 `POST /zql` accepts `{ "schema": "...", "query": "..." }` and returns
 `{ "ok": true, "result": ... }`. Errors return `{ "ok": false, "error": "..." }`
-with an error status. `GET /health` returns `{ "ok": true }`.
+with an error status. `GET /health` returns `{ "ok": true }`. `GET /stats`
+returns `{ "ok": true, "result": { "nodes": 3, "relationships": 1 } }`: the
+graph's size, which Zega Cloud shows against a graph's plan.
 
 ```sh
 curl -s http://127.0.0.1:9342/zql \
