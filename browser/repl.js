@@ -541,7 +541,10 @@ async function loadSources(source, document = false, provided = {}) {
 async function run(source, options = {}) {
   const current = options.current || (() => true);
   saveSources();
-  if (options.apply && looksLikeZqlFile(schemaText())) {
+  // A schema pane holding a ZQL file (a sample, say) is applied locally on Run.
+  // Never on a remote graph: it would write the pane's mutations into the
+  // customer's graph (zega#116 review).
+  if (options.apply && !db.remote && looksLikeZqlFile(schemaText())) {
     try {
       const sources = db.resolvesSources ? options.sources : await loadSources(schemaText(), true, options.sources);
       const raw = await db.apply_with_sources(schemaText(), sources === undefined ? undefined : JSON.stringify(sources));

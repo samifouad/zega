@@ -353,3 +353,28 @@ test('on a remote graph, typing sends nothing; a read-only Run is exactly one ca
   }
   await context.close();
 });
+
+test('Run on a remote graph never applies the schema pane: a sample loaded before connecting writes nothing', async () => {
+  const { context, page } = await openExplorer();
+  await page.getByRole('button', { name: 'Tickets', exact: true }).click();
+  await expect.poll(() => editorText(page, 'schema')).toContain('mutation');
+  await page.getByRole('button', { name: 'Connect to remote graph' }).click();
+  await page.getByLabel('Graph id').fill(GRAPH);
+  await page.getByLabel('API key').fill(KEY);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.locator('.conn')).toHaveText(`connected to ${GRAPH}`);
+  const from = router.seen.length;
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect.poll(() => editorText(page, 'output')).toContain('"remote": true');
+  await page.waitForTimeout(1_500);
+  // One /zql call for the query pane (the Tickets vector view then asks /vector-view to draw it).
+  const zql = router.seen.slice(from).filter((r) => r.method === 'POST' && r.url === `/g/${GRAPH}/zql`);
+  expect(zql.length).toBe(1);
+  for (const request of zql) {
+    const body = JSON.parse(request.body);
+    expect(body.document).toBe(false);
+    expect(body.query).not.toMatch(/mutation/);
+  }
+  expect(router.seen.slice(from).some((r) => r.method === 'DELETE')).toBe(false);
+  await context.close();
+});
