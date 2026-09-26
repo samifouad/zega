@@ -84,6 +84,7 @@ function fakeRouter(tls) {
         const { query } = JSON.parse(body);
         return send(200, { ok: true, result: { remote: true, echo: query, name: 'Ada Remote' } });
       }
+      if (request.method === 'POST' && match[2] === 'vector-view') return send(200, { ok: true, result: { points: [], nearest: [], flags: [] } });
       return send(404, { ok: false, code: 'not_found', error: 'Not served.' });
     });
   });
@@ -409,4 +410,38 @@ test('labels and relationship types from a remote graph are shown as text, never
   } finally {
     router.state.snapshot = SNAPSHOT;
   }
+});
+
+test('on a remote graph, the vector view asks /vector-view only for a result, once, and redraws reuse it', async () => {
+  const { context, page } = await openExplorer();
+  await page.getByRole('button', { name: 'Tickets', exact: true }).click();
+  await expect(page.locator('#view-tabs [aria-selected="true"]')).toHaveText(/Vector/);
+  const vectorCalls = (from) => router.seen.slice(from).filter((r) => r.method === 'POST' && r.url === `/g/${GRAPH}/vector-view`).length;
+  const settle = () => page.waitForTimeout(1_500);
+
+  let from = router.seen.length;
+  await page.getByRole('button', { name: 'Connect to remote graph' }).click();
+  await page.getByLabel('Graph id').fill(GRAPH);
+  await page.getByLabel('API key').fill(KEY);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.locator('.conn')).toHaveText(`connected to ${GRAPH}`);
+  await settle();
+  expect(vectorCalls(from), 'connecting draws the vector view without a result: no call').toBe(0);
+
+  from = router.seen.length;
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect.poll(() => editorText(page, 'output')).toContain('"remote": true');
+  await settle();
+  expect(vectorCalls(from)).toBeLessThanOrEqual(1);
+
+  from = router.seen.length;
+  await page.locator('#btn-theme').click();
+  await settle();
+  await page.locator('#btn-theme').click();
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await settle();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await settle();
+  expect(vectorCalls(from), 'theme toggles and resizes reuse the answer').toBe(0);
+  await context.close();
 });

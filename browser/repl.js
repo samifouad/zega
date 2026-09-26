@@ -541,6 +541,7 @@ async function loadSources(source, document = false, provided = {}) {
 async function run(source, options = {}) {
   const current = options.current || (() => true);
   saveSources();
+  vectorCache.clear(); // A new run may see a changed graph: its vectors are asked for afresh.
   // A schema pane holding a ZQL file (a sample, say) is applied locally on Run.
   // Never on a remote graph: it would write the pane's mutations into the
   // customer's graph (zega#116 review).
@@ -994,6 +995,30 @@ function relResults(value, nodes, types, index, into = new Set()) {
   return into.size ? into : null;
 }
 
+// A remote graph's /vector-view is a metered call, and drawGraph runs on every
+// redraw (theme, pane changes, connecting). There, nothing is asked before a
+// query has a result, and each answer is kept per (result, view, selection,
+// k, threshold) so a redraw reuses it. Locally it is wasm and is not cached.
+const EMPTY_VECTORS = { points: [], nearest: [], flags: [] };
+const VECTOR_CACHE_SIZE = 20;
+const vectorCache = new Map();
+async function vectorView(kind, selected, k, threshold) {
+  const result = JSON.stringify(lastValue);
+  if (!db.remote) {
+    const value = db.vector_view(schemaText(), result, kind, selected, k, threshold);
+    return typeof value === 'string' ? JSON.parse(value) : await value;
+  }
+  if (lastValue == null) return EMPTY_VECTORS;
+  const key = JSON.stringify([result, kind, selected ?? null, k, threshold, schemaText()]);
+  if (!vectorCache.has(key)) {
+    const pending = db.vector_view(schemaText(), result, kind, selected, k, threshold);
+    pending.catch(() => { if (vectorCache.get(key) === pending) vectorCache.delete(key); });
+    vectorCache.set(key, pending);
+    if (vectorCache.size > VECTOR_CACHE_SIZE) vectorCache.delete(vectorCache.keys().next().value);
+  }
+  return vectorCache.get(key);
+}
+
 function drawGraph() {
   const raw = db.graph();
   const graph = JSON.parse(raw);
@@ -1052,10 +1077,7 @@ function drawGraph() {
     disposeView = renderGlobe(graphEl, { ...globeData(nodes, types, rels), credit, focus }, view.globe, theme, inspectNode, inspectRel);
   } else if (activeView === 'vector2d' || activeView === 'vector3d') {
     disposeView?.();
-    const analyze = async (selected, k, threshold) => {
-      const value = db.vector_view(schemaText(), JSON.stringify(lastValue), activeView, selected ?? undefined, k, threshold);
-      return typeof value === 'string' ? JSON.parse(value) : await value;
-    };
+    const analyze = (selected, k, threshold) => vectorView(activeView, selected ?? undefined, k, threshold);
     disposeView = renderVector(graphEl, { nodes, rels: graph.rels }, activeView, theme, analyze, inspectNode);
   } else if (activeView === 'timeline') {
     const list = document.createElement('ol');
@@ -1299,6 +1321,7 @@ async function useDatabase(next) {
   hideTour();
   db = next;
   window.__zega = db;
+  vectorCache.clear();
   const remote = Boolean(db.remote);
   const conn = $('.conn');
   conn.classList.toggle('remote', remote);
