@@ -7,7 +7,7 @@ import { renderTable } from './table.js';
 import { applyTheme } from './theme.js';
 import { createEditors } from './editor.js';
 import { openCsv, parseSchema } from './csv.js';
-import { connectDatabase, RemoteDatabase } from './backend.js';
+import { connectDatabase, parseGraphTarget, RemoteDatabase } from './backend.js';
 import { formatEditor, hasMutation, typingAfterSpace } from './zql-edit.js';
 
 const LS_DB = 'zega.v2.since';
@@ -1284,6 +1284,10 @@ remoteButton.onclick = () => {
   remoteId.focus();
 };
 $('#remote-cancel').onclick = () => remoteDialog.close();
+// Pasting or leaving the field resolves a URL to its id right away; a bad one waits for Connect to explain.
+remoteId.addEventListener('change', () => {
+  try { remoteId.value = parseGraphTarget(remoteId.value); } catch { /* shown on Connect */ }
+});
 // Whatever way the dialog closes, the typed key does not stay in the page.
 remoteDialog.addEventListener('close', () => { remoteKey.value = ''; showRemoteError(''); });
 
@@ -1291,7 +1295,9 @@ $('#remote-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   let remote;
   try {
-    remote = new RemoteDatabase(localDb, remoteId.value.trim(), remoteKey.value.trim());
+    // A pasted URL becomes its id, shown in the field: what will be connected to.
+    remoteId.value = parseGraphTarget(remoteId.value);
+    remote = new RemoteDatabase(localDb, remoteId.value, remoteKey.value.trim());
   } catch (error) {
     showRemoteError(plainError(error));
     return;

@@ -458,3 +458,24 @@ test('a string may span lines: a mutation after one is seen, and one inside one 
   expect(mayWrite(inside)).toBe(false);
   expect(mayWrite('mutation csv ["./a.csv"] { Ticket(title: $t) { title } }')).toBe(true);
 });
+
+test('a pasted router URL is resolved to its id in the field, and connects to api.zega.dev', async () => {
+  const { context, page } = await openExplorer();
+  await page.getByRole('button', { name: 'Connect to remote graph' }).click();
+  await expect(page.getByText('Graph id or URL')).toBeVisible();
+  const field = page.getByLabel('Graph id or URL');
+  await field.fill(`https://api.zega.dev/g/${GRAPH}/zql?explain=1`);
+  await field.blur();
+  await expect(field).toHaveValue(GRAPH);
+  await field.fill(`https://api.zega.dev.evil.com/g/${GRAPH}/zql`);
+  await page.getByLabel('API key').fill(KEY);
+  const from = router.seen.length;
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.locator('#remote-error')).toHaveText('Only api.zega.dev/g/<id> or <id>.zegadb.com URLs can be used, not api.zega.dev.evil.com.');
+  expect(router.seen.length).toBe(from);
+  await field.fill(`  api.zega.dev/g/${GRAPH}/graph  `);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.locator('.conn')).toHaveText(`connected to ${GRAPH}`);
+  expect(router.seen.slice(from).filter((r) => r.method !== 'OPTIONS').map((r) => r.url)).toEqual([`/g/${GRAPH}/graph`]);
+  await context.close();
+});
