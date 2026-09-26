@@ -25,7 +25,7 @@ permissions:
 jobs:
   score:
     name: score
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: public-ci
     steps:
       # Deep enough to reach the base of the pull request without a second
