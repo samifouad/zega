@@ -212,16 +212,15 @@ Regular expressions and `findWithout` (text a node must not contain) search
 whole nodes rather than one field. They are part of
 [discovery with `then`](then.md), not of a filter.
 
-## Related nodes and counts
+## Walks
 
-A test can reach through a relationship. `playsFor -> Team(name = "Oilers")`
-keeps the nodes with at least one related node meeting the target's condition,
-and `@count(playsFor) > 1` compares how many relationships a node has. Both are
-ordinary tests, joined with `&&` and `||`. A relationship is never compared
-like a field: write `playsFor -> Team(name = "Oilers")`, not
-`playsFor = "Oilers"` or `playsFor.name = "Oilers"`. See
-[filtering by a related node](relationships.md#filtering-by-a-related-node) and
-[counting relationships](relationships.md#counting-relationships).
+A test can walk through a relationship: `has playsFor(name = "Oilers")` keeps
+the nodes with at least one related node that passes the test in parentheses,
+`!have …` those with none, and `in` takes one more hop. The schema knows every
+type, so none is written. A relationship is never compared like a field: write
+`has playsFor(name = "Oilers")`, not `playsFor = "Oilers"` or
+`playsFor.name = "Oilers"`. See
+[walks in a filter](relationships.md#walks-in-a-filter).
 
 ## Filters in mutations
 
@@ -231,5 +230,5 @@ parentheses are a filter again, and have to match exactly one node.
 
 ## Next
 
-- [Relationships](relationships.md): filters on related nodes, and counts.
+- [Relationships](relationships.md): walks in a filter.
 - [Indexes](index.md) make equality, range and text tests fast.

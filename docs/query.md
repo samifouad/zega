@@ -133,7 +133,9 @@ null
 
 If more than one node matches, the query fails instead of guessing; see
 [errors](errors.md). Any other filter, such as a comparison, gives a list, which
-may be empty. [Conditions](conditions.md) lists every test a filter can use.
+may be empty. [Conditions](conditions.md) lists every test a filter can use, and
+a filter can walk the graph too: `Team(has players(position = "C"))`; see
+[walks in a filter](relationships.md#walks-in-a-filter).
 
 ```zql
 query {
@@ -203,9 +205,7 @@ query {
 More keys break ties, left to right: `order by position, salary desc`. Equal
 rows keep creation order. Numbers, strings and `true`/`false` sort as you
 would expect; a node without the field, or with `null`, comes last in either
-direction. `order by @count(players) desc` orders by how many relationships a
-node has; see [counting relationships](relationships.md#counting-relationships).
-A location is ordered by its distance from a point,
+direction. A location is ordered by its distance from a point,
 `order by @distance(field, @point(lat, lon))`, nearest first unless `desc`; see
 [locations](location.md).
 

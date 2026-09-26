@@ -184,11 +184,12 @@ query {
 For the shortest or cheapest route between two nodes, with distances and
 costs, see [paths](path.md).
 
-## Filtering by a related node
+## Walks in a filter
 
-A relationship with its arrow and a target type can go inside a filter too. It
-keeps the nodes that have at least one related node meeting the target's
-condition. Cara joins a second team first:
+A filter can walk the graph as well as test fields. `has` follows a
+relationship from the node being tested, and the parentheses after it test the
+node it reaches. The schema knows every type, so a walk never names one. Cara
+joins a second team first:
 
 ```zql
 mutation {
@@ -206,7 +207,7 @@ mutation {
 
 ```zql
 query {
-  Player(playsFor -> Team(name = "Oilers")) { name }
+  Player(has playsFor(name = "Oilers")) { name }
 }
 ```
 
@@ -243,7 +244,7 @@ query {
 
 ```zql
 query {
-  Team(players <- Player(position = "C")) { name }
+  Team(has players(position = "C")) { name }
 }
 ```
 
@@ -253,18 +254,44 @@ query {
 ]
 ```
 
-- **Any, not all.** One matching related node is enough, for a relationship
-  to one or to many. A node without the relationship does not match.
-- **Direction.** The arrow is the one in the schema: `playsFor ->` from a
-  player, `players <-` from a team.
-- **No parentheses** on the target means the relationship exists:
-  `Player(playsFor -> Team)` is every player on a team.
-- **Nesting.** The target's condition can walk further, and joins with `&&` and
-  `||` like any test. Players who mentor someone on the Oilers:
+The whole grammar:
+
+| form | meaning |
+|---|---|
+| `has rel` | follow a relationship; at least one related node must match |
+| `!have rel` | no related node may match (`!has` is an error) |
+| `in rel`, `with rel` | keep walking, one hop each; the two mean the same |
+| `(…)` | test the node right before it |
+| `same rel` | at the start of a walk: continue from the node `rel` reached earlier in this `&&` group |
+| `in same rel` | at the end of a walk: arrive at that same node |
+| `rel 2 hops`, `rel within 3 hops` | repeat one relationship exactly 2, or 1 to 3, times |
+
+- **Any, and none.** A relationship to many holds when any related node
+  matches; `!have` holds when none does. A node without the relationship has
+  none of it.
+- **No parentheses** means the relationship exists: `Player(has playsFor)` is
+  every player on a team.
+- Walks join with `&&` and `||` like any test, and never nest: the
+  parentheses test one node's own fields, and a walk continues after them.
 
 ```zql
 query {
-  Player(mentors -> Player(playsFor -> Team(name = "Oilers"))) { name }
+  Team(!have players(position = "C")) { name }
+}
+```
+
+```json
+[
+  { "name": "Flames" }
+]
+```
+
+`in` and `with` take one more hop from the node before. Players who mentor
+someone on the Oilers:
+
+```zql
+query {
+  Player(has mentors in playsFor(name = "Oilers")) { name }
 }
 ```
 
@@ -274,8 +301,55 @@ query {
 ]
 ```
 
-A test on the related node goes through its relationship. Testing the
-relationship as if it were a field is an error that shows the right form:
+### same
+
+Two walks in one `&&` group are separate: `has mentors(position = "D") && has
+mentors in playsFor(…)` may find two different players. `same mentors`
+continues from the node the earlier walk reached, so both tests hold for one
+player. At the end of a walk, `in same playsFor` has to arrive at the node an
+earlier walk reached: a join, on the node itself rather than its fields.
+Players who mentor a teammate:
+
+```zql
+query {
+  Player(has playsFor && has mentors in same playsFor) { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" }
+]
+```
+
+`same` names one node. It is an error after `||`, after `!have`, and when the
+name is reached more than once before it.
+
+### Several hops
+
+`2 hops` repeats one relationship exactly twice, and `within 3 hops` one to
+three times, up to 6. They are the words for `*2..2` and `*1..3`: a node counts
+at its shortest distance, and a walk never goes back to a node it has passed.
+Alice mentors Bob, who mentors Cara:
+
+```zql
+query {
+  Player(has mentors 2 hops(name = "Cara")) { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" }
+]
+```
+
+The same words work in the braces, where `mentors 2 hops -> Player` is
+`mentors *2..2 -> Player`.
+
+### Errors that show the walk
+
+Testing a relationship as if it were a field is an error that writes the walk:
 
 ```zql error
 query {
@@ -288,53 +362,160 @@ execution error: error: playsFor is a relationship
   query:2:10
     Player(playsFor = "Oilers") { name }
            ^^^^^^^^
-  help: filter by a field of the related node: `playsFor -> Team(name = "Oilers")`; Team has name
+  help: test a field of the related node: `has playsFor(name = "Oilers")`; Team has name
 ```
 
-When the target's condition can use an [index](index.md), the matching targets
-are found through the index first and the relationship is followed backwards
-from them, so only the nodes that reach them are tested.
+So are `playsFor.name = "Oilers"`, `playsFor -> Team(name = "Oilers")`,
+`playsFor: Team(…)` and `!has`: each error shows the `has` or `!have` form.
 
-## Counting relationships
+### How it runs
 
-`@count(field)` is how many relationships a node has. It works in a filter,
-with `=`, `!=`, `<`, `<=`, `>`, `>=` and a whole number; in the braces, where
-its key is `count` unless you name it; and in `order by`.
+When the test at the end of a walk can use an [index](index.md), the matching
+nodes are found through the index first, and the walk is followed backwards
+from them, so only the nodes that reach them are tested. When the node's own
+fields are indexed, each candidate walks forward instead. `within N hops` to an
+indexed end searches from both ends at once. Every relationship read counts
+toward the query's time limit.
+
+### On the Flights sample
+
+The explorer's Flights sample stores routes as `route: ROUTE -> Airport[]`.
+Here are five of its airports and the routes between them:
 
 ```zql
-query {
-  Team(@count(players) >= 1) order by @count(players) desc {
-    name
-    size: @count(players)
+schema {
+  type Country {
+    name: String
+    iso: String
+    airports: BASE <- Airport[]
+  }
+
+  type Airport {
+    code: String
+    country: BASE -> Country
+    route: ROUTE -> Airport[]
+  }
+}
+
+unique {
+  Airport { code }
+  Country { iso }
+}
+```
+
+```zql
+mutation {
+  Country(name: "Canada" && iso: "CA") {
+    airports <- Airport(code: "YYC")
+    airports <- Airport(code: "YYZ")
   }
 }
 ```
 
-```json
-[
-  { "name": "Oilers", "size": 2 },
-  { "name": "Flames", "size": 1 }
-]
+```zql
+mutation {
+  Country(name: "Japan" && iso: "JP") {
+    airports <- Airport(code: "NRT")
+  }
+}
 ```
 
-With an arrow and a target, it counts only the relationships whose related node
-matches. `= 0` finds the nodes with none: here, players who mentor no defender.
+```zql
+mutation {
+  Country(name: "United States" && iso: "US") {
+    airports <- Airport(code: "ORD")
+  }
+}
+```
+
+```zql
+mutation {
+  Country(name: "Netherlands" && iso: "NL") {
+    airports <- Airport(code: "AMS")
+  }
+}
+```
+
+```zql
+mutation {
+  Airport(code: "YYC") {
+    route -> link Airport(code: "NRT")
+    route -> link Airport(code: "ORD")
+    route -> link Airport(code: "YYZ")
+  }
+}
+```
+
+```zql
+mutation {
+  Airport(code: "YYZ") {
+    route -> link Airport(code: "AMS")
+    route -> link Airport(code: "ORD")
+  }
+}
+```
+
+```zql
+mutation {
+  Airport(code: "NRT") {
+    route -> link Airport(code: "AMS")
+    route -> link Airport(code: "ORD")
+  }
+}
+```
+
+```zql
+mutation {
+  Airport(code: "ORD") {
+    route -> link Airport(code: "AMS")
+  }
+}
+```
+
+Canadian airports with a route to Japan:
 
 ```zql
 query {
-  Player(@count(mentors -> Player(position = "D")) = 0) { name }
+  Airport(has country(iso = "CA") && has route in country(iso = "JP")) { code }
 }
 ```
 
 ```json
 [
-  { "name": "Bob" },
-  { "name": "Cara" }
+  { "code": "YYC" }
 ]
 ```
 
-A node without the relationship counts 0. `@count` reads stored
-relationships, so it is not allowed in a mutation's braces.
+Airports with no route to the United States:
+
+```zql
+query {
+  Airport(!have route in country(iso = "US")) { code }
+}
+```
+
+```json
+[
+  { "code": "ORD" },
+  { "code": "AMS" }
+]
+```
+
+Countries with an airport within two flights of Amsterdam:
+
+```zql
+query {
+  Country(has airports with route within 2 hops(code = "AMS")) { name }
+}
+```
+
+```json
+[
+  { "name": "Canada" },
+  { "name": "Japan" },
+  { "name": "United States" }
+]
+```
 
 ## Next
 
