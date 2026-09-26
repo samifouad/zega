@@ -769,6 +769,21 @@ fn condition_forms(expr: &BoolExpr) {
             Pred::Cmp(_, cmp, _, _) => {
                 cmp_text(*cmp);
             }
+            Pred::Chain(Chain {
+                negated: _,
+                from,
+                hops,
+                span: _,
+            }) => {
+                if let Some(Same { name: _, span: _, test: Some(test) }) = from.as_deref() {
+                    condition_forms(test);
+                }
+                for Hop { field: _, span: _, repeat: _, same: _, test } in hops {
+                    if let Some(test) = test {
+                        condition_forms(test);
+                    }
+                }
+            }
             Pred::Box(_, _, _)
             | Pred::Eq(_, _, _)
             | Pred::Ne(_, _, _)

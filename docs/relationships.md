@@ -184,6 +184,404 @@ query {
 For the shortest or cheapest route between two nodes, with distances and
 costs, see [paths](path.md).
 
+## Walks in a filter
+
+A filter can walk the graph as well as test fields. `has` follows a
+relationship from the node being tested, and the parentheses after it test the
+node it reaches. The schema knows every type, so a walk never names one. Cara
+joins a second team first:
+
+```zql
+mutation {
+  Team(name: "Flames")
+}
+```
+
+```zql
+mutation {
+  Player(name: "Cara") {
+    playsFor -> link Team(name: "Flames") { &since: 2024 }
+  }
+}
+```
+
+```zql
+query {
+  Player(has playsFor(name = "Oilers")) { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" },
+  { "name": "Bob" }
+]
+```
+
+A filter on a relationship in the braces filters only that list; every team
+still comes back. In the parentheses, it filters the teams themselves:
+
+```zql
+query {
+  Team {
+    name
+    players <- Player(position = "C") { name }
+  }
+}
+```
+
+```json
+[
+  {
+    "name": "Oilers",
+    "players": [
+      { "name": "Alice" }
+    ]
+  },
+  { "name": "Flames", "players": [] }
+]
+```
+
+```zql
+query {
+  Team(has players(position = "C")) { name }
+}
+```
+
+```json
+[
+  { "name": "Oilers" }
+]
+```
+
+The whole grammar:
+
+| form | meaning |
+|---|---|
+| `has rel` | follow a relationship; at least one related node must match |
+| `!have rel` | no related node may match (`!has` is an error) |
+| `in rel`, `with rel` | keep walking, one hop each; the two mean the same |
+| `(…)` | test the node right before it |
+| `same rel` | at the start of a walk: continue from the node `rel` reached earlier in this `&&` group |
+| `in same rel` | at the end of a walk: arrive at that same node |
+| `rel 2 hops`, `rel max 3 hops`, `rel min 2 hops`, `rel min 2 max 4 hops` | repeat one relationship: the nodes at those shortest distances |
+
+- **Any, and none.** A relationship to many holds when any related node
+  matches; `!have` holds when none does. A node without the relationship has
+  none of it.
+- **No parentheses** means the relationship exists: `Player(has playsFor)` is
+  every player on a team.
+- Walks join with `&&` and `||` like any test, and never nest: the
+  parentheses test one node's own fields, and a walk continues after them.
+
+```zql
+query {
+  Team(!have players(position = "C")) { name }
+}
+```
+
+```json
+[
+  { "name": "Flames" }
+]
+```
+
+`in` and `with` take one more hop from the node before. Players who mentor
+someone on the Oilers:
+
+```zql
+query {
+  Player(has mentors in playsFor(name = "Oilers")) { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" }
+]
+```
+
+### same
+
+Two walks in one `&&` group are separate: `has mentors(position = "D") && has
+mentors in playsFor(…)` may find two different players. `same mentors`
+continues from the node the earlier walk reached, so both tests hold for one
+player. At the end of a walk, `in same playsFor` has to arrive at the node an
+earlier walk reached: a join, on the node itself rather than its fields.
+Players who mentor a teammate:
+
+```zql
+query {
+  Player(has playsFor && has mentors in same playsFor) { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" }
+]
+```
+
+`same` names one node. It is an error after `||`, after `!have`, and when the
+name is reached more than once before it.
+
+### Several hops
+
+A number of hops repeats one relationship, and reaches the nodes whose
+shortest distance along it is in a band:
+
+| words | shortest distance |
+|---|---|
+| `2 hops`, `exactly 2 hops` | 2 |
+| `max 3 hops`, `within 3 hops` | 1 to 3 |
+| `min 2 hops` | 2 to 6 |
+| `min 2 max 4 hops` | 2 to 4 |
+
+At most 6. They are the words for `*min..max`: each node counts once, at its
+shortest distance, and a walk never goes back to a node it has passed, so the
+start is never reached again. `min`, `max` and `exactly` are words only right
+before a number and `hops`, so a field called `max` still works. Alice mentors
+Bob, who mentors Cara:
+
+```zql
+query {
+  Player(name: "Alice") {
+    mentors max 2 hops -> Player { name @hops }
+  }
+}
+```
+
+```json
+{
+  "mentors": [
+    { "hops": 1, "name": "Bob" },
+    { "hops": 2, "name": "Cara" }
+  ]
+}
+```
+
+In the braces, `mentors max 2 hops -> Player` is `mentors *1..2 -> Player`.
+In a filter:
+
+```zql
+query {
+  Player(has mentors exactly 2 hops(name = "Cara")) { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" }
+]
+```
+
+Now Alice mentors Cara directly as well:
+
+```zql
+mutation {
+  Player(name: "Alice") {
+    mentors -> link Player(name: "Cara")
+  }
+}
+```
+
+Cara is one hop from Alice now, so she is no longer exactly two:
+
+```zql
+query {
+  Player(has mentors exactly 2 hops(name = "Cara")) { name }
+}
+```
+
+```json
+[]
+```
+
+To ask for any path of exactly two hops, write the hops out. `in` follows any
+path, so Alice to Bob to Cara still counts:
+
+```zql
+query {
+  Player(has mentors in mentors(name = "Cara")) { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" }
+]
+```
+
+### Errors that show the walk
+
+Testing a relationship as if it were a field is an error that writes the walk:
+
+```zql error
+query {
+  Player(playsFor = "Oilers") { name }
+}
+```
+
+```text
+execution error: error: playsFor is a relationship
+  query:2:10
+    Player(playsFor = "Oilers") { name }
+           ^^^^^^^^
+  help: test a field of the related node: `has playsFor(name = "Oilers")`; Team has name
+```
+
+So are `playsFor.name = "Oilers"`, `playsFor -> Team(name = "Oilers")`,
+`playsFor: Team(…)` and `!has`: each error shows the `has` or `!have` form.
+
+### How it runs
+
+When the test at the end of a walk can use an [index](index.md), the matching
+nodes are found through the index first, and the walk is followed backwards
+from them, so only the nodes that reach them are tested. When the node's own
+fields are indexed, each candidate walks forward instead. `N hops` to an
+indexed end searches from both ends at once. Every relationship read counts
+toward the query's time limit.
+
+### On the Flights sample
+
+The explorer's Flights sample stores routes as `route: ROUTE -> Airport[]`.
+Here are five of its airports and the routes between them:
+
+```zql
+schema {
+  type Country {
+    name: String
+    iso: String
+    airports: BASE <- Airport[]
+  }
+
+  type Airport {
+    code: String
+    country: BASE -> Country
+    route: ROUTE -> Airport[]
+  }
+}
+
+unique {
+  Airport { code }
+  Country { iso }
+}
+```
+
+```zql
+mutation {
+  Country(name: "Canada" && iso: "CA") {
+    airports <- Airport(code: "YYC")
+    airports <- Airport(code: "YYZ")
+  }
+}
+```
+
+```zql
+mutation {
+  Country(name: "Japan" && iso: "JP") {
+    airports <- Airport(code: "NRT")
+  }
+}
+```
+
+```zql
+mutation {
+  Country(name: "United States" && iso: "US") {
+    airports <- Airport(code: "ORD")
+  }
+}
+```
+
+```zql
+mutation {
+  Country(name: "Netherlands" && iso: "NL") {
+    airports <- Airport(code: "AMS")
+  }
+}
+```
+
+```zql
+mutation {
+  Airport(code: "YYC") {
+    route -> link Airport(code: "NRT")
+    route -> link Airport(code: "ORD")
+    route -> link Airport(code: "YYZ")
+  }
+}
+```
+
+```zql
+mutation {
+  Airport(code: "YYZ") {
+    route -> link Airport(code: "AMS")
+    route -> link Airport(code: "ORD")
+  }
+}
+```
+
+```zql
+mutation {
+  Airport(code: "NRT") {
+    route -> link Airport(code: "AMS")
+    route -> link Airport(code: "ORD")
+  }
+}
+```
+
+```zql
+mutation {
+  Airport(code: "ORD") {
+    route -> link Airport(code: "AMS")
+  }
+}
+```
+
+Canadian airports with a route to Japan:
+
+```zql
+query {
+  Airport(has country(iso = "CA") && has route in country(iso = "JP")) { code }
+}
+```
+
+```json
+[
+  { "code": "YYC" }
+]
+```
+
+Airports with no route to the United States:
+
+```zql
+query {
+  Airport(!have route in country(iso = "US")) { code }
+}
+```
+
+```json
+[
+  { "code": "ORD" },
+  { "code": "AMS" }
+]
+```
+
+Countries with an airport within two flights of Amsterdam:
+
+```zql
+query {
+  Country(has airports with route within 2 hops(code = "AMS")) { name }
+}
+```
+
+```json
+[
+  { "name": "Canada" },
+  { "name": "Japan" },
+  { "name": "United States" }
+]
+```
+
 ## Next
 
 - [Mutations](mutation.md): creating and linking relationships.
