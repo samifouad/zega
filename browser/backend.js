@@ -21,7 +21,7 @@ export const REMOTE_API = 'https://api.zega.dev';
 /** The router's `/g/<id>/` pattern (zegadb/cloud src/app.ts). Ids are opaque: old and new shapes both match. */
 export const GRAPH_ID = /^[a-z0-9-]{1,40}$/;
 /** A graph API key (zegadb/cloud src/keys.ts bearerKey). */
-export const API_KEY = /^zk_[a-z2-7]{32}$/i;
+export const API_KEY = /^zk_[a-z2-7]{32}$/;
 
 class HttpDatabase {
   native = true;

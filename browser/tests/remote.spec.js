@@ -176,6 +176,12 @@ test('connect to a remote graph: query it, disconnect, and the key is never pers
   await page.getByLabel('API key').fill('not-a-key');
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.locator('#remote-error')).toHaveText('An API key is zk_ followed by 32 characters.');
+  // Keys are lowercase (zegadb/cloud src/keys.ts newKey); a case-changed one is refused here too.
+  for (const changed of [KEY.toUpperCase(), `zk_${KEY.slice(3).toUpperCase()}`]) {
+    await page.getByLabel('API key').fill(changed);
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.locator('#remote-error')).toHaveText('An API key is zk_ followed by 32 characters.');
+  }
   expect(router.seen).toEqual([]);
 
   // A well-formed but wrong key: the router's own answer is shown, and nothing switches.
