@@ -264,7 +264,7 @@ The whole grammar:
 | `(…)` | test the node right before it |
 | `same rel` | at the start of a walk: continue from the node `rel` reached earlier in this `&&` group |
 | `in same rel` | at the end of a walk: arrive at that same node |
-| `rel 2 hops`, `rel within 3 hops` | repeat one relationship exactly 2, or 1 to 3, times |
+| `rel 2 hops`, `rel max 3 hops`, `rel min 2 hops`, `rel min 2 max 4 hops` | repeat one relationship: the nodes at those shortest distances |
 
 - **Any, and none.** A relationship to many holds when any related node
   matches; `!have` holds when none does. A node without the relationship has
@@ -327,14 +327,45 @@ name is reached more than once before it.
 
 ### Several hops
 
-`2 hops` repeats one relationship exactly twice, and `within 3 hops` one to
-three times, up to 6. They are the words for `*2..2` and `*1..3`: a node counts
-at its shortest distance, and a walk never goes back to a node it has passed.
-Alice mentors Bob, who mentors Cara:
+A number of hops repeats one relationship, and reaches the nodes whose
+shortest distance along it is in a band:
+
+| words | shortest distance |
+|---|---|
+| `2 hops`, `exactly 2 hops` | 2 |
+| `max 3 hops`, `within 3 hops` | 1 to 3 |
+| `min 2 hops` | 2 to 6 |
+| `min 2 max 4 hops` | 2 to 4 |
+
+At most 6. They are the words for `*min..max`: each node counts once, at its
+shortest distance, and a walk never goes back to a node it has passed, so the
+start is never reached again. `min`, `max` and `exactly` are words only right
+before a number and `hops`, so a field called `max` still works. Alice mentors
+Bob, who mentors Cara:
 
 ```zql
 query {
-  Player(has mentors 2 hops(name = "Cara")) { name }
+  Player(name: "Alice") {
+    mentors max 2 hops -> Player { name @hops }
+  }
+}
+```
+
+```json
+{
+  "mentors": [
+    { "hops": 1, "name": "Bob" },
+    { "hops": 2, "name": "Cara" }
+  ]
+}
+```
+
+In the braces, `mentors max 2 hops -> Player` is `mentors *1..2 -> Player`.
+In a filter:
+
+```zql
+query {
+  Player(has mentors exactly 2 hops(name = "Cara")) { name }
 }
 ```
 
@@ -344,8 +375,42 @@ query {
 ]
 ```
 
-The same words work in the braces, where `mentors 2 hops -> Player` is
-`mentors *2..2 -> Player`.
+Now Alice mentors Cara directly as well:
+
+```zql
+mutation {
+  Player(name: "Alice") {
+    mentors -> link Player(name: "Cara")
+  }
+}
+```
+
+Cara is one hop from Alice now, so she is no longer exactly two:
+
+```zql
+query {
+  Player(has mentors exactly 2 hops(name = "Cara")) { name }
+}
+```
+
+```json
+[]
+```
+
+To ask for any path of exactly two hops, write the hops out. `in` follows any
+path, so Alice to Bob to Cara still counts:
+
+```zql
+query {
+  Player(has mentors in mentors(name = "Cara")) { name }
+}
+```
+
+```json
+[
+  { "name": "Alice" }
+]
+```
 
 ### Errors that show the walk
 
@@ -373,7 +438,7 @@ So are `playsFor.name = "Oilers"`, `playsFor -> Team(name = "Oilers")`,
 When the test at the end of a walk can use an [index](index.md), the matching
 nodes are found through the index first, and the walk is followed backwards
 from them, so only the nodes that reach them are tested. When the node's own
-fields are indexed, each candidate walks forward instead. `within N hops` to an
+fields are indexed, each candidate walks forward instead. `N hops` to an
 indexed end searches from both ends at once. Every relationship read counts
 toward the query's time limit.
 

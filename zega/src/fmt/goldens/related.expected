@@ -54,3 +54,14 @@ query {
 query {
   Airport(has country || code < -5) { code }
 }
+
+query {
+  Airport(
+    has route exactly 2 hops(code = "KIX") &&
+    has route min 1 max 3 hops &&
+    has inbound min 2 hops
+  ) {
+    code
+    route max 2 hops -> Airport { code }
+  }
+}

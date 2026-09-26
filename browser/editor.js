@@ -96,6 +96,7 @@ function registerLanguages(monaco) {
         [/\b(findExact|startsExact|endsExact|findLike|startsLike|endsLike)\b/, 'keyword'],
         [/!have\b/, 'keyword'],
         [/\b(has|in|with|same|within|hops)\b/, 'keyword'],
+        [/\b(exactly|min|max)\b(?=\s+\d)/, 'keyword'],
         [/@[A-Za-z_][\w]*/, 'predefined'],
         [/->|<-|>=|<=|<>|!=|&&|\|\|/, 'operator'],
         [/[<>]/, 'operator'],
@@ -120,7 +121,7 @@ function registerLanguages(monaco) {
       const range = { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber,
         startColumn: word.startColumn - (hasAt ? 1 : 0), endColumn: word.endColumn };
       const names = ['@hops', '@cost', '@id', '@score', '@point', '@vector', '@distance', '@similarity', '@within_box', '@near'];
-      if (!hasAt) names.push('findExact', 'startsExact', 'endsExact', 'findLike', 'startsLike', 'endsLike', 'has', '!have', 'in', 'with', 'same', 'hops', 'within');
+      if (!hasAt) names.push('findExact', 'startsExact', 'endsExact', 'findLike', 'startsLike', 'endsLike', 'has', '!have', 'in', 'with', 'same', 'hops', 'within', 'exactly', 'min', 'max');
       return { suggestions: names.map((name) => ({ label: name, insertText: name, range,
         kind: monaco.languages.CompletionItemKind.Keyword })) };
     },

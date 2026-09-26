@@ -8,3 +8,4 @@ query{Country(has airports with route within 3 hops in country(iso="JP")){name}}
 query{Airport(has route(code="NRT")&&same route in country&&has inbound in same country){code}}
 query{Airport{code route within 2 hops->Airport{code @hops}}}
 query{Airport(has country||code<-5){code}}
+query{Airport(has route exactly 2 hops(code="KIX")&&has route min 1 max 3 hops&&has inbound min 2 hops){code route max 2 hops->Airport{code}}}
