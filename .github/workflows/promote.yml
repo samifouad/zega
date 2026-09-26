@@ -12,12 +12,17 @@ on:
     branches: [codex/channels]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
   integrity-proof:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Light: cargo metadata + unittest, no build.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: public-ci
     steps:
       - uses: actions/checkout@v5
