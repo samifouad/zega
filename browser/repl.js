@@ -1268,6 +1268,8 @@ const remoteError = $('#remote-error');
 const remoteSubmit = $('#remote-connect');
 // These load a sample by clearing the graph first: never on a customer's graph.
 const SAMPLE_BUTTONS = ['#btn-flights', '#btn-tickets', '#btn-cities', '#btn-calgary', '#btn-seed'];
+// Shown only now, with its handler attached (index.html has it hidden): a click
+// before this point would do nothing.
 remoteButton.hidden = Boolean(localDb.native);
 
 function showRemoteError(message) {
