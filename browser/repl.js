@@ -7,7 +7,7 @@ import { renderTable } from './table.js';
 import { applyTheme } from './theme.js';
 import { createEditors } from './editor.js';
 import { openCsv, parseSchema } from './csv.js';
-import { connectDatabase } from './backend.js';
+import { connectDatabase, RemoteDatabase } from './backend.js';
 import { formatEditor, hasMutation, typingAfterSpace } from './zql-edit.js';
 
 const LS_DB = 'zega.v2.since';
@@ -311,12 +311,17 @@ const editorsReady = createEditors({
 });
 
 await init();
-const db = await connectDatabase(new ZegaWasm());
-if (db.native) document.querySelector('.conn').innerHTML = '<span class="conn-dot"></span> local · native';
-const EMPTY_DB = db.native ? null : db.export_base64();
-const saved = db.native ? null : localStorage.getItem(LS_DB);
+// The page's own database: wasm in the browser, or the CLI's native backend.
+// `db` is what every operation uses; it becomes a RemoteDatabase while
+// connected to a Zega Cloud graph, and `localDb` again on Disconnect.
+const localDb = await connectDatabase(new ZegaWasm());
+let db = localDb;
+const LOCAL_LABEL = localDb.native ? 'local · native' : 'local · wasm';
+$('#conn-label').textContent = LOCAL_LABEL;
+const EMPTY_DB = localDb.native ? null : localDb.export_base64();
+const saved = localDb.native ? null : localStorage.getItem(LS_DB);
 if (saved) {
-  try { db.import_base64(saved); } catch (e) { console.error(e); }
+  try { localDb.import_base64(saved); } catch (e) { console.error(e); }
 }
 window.__zega = db;
 
@@ -430,6 +435,9 @@ $('#btn-theme').onclick = () => {
 
 
 async function clearDatabase() {
+  if (db.remote && !confirm(`Delete every node and relationship in the remote graph ${db.graphId}? This cannot be undone.`)) {
+    throw new Error(`Nothing was deleted from ${db.graphId}.`);
+  }
   setSample(null);
   if (db.native) await db.clear();
   else {
@@ -535,7 +543,7 @@ async function run(source, options = {}) {
   saveSources();
   if (options.apply && looksLikeZqlFile(schemaText())) {
     try {
-      const sources = db.native ? options.sources : await loadSources(schemaText(), true, options.sources);
+      const sources = db.resolvesSources ? options.sources : await loadSources(schemaText(), true, options.sources);
       const raw = await db.apply_with_sources(schemaText(), sources === undefined ? undefined : JSON.stringify(sources));
       const applied = JSON.parse(raw);
       if (!current()) return null;
@@ -557,7 +565,7 @@ async function run(source, options = {}) {
   }
   const started = performance.now();
   try {
-    const sources = db.native ? options.sources : await loadSources(source, false, options.sources);
+    const sources = db.resolvesSources ? options.sources : await loadSources(source, false, options.sources);
     const raw = await db.run_with_sources(schemaText(), source, sources === undefined ? undefined : JSON.stringify(sources));
     if (!current()) return null;
     const elapsedUs = (performance.now() - started) * 1000;
@@ -643,7 +651,7 @@ $('#btn-tickets').onclick = async () => {
 };
 $('#btn-clear').onclick = async () => {
   pauseAutoplay();
-  await clearDatabase();
+  try { await clearDatabase(); } catch (error) { showThrown(error); return; }
   if (tour !== TOUR) { setTour(TOUR); hideTour(); }
   setQuiet(schemaEditor, '');
   setQuiet(queryEditor, '');
@@ -1216,6 +1224,84 @@ dragSplit(document.getElementById('split-rows'), (ev) => {
   localStorage.setItem('zega.v2.split-rows', String(splitRows));
   applySplits();
 });
+
+// Connect to remote graph: a Zega Cloud graph by id and API key. The key is
+// held by the RemoteDatabase alone (backend.js), never stored anywhere, and
+// is wiped by Disconnect or a reload. The CLI's native mode serves this page
+// from 127.0.0.1, which the cloud router does not allow, so it has no button.
+const remoteButton = $('#btn-remote');
+const remoteDialog = $('#remote-dialog');
+const remoteId = $('#remote-id');
+const remoteKey = $('#remote-key');
+const remoteError = $('#remote-error');
+const remoteSubmit = $('#remote-connect');
+// These load a sample by clearing the graph first: never on a customer's graph.
+const SAMPLE_BUTTONS = ['#btn-flights', '#btn-tickets', '#btn-cities', '#btn-calgary', '#btn-seed'];
+remoteButton.hidden = Boolean(localDb.native);
+
+function showRemoteError(message) {
+  remoteError.textContent = message;
+  remoteError.hidden = !message;
+}
+
+remoteButton.onclick = () => {
+  if (db.remote) { disconnectRemote(); return; }
+  showRemoteError('');
+  remoteDialog.showModal();
+  remoteId.focus();
+};
+$('#remote-cancel').onclick = () => remoteDialog.close();
+// Whatever way the dialog closes, the typed key does not stay in the page.
+remoteDialog.addEventListener('close', () => { remoteKey.value = ''; showRemoteError(''); });
+
+$('#remote-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  let remote;
+  try {
+    remote = new RemoteDatabase(localDb, remoteId.value.trim(), remoteKey.value.trim());
+  } catch (error) {
+    showRemoteError(plainError(error));
+    return;
+  }
+  remoteSubmit.disabled = true;
+  remoteSubmit.textContent = 'Connecting…';
+  try {
+    await remote.refresh(); // Proves the id and key before anything switches.
+  } catch (error) {
+    remote.forget();
+    showRemoteError(plainError(error));
+    return;
+  } finally {
+    remoteSubmit.disabled = false;
+    remoteSubmit.textContent = 'Connect';
+  }
+  remoteDialog.close();
+  await useDatabase(remote);
+});
+
+function disconnectRemote() {
+  if (!db.remote) return;
+  db.forget();
+  return useDatabase(localDb);
+}
+
+async function useDatabase(next) {
+  pauseAutoplay();
+  hideTour();
+  db = next;
+  window.__zega = db;
+  const remote = Boolean(db.remote);
+  const conn = $('.conn');
+  conn.classList.toggle('remote', remote);
+  conn.title = remote ? `api.zega.dev/g/${db.graphId}` : '';
+  $('#conn-label').textContent = remote ? `connected to ${db.graphId}` : LOCAL_LABEL;
+  remoteButton.textContent = remote ? 'Disconnect' : 'Connect to remote graph';
+  for (const selector of SAMPLE_BUTTONS) $(selector).hidden = remote;
+  lastValue = null;
+  resetView();
+  drawGraph();
+  if (queryText().trim() && !hasMutation(queryText())) await execute();
+}
 
 // Read what was stored before formatting saves the panes over it.
 const firstVisit = !saved && !localStorage.getItem(LS_SCHEMA);

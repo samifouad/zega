@@ -40,6 +40,33 @@ wasm-pack build --target web --out-dir ../browser/pkg
 `zega-wasm` is its own workspace (see its `Cargo.toml`) so the wasm build
 never tries to compile the server crates for `wasm32`.
 
+## Remote graphs
+
+**Connect to remote graph**, next to the `local · wasm` indicator, opens a Zega
+Cloud graph by id and API key (`zk_…`). The explorer then uses the same HTTP
+backend as the native CLI mode (`backend.js`), pointed at
+`https://api.zega.dev/g/<id>` with `Authorization: Bearer <key>`; the header
+shows `connected to <id>`, and **Disconnect** returns to the local graph.
+
+- The key is held in memory only, in the `RemoteDatabase`'s private field:
+  never in localStorage, sessionStorage, IndexedDB, a cookie, the URL or a log.
+  A reload or Disconnect forgets it. Requests omit credentials.
+- The cloud router allows exactly `https://explorer.zega.dev` (CORS, no
+  credentials), so this works from the deployed explorer, not from `wrangler
+  dev` or the CLI; the CLI's native mode shows no button.
+- ZQL sources are fetched by the browser and sent with the query, as in wasm
+  mode: the graph's machine cannot read this computer's files.
+- Sample buttons and reset are hidden while connected (they clear the graph
+  first), and clear asks before deleting anything remote.
+- `tests/remote.spec.js` runs this against a local HTTPS stand-in for
+  api.zega.dev (Chromium's resolver maps the host; `openssl` makes the
+  certificate) and inspects every storage API, the URL and the DOM for the key
+  after connect, Disconnect and reload.
+
+The explorer sends no Content-Security-Policy today, so nothing blocks the
+connection; the same spec fails if a policy is added without api.zega.dev in
+`connect-src`.
+
 ## Native CLI mode
 
 `zega explorer --data ./data` serves the same static application embedded in the

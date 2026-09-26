@@ -1,6 +1,8 @@
 // The standalone site stores its graph in wasm. The CLI supplies this same UI
 // with a native backend; wasm remains the shared parser for editor diagnostics
 // and import previews, while every database operation goes over HTTP.
+// A remote Zega Cloud graph uses the same HTTP backend, pointed at
+// api.zega.dev/g/<id> with the graph's API key (RemoteDatabase below).
 export async function connectDatabase(parser) {
   const response = await fetch('/explorer-config.json');
   if (response.status === 404) return parser;
@@ -12,15 +14,28 @@ export async function connectDatabase(parser) {
   return db;
 }
 
-class NativeDatabase {
+/** Zega Cloud's router. It allows exactly https://explorer.zega.dev (zegadb/cloud src/router.ts). */
+export const REMOTE_API = 'https://api.zega.dev';
+/** The router's `/g/<id>/` pattern (zegadb/cloud src/app.ts). Ids are opaque: old and new shapes both match. */
+export const GRAPH_ID = /^[a-z0-9-]{1,40}$/;
+/** A graph API key (zegadb/cloud src/keys.ts bearerKey). */
+export const API_KEY = /^zk_[a-z2-7]{32}$/i;
+
+class HttpDatabase {
   native = true;
   snapshot = { nodes: [], rels: [] };
-  constructor(parser) { this.parser = parser; }
+  constructor(parser, base = '') { this.parser = parser; this.base = base; }
+  fetchOptions() { return {}; }
   async request(path, method = 'GET', body) {
-    const response = await fetch(path, {
+    const options = this.fetchOptions();
+    const response = await fetch(this.base + path, {
+      ...options,
       method,
       // `GET /graph` answers with a .graph file unless JSON is asked for.
-      headers: body === undefined ? { Accept: 'application/json' } : { Accept: 'application/json', 'Content-Type': 'application/json' },
+      headers: {
+        ...options.headers,
+        ...(body === undefined ? { Accept: 'application/json' } : { Accept: 'application/json', 'Content-Type': 'application/json' }),
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const result = await response.json();
@@ -54,5 +69,50 @@ class NativeDatabase {
   async connect(schema, from, field, to) {
     await this.request('/graph/relationships', 'POST', { schema, from, field, to });
     await this.refresh();
+  }
+}
+
+/** `zega explorer`: the CLI serves this page and answers /zql and /graph itself, reading local files named in ZQL. */
+class NativeDatabase extends HttpDatabase {
+  resolvesSources = true;
+}
+
+/**
+ * A Zega Cloud graph, reached with its API key.
+ *
+ * The key lives in this object's private field and nowhere else: never in
+ * localStorage, sessionStorage, IndexedDB, a cookie, the URL or a log. It is
+ * gone on reload, and `forget()` (Disconnect) drops it at once. Requests omit
+ * credentials, so no cookie travels with them, and the router allows this
+ * page's origin only, without credentials.
+ *
+ * The graph's machine cannot read files on this computer, so ZQL sources are
+ * fetched here in the browser and sent with the query, as in the wasm mode.
+ */
+export class RemoteDatabase extends HttpDatabase {
+  remote = true;
+  resolvesSources = false;
+  #key;
+  constructor(parser, graphId, key) {
+    if (!GRAPH_ID.test(graphId)) throw new Error('A graph id is lowercase letters, digits and dashes.');
+    if (!API_KEY.test(key)) throw new Error('An API key is zk_ followed by 32 characters.');
+    super(parser, `${REMOTE_API}/g/${graphId}`);
+    this.graphId = graphId;
+    this.#key = key;
+  }
+  get connected() { return this.#key !== null; }
+  forget() { this.#key = null; }
+  fetchOptions() {
+    if (this.#key === null) throw new Error('Disconnected from the remote graph.');
+    return { headers: { Authorization: `Bearer ${this.#key}` }, credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' };
+  }
+  async request(path, method, body) {
+    try {
+      return await super.request(path, method, body);
+    } catch (error) {
+      // fetch() rejects with a TypeError when the network or CORS stops it; the router's own errors arrive as JSON above.
+      if (error instanceof TypeError) throw new Error(`Cannot reach ${REMOTE_API}. Check the connection and try again.`);
+      throw error;
+    }
   }
 }
