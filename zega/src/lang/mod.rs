@@ -2388,12 +2388,21 @@ impl<'a> Parser<'a> {
         let mut hops = Vec::new();
         if from.is_none() {
             self.skip();
-            if word == ChainWord::NotHave && self.starts_word("same") {
+            // `same` then a name is the word; `same(…)` or a lone `same` is a
+            // relationship called `same`.
+            let same_word = {
+                let mut lookahead = self.fork();
+                lookahead.eat_word("same") && {
+                    lookahead.skip();
+                    lookahead.looking_at_ident()
+                }
+            };
+            if word == ChainWord::NotHave && same_word {
                 return Err(self
                     .err("`same` can't follow `!have`")
                     .with_help("`!have` matches no node to be the same as; write the test with `has`"));
             }
-            if self.starts_word("same") {
+            if same_word {
                 return Err(self
                     .err("`same` starts a chain, or ends one after `in`")
                     .with_help("write `same team in arena`, or `has studio in city in same country`"));
@@ -2447,6 +2456,23 @@ impl<'a> Parser<'a> {
         let (field, span) = self.ident()?;
         if self.starts_related_arrow() {
             return Err(self.walk_with_type(&field, start));
+        }
+        self.skip();
+        if self.src[self.i..].starts_with('*') {
+            let star = self.i;
+            let mut p = self.fork();
+            p.i += 1;
+            let low = p.integer().ok();
+            let high = if p.eat("..") { p.integer().ok() } else { None };
+            let band = match (low, high) {
+                (Some(n), None) => format!("{n} hops"),
+                (Some(1), Some(m)) => format!("max {m} hops"),
+                (Some(n), Some(m)) => format!("min {n} max {m} hops"),
+                _ => "2 hops".to_string(),
+            };
+            return Err(self
+                .err_at(self.span_bytes(star, p.i.max(star + 1)), "`*` counts hops in a selection, not in a filter")
+                .with_help(format!("did you mean `{field} {band}`?")));
         }
         let repeat = self.hop_band(&field)?;
         if same && repeat.is_some() {
@@ -2532,8 +2558,10 @@ impl<'a> Parser<'a> {
         }
         self.nested(start, |p| {
             p.skip();
-            if p.eat(")") {
-                return Ok(None);
+            if p.src[p.i..].starts_with(')') {
+                return Err(p
+                    .err_at(p.span_bytes(start, p.i + 1), "empty parentheses test nothing")
+                    .with_help("drop them to only follow the relationship, or write a test inside: `(name = …)`"));
             }
             let outer = std::mem::replace(&mut p.hop_test, true);
             let expr = p.parse_or();
@@ -4040,6 +4068,19 @@ impl Check<'_> {
                         hop.span,
                         format!("`{}` can't repeat: {stop} has no `{}`", hop.field, hop.field),
                         Some("`N hops` follows one relationship from each node it reaches, so both ends need it".into()),
+                    );
+                    return None;
+                }
+                // Each hop of a repeat is the same relationship between the
+                // same types, so a band is one distance: `nx` from X to Y and
+                // on from Y to Z is two relationships, walked as two hops.
+                let same_kind = |ty: &str| find_edge(self.schema, ty, &hop.field).and_then(Field::as_edge).map(|(_, kind, direction, ..)| (kind.to_string(), direction));
+                let kinds: Vec<_> = here.iter().filter_map(|ty| same_kind(ty)).collect();
+                if let Some(stop) = next.iter().find(|ty| !here.contains(ty) || same_kind(ty).is_none_or(|k| !kinds.contains(&k))) {
+                    self.push(
+                        hop.span,
+                        format!("`{}` can't repeat: it leads from {} to {stop}", hop.field, here.join(" or ")),
+                        Some(format!("a count of hops repeats a relationship between one type and itself; write the hops out: `{} in {}`", hop.field, hop.field)),
                     );
                     return None;
                 }

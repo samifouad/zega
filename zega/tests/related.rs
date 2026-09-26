@@ -63,9 +63,9 @@ fn the_flights_queries_from_the_issue() {
             "KUL", "LGW", "LIS", "MLA", "MNL", "OSL", "PRG", "SIN", "TLV", "TPE",
         ]
     );
-    // "One stop": Japan is exactly two routes away, and not one.
+    // Japan's airport is at a shortest distance of exactly two routes.
     assert_eq!(
-        codes(r#"{ Airport(has route 2 hops in country(iso = "JP")) { code } }"#),
+        codes(r#"{ Airport(has route exactly 2 hops in country(iso = "JP")) { code } }"#),
         ["ADD", "BUD", "GRU", "JNB", "TLV", "WAW"]
     );
     let countries = ask(&db, schema, r#"{ Country(has airports with route within 3 hops in country(iso = "JP")) { name } }"#);
@@ -416,6 +416,70 @@ fn min_max_and_exactly_are_keywords_only_before_n_hops() {
     ] {
         let got = error(schema, query);
         assert!(got.contains(message), "{query}\n{got}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A walk reaches the same nodes with an index as without (review of #107).
+
+/// `knows`, `fan` and `scout` are all stored as LINK. a -fan-> t -scout-> b
+/// is not a `knows` walk, whatever an index makes the planner do.
+#[test]
+fn a_walk_keeps_to_its_own_field_when_fields_share_a_kind() {
+    let plain = "type P { name: String v?: Int knows: LINK -> P[] fan: LINK -> T[] } type T { name: String scout: LINK -> P[] }";
+    let indexed = format!("schema {{ {plain} }} index {{ range P {{ v }} }}");
+    for schema in [plain.to_string(), indexed] {
+        let db = Zega::in_memory().build().unwrap();
+        for create in [r#"P(name: "a")"#, r#"P(name: "b" && v: 9)"#, r#"T(name: "t")"#] {
+            ask(&db, &schema, &format!("mutation {{ {create} }}"));
+        }
+        ask(&db, &schema, r#"mutation { P(name: "a") { fan -> link T(name: "t") } }"#);
+        ask(&db, &schema, r#"mutation { T(name: "t") { scout -> link P(name: "b") } }"#);
+        for band in ["within 2 hops", "exactly 2 hops", "max 3 hops"] {
+            let found = ask(&db, &schema, &format!("{{ P(has knows {band}(v = 9)) {{ name }} }}"));
+            assert_eq!(found, json!([]), "{schema}\n{band}");
+        }
+        // A selection's `*1..2` and `max 2 hops` take the same step.
+        let reached = ask(&db, &schema, r#"{ P(name: "a") { knows *1..2 -> P { name } } }"#);
+        assert_eq!(reached, json!({ "knows": [] }), "{schema}");
+        let reached = ask(&db, &schema, r#"{ P(name: "a") { knows max 2 hops -> P { name } } }"#);
+        assert_eq!(reached, json!({ "knows": [] }), "{schema}");
+    }
+}
+
+/// `nx` leads X -> Y -> Z: three relationships, not one repeated.
+#[test]
+fn a_count_of_hops_repeats_one_relationship_between_one_type() {
+    let schema = "type X { v?: Int nx: N1 -> Y[] } type Y { v?: Int nx: N2 -> Z[] } type Z { v?: Int nx: N3 -> X[] }";
+    let got = error(schema, "{ X(has nx 2 hops(v = 5)) { v } }");
+    assert!(got.contains("`nx` can't repeat: it leads from X to Y"), "{got}");
+    assert!(got.contains("write the hops out: `nx in nx`"), "{got}");
+    // Written out, the walk is fine.
+    let db = Zega::in_memory().build().unwrap();
+    ask(&db, schema, "mutation { X(v: 1) }");
+    ask(&db, schema, "mutation { Y(v: 2) }");
+    ask(&db, schema, "mutation { Z(v: 5) }");
+    ask(&db, schema, "mutation { X(v: 1) { nx -> link Y(v: 2) } }");
+    ask(&db, schema, "mutation { Y(v: 2) { nx -> link Z(v: 5) } }");
+    assert_eq!(ask(&db, schema, "{ X(has nx in nx(v = 5)) { v } }"), json!([{ "v": 1 }]));
+}
+
+#[test]
+fn small_mistakes_in_a_chain_say_what_to_write() {
+    let schema = "type P { name: String same -> P[] team -> T } type T { name: String }";
+    // A relationship called `same`, followed with `has same(…)`.
+    let db = Zega::in_memory().build().unwrap();
+    ask(&db, schema, r#"mutation { P(name: "a") }"#);
+    ask(&db, schema, r#"mutation { P(name: "b") }"#);
+    ask(&db, schema, r#"mutation { P(name: "a") { same -> link P(name: "b") } }"#);
+    assert_eq!(ask(&db, schema, r#"{ P(has same(name = "b")) { name } }"#), json!([{ "name": "a" }]));
+    for (query, message, help) in [
+        ("{ P(has team()) { name } }", "empty parentheses test nothing", "drop them"),
+        ("{ P(has same *2) { name } }", "`*` counts hops in a selection, not in a filter", "did you mean `same 2 hops`?"),
+        ("{ P(has same *1..3) { name } }", "`*` counts hops in a selection", "did you mean `same max 3 hops`?"),
+    ] {
+        let got = error(schema, query);
+        assert!(got.contains(message) && got.contains(help), "{query}\n{got}");
     }
 }
 

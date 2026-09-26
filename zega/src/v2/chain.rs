@@ -19,9 +19,12 @@ fn edge_of<'s>(schema: &'s Schema, node: NodeRef<'_>, field: &str) -> Option<(&'
     })
 }
 
-/// The nodes one `field` hop from `id`, of a type the relationship reaches.
+/// The nodes one `field` hop from `id`, of a type the relationship reaches,
+/// with the relationship that reached each. This is the one step every walk
+/// takes (a chain's hop, `N hops`, `*min..max` in a selection, and every
+/// search backwards), so an index never changes which nodes a walk reaches.
 /// Each relationship read is charged to the statement.
-fn step(graph: &Graph, schema: &Schema, id: NodeId, field: &str, work: &mut Work) -> Result<Vec<NodeId>, LangError> {
+pub(super) fn step_edges(graph: &Graph, schema: &Schema, id: NodeId, field: &str, work: &mut Work) -> Result<Vec<(NodeId, RelId)>, LangError> {
     let Some(node) = graph.get_node(id) else {
         return Ok(Vec::new());
     };
@@ -30,11 +33,45 @@ fn step(graph: &Graph, schema: &Schema, id: NodeId, field: &str, work: &mut Work
     };
     let next = neighbors(graph, id, kind, direction);
     work.charge(next.len())?;
-    Ok(next
-        .into_iter()
-        .map(|(to, _)| to)
-        .filter(|to| node_has_any_label(graph, *to, targets))
-        .collect())
+    Ok(next.into_iter().filter(|(to, _)| node_has_any_label(graph, *to, targets)).collect())
+}
+
+fn step(graph: &Graph, schema: &Schema, id: NodeId, field: &str, work: &mut Work) -> Result<Vec<NodeId>, LangError> {
+    Ok(step_edges(graph, schema, id, field, work)?.into_iter().map(|(to, _)| to).collect())
+}
+
+/// [`step`] backwards: the nodes whose own `field` step reaches `id`. A
+/// relationship of the same kind that `field` does not declare (another
+/// field's, or one to a type `field` does not reach) is not followed.
+fn step_back(graph: &Graph, schema: &Schema, id: NodeId, field: &str, work: &mut Work) -> Result<Vec<NodeId>, LangError> {
+    let Some(node) = graph.get_node(id) else {
+        return Ok(Vec::new());
+    };
+    let labels: Vec<&str> = node.labels().collect();
+    let mut out = Vec::new();
+    for ty in &schema.types {
+        let Some((_, kind, direction, targets, _)) = schema.edge(&ty.name, field).ok().and_then(|edge| edge.as_edge()) else {
+            continue;
+        };
+        if !targets.iter().any(|target| labels.contains(&target.as_str())) {
+            continue;
+        }
+        let reverse = match direction {
+            Direction::Out => Direction::In,
+            Direction::In => Direction::Out,
+        };
+        let from = neighbors(graph, id, kind, reverse);
+        work.charge(from.len())?;
+        for (before, _) in from {
+            let declared = graph.get_node(before).is_some_and(|node| {
+                node.has_label(&ty.name) && edge_of(schema, node, field).is_some_and(|(k, d, t)| k == kind && d == direction && t.iter().any(|target| labels.contains(&target.as_str())))
+            });
+            if declared && !out.contains(&before) {
+                out.push(before);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// `field N hops` or `field within N hops` from one node: the nodes whose
@@ -300,7 +337,6 @@ fn indexed_end(graph: &Graph, schema: &Schema, types: &[String], hop: &Hop, work
 /// The nodes one `hop` back from `ends`: those of `types` whose `hop` reaches
 /// one of them. With a repeat, every node within its most hops (a superset).
 fn back(graph: &Graph, schema: &Schema, ends: &HashSet<NodeId>, types: &[String], hop: &Hop, work: &mut Work) -> Result<HashSet<NodeId>, LangError> {
-    let kinds = kinds_of(schema, types, &hop.field);
     let depth = hop.repeat.map_or(1, |r| r.range().1);
     let mut out = HashSet::new();
     let mut layer: Vec<NodeId> = ends.iter().copied().collect();
@@ -308,39 +344,18 @@ fn back(graph: &Graph, schema: &Schema, ends: &HashSet<NodeId>, types: &[String]
     for _ in 0..depth {
         let mut next = Vec::new();
         for id in layer {
-            for (kind, direction) in &kinds {
-                let reverse = match direction {
-                    Direction::Out => Direction::In,
-                    Direction::In => Direction::Out,
-                };
-                let from = neighbors(graph, id, kind, reverse);
-                work.charge(from.len())?;
-                for (node, _) in from {
-                    if node_has_any_label(graph, node, types) {
-                        out.insert(node);
-                    }
-                    if seen.insert(node) {
-                        next.push(node);
-                    }
+            for node in step_back(graph, schema, id, &hop.field, work)? {
+                if node_has_any_label(graph, node, types) {
+                    out.insert(node);
+                }
+                if seen.insert(node) {
+                    next.push(node);
                 }
             }
         }
         layer = next;
     }
     Ok(out)
-}
-
-/// The stored (kind, direction) of `field` on each of `types`.
-fn kinds_of(schema: &Schema, types: &[String], field: &str) -> Vec<(String, Direction)> {
-    let mut kinds: Vec<(String, Direction)> = Vec::new();
-    for ty in types {
-        if let Some((_, kind, direction, ..)) = schema.edge(ty, field).ok().and_then(|edge| edge.as_edge()) {
-            if !kinds.iter().any(|(k, d)| k == kind && *d == direction) {
-                kinds.push((kind.to_string(), direction));
-            }
-        }
-    }
-    kinds
 }
 
 /// Backwards from the indexed end to hop `k`: the nodes hop `k` must reach.
@@ -404,21 +419,6 @@ fn distance(graph: &Graph, schema: &Schema, from: NodeId, field: &str, most: usi
     if targets.is_empty() {
         return Ok(None);
     }
-    let types: Vec<String> = graph
-        .get_node(from)
-        .map(|node| node.labels().map(str::to_string).collect())
-        .unwrap_or_default();
-    let mut all_types = types.clone();
-    for ty in &types {
-        if let Ok(edge) = schema.edge(ty, field) {
-            for target in edge.as_edge().map(|edge| edge.3).unwrap_or(&[]) {
-                if !all_types.contains(target) {
-                    all_types.push(target.clone());
-                }
-            }
-        }
-    }
-    let kinds = kinds_of(schema, &all_types, field);
     let mut ahead: HashMap<NodeId, usize> = HashMap::from([(from, 0)]);
     let mut behind: HashMap<NodeId, usize> = targets.iter().map(|id| (*id, 0)).collect();
     let mut front = vec![from];
@@ -436,23 +436,15 @@ fn distance(graph: &Graph, schema: &Schema, from: NodeId, field: &str, most: usi
         // The whole layer, then the nearest meeting in it: the shortest.
         let mut met: Option<usize> = None;
         for id in layer.drain(..) {
-            for (kind, direction) in &kinds {
-                let direction = match (forward, direction) {
-                    (true, d) => *d,
-                    (false, Direction::Out) => Direction::In,
-                    (false, Direction::In) => Direction::Out,
-                };
-                let reached = neighbors(graph, id, kind, direction);
-                work.charge(reached.len())?;
-                for (node, _) in reached {
-                    if let Some(other) = theirs.get(&node) {
-                        let total = *depth + other;
-                        met = Some(met.map_or(total, |best| best.min(total)));
-                    }
-                    if let std::collections::hash_map::Entry::Vacant(slot) = mine.entry(node) {
-                        slot.insert(*depth);
-                        next.push(node);
-                    }
+            let reached = if forward { step(graph, schema, id, field, work)? } else { step_back(graph, schema, id, field, work)? };
+            for node in reached {
+                if let Some(other) = theirs.get(&node) {
+                    let total = *depth + other;
+                    met = Some(met.map_or(total, |best| best.min(total)));
+                }
+                if let std::collections::hash_map::Entry::Vacant(slot) = mine.entry(node) {
+                    slot.insert(*depth);
+                    next.push(node);
                 }
             }
         }

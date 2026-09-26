@@ -6,6 +6,8 @@
 //! as the existing executor.
 
 mod chain;
+#[cfg(test)]
+mod chain_model_tests;
 mod discovery;
 
 use crate::location::{Bounds, Point, EARTH_RADIUS};
@@ -1390,6 +1392,7 @@ fn project(
                 let reached = if let Some((min, max)) = range {
                     walk_range(
                         graph,
+                        schema,
                         id,
                         WalkSpec {
                             rel,
@@ -1728,6 +1731,7 @@ struct WalkSpec<'a> {
 
 fn walk_range(
     graph: &Graph,
+    schema: &Schema,
     start: NodeId,
     spec: WalkSpec<'_>,
     work: &mut Work,
@@ -1755,8 +1759,9 @@ fn walk_range(
         if depth == max {
             continue;
         }
-        for (next, rel_id) in neighbors(graph, node, rel, direction) {
-            work.charge(1)?;
+        // The step a chain's `N hops` takes: `field` as each node's own type
+        // declares it, to the types it reaches (zegadb/zega#86).
+        for (next, rel_id) in chain::step_edges(graph, schema, node, field, work)? {
             if seen.insert(next) {
                 queue.push_back((next, depth + 1, rel_id));
             }
