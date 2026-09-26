@@ -9,6 +9,7 @@ use axum::{
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/stats", get(handlers::stats))
         .route("/zql", post(handlers::zql))
         .route("/vector-view", post(handlers::vector_view))
         // A `.graph` upload streams into the engine, so the JSON body limit

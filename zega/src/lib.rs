@@ -69,6 +69,13 @@ fn seconds(limit: std::time::Duration) -> String {
 
 pub type Result<T> = std::result::Result<T, ZegaError>;
 
+/// [`Zega::counts`]: the graph's size, as the hosted service meters it against a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphCounts {
+    pub nodes: usize,
+    pub relationships: usize,
+}
+
 pub struct Zega {
     graph: Arc<Mutex<Graph>>,
     wal: Arc<Wal>,
@@ -342,6 +349,13 @@ impl Zega {
     pub fn is_empty(&self) -> Result<bool> {
         let graph = self.lock_graph()?;
         Ok(graph.is_empty())
+    }
+
+    /// How many nodes and relationships the graph holds. Both are the
+    /// in-memory maps' lengths: O(1), no scan.
+    pub fn counts(&self) -> Result<GraphCounts> {
+        let graph = self.lock_graph()?;
+        Ok(GraphCounts { nodes: graph.node_count(), relationships: graph.relationship_count() })
     }
 
     /// Stream the whole graph to `out` as a `.graph` file

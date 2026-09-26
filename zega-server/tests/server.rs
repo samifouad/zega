@@ -181,6 +181,7 @@ async fn every_database_route_requires_the_bearer() {
     let client = Client::new();
     for (method, path) in [
         (reqwest::Method::GET, "/health"),
+        (reqwest::Method::GET, "/stats"),
         (reqwest::Method::POST, "/zql"),
         (reqwest::Method::POST, "/vector-view"),
         (reqwest::Method::GET, "/graph"),
@@ -214,6 +215,38 @@ async fn every_database_route_requires_the_bearer() {
         .await
         .unwrap();
     assert_eq!(body, json!({"ok":true}));
+}
+
+#[tokio::test]
+async fn stats_counts_nodes_and_relationships() {
+    let server = start_server().await;
+    let client = Client::new();
+    let stats = || async {
+        client.get(format!("{}/stats", server.base_url)).bearer_auth(TOKEN).send().await.unwrap().json::<Value>().await.unwrap()
+    };
+    assert_eq!(stats().await, json!({"ok":true,"result":{"nodes":0,"relationships":0}}));
+    const KNOWS: &str = "type Person { name: String knows -> Person[] }";
+    for name in ["Ada", "Grace", "Linus"] {
+        let body: Value = post(&client, &server)
+            .json(&json!({"schema":KNOWS,"query":format!("mutation {{ Person(name: \"{name}\") {{ name }} }}")}))
+            .send().await.unwrap().json().await.unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+    }
+    let graph: Value = client
+        .get(format!("{}/graph", server.base_url))
+        .header("accept", "application/json")
+        .bearer_auth(TOKEN)
+        .send().await.unwrap().json().await.unwrap();
+    let ids: Vec<u64> = graph["result"]["nodes"].as_array().unwrap().iter().map(|n| n["id"].as_u64().unwrap()).collect();
+    let linked = client
+        .post(format!("{}/graph/relationships", server.base_url))
+        .bearer_auth(TOKEN)
+        .json(&json!({"schema": KNOWS, "from": ids[0], "field": "knows", "to": ids[1]}))
+        .send().await.unwrap();
+    assert!(linked.status().is_success(), "{}", linked.text().await.unwrap());
+    assert_eq!(stats().await, json!({"ok":true,"result":{"nodes":3,"relationships":1}}));
+    assert!(client.delete(format!("{}/graph/nodes/{}", server.base_url, ids[2])).bearer_auth(TOKEN).send().await.unwrap().status().is_success());
+    assert_eq!(stats().await["result"]["nodes"], 2);
 }
 
 #[tokio::test]
