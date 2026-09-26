@@ -11,7 +11,7 @@ permissions:
 jobs:
   guards:
     name: Prove promoted-version and duplicate-tag refusals
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: public-ci
     steps:
       - uses: actions/checkout@v5
@@ -26,7 +26,7 @@ jobs:
   tag-canary:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'zegadb/zega'
     needs: guards
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release
     permissions:
       contents: write
