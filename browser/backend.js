@@ -41,7 +41,9 @@ class HttpDatabase {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    if (!response.ok || !result.ok) {
+      throw Object.assign(new Error(result.error || `HTTP ${response.status}`), { status: response.status, code: result.code });
+    }
     return result.result;
   }
   async refresh() { this.snapshot = await this.request('/graph'); }
@@ -107,6 +109,22 @@ export class RemoteDatabase extends HttpDatabase {
     this.#key = key;
   }
   get connected() { return this.#key !== null; }
+  /**
+   * The schema text last pushed to this graph (zegadb/cloud#15,
+   * `GET /g/<id>/schema`): '' before the first push, or null when the router
+   * has no schema route yet. zega-server keeps no schema; every query sends one.
+   */
+  async loadSchema() {
+    try {
+      const stored = await this.request('/schema');
+      return typeof stored?.schema === 'string' ? stored.schema : '';
+    } catch (error) {
+      if (error.status === 404) return null;
+      throw error;
+    }
+  }
+  /** `PUT /g/<id>/schema`: stores the text as sent. Metered as a write. */
+  pushSchema(schema) { return this.request('/schema', 'PUT', { schema }); }
   forget() { this.#key = null; }
   fetchOptions() {
     if (this.#key === null) throw new Error('Disconnected from the remote graph.');

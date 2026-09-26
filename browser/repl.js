@@ -8,7 +8,7 @@ import { applyTheme } from './theme.js';
 import { createEditors } from './editor.js';
 import { openCsv, parseSchema } from './csv.js';
 import { connectDatabase, RemoteDatabase } from './backend.js';
-import { formatEditor, hasMutation, typingAfterSpace } from './zql-edit.js';
+import { formatEditor, hasMutation, mayWrite, typingAfterSpace } from './zql-edit.js';
 
 const LS_DB = 'zega.v2.since';
 const LS_SCHEMA = 'zega.v2.schema';
@@ -339,7 +339,10 @@ function setQuiet(editor, value) {
   formatPane(editor, { history: false });
   suppress -= 1;
 }
+// While connected, the panes hold the remote graph's text: the local panes are
+// kept in memory (localPanes) and are what the browser remembers.
 function saveSources() {
+  if (db.remote) return;
   localStorage.setItem(LS_SCHEMA, schemaText());
   localStorage.setItem(LS_QUERY, queryText());
 }
@@ -448,6 +451,7 @@ async function clearDatabase() {
 }
 
 function persist() {
+  if (db.remote) return;
   localStorage.setItem(LS_SCHEMA, schemaText());
   localStorage.setItem(LS_QUERY, queryText());
   if (!db.native) { try { localStorage.setItem(LS_DB, db.export_base64()); } catch (e) { console.error(e); } }
@@ -560,6 +564,10 @@ async function run(source, options = {}) {
       return null;
     }
   }
+  if (options.apply && db.remote && looksLikeZqlFile(schemaText()) && !String(source || '').trim()) {
+    showReport({ text: REMOTE_RUN_NOTE });
+    return null;
+  }
   const report = review(source);
   if (source === queryText()) mark(report.diagnostics);
   if (report.diagnostics.length || report.failed) {
@@ -659,8 +667,10 @@ $('#btn-clear').onclick = async () => {
   if (tour !== TOUR) { setTour(TOUR); hideTour(); }
   setQuiet(schemaEditor, '');
   setQuiet(queryEditor, '');
-  localStorage.setItem(LS_SCHEMA, '');
-  localStorage.setItem(LS_QUERY, '');
+  if (!db.remote) {
+    localStorage.setItem(LS_SCHEMA, '');
+    localStorage.setItem(LS_QUERY, '');
+  }
   mark([]);
   outputEditor.setValue('');
   outputSize.textContent = '';
@@ -1261,6 +1271,9 @@ dragSplit(document.getElementById('split-rows'), (ev) => {
 // is wiped by Disconnect or a reload. The CLI's native mode serves this page
 // from 127.0.0.1, which the cloud router does not allow, so it has no button.
 const remoteButton = $('#btn-remote');
+const pushButton = $('#btn-push-schema');
+const REMOTE_RUN_NOTE = 'On a remote graph, Run sends the query pane only. Push schema stores the schema pane on the graph, and writes its mutation blocks, after you confirm.';
+let localPanes = null; // The local schema and query panes, kept while connected.
 const remoteDialog = $('#remote-dialog');
 const remoteId = $('#remote-id');
 const remoteKey = $('#remote-key');
@@ -1312,6 +1325,40 @@ $('#remote-form').addEventListener('submit', async (event) => {
   await useDatabase(remote);
 });
 
+// Push schema: the schema pane becomes the graph's stored schema (PUT
+// /g/<id>/schema), and a ZQL document's mutation blocks are applied. Never
+// without a confirmation naming the graph: a sample loaded before connecting
+// must not reach a customer's graph unasked.
+pushButton.onclick = async () => {
+  if (!db.remote) return;
+  const remote = db;
+  const text = schemaText();
+  try {
+    remote.schema(text); // The wasm parser: a broken schema never leaves the page.
+  } catch (error) { showThrown(error); return; }
+  const writes = mayWrite(text);
+  const question = `Push the schema pane to the remote graph ${remote.graphId}?`
+    + (writes ? ` Its mutation blocks will be written into ${remote.graphId}.` : ' It replaces the schema stored there.');
+  if (!confirm(question)) { showReport({ text: `Nothing was pushed to ${remote.graphId}.` }); return; }
+  pushButton.disabled = true;
+  try {
+    await remote.pushSchema(text);
+    if (writes) {
+      const sources = await loadSources(text, true);
+      await remote.apply_with_sources(text, JSON.stringify(sources));
+    }
+    if (db !== remote) return;
+    lastValue = null;
+    vectorCache.clear();
+    drawGraph();
+    showReport({ text: writes ? `Schema pushed to ${remote.graphId}, and its mutations written.` : `Schema pushed to ${remote.graphId}.` });
+  } catch (error) {
+    showThrown(error);
+  } finally {
+    pushButton.disabled = false;
+  }
+};
+
 function disconnectRemote() {
   if (!db.remote) return;
   db.forget();
@@ -1331,10 +1378,32 @@ async function useDatabase(next) {
   $('#conn-label').textContent = remote ? `connected to ${db.graphId}` : LOCAL_LABEL;
   remoteButton.textContent = remote ? 'Disconnect' : 'Connect to remote graph';
   for (const selector of SAMPLE_BUTTONS) $(selector).hidden = remote;
+  pushButton.hidden = !remote;
   lastValue = null;
   autorunPaused();
+  let note = '';
+  if (remote) {
+    // Open on the graph's own schema. The local panes wait in memory.
+    localPanes ??= { schema: schemaText(), query: queryText() };
+    let stored = null;
+    try { stored = await db.loadSchema(); } catch (error) { note = plainError(error); }
+    if (db !== next) return;
+    if (stored) {
+      setQuiet(schemaEditor, stored);
+      setQuiet(queryEditor, '');
+    } else if (stored === '') {
+      note = `${db.graphId} has no schema yet. Write its types in the schema pane, then press Push schema.`;
+    }
+  } else if (localPanes) {
+    setQuiet(schemaEditor, localPanes.schema);
+    setQuiet(queryEditor, localPanes.query);
+    localPanes = null;
+    saveSources();
+  }
+  mark([]);
   resetView();
   drawGraph();
+  if (note) showReport({ text: note });
   // The remote snapshot was just read to prove the key; its queries wait for Run.
   if (!remote && queryText().trim() && !hasMutation(queryText())) await execute();
 }
