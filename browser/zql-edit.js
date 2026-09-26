@@ -43,8 +43,21 @@ export function typingAfterSpace(text, offset) {
  * comments are blanked first, so `"mutation {"` inside a value does not count.
  */
 export function hasMutation(source) {
-  const code = source.replace(/"(?:[^"\\\n]|\\.)*"?|\/\/[^\n]*/g, ' ');
-  return /(?:^|[^\w])mutation\s*\{/.test(code);
+  return /(?:^|[^\w])mutation\s*\{/.test(code(source));
+}
+
+/**
+ * Whether ZQL may write: any `mutation` block, including a sourced one
+ * (`mutation csv [...] { ... }`), outside strings and comments. Broader than
+ * hasMutation on purpose: a remote graph's snapshot is refreshed after a
+ * possible write and never after a read (backend.js RemoteDatabase).
+ */
+export function mayWrite(source) {
+  return /(?:^|[^\w])mutation\b/.test(code(source));
+}
+
+function code(source) {
+  return source.replace(/"(?:[^"\\\n]|\\.)*"?|\/\/[^\n]*/g, ' ');
 }
 
 /**

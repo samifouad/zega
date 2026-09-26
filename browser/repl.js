@@ -688,8 +688,12 @@ let autorunTimer = null;
 let autorunning = false;
 let rerunRequested = false;
 
+// Auto-run is off on a remote graph (Sami, zega#116): every call there is
+// metered, so queries run only on Run or Cmd/Ctrl+Enter.
 function autorunPaused() {
-  const paused = hasMutation(queryText());
+  const remote = Boolean(db.remote);
+  const paused = remote || hasMutation(queryText());
+  autorunNote.textContent = remote ? 'auto-run off: remote graph' : 'auto-run paused: mutation';
   autorunNote.hidden = !paused;
   return paused;
 }
@@ -697,6 +701,8 @@ function autorunPaused() {
 async function autorunOnce() {
   const report = review();
   mark(report.diagnostics);
+  // Checked in the browser (wasm), so a remote graph still gets diagnostics; nothing is sent.
+  if (db.remote) { autorunPaused(); return; }
   if (report.diagnostics.length || report.failed) {
     drawGraph();
     queryTime.textContent = '';
@@ -1298,9 +1304,11 @@ async function useDatabase(next) {
   remoteButton.textContent = remote ? 'Disconnect' : 'Connect to remote graph';
   for (const selector of SAMPLE_BUTTONS) $(selector).hidden = remote;
   lastValue = null;
+  autorunPaused();
   resetView();
   drawGraph();
-  if (queryText().trim() && !hasMutation(queryText())) await execute();
+  // The remote snapshot was just read to prove the key; its queries wait for Run.
+  if (!remote && queryText().trim() && !hasMutation(queryText())) await execute();
 }
 
 // Read what was stored before formatting saves the panes over it.

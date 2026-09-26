@@ -3,6 +3,8 @@
 // and import previews, while every database operation goes over HTTP.
 // A remote Zega Cloud graph uses the same HTTP backend, pointed at
 // api.zega.dev/g/<id> with the graph's API key (RemoteDatabase below).
+import { mayWrite } from './zql-edit.js';
+
 export async function connectDatabase(parser) {
   const response = await fetch('/explorer-config.json');
   if (response.status === 404) return parser;
@@ -43,13 +45,17 @@ class HttpDatabase {
     return result.result;
   }
   async refresh() { this.snapshot = await this.request('/graph'); }
+  // GET /graph is the whole graph, and on Zega Cloud every call is metered:
+  // the snapshot is refreshed after a document or anything that may write
+  // (even if it failed part way), never after a read.
   async execute(query, schema, sources, document) {
+    const writes = document || mayWrite(query);
     try {
       return JSON.stringify(await this.request('/zql', 'POST', {
         schema, query, document,
         sources: sources === undefined ? undefined : JSON.parse(sources),
       }));
-    } finally { await this.refresh(); }
+    } finally { if (writes) await this.refresh(); }
   }
   run_with_sources(schema, query, sources) { return this.execute(query, schema, sources, false); }
   apply_with_sources(query, sources) { return this.execute(query, '', sources, true); }

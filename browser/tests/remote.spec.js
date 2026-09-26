@@ -249,9 +249,9 @@ test('connect to a remote graph: query it, disconnect, and the key is never pers
   const reconnect = router.seen.length;
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(conn).toHaveText(`connected to ${GRAPH}`);
-  // Connecting reads the graph, reruns the query pane, and reads the graph again.
+  // Connecting reads the graph once, to prove the key; the query pane waits for Run.
   const calls = () => router.seen.slice(reconnect).filter((r) => r.method !== 'OPTIONS').map((r) => `${r.method} ${r.url}`);
-  await expect.poll(calls).toEqual([`GET /g/${GRAPH}/graph`, `POST /g/${GRAPH}/zql`, `GET /g/${GRAPH}/graph`]);
+  await expect.poll(calls).toEqual([`GET /g/${GRAPH}/graph`]);
   const beforeReload = router.seen.length;
   await page.reload();
   await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45_000 });
@@ -298,4 +298,58 @@ test('a Content-Security-Policy, if the explorer ever sends one, lets it connect
     if (!sources) continue;
     expect(sources.some((s) => s === 'https://api.zega.dev' || s === 'https:' || s === '*'), policy).toBe(true);
   }
+});
+
+test('on a remote graph, typing sends nothing; a read-only Run is exactly one call; a mutation refreshes the graph', async () => {
+  const { context, page } = await openExplorer();
+  await page.getByRole('button', { name: 'Connect to remote graph' }).click();
+  await page.getByLabel('Graph id').fill(GRAPH);
+  await page.getByLabel('API key').fill(KEY);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.locator('.conn')).toHaveText(`connected to ${GRAPH}`);
+  await expect(page.locator('#autorun-note')).toHaveText('auto-run off: remote graph');
+
+  const metered = (from) => router.seen.slice(from).filter((r) => r.method !== 'OPTIONS').map((r) => `${r.method} ${r.url}`);
+  const settle = () => page.waitForTimeout(1_500); // well past the 350 ms auto-run debounce
+
+  // Typing N characters, in both panes: 0 calls.
+  await settle();
+  let from = router.seen.length;
+  await page.locator('#query .inputarea').focus();
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.press('Backspace');
+  const typed = '{ Country(name = "Remoteland") { name } }';
+  for (const ch of typed) await page.keyboard.type(ch);
+  await page.locator('#schema .inputarea').focus();
+  await page.keyboard.press('ControlOrMeta+End');
+  await page.keyboard.type('\n\ntype Extra { name: String }');
+  await settle();
+  expect(metered(from)).toEqual([]);
+  expect(typed.length).toBeGreaterThan(30);
+
+  // Run, read-only: exactly one call, and no GET /graph after it.
+  from = router.seen.length;
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect.poll(() => editorText(page, 'output')).toContain('"remote": true');
+  await settle();
+  expect(metered(from)).toEqual([`POST /g/${GRAPH}/zql`]);
+
+  // Cmd/Ctrl+Enter is Run too.
+  from = router.seen.length;
+  await page.locator('#query .inputarea').focus();
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await expect.poll(() => metered(from)).toEqual([`POST /g/${GRAPH}/zql`]);
+  await settle();
+  expect(metered(from)).toEqual([`POST /g/${GRAPH}/zql`]);
+
+  // A mutation (a sourced one too): the call, then the snapshot is refreshed.
+  for (const mutation of ['mutation { Country(name: "Newland" && flag: "") { name } }', 'mutation csv ["https://example.test/c.csv"] { Country(name: $name) { name } }']) {
+    from = router.seen.length;
+    await page.evaluate((text) => window.monaco.editor.getEditors().find((e) => e.getDomNode()?.closest('#query')).setValue(text), mutation);
+    await settle();
+    expect(metered(from)).toEqual([]);
+    await page.evaluate((text) => window.__zega.run_with_sources('', text, '{"https://example.test/c.csv":"name\\nX"}'), mutation);
+    expect(metered(from)).toEqual([`POST /g/${GRAPH}/zql`, `GET /g/${GRAPH}/graph`]);
+  }
+  await context.close();
 });
