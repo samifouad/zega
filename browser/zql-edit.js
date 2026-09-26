@@ -56,8 +56,9 @@ export function mayWrite(source) {
   return /(?:^|[^\w])mutation\b/.test(code(source));
 }
 
+// Strings and comments blanked out. A string may span lines.
 function code(source) {
-  return source.replace(/"(?:[^"\\\n]|\\.)*"?|\/\/[^\n]*/g, ' ');
+  return source.replace(/"(?:[^"\\]|\\.)*"?|\/\/[^\n]*/g, ' ');
 }
 
 /**

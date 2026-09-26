@@ -445,3 +445,14 @@ test('on a remote graph, the vector view asks /vector-view only for a result, on
   expect(vectorCalls(from), 'theme toggles and resizes reuse the answer').toBe(0);
   await context.close();
 });
+
+test('a string may span lines: a mutation after one is seen, and one inside one is not', async () => {
+  const { hasMutation, mayWrite } = await import('../zql-edit.js');
+  const after = '{ Ticket(note = "first line\nsecond line") { title } } mutation { Ticket(title: "x") { title } }';
+  expect(hasMutation(after)).toBe(true);
+  expect(mayWrite(after)).toBe(true);
+  const inside = '{ Ticket(note = "says\nmutation { not code }") { title } }';
+  expect(hasMutation(inside)).toBe(false);
+  expect(mayWrite(inside)).toBe(false);
+  expect(mayWrite('mutation csv ["./a.csv"] { Ticket(title: $t) { title } }')).toBe(true);
+});
