@@ -5,13 +5,18 @@ on:
     branches: [main, codex/channels]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
   guards:
     name: Prove promoted-version and duplicate-tag refusals
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Light: unittest + cargo metadata, no build.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: public-ci
     steps:
       - uses: actions/checkout@v5
