@@ -16,6 +16,15 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:https';
 import { join, resolve, sep } from 'node:path';
+import { initSync, ZegaWasm } from '../pkg/zega_wasm.js';
+
+// EMPTY is a graph backed by the real engine (the vendored wasm, run here in
+// Node), starting empty, with the schema store cloud keeps (zegadb/cloud#15:
+// GET|PUT /g/<id>/schema). GRAPH answers from a fixed snapshot and, like the
+// router before #15, has no schema route.
+initSync({ module: readFileSync(resolve('pkg/zega_wasm_bg.wasm')) });
+const EMPTY = 'k3zq8vbd5nw2ptr7ha';
+const EMPTY_KEY = 'zk_emptyemptyemptyemptyemptyabcdefg';
 
 const GRAPH = 'u7bgg2k9q4xmh3ne5t';
 const KEY = 'zk_abcdefghijklmnopqrstuvwxyz234567';
@@ -55,7 +64,7 @@ function serveMonaco(request, response) {
 /** The cloud router, as far as the explorer can see it (zegadb/cloud src/router.ts). */
 function fakeRouter(tls) {
   const seen = [];
-  const state = { snapshot: SNAPSHOT };
+  const state = { snapshot: SNAPSHOT, engine: new ZegaWasm(), schema: '', updatedAt: null };
   const server = createServer(tls, (request, response) => {
     if (request.headers.host?.startsWith('cdn.jsdelivr.net')) return serveMonaco(request, response);
     let body = '';
@@ -65,7 +74,7 @@ function fakeRouter(tls) {
       const cors = request.headers.origin === PAGE ? { 'access-control-allow-origin': PAGE, vary: 'origin' } : { vary: 'origin' };
       if (request.method === 'OPTIONS') {
         response.writeHead(204, request.headers.origin === PAGE ? {
-          ...cors, 'access-control-allow-methods': 'GET, POST, DELETE', 'access-control-allow-headers': 'authorization, content-type',
+          ...cors, 'access-control-allow-methods': 'GET, POST, PUT, DELETE', 'access-control-allow-headers': 'authorization, content-type',
         } : cors);
         return response.end();
       }
@@ -77,6 +86,7 @@ function fakeRouter(tls) {
       if (!match) return send(404, { ok: false, code: 'not_found', error: 'Not found.' });
       const auth = request.headers.authorization;
       if (!auth) return send(401, { ok: false, code: 'missing_key', error: 'Send the graph API key as "Authorization: Bearer zk_…".' });
+      if (auth === `Bearer ${EMPTY_KEY}` && match[1] === EMPTY) return engine(request.method, match[2], body);
       if (auth !== `Bearer ${KEY}`) return send(401, { ok: false, code: 'invalid_key', error: 'This API key is not valid. It may have been revoked.' });
       if (match[1] !== GRAPH) return send(403, { ok: false, code: 'key_not_for_graph', error: `This API key belongs to a different graph, not "${match[1]}".` });
       if (request.method === 'GET' && match[2] === 'graph') return send(200, { ok: true, result: state.snapshot });
@@ -86,6 +96,29 @@ function fakeRouter(tls) {
       }
       if (request.method === 'POST' && match[2] === 'vector-view') return send(200, { ok: true, result: { points: [], nearest: [], flags: [] } });
       return send(404, { ok: false, code: 'not_found', error: 'Not served.' });
+
+      /** The engine's answers (zega-server handlers.rs) and cloud's schema store (#15). */
+      function engine(method, route, text) {
+        const run = (fn) => {
+          try { return send(200, { ok: true, result: JSON.parse(fn()) }); } catch (error) { return send(400, { ok: false, error: String(error?.message ?? error) }); }
+        };
+        if (method === 'GET' && route === 'graph') return run(() => state.engine.graph());
+        if (method === 'DELETE' && route === 'graph') return run(() => { state.engine = new ZegaWasm(); return state.engine.graph(); });
+        if (method === 'POST' && route === 'zql') {
+          const { schema = '', query, document, sources } = JSON.parse(text);
+          const supplied = JSON.stringify(sources ?? {});
+          return run(() => (document ? state.engine.apply_with_sources(query, supplied) : state.engine.run_with_sources(schema, query, supplied)));
+        }
+        if (method === 'GET' && route === 'schema') return send(200, { ok: true, result: { schema: state.schema, updatedAt: state.updatedAt } });
+        if (method === 'PUT' && route === 'schema') {
+          const schema = JSON.parse(text)?.schema;
+          if (typeof schema !== 'string') return send(400, { ok: false, code: 'bad_schema', error: 'Send {"schema": "…"}.' });
+          state.schema = schema;
+          state.updatedAt = new Date().toISOString();
+          return send(200, { ok: true, result: { schema: state.schema, updatedAt: state.updatedAt } });
+        }
+        return send(404, { ok: false, code: 'not_found', error: 'Not served.' });
+      }
     });
   });
   return { server, seen, state };
@@ -261,7 +294,7 @@ test('connect to a remote graph: query it, disconnect, and the key is never pers
   await expect(conn).toHaveText(`connected to ${GRAPH}`);
   // Connecting reads the graph once, to prove the key; the query pane waits for Run.
   const calls = () => router.seen.slice(reconnect).filter((r) => r.method !== 'OPTIONS').map((r) => `${r.method} ${r.url}`);
-  await expect.poll(calls).toEqual([`GET /g/${GRAPH}/graph`]);
+  await expect.poll(calls).toEqual([`GET /g/${GRAPH}/graph`, `GET /g/${GRAPH}/schema`]);
   const beforeReload = router.seen.length;
   await page.reload();
   await expect(page.locator('#query .monaco-editor')).toBeVisible({ timeout: 45_000 });
@@ -427,6 +460,9 @@ test('on a remote graph, the vector view asks /vector-view only for a result, on
   await page.getByLabel('API key').fill(KEY);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.locator('.conn')).toHaveText(`connected to ${GRAPH}`);
+  // Connecting reads the schema, then redraws the vector view: wait for both before counting.
+  await expect.poll(() => router.seen.slice(from).some((r) => r.method === 'GET' && r.url === `/g/${GRAPH}/schema`)).toBe(true);
+  await expect(page.locator('#graph canvas')).toBeVisible();
   await settle();
   expect(vectorCalls(from), 'connecting draws the vector view without a result: no call').toBe(0);
 
@@ -459,6 +495,125 @@ test('a string may span lines: a mutation after one is seen, and one inside one 
   expect(mayWrite('mutation csv ["./a.csv"] { Ticket(title: $t) { title } }')).toBe(true);
 });
 
+async function connectTo(page, graph, key) {
+  await page.getByRole('button', { name: 'Connect to remote graph' }).click();
+  await page.getByLabel('Graph id').fill(graph);
+  await page.getByLabel('API key').fill(key);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.locator('.conn')).toHaveText(`connected to ${graph}`);
+}
+const setPane = (page, pane, text) => page.evaluate(([id, value]) => window.monaco.editor.getEditors()
+  .find((editor) => editor.getDomNode()?.closest(`#${id}`)).setValue(value), [pane, text]);
+const writesTo = (from, graph) => router.seen.slice(from)
+  .filter((r) => r.url.startsWith(`/g/${graph}/`) && (r.method === 'PUT' || r.method === 'DELETE' || (r.method === 'POST' && /mutation|"document":true/.test(r.body))));
+function freshEngine() {
+  router.state.engine = new ZegaWasm();
+  router.state.schema = '';
+  router.state.updatedAt = null;
+}
+
+test('an empty remote graph: push a schema after confirming, create nodes with a typed mutation, and see them', async () => {
+  freshEngine();
+  const { context, page } = await openExplorer();
+  const local = await editorText(page, 'schema');
+  await connectTo(page, EMPTY, EMPTY_KEY);
+  await expect.poll(() => editorText(page, 'output')).toContain(`${EMPTY} has no schema yet`);
+  await expect(page.getByRole('button', { name: 'Push schema' })).toBeVisible();
+
+  // Push: the confirmation names the graph; only then is the schema stored.
+  await setPane(page, 'schema', 'type Person {\n  name: String\n  age: Int\n}');
+  const dialogs = [];
+  page.on('dialog', (dialog) => { dialogs.push(dialog.message()); dialog.accept(); });
+  let from = router.seen.length;
+  await page.getByRole('button', { name: 'Push schema' }).click();
+  await expect.poll(() => editorText(page, 'output')).toContain(`Schema pushed to ${EMPTY}.`);
+  expect(dialogs).toEqual([`Push the schema pane to the remote graph ${EMPTY}? It replaces the schema stored there.`]);
+  expect(router.seen.slice(from).filter((r) => r.method !== 'OPTIONS').map((r) => `${r.method} ${r.url}`)).toEqual([`PUT /g/${EMPTY}/schema`]);
+  expect(router.state.schema).toContain('type Person');
+
+  // A typed mutation reaches the engine, and the graph view shows the node.
+  await setPane(page, 'query', 'mutation { Person(name: "Ada" && age: 36) { name } }');
+  from = router.seen.length;
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(page.locator('#raw-count')).toHaveText('1 nodes · 0 edges');
+  await expect(page.locator('#graph')).toContainText('Ada');
+  await expect(page.locator('#graph .chip')).toContainText(['Person (1)']);
+  await page.screenshot({ path: test.info().outputPath('remote-pushed.png') });
+  expect(router.seen.slice(from).filter((r) => r.method !== 'OPTIONS').map((r) => `${r.method} ${r.url}`)).toEqual([`POST /g/${EMPTY}/zql`, `GET /g/${EMPTY}/graph`]);
+  expect(JSON.parse(router.state.engine.graph()).nodes).toMatchObject([{ labels: ['Person'], name: 'Ada', age: 36 }]);
+
+  // A read runs against it too.
+  await setPane(page, 'query', '{ Person { name age } }');
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect.poll(async () => JSON.parse(await editorText(page, 'output') || 'null')).toEqual([{ name: 'Ada', age: 36 }]);
+
+  // Disconnect: the local panes come back. Reconnect: the graph opens on its stored schema.
+  await page.getByRole('button', { name: 'Disconnect' }).click();
+  await expect.poll(() => editorText(page, 'schema')).toBe(local);
+  await connectTo(page, EMPTY, EMPTY_KEY);
+  await expect.poll(() => editorText(page, 'schema')).toContain('type Person');
+  await expect(page.locator('#graph')).toContainText('Ada');
+  expect(dialogs.length).toBe(1);
+  await context.close();
+});
+
+test('pushing a ZQL document writes its mutations, and says so before it does', async () => {
+  freshEngine();
+  const { context, page } = await openExplorer();
+  await connectTo(page, EMPTY, EMPTY_KEY);
+  await setPane(page, 'schema', 'schema {\n  type Robot {\n    name: String\n  }\n}\n\nmutation { Robot(name: "R2") { name } }\nmutation { Robot(name: "C3") { name } }');
+  const dialogs = [];
+  page.on('dialog', (dialog) => { dialogs.push(dialog.message()); dialog.accept(); });
+  await page.getByRole('button', { name: 'Push schema' }).click();
+  await expect.poll(() => editorText(page, 'output')).toContain(`Schema pushed to ${EMPTY}, and its mutations written.`);
+  expect(dialogs).toEqual([`Push the schema pane to the remote graph ${EMPTY}? Its mutation blocks will be written into ${EMPTY}.`]);
+  await expect(page.locator('#raw-count')).toHaveText('2 nodes · 0 edges');
+  await expect(page.locator('#graph')).toContainText('R2');
+  await context.close();
+});
+
+test('a sample loaded before connecting reaches a remote graph only through a confirmed push', async () => {
+  freshEngine();
+  const { context, page } = await openExplorer();
+  await page.getByRole('button', { name: 'Tickets', exact: true }).click();
+  await expect.poll(() => editorText(page, 'schema'), { timeout: 30_000 }).toContain('mutation');
+  await connectTo(page, EMPTY, EMPTY_KEY);
+  const from = router.seen.length;
+
+  // Run with the query pane emptied: nothing is sent, and the note says how to push.
+  await setPane(page, 'query', '');
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect.poll(() => editorText(page, 'output')).toContain('Run sends the query pane only');
+
+  // Push, declined: nothing is stored or written.
+  const dialogs = [];
+  page.on('dialog', (dialog) => { dialogs.push(dialog.message()); dialog.dismiss(); });
+  await page.getByRole('button', { name: 'Push schema' }).click();
+  await expect.poll(() => editorText(page, 'output')).toContain(`Nothing was pushed to ${EMPTY}.`);
+  expect(dialogs[0]).toContain(EMPTY);
+  await page.waitForTimeout(1_000);
+  expect(writesTo(from, EMPTY)).toEqual([]);
+  expect(router.state.schema).toBe('');
+  expect(JSON.parse(router.state.engine.graph()).nodes).toEqual([]);
+  await context.close();
+});
+
+test('a schema the parser rejects is never pushed', async () => {
+  freshEngine();
+  const { context, page } = await openExplorer();
+  await connectTo(page, EMPTY, EMPTY_KEY);
+  await setPane(page, 'schema', 'type Person {\n  name: Strin\n');
+  let asked = 0;
+  page.on('dialog', (dialog) => { asked += 1; dialog.accept(); });
+  const from = router.seen.length;
+  await page.getByRole('button', { name: 'Push schema' }).click();
+  await expect.poll(() => editorText(page, 'output')).toMatch(/error/);
+  await page.waitForTimeout(500);
+  expect(asked).toBe(0);
+  expect(writesTo(from, EMPTY)).toEqual([]);
+  await context.close();
+});
+
 test('a pasted router URL is resolved to its id in the field, and connects to api.zega.dev', async () => {
   const { context, page } = await openExplorer();
   await page.getByRole('button', { name: 'Connect to remote graph' }).click();
@@ -476,6 +631,7 @@ test('a pasted router URL is resolved to its id in the field, and connects to ap
   await field.fill(`  api.zega.dev/g/${GRAPH}/graph  `);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.locator('.conn')).toHaveText(`connected to ${GRAPH}`);
-  expect(router.seen.slice(from).filter((r) => r.method !== 'OPTIONS').map((r) => r.url)).toEqual([`/g/${GRAPH}/graph`]);
+  // Connecting reads the graph, then its stored schema (zegadb/cloud#15).
+  await expect.poll(() => router.seen.slice(from).filter((r) => r.method !== 'OPTIONS').map((r) => r.url)).toEqual([`/g/${GRAPH}/graph`, `/g/${GRAPH}/schema`]);
   await context.close();
 });

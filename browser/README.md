@@ -59,6 +59,13 @@ shows `connected to <id>`, and **Disconnect** returns to the local graph.
 - Every call to a remote graph is metered, so nothing runs on typing: queries
   run only on Run or Cmd/Ctrl+Enter, connecting reads the graph once, and the
   `GET /graph` snapshot is refreshed only after something that may write.
+- zega-server keeps no schema: every query carries one. Zega Cloud stores the
+  text last pushed (`GET|PUT /g/<id>/schema`, zegadb/cloud#15). Connecting
+  opens the schema pane on it (the local panes wait in memory and come back
+  on Disconnect); a graph with none says so. **Push schema** stores the
+  schema pane, and applies a ZQL document's mutation blocks, only after a
+  confirmation that names the graph. Typed `mutation { … }` in the query pane
+  run on Run, and the view shows the new nodes.
 - Run never applies the schema pane to a remote graph, and sample buttons and
   reset are hidden while connected (they clear the graph first); clear asks
   before deleting anything remote.
