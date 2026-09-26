@@ -75,18 +75,22 @@ fn ast(source: &str) -> Result<Parsed> {
                 | Pred::FindLike(_, _, s)
                 | Pred::StartsLike(_, _, s)
                 | Pred::EndsLike(_, _, s) => span(s),
-                Pred::Related(related) => {
-                    span(&mut related.span);
-                    selection(&mut related.target);
+                Pred::Chain(chain) => {
+                    span(&mut chain.span);
+                    if let Some(same) = &mut chain.from {
+                        span(&mut same.span);
+                        if let Some(test) = &mut same.test {
+                            expr(test);
+                        }
+                    }
+                    for hop in &mut chain.hops {
+                        span(&mut hop.span);
+                        if let Some(test) = &mut hop.test {
+                            expr(test);
+                        }
+                    }
                 }
-                Pred::Count(count, _, _) => count_spans(count),
             },
-        }
-    }
-    fn count_spans(count: &mut Count) {
-        span(&mut count.span);
-        if let Some((_, target)) = &mut count.to {
-            selection(target);
         }
     }
     fn selection(sel: &mut Selection) {
@@ -107,7 +111,6 @@ fn ast(source: &str) -> Result<Parsed> {
             span(&mut key.span);
             match &mut key.by {
                 OrderBy::Distance(distance) => span(&mut distance.span),
-                OrderBy::Count(count) => count_spans(count),
                 OrderBy::Field(_) => {}
             }
         }
@@ -123,7 +126,6 @@ fn ast(source: &str) -> Result<Parsed> {
                 | Item::EdgeSet(_, _, s) => span(s),
                 Item::Similarity(_, sim) => span(&mut sim.span),
                 Item::Distance(_, distance) => span(&mut distance.span),
-                Item::Count(_, count) => count_spans(count),
                 Item::Hops(_) | Item::Id(_) => {}
                 Item::Walk {
                     span: s,

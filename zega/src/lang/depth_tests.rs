@@ -57,12 +57,13 @@ fn selections(depth: usize) -> String {
     )
 }
 
-/// `Item(links -> Item(links -> … Item(key: "s1")))`: `depth` walks in a
-/// condition (zegadb/zega#86).
+/// `Item(has links(((…(key: "s1")…))))`: a chain's test, `depth` levels
+/// with its own parentheses (zegadb/zega#86). Chains never nest; their tests
+/// count toward the one limit.
 fn walks(depth: usize) -> String {
     format!(
-        "{{ Item({}key: \"s1\"{}) {{ key }} }}",
-        "links -> Item(".repeat(depth),
+        "{{ Item(has links{}key: \"s1\"{}) {{ key }} }}",
+        "(".repeat(depth),
         ")".repeat(depth)
     )
 }
@@ -198,8 +199,8 @@ fn input_at_the_limit_runs_checks_and_formats() {
         let read = db.run_lang(SCHEMA, &brackets(MAX_NESTING)).unwrap();
         assert_eq!(read, serde_json::json!({ "key": "s1" }));
         db.run_lang(SCHEMA, &selections(MAX_NESTING)).unwrap();
-        // No item links anywhere, so the outermost walk finds nothing.
-        assert_eq!(db.run_lang(SCHEMA, &walks(MAX_NESTING)).unwrap(), serde_json::json!([]));
+        // s0 links to s1, and every other item links onward from s1.
+        assert_eq!(db.run_lang(SCHEMA, &walks(MAX_NESTING)).unwrap(), serde_json::json!([{ "key": "s0" }]));
         db.run_lang(SCHEMA, &discovery(MAX_NESTING)).unwrap();
 
         for (name, shape) in SHAPES {

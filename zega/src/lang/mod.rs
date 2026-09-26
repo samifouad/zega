@@ -305,55 +305,67 @@ pub struct OrderKey {
 pub enum OrderBy {
     Field(String),
     Distance(Distance),
-    /// `order by @count(route) desc`.
-    Count(Count),
 }
 
-/// `country -> Country(iso = "CA")` inside a condition: the node has at least
-/// one relationship `country` whose far end is a `Country` meeting the
-/// target's condition (zegadb/zega#86).
+/// A walk in a condition (zegadb/zega#86), read as English and never
+/// nested: `has country(iso = "CA")`, `!have flights in country(iso = "US")`,
+/// `same team in arena`, `… in same country`. The schema supplies every type.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Related {
+pub struct Chain {
+    /// `!have`: no walk may match.
+    pub negated: bool,
+    /// `same team …`: start at the node an earlier chain's `team` reached.
+    pub from: Option<Box<Same>>,
+    /// One hop each, joined by `in` or `with`. Only the last may be `same`.
+    pub hops: Vec<Hop>,
+    /// From `has`, `!have` or `same` to the end of the last hop.
+    pub span: Span,
+}
+
+/// `same team(…)` at the start of a chain.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Same {
+    pub name: String,
+    pub span: Span,
+    /// `same players(position = "G")`: a test on that node.
+    pub test: Option<BoolExpr>,
+}
+
+/// One relationship followed: `country(iso = "CA")`, `flights 2 hops`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hop {
     pub field: String,
     /// The relationship's name.
     pub span: Span,
-    pub direction: Direction,
-    /// The far end: its type or `(A | B)` union and an optional condition.
-    /// Never items, `order by`, `limit` or `set`; the parser reads none.
-    pub target: Box<Selection>,
+    pub repeat: Option<Repeat>,
+    /// `in same country`: the hop has to arrive at the node an earlier
+    /// chain's `country` reached (a join on the node, not its values).
+    pub same: bool,
+    /// `(…)`: a test on the node this hop reaches.
+    pub test: Option<BoolExpr>,
 }
 
-/// `@count(route)`, or `@count(route -> Airport(…))` to count only the
-/// relationships whose far end matches.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Count {
-    pub field: String,
-    /// The whole `@count(…)`.
-    pub span: Span,
-    pub to: Option<(Direction, Box<Selection>)>,
-}
-
-/// How `@count(…)` is compared with its whole number.
+/// `flights 2 hops` or `flights within 3 hops`: one relationship repeated,
+/// the English form of `*2..2` and `*1..3`. A node is reached at its
+/// shortest distance and never twice, and the start is never reached again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CountCmp {
-    Eq,
-    Ne,
-    Cmp(Cmp),
+pub enum Repeat {
+    Exactly(usize),
+    Within(usize),
 }
 
-impl CountCmp {
-    /// Whether a relationship count `n` passes against `value`.
-    pub fn holds(self, n: u64, value: u64) -> bool {
+impl Repeat {
+    /// The fewest and most hops, as a `*min..max` range.
+    pub fn range(self) -> (usize, usize) {
         match self {
-            CountCmp::Eq => n == value,
-            CountCmp::Ne => n != value,
-            CountCmp::Cmp(Cmp::Gt) => n > value,
-            CountCmp::Cmp(Cmp::Gte) => n >= value,
-            CountCmp::Cmp(Cmp::Lt) => n < value,
-            CountCmp::Cmp(Cmp::Lte) => n <= value,
+            Repeat::Exactly(n) => (n, n),
+            Repeat::Within(n) => (1, n),
         }
     }
 }
+
+/// The most hops `N hops` and `within N hops` may repeat.
+pub const MAX_HOPS: usize = 6;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Similarity { pub field: String, pub query: Vector, pub span: Span }
@@ -372,8 +384,6 @@ pub enum Item {
     Score(String, Span),
     Similarity(String, Similarity),
     Distance(String, Distance),
-    /// `routes: @count(route)`: how many relationships the node has.
-    Count(String, Count),
     Prop(String, Span),
     Hops(String),
     Id(String),
@@ -488,10 +498,8 @@ pub enum Pred {
     FindLike(String, String, Span),
     StartsLike(String, String, Span),
     EndsLike(String, String, Span),
-    /// `country -> Country(iso = "CA")`: some related node matches.
-    Related(Related),
-    /// `@count(route) > 20`.
-    Count(Count, CountCmp, u64),
+    /// `has country(iso = "CA")`, `!have …`, `same …`.
+    Chain(Chain),
 }
 
 /// A condition, read like the test in an `if`.
@@ -546,14 +554,34 @@ impl BoolExpr {
     }
 }
 
+impl Chain {
+    /// The first relationship named: `same`'s, or the first hop's.
+    pub fn first_name(&self) -> &str {
+        match (&self.from, self.hops.first()) {
+            (Some(same), _) => &same.name,
+            (None, Some(hop)) => &hop.field,
+            (None, None) => "",
+        }
+    }
+
+    /// Whether it names a node from an earlier chain: `same` at either end.
+    pub fn uses_same(&self) -> bool {
+        self.from.is_some() || self.hops.last().is_some_and(|hop| hop.same)
+    }
+
+    /// The names a later `same` may refer to: every hop but a join.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.hops.iter().filter(|hop| !hop.same).map(|hop| hop.field.as_str())
+    }
+}
+
 impl Pred {
     pub fn field(&self) -> &str {
         match self {
             Pred::Similarity(sim, ..) => &sim.field,
             Pred::Distance(distance, ..) => &distance.field,
             Pred::Box(field, ..) => field,
-            Pred::Related(related) => &related.field,
-            Pred::Count(count, ..) => &count.field,
+            Pred::Chain(chain) => chain.first_name(),
             Pred::Eq(field, _, _)
             | Pred::Ne(field, _, _)
             | Pred::Cmp(field, _, _, _)
@@ -571,8 +599,7 @@ impl Pred {
             Pred::Similarity(sim, ..) => sim.span,
             Pred::Distance(distance, ..) => distance.span,
             Pred::Box(_, _, span) => *span,
-            Pred::Related(related) => related.span,
-            Pred::Count(count, ..) => count.span,
+            Pred::Chain(chain) => chain.span,
             Pred::Eq(_, _, span)
             | Pred::Ne(_, _, span)
             | Pred::Cmp(_, _, _, span)
@@ -990,6 +1017,15 @@ pub fn effective_indexes(
 }
 
 /// Types a range index can order.
+/// The word a chain starts with; `!has` is only read to be refused.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChainWord {
+    Has,
+    NotHave,
+    NotHas,
+    Same,
+}
+
 fn orderable(ty: &str) -> bool {
     matches!(ty, "Int" | "Float") || is_string(ty)
 }
@@ -1013,6 +1049,9 @@ struct Parser<'a> {
     columns: bool,
     /// Levels of [`MAX_NESTING`] entered at the current position.
     depth: usize,
+    /// Inside a hop's `(…)`, which tests that node's own fields: a walk
+    /// there would nest, and ZQL walks never nest.
+    hop_test: bool,
     /// The last `(byte, line, column)` that [`Self::loc`] resolved. Spans are
     /// asked for mostly in source order, so resuming from here keeps a long
     /// query linear instead of rescanning from byte 0 for every span.
@@ -1026,6 +1065,7 @@ impl<'a> Parser<'a> {
             i: 0,
             columns: false,
             depth: 0,
+            hop_test: false,
             last_loc: std::cell::Cell::new((0, 1, 1)),
         }
     }
@@ -1037,6 +1077,7 @@ impl<'a> Parser<'a> {
             i: self.i,
             columns: self.columns,
             depth: self.depth,
+            hop_test: self.hop_test,
             last_loc: self.last_loc.clone(),
         }
     }
@@ -1575,7 +1616,6 @@ impl<'a> Parser<'a> {
                 .with_help("write `@detach` on its own line in the delete")),
             "score" => Ok(Item::Score(alias, span)),
             "distance" => { self.i = start; Ok(Item::Distance(alias, self.distance()?)) }
-            "count" => { self.i = start; Ok(Item::Count(alias, self.count()?)) }
             "similarity" => { self.i = start; Ok(Item::Similarity(alias, self.similarity()?)) }
             _ => Err(self.err_at(span, format!("unknown built-in @{name}"))),
         }
@@ -1972,8 +2012,6 @@ impl<'a> Parser<'a> {
             let start = self.i;
             let by = if self.starts_call("distance", "(") {
                 OrderBy::Distance(self.distance()?)
-            } else if self.starts_call("count", "(") {
-                OrderBy::Count(self.count()?)
             } else {
                 OrderBy::Field(self.ident()?.0)
             };
@@ -2040,7 +2078,7 @@ impl<'a> Parser<'a> {
             }
             return Ok(ItemHead::Done(Item::EdgeProp(name, span)));
         }
-        for name in ["similarity", "distance", "count"] {
+        for name in ["similarity", "distance"] {
             if self.starts_call(name, "(") {
                 return self.builtin_item(None).map(ItemHead::Done);
             }
@@ -2050,6 +2088,36 @@ impl<'a> Parser<'a> {
             return self.builtin_item(Some(field)).map(ItemHead::Done);
         }
         let mut path = None;
+        // `mentors 2 hops ->` and `mentors within 3 hops ->`: English for
+        // `*2..2` and `*1..3`, as in a filter's chain.
+        self.skip();
+        if self.peek_digit() || (self.starts_word("within") && {
+            let mut lookahead = self.fork();
+            lookahead.eat_word("within");
+            lookahead.skip();
+            lookahead.peek_digit()
+        }) {
+            let within = self.eat_word("within");
+            self.skip();
+            let number_start = self.i;
+            let n = self.integer()?;
+            let number = self.span_bytes(number_start, self.i);
+            self.expect_word("hops")?;
+            let n = usize::try_from(n).ok().filter(|n| (1..=MAX_HOPS).contains(n)).ok_or_else(|| {
+                self.err_at(number, format!("a relationship repeats 1 to {MAX_HOPS} hops"))
+                    .with_help("for more, write `*min..max`")
+            })?;
+            let (end_line, end_column) = self.loc(self.i);
+            span.end_line = end_line;
+            span.end_column = end_column;
+            let range = if within { (1, n) } else { (n, n) };
+            if !self.starts_with_arrow() {
+                return Err(self
+                    .err_at(span, format!("{field} has hops but no arrow"))
+                    .with_help(format!("write `{field} {} hops -> Type`", if within { format!("within {n}") } else { n.to_string() })));
+            }
+            return Ok(ItemHead::Walk { field, span, range: Some(range), path: None });
+        }
         let star = self.eat("*");
         let range = if star && self.starts_word("path") {
             path = Some(self.parse_path()?);
@@ -2258,37 +2326,284 @@ impl<'a> Parser<'a> {
         Ok(BoolExpr::Test(self.parse_pred()?))
     }
 
-    /// One test. A walk (`rel -> Type(…)`) and `@count(…)` recurse into a
-    /// target's condition, so they are read here; every other test is read by
-    /// [`Self::plain_pred`], out of line, to keep this frame small on the
-    /// recursive path (zegadb/zega#48).
+    /// One test. A chain (`has …`, `!have …`, `same …`) is read by
+    /// [`Self::chain`] and every other test by [`Self::plain_pred`], both out
+    /// of line, to keep this frame small on the recursive path
+    /// (zegadb/zega#48).
     fn parse_pred(&mut self) -> Result<Pred> {
         self.skip();
-        if self.starts_call("count", "(") {
-            let count = self.count()?;
-            let (op, value) = self.count_comparison(&count)?;
-            return Ok(Pred::Count(count, op, value));
-        }
-        if let Some((field, span)) = self.related_head() {
-            return Ok(Pred::Related(self.related(field, span)?));
+        if let Some(word) = self.chain_word() {
+            return self.chain(word).map(Pred::Chain);
         }
         self.plain_pred()
     }
 
-    /// `name ->` or `name <-Type`: the relationship's name, read, when a walk
-    /// starts here.
+    /// The word that starts a chain here, if one does. `has` and `same` are
+    /// chain words only before a name, so a field called `has` still works.
+    fn chain_word(&self) -> Option<ChainWord> {
+        let rest = &self.src[self.i..];
+        if let Some(after) = rest.strip_prefix('!') {
+            let mut lookahead = self.fork();
+            lookahead.i += 1;
+            if lookahead.starts_word("have") {
+                return Some(ChainWord::NotHave);
+            }
+            if lookahead.starts_word("has") {
+                return Some(ChainWord::NotHas);
+            }
+            let _ = after;
+            return None;
+        }
+        let before_name = |word: &str| {
+            let mut lookahead = self.fork();
+            lookahead.eat_word(word) && {
+                lookahead.skip();
+                lookahead.looking_at_ident()
+            }
+        };
+        if before_name("has") {
+            return Some(ChainWord::Has);
+        }
+        if before_name("same") {
+            return Some(ChainWord::Same);
+        }
+        None
+    }
+
+    /// `has country(iso = "CA") in …`, `!have …`, `same team …`: see [`Chain`].
     #[inline(never)]
-    fn related_head(&mut self) -> Option<(String, Span)> {
-        if !self.looking_at_ident() {
+    fn chain(&mut self, word: ChainWord) -> Result<Chain> {
+        self.skip();
+        let start = self.i;
+        if self.hop_test {
+            return Err(self
+                .err("a test in (…) checks this node's own fields")
+                .with_help("walks never nest: keep walking after the parentheses with `in`, e.g. `has team(name = \"A\") in league`"));
+        }
+        let mut from = None;
+        match word {
+            ChainWord::NotHas => {
+                self.i += 1;
+                let word_end = self.peek_token_end(self.i);
+                let rest = self.chain_text(word_end);
+                return Err(self
+                    .err_at(self.span_bytes(start, word_end), "`!has` is not ZQL: none is `!have`")
+                    .with_help(format!("write `!have{rest}`")));
+            }
+            ChainWord::NotHave => {
+                self.i += 1;
+                self.expect_word("have")?;
+            }
+            ChainWord::Has => self.expect_word("has")?,
+            ChainWord::Same => {
+                self.expect_word("same")?;
+                let (name, span) = self.ident()?;
+                let test = self.hop_condition()?;
+                from = Some(Box::new(Same { name, span, test }));
+            }
+        }
+        let mut hops = Vec::new();
+        if from.is_none() {
+            self.skip();
+            if word == ChainWord::NotHave && self.starts_word("same") {
+                return Err(self
+                    .err("`same` can't follow `!have`")
+                    .with_help("`!have` matches no node to be the same as; write the test with `has`"));
+            }
+            if self.starts_word("same") {
+                return Err(self
+                    .err("`same` starts a chain, or ends one after `in`")
+                    .with_help("write `same team in arena`, or `has studio in city in same country`"));
+            }
+            hops.push(self.hop(false)?);
+        }
+        loop {
+            self.skip();
+            let at = self.i;
+            if !(self.eat_word("in") || self.eat_word("with")) {
+                break;
+            }
+            self.skip();
+            if !self.looking_at_ident() {
+                // `in` that no name follows is not a link.
+                self.i = at;
+                break;
+            }
+            if hops.last().is_some_and(|hop: &Hop| hop.same) {
+                return Err(self
+                    .err_at(self.span_bytes(at, self.peek_token_end(at)), "a chain ends at `in same …`")
+                    .with_help("a join is the last hop; start another chain with `&& has …` to keep walking"));
+            }
+            let same = {
+                let mut lookahead = self.fork();
+                lookahead.eat_word("same") && {
+                    lookahead.skip();
+                    lookahead.looking_at_ident()
+                }
+            };
+            if same {
+                self.expect_word("same")?;
+            }
+            hops.push(self.hop(same)?);
+        }
+        let end = self.i;
+        let chain = Chain {
+            negated: word == ChainWord::NotHave,
+            from,
+            hops,
+            span: self.span_bytes(start, end),
+        };
+        Ok(chain)
+    }
+
+    /// One hop: a relationship's name, `N hops` or `within N hops`, and a
+    /// test in parentheses.
+    fn hop(&mut self, same: bool) -> Result<Hop> {
+        self.skip();
+        let start = self.i;
+        let (field, span) = self.ident()?;
+        if self.starts_related_arrow() {
+            return Err(self.walk_with_type(&field, start));
+        }
+        self.skip();
+        let repeat = if self.peek_digit() || self.starts_word("within") {
+            let within = self.eat_word("within");
+            self.skip();
+            let number_start = self.i;
+            let n = self.integer()?;
+            if !self.eat_word("hops") {
+                return Err(self
+                    .err("expected `hops`")
+                    .with_help(format!("write `{field} {} hops`", if within { format!("within {n}") } else { n.to_string() })));
+            }
+            let span = self.span_bytes(number_start, self.i);
+            let n = usize::try_from(n).ok().filter(|n| (1..=MAX_HOPS).contains(n)).ok_or_else(|| {
+                self.err_at(span, format!("a relationship repeats 1 to {MAX_HOPS} hops"))
+                    .with_help("the query time limit bounds a walk; more hops reach most of a graph")
+            })?;
+            Some(if within { Repeat::Within(n) } else { Repeat::Exactly(n) })
+        } else {
+            None
+        };
+        if same && repeat.is_some() {
+            return Err(self.err_at(span, "a join takes one hop").with_help(format!("write `in same {field}`")));
+        }
+        let test = self.hop_condition()?;
+        Ok(Hop { field, span, repeat, same, test })
+    }
+
+    /// `(…)` right after a hop: a test on the node it reached, no walks.
+    fn hop_condition(&mut self) -> Result<Option<BoolExpr>> {
+        self.skip();
+        let start = self.i;
+        if !self.eat("(") {
+            return Ok(None);
+        }
+        self.nested(start, |p| {
+            p.skip();
+            if p.eat(")") {
+                return Ok(None);
+            }
+            let outer = std::mem::replace(&mut p.hop_test, true);
+            let expr = p.parse_or();
+            p.hop_test = outer;
+            let expr = expr?;
+            p.expect(")")?;
+            Ok(Some(expr))
+        })
+    }
+
+    /// The source from `from` to the end of the chain that starts there, for a
+    /// help text: up to the `&&`, `||` or `)` that closes it.
+    fn chain_text(&self, from: usize) -> String {
+        let rest = &self.src[from..];
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut end = rest.len();
+        for (i, c) in rest.char_indices() {
+            if in_string {
+                match (escaped, c) {
+                    (true, _) => escaped = false,
+                    (false, '\\') => escaped = true,
+                    (false, '"') => in_string = false,
+                    _ => {}
+                }
+                continue;
+            }
+            match c {
+                '"' => in_string = true,
+                '(' => depth += 1,
+                ')' if depth == 0 => {
+                    end = i;
+                    break;
+                }
+                ')' => depth -= 1,
+                '&' | '|' | '{' | '\n' if depth == 0 => {
+                    end = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let text = rest[..end].trim_end();
+        if text.starts_with(' ') { text.to_string() } else { format!(" {text}") }
+    }
+
+    /// `country -> Country(iso = "CA")`, the old way to walk in a filter:
+    /// the error writes the chain, since the schema knows every type.
+    #[cold]
+    fn walk_with_type(&self, field: &str, start: usize) -> Error {
+        let mut p = self.fork();
+        let chain = p.old_walk(field);
+        let span = self.span_bytes(start, p.i.max(start + field.len()));
+        let help = match chain {
+            Some(chain) => format!("write `has {chain}`"),
+            None => format!("write `has {field}(…)`, and `in` for each further hop"),
+        };
+        self.err_at(span, "a walk in a filter doesn't name the type: the schema knows it")
+            .with_help(help)
+    }
+
+    /// Rewrites `-> Type(inner)` after `field` into chain text, as far as the
+    /// source allows; `route -> Airport(country -> Country(iso = "JP"))`
+    /// becomes `route in country(iso = "JP")`.
+    fn old_walk(&mut self, field: &str) -> Option<String> {
+        if !(self.eat("->") || self.eat("<-")) {
             return None;
         }
-        let mut lookahead = self.fork();
-        let (field, span) = lookahead.ident().ok()?;
-        if !lookahead.starts_related_arrow() {
-            return None;
+        self.skip();
+        if self.eat("(") {
+            self.ident().ok()?;
+            while self.eat("|") {
+                self.ident().ok()?;
+            }
+            if !self.eat(")") {
+                return None;
+            }
+        } else {
+            self.ident().ok()?;
         }
-        self.i = lookahead.i;
-        Some((field, span))
+        if !self.eat("(") {
+            return Some(field.to_string());
+        }
+        self.skip();
+        // One old walk and nothing else inside: it becomes the next hop.
+        let mut inner = self.fork();
+        if let Ok((next, _)) = inner.ident() {
+            if inner.starts_related_arrow() {
+                if let Some(rest) = inner.old_walk(&next) {
+                    if inner.eat(")") {
+                        self.i = inner.i;
+                        return Some(format!("{field} in {rest}"));
+                    }
+                }
+            }
+        }
+        let text = self.chain_text(self.i);
+        self.i += self.src[self.i..].len().min(text.trim_start().len());
+        self.eat(")");
+        Some(format!("{field}({})", text.trim()))
     }
 
     #[inline(never)]
@@ -2357,16 +2672,10 @@ impl<'a> Parser<'a> {
         if self.src[self.i..].starts_with('.')
             && self.src[self.i + 1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         {
-            self.i += 1;
-            let (inner, _) = self.ident()?;
-            return Err(self
-                .err_at(
-                    self.span_bytes(start, self.i),
-                    "a related node's field is reached through its relationship",
-                )
-                .with_help(format!(
-                    "write `{field} -> Type({inner} = …)`, with the type `{field}` reaches"
-                )));
+            return Err(self.dotted_path(field, start));
+        }
+        if !builtin && self.starts_related_arrow() {
+            return Err(self.walk_with_type(&field, start));
         }
         if self.eat(":") || self.eat("=") {
             self.reject_related_value(&field)?;
@@ -2442,6 +2751,27 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    /// `country.iso = "CA"`: the error writes the chain, `has country(iso = "CA")`,
+    /// with every name before the last as a hop.
+    #[cold]
+    fn dotted_path(&self, field: String, start: usize) -> Error {
+        let mut p = self.fork();
+        let mut names = vec![field];
+        while p.src[p.i..].starts_with('.') {
+            p.i += 1;
+            match p.ident() {
+                Ok((name, _)) => names.push(name),
+                Err(_) => break,
+            }
+        }
+        let last = names.pop().unwrap_or_default();
+        let test = p.chain_text(p.i);
+        let span = self.span_bytes(start, p.i);
+        let hops = names.join(" in ");
+        self.err_at(span, "a related node's field is reached with `has`")
+            .with_help(format!("write `has {hops}({last}{test})`"))
+    }
+
     /// `->`, or a `<-` that no number follows: an arrow into a related node.
     /// `x <-5` is still `x < -5`.
     fn starts_related_arrow(&self) -> bool {
@@ -2454,87 +2784,6 @@ impl<'a> Parser<'a> {
         }
         lookahead.skip();
         !lookahead.src[lookahead.i..].starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '.')
-    }
-
-    /// `country -> Country(iso = "CA")` in a condition, from the arrow on.
-    #[inline(never)]
-    fn related(&mut self, field: String, span: Span) -> Result<Related> {
-        self.skip();
-        let start = self.i;
-        let direction = if self.eat("->") {
-            Direction::Out
-        } else {
-            self.expect("<-")?;
-            Direction::In
-        };
-        let target = self.related_target(start, &field)?;
-        Ok(Related {
-            field,
-            span,
-            direction,
-            target: Box::new(target),
-        })
-    }
-
-    /// The far end of a walk in a condition: a type or `(A | B)`, then an
-    /// optional condition. One nesting level, so a walk inside a walk's
-    /// condition counts toward [`MAX_NESTING`].
-    fn related_target(&mut self, start: usize, field: &str) -> Result<Selection> {
-        self.nested(start, |p| {
-            p.skip();
-            if !p.looking_at_ident() && !p.src[p.i..].starts_with('(') {
-                return Err(p
-                    .err(format!("expected the type `{field}` reaches"))
-                    .with_help(format!("write `{field} -> Type(field = value)`")));
-            }
-            let mut also = Vec::new();
-            let mut also_spans = Vec::new();
-            let (type_name, type_span) = if p.eat("(") {
-                let first = p.ident()?;
-                while p.eat("|") {
-                    let (name, span) = p.ident()?;
-                    also.push(name);
-                    also_spans.push(span);
-                }
-                p.expect(")")?;
-                first
-            } else {
-                p.ident()?
-            };
-            let condition = if p.eat("(") {
-                p.skip();
-                if p.eat(")") {
-                    None
-                } else {
-                    let expr = p.parse_or()?;
-                    p.expect(")")?;
-                    Some(expr)
-                }
-            } else {
-                None
-            };
-            p.skip();
-            if p.src[p.i..].starts_with('{') {
-                return Err(p
-                    .err("a walk in a condition only tests the related node")
-                    .with_help(format!(
-                        "select its fields after the parentheses: `{{ {field} -> {type_name} {{ … }} }}`"
-                    )));
-            }
-            Ok(Selection {
-                type_name,
-                type_span,
-                also,
-                also_spans,
-                condition,
-                sets: Vec::new(),
-                near: None,
-                order: Vec::new(),
-                limit: None,
-                items: Vec::new(),
-                delete: None,
-            })
-        })
     }
 
     /// `country: Country(iso: "CA")`: a type where a value goes. A related
@@ -2554,77 +2803,13 @@ impl<'a> Parser<'a> {
         if builtin || matches!(name.as_str(), "true" | "false" | "null") || !lookahead.eat("(") {
             return Ok(());
         }
+        let inner = self.chain_text(lookahead.i);
         Err(self
             .err_at(
                 self.span_bytes(start, start + name.len()),
-                "a related node is tested with an arrow",
+                "a related node is tested with `has`, not a value",
             )
-            .with_help(format!("write `{field} -> {name}(…)`")))
-    }
-
-    /// `@count(route)` or `@count(route -> Airport(…))`.
-    fn count(&mut self) -> Result<Count> {
-        self.skip();
-        let start = self.i;
-        self.expect_builtin("count")?;
-        self.expect("(")?;
-        let (field, _) = self.ident()?;
-        let to = if self.starts_related_arrow() {
-            self.skip();
-            let arrow = self.i;
-            let direction = if self.eat("->") {
-                Direction::Out
-            } else {
-                self.expect("<-")?;
-                Direction::In
-            };
-            Some((direction, Box::new(self.related_target(arrow, &field)?)))
-        } else {
-            None
-        };
-        if !self.eat(")") {
-            return Err(self
-                .err("expected )")
-                .with_help(format!(
-                    "`@count({field})` is the number; compare after it: `@count({field}) > 20`"
-                )));
-        }
-        Ok(Count {
-            field,
-            span: self.span_bytes(start, self.i),
-            to,
-        })
-    }
-
-    /// `= 3`, `> 20`: a count is compared with a whole number.
-    fn count_comparison(&mut self, count: &Count) -> Result<(CountCmp, u64)> {
-        let op = if self.eat(":") || self.eat("=") {
-            CountCmp::Eq
-        } else if self.eat("!=") || self.eat("<>") {
-            CountCmp::Ne
-        } else if self.eat(">=") {
-            CountCmp::Cmp(Cmp::Gte)
-        } else if self.eat("<=") {
-            CountCmp::Cmp(Cmp::Lte)
-        } else if self.eat(">") {
-            CountCmp::Cmp(Cmp::Gt)
-        } else if self.eat("<") {
-            CountCmp::Cmp(Cmp::Lt)
-        } else {
-            return Err(self
-                .err("@count needs a comparison")
-                .with_help(format!("write `@count({}) > 20`", count.field)));
-        };
-        self.skip();
-        let start = self.i;
-        let value = self.number_token()?;
-        let value = value.as_u64().ok_or_else(|| {
-            self.err_at(
-                self.span_bytes(start, self.i),
-                "a count is compared with a whole number, 0 or more",
-            )
-        })?;
-        Ok((op, value))
+            .with_help(format!("write `has {field}({})`; the schema knows it is a {name}", inner.trim())))
     }
 
     fn looking_at_ident(&self) -> bool {
@@ -3005,23 +3190,30 @@ fn bind_pred(pred: &Pred, row: &std::collections::HashMap<String, Json>) -> Resu
         Pred::Cmp(field, op, value, span) => {
             Ok(bind_json(value, row)?.map(|value| Pred::Cmp(field.clone(), *op, value, *span)))
         }
-        // A target whose condition empties drops the whole walk, the way an
+        // A test whose columns are all empty drops the whole chain, the way an
         // empty cell drops its own term.
-        Pred::Related(related) => Ok(bind_selection(&related.target, row)?.map(|target| {
-            Pred::Related(Related {
-                target: Box::new(target),
-                ..related.clone()
-            })
-        })),
-        Pred::Count(count, op, value) => {
-            let to = match &count.to {
+        Pred::Chain(chain) => {
+            let bind_test = |test: &Option<BoolExpr>| -> Result<Option<Option<BoolExpr>>> {
+                match test {
+                    None => Ok(Some(None)),
+                    Some(expr) => Ok(bind_expr(expr, row)?.map(Some)),
+                }
+            };
+            let from = match &chain.from {
                 None => None,
-                Some((direction, target)) => match bind_selection(target, row)? {
-                    Some(target) => Some((*direction, Box::new(target))),
+                Some(same) => match bind_test(&same.test)? {
+                    Some(test) => Some(Box::new(Same { test, ..(**same).clone() })),
                     None => return Ok(None),
                 },
             };
-            Ok(Some(Pred::Count(Count { to, ..count.clone() }, *op, *value)))
+            let mut hops = Vec::with_capacity(chain.hops.len());
+            for hop in &chain.hops {
+                match bind_test(&hop.test)? {
+                    Some(test) => hops.push(Hop { test, ..hop.clone() }),
+                    None => return Ok(None),
+                }
+            }
+            Ok(Some(Pred::Chain(Chain { from, hops, ..chain.clone() })))
         }
         other => Ok(Some(other.clone())),
     }
@@ -3097,9 +3289,12 @@ fn collect_expr_refs(expr: &BoolExpr, out: &mut Vec<(String, Span)>) {
                 Pred::Eq(_, value, span)
                 | Pred::Ne(_, value, span)
                 | Pred::Cmp(_, _, value, span) => (value, *span),
-                Pred::Related(Related { target, .. })
-                | Pred::Count(Count { to: Some((_, target)), .. }, ..) => {
-                    return collect_refs(target, out);
+                Pred::Chain(chain) => {
+                    let tests = chain.from.iter().filter_map(|same| same.test.as_ref());
+                    for test in tests.chain(chain.hops.iter().filter_map(|hop| hop.test.as_ref())) {
+                        collect_expr_refs(test, out);
+                    }
+                    return;
                 }
                 _ => return,
             };
@@ -3537,7 +3732,6 @@ impl Check<'_> {
             match &key.by {
                 OrderBy::Distance(distance) => self.ensure_point(sel, &distance.field, distance.span),
                 OrderBy::Field(field) => self.ensure_orderable(sel, field, key.span),
-                OrderBy::Count(count) => self.count(sel, count),
             }
         }
         if sel.delete.is_some() {
@@ -3569,17 +3763,6 @@ impl Check<'_> {
                 Item::Prop(name, span) => self.ensure_prop(sel, name, *span),
                 Item::Distance(_, distance) => {
                     self.ensure_point(sel, &distance.field, distance.span)
-                }
-                Item::Count(_, count) => {
-                    if self.mutation {
-                        self.push(
-                            count.span,
-                            "@count is read by a query, not a mutation",
-                            Some("select it in a `query { }` after the write".into()),
-                        );
-                    } else {
-                        self.count(sel, count);
-                    }
                 }
                 Item::Hops(_) | Item::Id(_) => {}
                 Item::Detach(span) => {
@@ -3642,79 +3825,233 @@ impl Check<'_> {
         }
     }
 
-    /// The tests in `sel`'s parentheses, and the conditions of any walks in
-    /// them, each against the type it is written on.
+    /// The tests in `sel`'s parentheses, each against the type it is written
+    /// on; a chain's hops against the types the schema says they reach.
     fn condition(&mut self, sel: &Selection) {
         let Some(expr) = &sel.condition else {
             return;
         };
-        for pred in expr.tests() {
-            match pred {
-                Pred::Related(related) => {
-                    self.related(sel, &related.field, related.span, related.direction, &related.target);
-                    continue;
+        let types: Vec<String> = selection_types(sel).into_iter().map(str::to_string).collect();
+        self.expr(sel, &types, expr, Group::Alone);
+    }
+
+    fn expr(&mut self, sel: &Selection, types: &[String], expr: &BoolExpr, group: Group) {
+        match expr {
+            BoolExpr::Test(pred) => self.test(sel, types, pred, &[], group),
+            BoolExpr::And(terms) => {
+                for (i, term) in terms.iter().enumerate() {
+                    match term {
+                        BoolExpr::Test(pred) => self.test(sel, types, pred, &terms[..i], Group::And),
+                        other => self.expr(sel, types, other, Group::Alone),
+                    }
                 }
-                Pred::Count(count, ..) => {
-                    self.count(sel, count);
-                    continue;
-                }
-                _ => {}
             }
-            if pred.field() != "@id" && !self.relationship_in_filter(sel, pred) {
-                self.ensure_prop(sel, pred.field(), pred.span());
-            }
-            match pred {
-                Pred::Similarity(sim, ..) => self.ensure_vector(sel, sim),
-                Pred::Distance(distance, ..) => {
-                    self.ensure_point(sel, &distance.field, distance.span)
+            BoolExpr::Or(terms) => {
+                for term in terms {
+                    self.expr(sel, types, term, Group::Or);
                 }
-                Pred::Box(field, _, span) => self.ensure_point(sel, field, *span),
-                Pred::Eq(field, value, span)
-                | Pred::Ne(field, value, span)
-                | Pred::Cmp(field, _, value, span) => {
-                    self.check_point_value(sel, field, value, *span)
-                }
-                _ => {}
             }
         }
     }
 
-    /// `rel -> Target(condition)` in a condition, or in `@count(…)`: the
-    /// relationship, its direction and target are checked the way a walk's
-    /// are, then the target's own condition against the target's type.
-    fn related(&mut self, sel: &Selection, field: &str, span: Span, direction: Direction, target: &Selection) {
-        let before = self.out.len();
-        self.walk(sel, field, span, direction, target);
-        // An unknown relationship or target says so once; its condition
-        // would only repeat it.
-        if self.out.len() == before {
-            self.condition(target);
+    /// One test; `earlier` are the terms before it in its `&&` group, which
+    /// a chain's `same` may name.
+    fn test(&mut self, sel: &Selection, types: &[String], pred: &Pred, earlier: &[BoolExpr], group: Group) {
+        if let Pred::Chain(chain) = pred {
+            self.chain(types, chain, earlier, group);
+            return;
+        }
+        if pred.field() != "@id" && !self.relationship_in_filter(sel, pred) {
+            self.ensure_prop(sel, pred.field(), pred.span());
+        }
+        match pred {
+            Pred::Similarity(sim, ..) => self.ensure_vector(sel, sim),
+            Pred::Distance(distance, ..) => self.ensure_point(sel, &distance.field, distance.span),
+            Pred::Box(field, _, span) => self.ensure_point(sel, field, *span),
+            Pred::Eq(field, value, span) | Pred::Ne(field, value, span) | Pred::Cmp(field, _, value, span) => {
+                self.check_point_value(sel, field, value, *span)
+            }
+            _ => {}
         }
     }
 
-    /// `@count(rel)` or `@count(rel -> Target(…))`: `rel` is a relationship.
-    fn count(&mut self, sel: &Selection, count: &Count) {
-        if let Some((direction, target)) = &count.to {
-            self.related(sel, &count.field, count.span, *direction, target);
-            return;
+    /// A chain: its `same` names, then each hop against the types the one
+    /// before it reached, and each `(…)` against the node it tests.
+    fn chain(&mut self, types: &[String], chain: &Chain, earlier: &[BoolExpr], group: Group) {
+        let bound = match self.same_target(types, chain, earlier, group) {
+            Ok(bound) => bound,
+            Err((span, message, help)) => {
+                self.push(span, message, help);
+                return;
+            }
+        };
+        let mut here: Vec<String> = match (&chain.from, &bound) {
+            (Some(_), Some(bound)) => bound.clone(),
+            _ => types.to_vec(),
+        };
+        if let Some(same) = &chain.from {
+            if let Some(test) = &same.test {
+                self.hop_test(&here, same.span, test);
+            }
         }
-        let types = selection_types(sel);
-        if types.iter().any(|ty| find_edge(self.schema, ty, &count.field).is_some()) {
-            return;
+        let mut first = chain.from.is_none();
+        for hop in &chain.hops {
+            let Some(next) = self.hop_types(&here, hop, first) else {
+                return;
+            };
+            if hop.same {
+                if let Some(bound) = &bound {
+                    if !next.iter().any(|ty| bound.contains(ty)) {
+                        self.push(
+                            hop.span,
+                            format!("`in same {}` can never arrive at the same node", hop.field),
+                            Some(format!(
+                                "this hop reaches {}, and the earlier `{}` reached {}",
+                                next.join(" or "),
+                                hop.field,
+                                bound.join(" or ")
+                            )),
+                        );
+                    }
+                }
+            }
+            if let Some(test) = &hop.test {
+                self.hop_test(&next, hop.span, test);
+            }
+            here = next;
+            first = false;
         }
-        if let Some(ty) = types.iter().find(|ty| self.schema.prop(ty, &count.field).is_ok()) {
+    }
+
+    /// The types the node `same` names can be, or the error that says why the
+    /// `same` is wrong. None when the chain has no `same`.
+    fn same_target(
+        &self,
+        types: &[String],
+        chain: &Chain,
+        earlier: &[BoolExpr],
+        group: Group,
+    ) -> std::result::Result<Option<Vec<String>>, (Span, String, Option<String>)> {
+        let name_span = match (&chain.from, chain.hops.last()) {
+            (Some(same), _) => (same.name.as_str(), same.span),
+            (None, Some(hop)) if hop.same => (hop.field.as_str(), hop.span),
+            _ => return Ok(None),
+        };
+        let (name, span) = name_span;
+        if chain.negated {
+            return Err((span, "`same` can't follow `!have`".into(), Some("`!have` matched no node to be the same as; write the test with `has`".into())));
+        }
+        match group {
+            Group::Or => {
+                return Err((span, "`same` can't follow `||`".into(), Some(format!("`same {name}` continues an earlier chain joined by `&&`"))))
+            }
+            Group::Alone => {
+                return Err((span, format!("`same {name}` has no earlier chain"), Some(format!("write `has {name} … && same {name} …`"))))
+            }
+            Group::And => {}
+        }
+        let found = same_hops(earlier, name);
+        match found.as_slice() {
+            [] => Err((
+                span,
+                format!("no earlier chain in this `&&` group reaches `{name}`"),
+                Some(format!("write `has {name} … && same {name} …`")),
+            )),
+            [(i, _)] => {
+                let BoolExpr::Test(Pred::Chain(source)) = &earlier[*i] else {
+                    return Ok(None);
+                };
+                if source.negated {
+                    return Err((span, format!("`same {name}` can't refer into `!have`"), Some("`!have` matched no node; the earlier chain has to be a `has`".into())));
+                }
+                Ok(self.reached(types, &earlier[..*i], source, name))
+            }
+            many => Err((
+                span,
+                format!("`same {name}` is ambiguous: `{name}` is reached {} times earlier", many.len()),
+                Some(format!("keep one `{name}` before `same {name}`")),
+            )),
+        }
+    }
+
+    /// The types chain `source` reaches at its hop `name`, following the
+    /// schema; `earlier` are the terms before `source`, for its own `same`.
+    fn reached(&self, types: &[String], earlier: &[BoolExpr], source: &Chain, name: &str) -> Option<Vec<String>> {
+        let mut here = match &source.from {
+            None => types.to_vec(),
+            Some(same) => {
+                let found = same_hops(earlier, &same.name);
+                let [(i, _)] = found.as_slice() else {
+                    return None;
+                };
+                let BoolExpr::Test(Pred::Chain(before)) = &earlier[*i] else {
+                    return None;
+                };
+                self.reached(types, &earlier[..*i], before, &same.name)?
+            }
+        };
+        for hop in &source.hops {
+            here = edge_targets(self.schema, &here, &hop.field)?;
+            if hop.field == name && !hop.same {
+                return Some(here);
+            }
+        }
+        None
+    }
+
+    /// The types `hop` reaches from `here`, or None after reporting why it
+    /// can't be followed.
+    fn hop_types(&mut self, here: &[String], hop: &Hop, first: bool) -> Option<Vec<String>> {
+        if let Some(next) = edge_targets(self.schema, here, &hop.field) {
+            if hop.repeat.is_some() {
+                if let Some(stop) = next.iter().find(|ty| find_edge(self.schema, ty, &hop.field).is_none()) {
+                    self.push(
+                        hop.span,
+                        format!("`{}` can't repeat: {stop} has no `{}`", hop.field, hop.field),
+                        Some("`N hops` follows one relationship from each node it reaches, so both ends need it".into()),
+                    );
+                    return None;
+                }
+            }
+            return Some(next);
+        }
+        let names: Vec<&str> = here.iter().map(String::as_str).collect();
+        if let Some(ty) = names.iter().find(|ty| self.schema.prop(ty, &hop.field).is_ok()) {
+            let help = if first {
+                format!("test a field directly: `{} = …`", hop.field)
+            } else {
+                format!("test it in the parentheses of the hop before: `(…{} = …)`", hop.field)
+            };
+            self.push(hop.span, format!("{ty}.{} is a field, not a relationship", hop.field), Some(help));
+        } else {
             self.push(
-                count.span,
-                format!("@count counts a relationship; {ty}.{} is a field", count.field),
-                Some(format!("filter the field itself, e.g. `{} = …`", count.field)),
+                hop.span,
+                format!("{} has no relationship {}", names.join(" or "), hop.field),
+                Some(field_help(self.schema, &names, &hop.field)),
             );
-            return;
         }
-        self.push(
-            count.span,
-            format!("{} has no relationship {}", sel.type_name, count.field),
-            Some(field_help(self.schema, &types, &count.field)),
-        );
+        None
+    }
+
+    /// `(…)` after a hop, against the types that hop reaches.
+    fn hop_test(&mut self, types: &[String], span: Span, test: &BoolExpr) {
+        let Some((first, rest)) = types.split_first() else {
+            return;
+        };
+        let reached = Selection {
+            type_name: first.clone(),
+            type_span: span,
+            also: rest.to_vec(),
+            also_spans: vec![span; rest.len()],
+            condition: Some(test.clone()),
+            sets: Vec::new(),
+            near: None,
+            order: Vec::new(),
+            limit: None,
+            items: Vec::new(),
+            delete: None,
+        };
+        self.condition(&reached);
     }
 
     /// `Airport(country = "CA")` or `Airport(route > 20)`: a relationship
@@ -3726,10 +4063,10 @@ impl Check<'_> {
         if types.iter().any(|ty| self.schema.prop(ty, name).is_ok()) {
             return false;
         }
-        let Some((direction, targets)) = types.iter().find_map(|ty| {
+        let Some(targets) = types.iter().find_map(|ty| {
             find_edge(self.schema, ty, name)
                 .and_then(Field::as_edge)
-                .map(|(_, _, direction, targets, _)| (direction, targets))
+                .map(|(_, _, _, targets, _)| targets)
         }) else {
             return false;
         };
@@ -3742,8 +4079,7 @@ impl Check<'_> {
                     pred.span(),
                     format!("{name} is a relationship"),
                     Some(format!(
-                        "test a field of the related node: `{name} {} {}(field …)`",
-                        arrow(direction),
+                        "test a field of the related node: `has {name}(field …)`; it is a {}",
                         targets.first().map_or("Type", String::as_str)
                     )),
                 );
@@ -3751,9 +4087,7 @@ impl Check<'_> {
             }
         };
         let shown = serde_json::to_string(value).unwrap_or_default();
-        let help = if value.is_u64() {
-            format!("count it: `@count({name}) {op} {shown}`")
-        } else {
+        let help = {
             let target = targets.first().map_or("Type", String::as_str);
             let fields: Vec<(&str, &str)> = self
                 .schema
@@ -3774,10 +4108,7 @@ impl Check<'_> {
                 .or(fields.first())
                 .map_or("field", |(name, _)| *name);
             let listed = fields.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ");
-            format!(
-                "filter by a field of the related node: `{name} {} {target}({example} {op} {shown})`; {target} has {listed}",
-                arrow(direction)
-            )
+            format!("test a field of the related node: `has {name}({example} {op} {shown})`; {target} has {listed}")
         };
         self.push(pred.span(), format!("{name} is a relationship"), Some(help));
         true
@@ -4145,7 +4476,6 @@ impl Check<'_> {
                 Item::Score(_, span) => Some((*span, "a delete returns only `@id` and fields")),
                 Item::Similarity(_, sim) => Some((sim.span, "a delete returns only `@id` and fields")),
                 Item::Distance(_, distance) => Some((distance.span, "a delete returns only `@id` and fields")),
-                Item::Count(_, count) => Some((count.span, "a delete returns only `@id` and fields")),
                 Item::Hops(_) => Some((sel.type_span, "a delete returns only `@id` and fields")),
             };
             if let Some((span, message)) = refused {
@@ -4231,6 +4561,52 @@ impl Check<'_> {
             Some(field_help(self.schema, &types, name)),
         );
     }
+}
+
+/// Where a test sits: which terms a chain's `same` may name.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Group {
+    /// A term of an `&&` group, after the terms before it.
+    And,
+    /// A branch of `||`.
+    Or,
+    /// The whole condition, or a parenthesized group's only test.
+    Alone,
+}
+
+/// The hops named `name` in the chains among `terms`, as (term, hop) indexes:
+/// what `same name` can refer to. A join (`in same x`) is not a new name.
+/// The checker needs exactly one; the executor binds that one.
+pub(crate) fn same_hops(terms: &[BoolExpr], name: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for (i, term) in terms.iter().enumerate() {
+        if let BoolExpr::Test(Pred::Chain(chain)) = term {
+            for (j, hop) in chain.hops.iter().enumerate() {
+                if hop.field == name && !hop.same {
+                    out.push((i, j));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The types relationship `field` reaches from any of `types`; None when none
+/// of them has it.
+fn edge_targets(schema: &Schema, types: &[String], field: &str) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    let mut found = false;
+    for ty in types {
+        if let Some(Field::Edge { targets, .. }) = find_edge(schema, ty, field) {
+            found = true;
+            for target in targets {
+                if !out.contains(target) {
+                    out.push(target.clone());
+                }
+            }
+        }
+    }
+    found.then_some(out)
 }
 
 fn selection_types(sel: &Selection) -> Vec<&str> {

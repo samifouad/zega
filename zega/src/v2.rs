@@ -5,6 +5,7 @@
 //! or `set`. Writes go through the same node, relationship, and WAL operations
 //! as the existing executor.
 
+mod chain;
 mod discovery;
 
 use crate::location::{Bounds, Point, EARTH_RADIUS};
@@ -15,8 +16,8 @@ use std::time::{Duration, Instant};
 use crate::graph::{Graph, NodeId, NodeRef, NodeView, RelId, RelRef};
 use crate::index::{IndexKind, Interval, TextPattern};
 use crate::lang::{
-    BoolExpr, Cmp, Count, Direction, Error as LangError, Item, LoadFormat, OrderBy, OrderKey, Pred,
-    Related, Schema, Selection, Span, Statement,
+    BoolExpr, Cmp, Direction, Error as LangError, Item, LoadFormat, OrderBy, OrderKey, Pred, Schema,
+    Selection, Span, Statement,
 };
 use crate::value::Value;
 use crate::journal::{atomically, Journal};
@@ -706,7 +707,7 @@ fn read(
     // the answer and the rest need not be tested (zegadb/zega#82).
     let enough = root.limit.filter(|_| root.near.is_none() && root.order.is_empty());
     retain_first_matches(graph, schema, &mut ids, root.condition.as_ref(), enough, context.work)?;
-    order_limit(graph, schema, root, &mut ids, |id| *id, context.work)?;
+    order_limit(graph, root, &mut ids, |id| *id, context.work)?;
     if equality_lookup(root) {
         return match ids.len() {
             0 => Ok(Json::Null),
@@ -882,10 +883,6 @@ fn apply_node(
             }
             Item::Hops(alias) => {
                 object.insert(alias.clone(), json!(0));
-            }
-            // The checker refuses it; this is the backstop.
-            Item::Count(_, count) => {
-                return Err(LangError::at(count.span, "@count is read by a query, not a mutation"));
             }
             Item::EdgeProp(name, _) | Item::EdgeSet(name, _, _) => {
                 let value = sel
@@ -1322,10 +1319,6 @@ fn project(
             Item::Hops(alias) => {
                 object.insert(alias.clone(), json!(hops));
             }
-            Item::Count(alias, count) => {
-                let n = count_related(graph, schema, id, count, None, context.work)?;
-                object.insert(alias.clone(), json!(n));
-            }
             Item::EdgeSet(name, _, _) => {
                 return Err(LangError::bare(format!(
                     "&{name}: value is stored by a mutation"
@@ -1427,7 +1420,7 @@ fn project(
                     }
                 }
                 let mut reached = kept;
-                order_limit(graph, schema, target, &mut reached, |(id, ..)| *id, context.work)?;
+                order_limit(graph, target, &mut reached, |(id, ..)| *id, context.work)?;
                 let mut rows = Vec::new();
                 for (next, depth, rel_id) in reached {
                     rows.push(project(
@@ -1925,11 +1918,7 @@ fn index_filter(
         // it cannot serve these without a second, folded index (zegadb/zega#98
         // left that for later). They always fall through to a full scan below.
         BoolExpr::Test(Pred::FindLike(..) | Pred::StartsLike(..) | Pred::EndsLike(..)) => None,
-        BoolExpr::Test(Pred::Related(related)) => {
-            return related_candidates(graph, schema, types, related, work)
-        }
-        // A count reads each row's own relationships; no index holds degrees.
-        BoolExpr::Test(Pred::Count(..)) => None,
+        BoolExpr::Test(Pred::Chain(chain)) => return chain::candidates(graph, schema, types, chain, work),
         BoolExpr::Test(pred) => {
             let Some((field, interval)) = range_interval(pred) else {
                 return Ok(None);
@@ -1945,8 +1934,8 @@ fn index_filter(
             let mut walks = Vec::new();
             for term in terms {
                 if let BoolExpr::Test(pred) = term {
-                    if let Pred::Related(related) = pred {
-                        walks.push(related);
+                    if let Pred::Chain(walk) = pred {
+                        walks.push(walk);
                         continue;
                     }
                     if let Some((field, interval)) = range_interval(pred) {
@@ -1974,11 +1963,11 @@ fn index_filter(
             // When the row's own fields already narrowed it, walking forward
             // from those few rows is cheaper than finding every matching
             // target first; so is walking from the rows one walk found.
-            for related in walks {
+            for walk in walks {
                 if found.is_some() {
                     break;
                 }
-                if let Some(set) = related_candidates(graph, schema, types, related, work)? {
+                if let Some(set) = chain::candidates(graph, schema, types, walk, work)? {
                     found = Some(set);
                 }
             }
@@ -1996,53 +1985,6 @@ fn index_filter(
             Some(found)
         }
     })
-}
-
-/// `rel -> Target(condition)` whose target condition an index can answer:
-/// find the matching targets through that index, then follow `rel` backwards
-/// from each to the rows that reach them. None when the target has no index
-/// to start from; the caller then tests each of its rows by walking forward.
-fn related_candidates(
-    graph: &Graph,
-    schema: &Schema,
-    types: &[&str],
-    related: &Related,
-    work: &mut Work,
-) -> Result<Option<HashSet<NodeId>>, LangError> {
-    let target = &related.target;
-    let Some(condition) = &target.condition else {
-        return Ok(None);
-    };
-    let Some(found) = index_filter(graph, schema, &selection_types(target), condition, work)? else {
-        return Ok(None);
-    };
-    let mut ids: Vec<NodeId> = found
-        .into_iter()
-        .filter(|id| in_selection(graph, *id, target))
-        .collect();
-    ids.sort_unstable();
-    retain_matches(graph, schema, &mut ids, Some(condition), work)?;
-    // The relationship kind as each of the row's types declares it.
-    let mut kinds: Vec<&str> = types
-        .iter()
-        .filter_map(|ty| schema.edge(ty, &related.field).ok()?.as_edge())
-        .filter(|(_, _, direction, ..)| *direction == related.direction)
-        .map(|(_, kind, ..)| kind)
-        .collect();
-    kinds.dedup();
-    let back = match related.direction {
-        Direction::Out => Direction::In,
-        Direction::In => Direction::Out,
-    };
-    let mut rows = HashSet::new();
-    for id in ids {
-        for kind in &kinds {
-            let from = neighbors(graph, id, kind, back);
-            work.charge(from.len())?;
-            rows.extend(from.into_iter().map(|(row, _)| row));
-        }
-    }
-    Ok(Some(rows))
 }
 
 fn selection_types(sel: &Selection) -> Vec<&str> {
@@ -2124,7 +2066,6 @@ fn node_distance(graph: &Graph, id: NodeId, distance: &crate::lang::Distance) ->
 }
 fn order_limit<T>(
     graph: &Graph,
-    schema: &Schema,
     sel: &Selection,
     ids: &mut Vec<T>,
     id: impl Fn(&T) -> NodeId,
@@ -2160,10 +2101,6 @@ fn order_limit<T>(
                         None => continue 'rows,
                     },
                     OrderBy::Field(field) => SortValue::of(node.and_then(|n| n.prop(field))),
-                    OrderBy::Count(count) => SortValue::Int(
-                        i64::try_from(count_related(graph, schema, id(&row), count, None, work)?)
-                            .unwrap_or(i64::MAX),
-                    ),
                 });
             }
             keyed.push((values, row));
@@ -2295,6 +2232,7 @@ fn eval_expr(
 ) -> Result<bool, LangError> {
     match expr {
         BoolExpr::Test(pred) => pred_matches(graph, schema, id, pred, work),
+        BoolExpr::And(terms) if chain::correlated(terms) => chain::and_group(graph, schema, id, terms, work),
         BoolExpr::And(terms) => {
             for term in terms {
                 if !eval_expr(graph, schema, id, term, work)? {
@@ -2312,88 +2250,6 @@ fn eval_expr(
             Ok(false)
         }
     }
-}
-
-/// The stored kind, direction and target types of `field` on `node`'s type.
-fn relationship_of<'a>(
-    schema: &'a Schema,
-    node: NodeRef<'_>,
-    field: &str,
-) -> Option<(&'a str, Direction, &'a [String])> {
-    node.labels().find_map(|label| {
-        let (_, kind, direction, targets, _) = schema.edge(label, field).ok()?.as_edge()?;
-        Some((kind, direction, targets))
-    })
-}
-
-/// `rel -> Target(condition)`: some neighbour over `rel` is a `Target` that
-/// meets the condition. Stops at the first; a node without the relationship
-/// fails. Each relationship read is charged to the statement's work.
-fn related_matches(
-    graph: &Graph,
-    schema: &Schema,
-    id: NodeId,
-    related: &Related,
-    work: &mut Work,
-) -> Result<bool, LangError> {
-    let Some(node) = graph.get_node(id) else {
-        return Ok(false);
-    };
-    let Some((kind, direction, _)) = relationship_of(schema, node, &related.field) else {
-        return Ok(false);
-    };
-    if direction != related.direction {
-        return Ok(false);
-    }
-    for (next, _) in neighbors(graph, id, kind, direction) {
-        work.charge(1)?;
-        if in_selection(graph, next, &related.target)
-            && node_matches(graph, schema, next, related.target.condition.as_ref(), work)?
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// How many of `id`'s `count.field` relationships reach a node the count
-/// accepts: any declared target, or with `-> Target(condition)` only those
-/// that meet it. Stops once `cap` are found.
-fn count_related(
-    graph: &Graph,
-    schema: &Schema,
-    id: NodeId,
-    count: &Count,
-    cap: Option<u64>,
-    work: &mut Work,
-) -> Result<u64, LangError> {
-    let Some(node) = graph.get_node(id) else {
-        return Ok(0);
-    };
-    let Some((kind, direction, targets)) = relationship_of(schema, node, &count.field) else {
-        return Ok(0);
-    };
-    if count.to.as_ref().is_some_and(|(wanted, _)| *wanted != direction) {
-        return Ok(0);
-    }
-    let mut n = 0;
-    for (next, _) in neighbors(graph, id, kind, direction) {
-        if cap.is_some_and(|cap| n >= cap) {
-            break;
-        }
-        work.charge(1)?;
-        let counted = match &count.to {
-            None => node_has_any_label(graph, next, targets),
-            Some((_, target)) => {
-                in_selection(graph, next, target)
-                    && node_matches(graph, schema, next, target.condition.as_ref(), work)?
-            }
-        };
-        if counted {
-            n += 1;
-        }
-    }
-    Ok(n)
 }
 
 fn assign_props(
@@ -2433,12 +2289,7 @@ fn pred_matches(
         return Ok(false);
     };
     Ok(match pred {
-        Pred::Related(related) => return related_matches(graph, schema, id, related, work),
-        Pred::Count(count, op, value) => {
-            // Past `value + 1` relationships, no comparison with `value` changes.
-            let n = count_related(graph, schema, id, count, Some(value.saturating_add(1)), work)?;
-            op.holds(n, *value)
-        }
+        Pred::Chain(walk) => return chain::holds(graph, schema, id, walk, work),
         Pred::Similarity(sim, op, threshold) => node_similarity(node, sim).is_some_and(|s| cmp_json(&json!(s), *op, &json!(threshold))),
         Pred::Distance(distance, op, metres) => {
             point_prop(node, &distance.field).is_some_and(|point| {
@@ -2591,7 +2442,14 @@ fn json_to_value(value: &Json) -> Result<Value, LangError> {
 pub(crate) struct Work {
     left: usize,
     deadline: Option<Deadline>,
+    /// For a chain's `within N hops`, the end nodes an index pinned: by
+    /// chain, hop and start type, computed once for the statement.
+    pins: HashMap<PinKey, Option<std::rc::Rc<HashSet<NodeId>>>>,
 }
+
+/// A pinned end set's key: the chain (by address, fixed for the statement),
+/// the hop, and the type the walk started from.
+type PinKey = (usize, usize, String);
 
 struct Deadline {
     at: Instant,
@@ -2612,6 +2470,7 @@ impl Work {
                 steps: 0,
                 expired: false,
             }),
+            pins: HashMap::new(),
         }
     }
 

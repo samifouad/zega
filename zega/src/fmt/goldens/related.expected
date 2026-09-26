@@ -14,33 +14,43 @@ schema {
 }
 
 query {
-  Airport(country -> Country(iso = "CA")) {
+  Airport(has country(iso = "CA")) {
     code
-    route -> Airport(country -> Country(iso = "JP")) { code }
+    route -> Airport { code }
   }
+}
+
+query {
+  Airport(has country(iso = "CA") && has route in country(iso = "JP")) { code }
+}
+
+query {
+  Airport(!have route in country(iso = "US")) { code }
+}
+
+query {
+  Airport(has route 2 hops in country(iso = "JP")) { code }
+}
+
+query {
+  Country(has airports with route within 3 hops in country(iso = "JP")) { name }
 }
 
 query {
   Airport(
-    country -> Country(iso = "CA") &&
-    route -> Airport(country -> Country(iso = "JP")) &&
-    @count(inbound) >= 1
+    has route(code = "NRT") &&
+    same route in country &&
+    has inbound in same country
   ) { code }
 }
 
 query {
-  Airport(@count(route) > 20) order by @count(route) desc {
+  Airport {
     code
-    routes: @count(route)
+    route within 2 hops -> Airport { code @hops }
   }
 }
 
 query {
-  Country(
-    airports <- Airport(@count(route -> Airport(country -> Country)) != 0)
-  ) { name @count(airports) }
-}
-
-query {
-  Airport(country -> Country || x < -5) { code }
+  Airport(has country || code < -5) { code }
 }

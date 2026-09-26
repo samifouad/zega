@@ -229,7 +229,7 @@ pub(super) fn display_fragment(ts: &[Token<'_>], expand_attributes: bool) -> Doc
 fn fragment_layout(ts: &[Token<'_>], types: bool, expand_attributes: bool) -> Doc {
     fn spaced(prev: &str, next: &str, types: bool) -> bool {
         if prev.is_empty()
-            || matches!(prev, "(" | "[" | "@" | "&" | "$" | ".." | "*")
+            || matches!(prev, "(" | "[" | "@" | "&" | "$" | ".." | "*" | "!")
             || matches!(next, ")" | "]" | "," | ":" | "?" | "..")
         {
             return false;
