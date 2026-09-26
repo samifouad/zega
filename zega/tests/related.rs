@@ -427,7 +427,7 @@ fn min_max_and_exactly_are_keywords_only_before_n_hops() {
 #[test]
 fn a_walk_keeps_to_its_own_field_when_fields_share_a_kind() {
     let plain = "type P { name: String v?: Int knows: LINK -> P[] fan: LINK -> T[] } type T { name: String scout: LINK -> P[] }";
-    let indexed = format!("schema {{ {plain} }} index {{ range P {{ v }} }}");
+    let indexed = format!("schema {{ {plain} }} index {{ range P {{ v name }} }}");
     for schema in [plain.to_string(), indexed] {
         let db = Zega::in_memory().build().unwrap();
         for create in [r#"P(name: "a")"#, r#"P(name: "b" && v: 9)"#, r#"T(name: "t")"#] {
@@ -437,6 +437,9 @@ fn a_walk_keeps_to_its_own_field_when_fields_share_a_kind() {
         ask(&db, &schema, r#"mutation { T(name: "t") { scout -> link P(name: "b") } }"#);
         for band in ["within 2 hops", "exactly 2 hops", "max 3 hops"] {
             let found = ask(&db, &schema, &format!("{{ P(has knows {band}(v = 9)) {{ name }} }}"));
+            assert_eq!(found, json!([]), "{schema}\n{band}");
+            // With `a` found by its own index, its walk meets `b` from both ends.
+            let found = ask(&db, &schema, &format!(r#"{{ P(name = "a" && has knows {band}(v = 9)) {{ name }} }}"#));
             assert_eq!(found, json!([]), "{schema}\n{band}");
         }
         // A selection's `*1..2` and `max 2 hops` take the same step.
