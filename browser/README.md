@@ -56,8 +56,12 @@ shows `connected to <id>`, and **Disconnect** returns to the local graph.
   dev` or the CLI; the CLI's native mode shows no button.
 - ZQL sources are fetched by the browser and sent with the query, as in wasm
   mode: the graph's machine cannot read this computer's files.
-- Sample buttons and reset are hidden while connected (they clear the graph
-  first), and clear asks before deleting anything remote.
+- Every call to a remote graph is metered, so nothing runs on typing: queries
+  run only on Run or Cmd/Ctrl+Enter, connecting reads the graph once, and the
+  `GET /graph` snapshot is refreshed only after something that may write.
+- Run never applies the schema pane to a remote graph, and sample buttons and
+  reset are hidden while connected (they clear the graph first); clear asks
+  before deleting anything remote.
 - `tests/remote.spec.js` runs this against a local HTTPS stand-in for
   api.zega.dev (Chromium's resolver maps the host; `openssl` makes the
   certificate) and inspects every storage API, the URL and the DOM for the key
