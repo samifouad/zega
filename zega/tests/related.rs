@@ -416,13 +416,17 @@ fn same_is_refused_where_it_names_nothing_or_two_nodes() {
 }
 
 #[test]
-fn has_and_same_are_still_field_names() {
-    let schema = "type Box { has: Int same?: Int }";
+fn has_same_and_in_are_still_names() {
+    // A field called `has`, another called `same`, and a relationship
+    // called `in`: chain words only where a chain goes.
+    let schema = "type Box { has: Int same?: Int in -> Box[] }";
     let db = Zega::in_memory().build().unwrap();
-    ask(&db, schema, "mutation { Box(has: 1 && same: 2) }");
-    assert_eq!(ask(&db, schema, "{ Box(has = 1 && same >= 2) { has } }"), json!([{ "has": 1 }]));
+    ask(&db, schema, "mutation { Box(has: 2 && same: 3) }");
+    ask(&db, schema, "mutation { Box(has: 1) }");
+    ask(&db, schema, "mutation { Box(has: 1) { in -> link Box(has: 2) } }");
+    assert_eq!(ask(&db, schema, "{ Box(has = 1 && has in(has = 2 && same >= 3)) { has } }"), json!([{ "has": 1 }]));
     // `<-` before a number is still less-than a negative.
-    assert_eq!(ask(&db, schema, "{ Box(has <-5 || has > 0) { has } }"), json!([{ "has": 1 }]));
+    assert_eq!(ask(&db, schema, "{ Box(has <-5 || has in) { has } }"), json!([{ "has": 1 }]));
 }
 
 // ---------------------------------------------------------------------------
