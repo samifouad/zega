@@ -4,7 +4,7 @@ name: cqx export
 #
 # The score itself is `cqx.yml`, which runs on every pull request and needs no
 # credentials. This is the other half: a push to main gets exported so that
-# cqx.bio/zegadb/zega opens on a dataset that already exists.
+# cqx.dev/zegadb/zega opens on a dataset that already exists.
 #
 # Without it the page still works — it reads the repository from GitHub and
 # runs the analysis in the reader's browser — but it does that on every visit,
@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           export CQX_INSTALL_DIR="${RUNNER_TEMP}/cqx" CQX_NO_MODIFY_PATH=1
-          curl -fsSL https://cqx.bio/install | sh
+          curl -fsSL https://cqx.dev/install | sh
           echo "${CQX_INSTALL_DIR}/bin" >> "$GITHUB_PATH"
 
       # A dataset names its commit and describes nothing else, which makes it
@@ -143,7 +143,7 @@ jobs:
         name: Say what is live
         run: |
           {
-            echo "[cqx.bio/${{ github.repository }}](https://cqx.bio/${{ github.repository }})"
+            echo "[cqx.dev/${{ github.repository }}](https://cqx.dev/${{ github.repository }})"
             echo
             python3 - <<'PY'
           import json
